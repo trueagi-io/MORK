@@ -44,4 +44,5 @@ Automatic derivation of [triemaps](https://arxiv.org/pdf/2302.08775) for any [Mu
 - [ ] Database\
 Full [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra#Joins_and_join-like_operators) support, allowing classical database querying for any structured key type
 
-  
+- [ ] JSON interop\
+Combined parsing of JSON and construction of the Triemap database and querying using [JSONPath](https://datatracker.ietf.org/doc/rfc9535/) 

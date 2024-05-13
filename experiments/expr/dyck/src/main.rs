@@ -5,6 +5,7 @@ extern crate core;
 extern crate std;
 use alloc::vec::Vec;
 use core::{clone::Clone, convert::From, iter::Iterator, option::Option, result::Result};
+use std::default;
 
 
 
@@ -88,9 +89,9 @@ impl<T : core::fmt::Display> core::fmt::Display for Dyke<T> {
 
 // this uses a "module" type, so `Self`` here is just a type level namespace
 trait FiniteBinaryTree {
-  type BinaryTree<T>;
+  type BinaryTree<T> : core::default::Default;
 
-  fn empty<T>() -> Self::BinaryTree<T>;
+  fn empty<T>() -> Self::BinaryTree<T> {<Self::BinaryTree<T> as core::default::Default>::default()}
   fn leaf<T>(value : T)->Self::BinaryTree<T>;
   /// a finite tree may fail to grow bigger as it holds a finite number of elements, in which case, the arguments are returned
   fn try_branch<T>(

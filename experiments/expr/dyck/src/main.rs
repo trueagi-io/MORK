@@ -4,9 +4,121 @@ extern crate alloc;
 extern crate core;
 extern crate std;
 use alloc::vec::Vec;
-use core::{clone::Clone, convert::From, iter::Iterator, option::Option, result::Result};
+use core::{clone::Clone, convert::From, default::Default, iter::{Iterator, Extend, IntoIterator}, option::Option, result::Result};
 use std::default;
 
+
+
+
+// this uses a "module" type, so `Self`` here is just a type level namespace
+trait FiniteBinaryTree {
+  type BinaryTree<T> : Default;
+
+  fn empty<T>() -> Self::BinaryTree<T> {<Self::BinaryTree<T> as Default>::default()}
+  fn leaf<T>(value : T)->Self::BinaryTree<T>;
+  /// a finite tree may fail to grow bigger as it holds a finite number of elements, in which case, the arguments are returned
+  fn try_branch<T>(
+    left : Self::BinaryTree<T>,
+    right : Self::BinaryTree<T>
+  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+
+  /// this should behave like an `&Self::BinaryTree`
+  type SubTree<'refer, T : 'refer>  : core::marker::Copy;
+  /// this should behave like an `&mut Self::BinaryTree`
+  type SubTreeMut<'mut_refer, T : 'mut_refer>;
+
+  fn clone_sub_tree<'sub_tree, T>(
+    sub_tree : Self::SubTree<'sub_tree, T>
+  )-> Self::BinaryTree<T> where T:Clone;
+
+  fn sub_tree<'refer, T>(
+    binary_tree : &Self::BinaryTree<T>
+  )->Self::SubTree<'refer, T>;
+  fn sub_tree_mut<'mut_refer,'t, T>(
+    binary_tree : &'mut_refer mut Self::BinaryTree<T>
+  )->Self::SubTree<'mut_refer, T>;
+
+  type Path : core::marker::Copy;
+  fn sub_tree_index<'sub_tree, T>(
+    sub_tree : Self::SubTree<'sub_tree, T>,
+    path : Self::Path
+  )->Option<Self::SubTree<'sub_tree, T>>;
+  fn sub_tree_mut_index<'sub_tree, T>(
+    sub_tree : &mut Self::SubTreeMut<'sub_tree, T>,
+    path : Self::Path
+  )->Option<Self::SubTreeMut<'sub_tree, T>>;
+  
+  /// a finite tree may fail to grow bigger as it holds a finite number of elements, in which case, the arguments are returned
+  /// This function always succeeds when the swapped in element is of the same size, or smaller.
+  fn try_swap<T>(
+    tree   : Self::BinaryTree<T>, 
+    path   : Self::Path, 
+    branch : Self::BinaryTree<T>,
+  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+
+  /// removes the element fount at Path location, collapsing the parent branch
+  fn remove<T>(
+    tree : Self::BinaryTree<T>, 
+    path : Self::Path,
+  )->(Self::BinaryTree<T>, Option<Self::BinaryTree<T>>);
+
+  fn remove_where<T, F>(
+    tree : Self::BinaryTree<T>,
+    filter : F
+  ) -> Self::BinaryTree<T>
+    where F : for<'sub_tree, 't> core::ops::FnMut(Self::SubTree<'sub_tree, T>)->bool;
+
+  /// Swaps two branhces in an a tree in-place
+  /// If the `Self::Path`s are out of bounds, the tree is returned unchanged
+  fn swap_branches<T>(
+    tree : Self::BinaryTree<T>, 
+    path_1 : Self::Path,
+    path_2 : Self::Path,
+  )->Result<Self::BinaryTree<T>, Self::BinaryTree<T>>;
+
+  /// The const generic `LEFT` choses to branch left if true, and right if false
+  fn try_branch_at<T, const LEFT : bool>(
+    tree : Self::BinaryTree<T>, 
+    path : Self::Path,
+    branch : Self::BinaryTree<T>,
+  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+
+  // ref traverse  
+
+  type DfsRef<'sub_tree, T : 'sub_tree> : Iterator<Item = &'sub_tree T> + Clone;
+  fn depth_first_traverse_ref<'sub_tree,'t, T:'t>(
+    sexpr : Self::SubTree<'sub_tree, T>
+  )->Self::DfsRef<'sub_tree, T>;
+
+  type BfsRef<'sub_tree, T : 'sub_tree> : Iterator<Item = &'sub_tree T> + Clone;
+  fn breath_first_traverse_ref<'sub_tree, T:'sub_tree>(
+    sexpr : Self::SubTree<'sub_tree, T>
+  )->Self::BfsRef<'sub_tree, T>;
+
+  // mut traverse
+
+  type DfsMut<'sub_tree, T : 'sub_tree> : Iterator<Item = &'sub_tree mut T> + From<Self::SubTreeMut<'sub_tree, T>>;
+  fn depth_first_traverse_mut<'sub_tree, T>(
+    sexpr : &mut Self::SubTreeMut<'sub_tree, T>
+  )->Self::DfsMut<'sub_tree, T>;
+
+  type BfsMut<'sub_tree, T : 'sub_tree> : Iterator<Item = &'sub_tree mut T> + From<Self::SubTreeMut<'sub_tree, T>>;
+  fn breath_first_traverse_mut<'sub_tree, T>(
+    sexpr : &mut Self::SubTreeMut<'sub_tree, T>
+  )->Self::BfsMut<'sub_tree, T>;
+
+  // move traverse
+
+  type Dfs<T> : Iterator<Item = T> + From<Self::BinaryTree<T>>;
+  fn depth_first_traverse<T>(
+    sexpr : Self::BinaryTree<T>
+  )->Self::Dfs<T>;
+  
+  type Bfs<T> : Iterator<Item = T> + From<Self::BinaryTree<T>>;
+  fn breath_first_traverse<T>(
+    sexpr : Self::BinaryTree<T>
+  )->Self::Bfs<T>;
+}
 
 
 enum Term {
@@ -52,10 +164,7 @@ pub(crate) fn main() {
 }
 
 
-struct Dyke<T> {
-    shape: u64, // we could use u128
-    data: Vec<T>,
-}
+
 
 impl<T : core::fmt::Display> core::fmt::Display for Dyke<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -87,113 +196,190 @@ impl<T : core::fmt::Display> core::fmt::Display for Dyke<T> {
 }
 
 
-// this uses a "module" type, so `Self`` here is just a type level namespace
-trait FiniteBinaryTree {
-  type BinaryTree<T> : core::default::Default;
+struct Dyke<T> {
+    shape: u64,
+    data: Vec<T>,
+}
+impl<T> Dyke<T> {
+  const MAX_ELEMENTS : usize = u64::BITS as usize/2 -1;
+}
+impl<T> Default for Dyke<T> {
+    fn default() -> Self {
+        Self { shape: Default::default(), data: Default::default() }
+    }
+}
 
-  fn empty<T>() -> Self::BinaryTree<T> {<Self::BinaryTree<T> as core::default::Default>::default()}
-  fn leaf<T>(value : T)->Self::BinaryTree<T>;
-  /// a finite tree may fail to grow bigger as it holds a finite number of elements, in which case, the arguments are returned
-  fn try_branch<T>(
-    left : Self::BinaryTree<T>,
-    right : Self::BinaryTree<T>
-  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+struct DyckSubTree<'sub_tree, T> {
+  offset : u8,
+  tree : &'sub_tree Dyke<T>
+}
 
-  /// this should behave like an `&Self::BinaryTree`
-  type SubTree<'refer, 't, T : 't> : core::marker::Copy + for<'a> From<&'a Self::SubTreeMut<'refer, 't, T>>;
-  /// this should behave like an `&mut Self::BinaryTree`
-  type SubTreeMut<'mut_refer, 't, T : 't>;
+impl<'sub_tree, T> Clone for DyckSubTree<'sub_tree, T> {
+  fn clone(&self) -> Self {
+      Self { offset: self.offset, tree: self.tree }
+  }
+}
+impl<'sub_tree, T> core::marker::Copy for DyckSubTree<'sub_tree, T> {}
 
-  fn clone_sub_tree<'sub_tree,'t, T>(
-    sub_tree : Self::SubTree<'sub_tree,'t, T>
-  )-> Self::BinaryTree<T> where T:Clone;
 
-  fn sub_tree<'refer,'t, T>(
-    binary_tree : &Self::BinaryTree<T>
-  )->Self::SubTree<'refer, 't, T>;
-  fn sub_tree_mut<'mut_refer,'t, T>(
-    binary_tree : &'mut_refer mut Self::BinaryTree<T>
-  )->Self::SubTree<'mut_refer, 't, T>;
 
-  type Path : core::marker::Copy;
-  fn sub_tree_index<'sub_tree,'t, T>(
-    sub_tree : Self::SubTree<'sub_tree,'t, T>,
-    path : Self::Path
-  )->Option<Self::SubTree<'sub_tree, 't, T>>;
-  fn sub_tree_mut_index<'sub_tree,'t, T>(
-    sub_tree : &mut Self::SubTreeMut<'sub_tree,'t, T>,
-    path : Self::Path
-  )->Option<Self::SubTreeMut<'sub_tree, 't, T>>;
-  
-  /// a finite tree may fail to grow bigger as it holds a finite number of elements, in which case, the arguments are returned
-  /// This function always succeeds when the swapped in element is of the same size, or smaller.
-  fn try_swap<T>(
-    tree   : Self::BinaryTree<T>, 
-    path   : Self::Path, 
-    branch : Self::BinaryTree<T>,
-  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+struct DyckSubTreeMut<'sub_tree, T> {
+  offset : u8,
+  tree : &'sub_tree mut Dyke<T>
+}
+impl<'a : 'refer, 'refer, T> core::convert::From<&'a DyckSubTreeMut<'refer, T>> for DyckSubTree<'refer, T>{
+    fn from(&DyckSubTreeMut { offset, ref tree }: &'a DyckSubTreeMut<'refer, T>) -> DyckSubTree<'refer, T> {
+      DyckSubTree { offset, tree : *tree }
+    }
+}
 
-  /// removes the element fount at Path location, collapsing the parent branch
-  fn remove<T>(
-    tree : Self::BinaryTree<T>, 
-    path : Self::Path,
-  )->(Self::BinaryTree<T>, Option<Self::BinaryTree<T>>);
 
-  fn remove_where<T, F>(
-    tree : Self::BinaryTree<T>,
-    filter : F
-  ) -> Self::BinaryTree<T>
-    where F : for<'sub_tree, 't> core::ops::FnMut(Self::SubTree<'sub_tree, 't, T>)->bool;
+struct DykeImpl;
+impl FiniteBinaryTree for DykeImpl {
+    type BinaryTree<T> = Dyke<T>;
 
-  /// Swaps two branhces in an a tree in-place
-  /// If the `Self::Path`s are out of bounds, the tree is returned unchanged
-  fn swap_branches<T>(
-    tree : Self::BinaryTree<T>, 
-    path_1 : Self::Path,
-    path_2 : Self::Path,
-  )->Result<Self::BinaryTree<T>, Self::BinaryTree<T>>;
+    fn leaf<T>(value : T)->Self::BinaryTree<T> {
+      let mut data = Vec::with_capacity(Dyke::<T>::MAX_ELEMENTS);
+      data.push(value);
+      Dyke { shape : 1, data }
+    }
 
-  /// The const generic `LEFT` choses to branch left if true, and right if false
-  fn try_branch_at<T, const LEFT : bool>(
-    tree : Self::BinaryTree<T>, 
-    path : Self::Path,
-    branch : Self::BinaryTree<T>,
-  )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)>;
+    fn try_branch<T>(
+        left : Self::BinaryTree<T>,
+        right : Self::BinaryTree<T>
+      )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)> {
+        if left.data.len() + right.data.len() > Dyke::<T>::MAX_ELEMENTS { return Result::Err((left,right)); }
 
-  // ref traverse  
+        let shape = ((right.shape << left.shape.leading_zeros())|left.shape)<<1;
+        let mut data = left.data;
+        data.extend(right.data.into_iter());
 
-  type DfsRef<'sub_tree,'t, T : 't> : Iterator<Item = &'t T> + Clone;
-  fn depth_first_traverse_ref<'sub_tree,'t, T:'t>(
-    sexpr : Self::SubTree<'sub_tree, 't, T>
-  )->Self::DfsRef<'sub_tree,'t, T>;
+        Result::Ok(Dyke { shape, data })
+    }
 
-  type BfsRef<'sub_tree, 't, T : 't> : Iterator<Item = &'t T> + Clone;
-  fn breath_first_traverse_ref<'sub_tree, 't, T:'t>(
-    sexpr : Self::SubTree<'sub_tree, 't, T>
-  )->Self::BfsRef<'sub_tree, 't, T>;
+    type SubTree<'refer, T:'refer> = DyckSubTree<'refer, T>;
 
-  // mut traverse
-
-  type DfsMut<'sub_tree, 't, T : 't> : Iterator<Item = &'t mut T> + From<Self::SubTreeMut<'sub_tree,'t, T>>;
-  fn depth_first_traverse_mut<'sub_tree,'t, T>(
-    sexpr : &mut Self::SubTreeMut<'sub_tree,'t,T>
-  )->Self::DfsMut<'sub_tree,'t, T>;
-
-  type BfsMut<'sub_tree, 't, T : 't> : Iterator<Item = &'t mut T> + From<Self::SubTreeMut<'sub_tree,'t, T>>;
-  fn breath_first_traverse_mut<'sub_tree,'t, T>(
-    sexpr : &mut Self::SubTreeMut<'sub_tree,'t,T>
-  )->Self::BfsMut<'sub_tree,'t, T>;
-
-  // move traverse
-
-  type Dfs<T> : Iterator<Item = T> + From<Self::BinaryTree<T>>;
-  fn depth_first_traverse<T>(
-    sexpr : Self::BinaryTree<T>
-  )->Self::Dfs<T>;
-  
-  type Bfs<T> : Iterator<Item = T> + From<Self::BinaryTree<T>>;
-  fn breath_first_traverse<T>(
-    sexpr : Self::BinaryTree<T>
-  )->Self::Bfs<T>;
+    type SubTreeMut<'mut_refer, T : 'mut_refer> = DyckSubTreeMut<'mut_refer, T>;
+    
+    fn clone_sub_tree<'sub_tree, T>(
+        sub_tree : Self::SubTree<'sub_tree, T>
+      )-> Self::BinaryTree<T> where T:Clone {
+        todo!()
+    }
+    
+    fn sub_tree<'refer, T>(
+        binary_tree : &Self::BinaryTree<T>
+      )->Self::SubTree<'refer, T> {
+        todo!()
+    }
+    
+    fn sub_tree_mut<'mut_refer,'t, T>(
+        binary_tree : &'mut_refer mut Self::BinaryTree<T>
+      )->Self::SubTree<'mut_refer, T> {
+        todo!()
+    }
+    
+    type Path ;
+    
+    fn sub_tree_index<'sub_tree, T>(
+        sub_tree : Self::SubTree<'sub_tree, T>,
+        path : Self::Path
+      )->Option<Self::SubTree<'sub_tree, T>> {
+        todo!()
+    }
+    
+    fn sub_tree_mut_index<'sub_tree, T>(
+        sub_tree : &mut Self::SubTreeMut<'sub_tree, T>,
+        path : Self::Path
+      )->Option<Self::SubTreeMut<'sub_tree, T>> {
+        todo!()
+    }
+    
+    fn try_swap<T>(
+        tree   : Self::BinaryTree<T>, 
+        path   : Self::Path, 
+        branch : Self::BinaryTree<T>,
+      )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)> {
+        todo!()
+    }
+    
+    fn remove<T>(
+        tree : Self::BinaryTree<T>, 
+        path : Self::Path,
+      )->(Self::BinaryTree<T>, Option<Self::BinaryTree<T>>) {
+        todo!()
+    }
+    
+    fn remove_where<T, F>(
+        tree : Self::BinaryTree<T>,
+        filter : F
+      ) -> Self::BinaryTree<T>
+        where F : for<'sub_tree, 't> core::ops::FnMut(Self::SubTree<'sub_tree, T>)->bool {
+        todo!()
+    }
+    
+    fn swap_branches<T>(
+        tree : Self::BinaryTree<T>, 
+        path_1 : Self::Path,
+        path_2 : Self::Path,
+      )->Result<Self::BinaryTree<T>, Self::BinaryTree<T>> {
+        todo!()
+    }
+    
+    fn try_branch_at<T, const LEFT : bool>(
+        tree : Self::BinaryTree<T>, 
+        path : Self::Path,
+        branch : Self::BinaryTree<T>,
+      )->Result<Self::BinaryTree<T>, (Self::BinaryTree<T>, Self::BinaryTree<T>)> {
+        todo!()
+    }
+    
+    type DfsRef<'sub_tree, T : 'sub_tree> ;
+    
+    fn depth_first_traverse_ref<'sub_tree,'t, T:'t>(
+        sexpr : Self::SubTree<'sub_tree, T>
+      )->Self::DfsRef<'sub_tree, T> {
+        todo!()
+    }
+    
+    type BfsRef<'sub_tree, T : 'sub_tree> ;
+    
+    fn breath_first_traverse_ref<'sub_tree, T:'sub_tree>(
+        sexpr : Self::SubTree<'sub_tree, T>
+      )->Self::BfsRef<'sub_tree, T> {
+        todo!()
+    }
+    
+    type DfsMut<'sub_tree, T : 'sub_tree> ;
+    
+    fn depth_first_traverse_mut<'sub_tree, T>(
+        sexpr : &mut Self::SubTreeMut<'sub_tree, T>
+      )->Self::DfsMut<'sub_tree, T> {
+        todo!()
+    }
+    
+    type BfsMut<'sub_tree, T : 'sub_tree> ;
+    
+    fn breath_first_traverse_mut<'sub_tree, T>(
+        sexpr : &mut Self::SubTreeMut<'sub_tree, T>
+      )->Self::BfsMut<'sub_tree, T> {
+        todo!()
+    }
+    
+    type Dfs<T> ;
+    
+    fn depth_first_traverse<T>(
+        sexpr : Self::BinaryTree<T>
+      )->Self::Dfs<T> {
+        todo!()
+    }
+    
+    type Bfs<T> ;
+    
+    fn breath_first_traverse<T>(
+        sexpr : Self::BinaryTree<T>
+      )->Self::Bfs<T> {
+        todo!()
+    }
 
 }

@@ -1,0 +1,11 @@
+[package]
+name = "mork"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+typed-arena = "2.0.2"
+regex = "1.10.4"
+
+[build]
+rustflags = "-C link-args=-Wl,-zstack-size=16 -C opt-level=3 -C target-cpu=native -C lto=fat"

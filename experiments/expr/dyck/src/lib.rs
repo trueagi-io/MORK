@@ -135,52 +135,26 @@ pub(crate) mod left_branch_impl {
            the bit one past the end will always be a "non-trivial" split,
         */
         let mut left_splits = !structure & structure << 1 & structure << 2;
-
-        // let top_mask = !((1 << $INT::BITS - structure.leading_zeros()) - 1);
-        // let mut remaining = left_splits;
-
-        // // moving from right to left
-        // loop {
-        //   let current = remaining & remaining.wrapping_neg();
-        //   match remaining.count_ones() {
-        //     1 => break remaining >> 1,
-        //     2 => break current,
-
-        //     _ => {
-        //       let mask_out = top_mask | (current << 1) - 1;
-        //       if (structure & !mask_out).count_ones() - (structure | mask_out).count_zeros() == 0 {
-        //         break current;
-        //       }
-
-        //       remaining ^= current;
-        //     }
-        //   }
-        // }
-
       
-      // moving from right to left
-      loop {
-        let trailing = left_splits.trailing_zeros();
-        let current = 1<<trailing;
-        match left_splits.count_ones() {
-          1 => return current >> 1,
-          2 => return current,
-          _ => {
-            let tmp = structure >> trailing;
-            
-            if ($INT::BITS-tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
-              return current;
+        // moving from right to left
+        loop {
+          let trailing = left_splits.trailing_zeros();
+          let current = 1<<trailing;
+          match left_splits.count_ones() {
+            1 => return current >> 1,
+            2 => return current,
+            _ => {
+              let tmp = structure >> trailing;
+              
+              if ($INT::BITS-tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
+                return current;
+              }
+        
+              // clear right most candidate
+              left_splits ^= current;
             }
-
-            // clear right most candidate
-            left_splits ^= current;
           }
         }
-      }
-
-
-
-
 
       }
     }

@@ -120,6 +120,7 @@ impl<'a, L> core::marker::Copy for DyckZipper<'a, L> {}
 //   }
 // }
 
+
 // this can be refactored to be less repitive, but then I would have to use some traits, I'm avoiding the complexity for now
 pub(crate) mod left_branch_impl {
   macro_rules! left_branch {($($INT:ident)+) => {$(
@@ -140,22 +141,17 @@ pub(crate) mod left_branch_impl {
         loop {
           let trailing = left_splits.trailing_zeros();
           let current = 1<<trailing;
-          match left_splits.count_ones() {
-            1 => return current >> 1,
-            2 => return current,
-            _ => {
-              let tmp = structure >> trailing;
-              
-              if ($INT::BITS-tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
-                return current;
-              }
-        
-              // clear right most candidate
-              left_splits ^= current;
-            }
+          if let 1 = left_splits.count_ones() { return current >> 1 }
+          let tmp = structure >> trailing;
+          
+          if ($INT::BITS-tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
+            return current;
           }
+          
+          // clear right most candidate
+          left_splits ^= current;
+          
         }
-
       }
     }
   )+};}
@@ -167,17 +163,17 @@ pub(crate) mod left_branch_impl {
   pub(crate) mod u512 {
     use crate::*;
     pub(crate) use bnum::types::U512;
-
+    
     pub(crate) fn left_branch(mut structure: U512) -> U512 {
       if structure.count_ones() <= 1 {
         return U512::ZERO;
       }
-
+      
       #[allow(non_upper_case_globals)]
       const u_0b10: U512 = U512::TWO;
       #[allow(non_upper_case_globals)]
       const u_0b100: U512 = U512::FOUR;
-
+      
       if structure.bit(1) && !structure.bit(0) {
         return u_0b100;
       }
@@ -203,31 +199,27 @@ pub(crate) mod left_branch_impl {
       // reset
       structure >>= 2;
       let mut current_shift = 0;
-
+      
       // moving from right to left
       loop {
         let trailing = left_splits.trailing_zeros();
         let current = U512::ONE<<trailing;
-        match left_splits.count_ones() {
-          1 => return current >> 1,
-          2 => return current,
-          _ => {
-            structure >>= trailing - current_shift;
-            
-            if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
-              return current;
-            }
-
-            // clear right most candidate
-            left_splits ^= current;
-            current_shift = trailing;
-          }
+        if let 1 = left_splits.count_ones() { return current >> 1 }
+        
+        structure >>= trailing - current_shift;
+        
+        if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
+          return current;
         }
+        
+        // clear right most candidate
+        left_splits ^= current;
+        current_shift = trailing;
+         
       }
     }
   }
 
-  // NEEDS TESTING
   // this is for the unbounded case
   pub(crate) mod big_uint {
     use crate::*;
@@ -266,21 +258,17 @@ pub(crate) mod left_branch_impl {
       loop {
         let trailing = left_splits.trailing_zeros().expect("TRAILING ZEROS");
         
-        match left_splits.count_ones() {
-          1 => return u_0b1 << trailing-1,
-          2 => return  u_0b1 << trailing,
-          _ => {
-            structure >>= trailing - current_shift;
-            
-            if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
-              return u_0b1<<trailing;
-            }
-
-            // clear right most candidate
-            left_splits.set_bit(trailing as u64, false);
-            current_shift = trailing;
-          }
+        if let 1 = left_splits.count_ones() { return u_0b1 << trailing-1 }
+        
+        structure >>= trailing - current_shift;
+        
+        if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
+          return u_0b1<<trailing;
         }
+        
+        // clear right most candidate
+        left_splits.set_bit(trailing as u64, false);
+        current_shift = trailing;
       }
     }
   }
@@ -322,6 +310,7 @@ fn all_trees() -> Vec<Int> {
 fn test_for_u64() {
 
   let trees = all_trees();
+  std::println!("count : {}", all_trees().len());
   let now = std::time::Instant::now();
     for each in trees {
       // std::print!("{each:016b}\t{:016b}\n", 
@@ -360,49 +349,4 @@ fn test_for_u512() {
       ;
     }
   std::println!("time : {} micros", now.elapsed().as_micros())
-}
-
-#[cfg(test)]
-mod test {
-  use crate::*;
-  #[test]
-  fn test_bed() {
-    /*
-
-    splits :
-      L R
-    | 1 10  (trivial_subtree)
-
-    | _ 10  (left_tree right_leaf_partial_apply_branch)
-    | 0 11  (left_branch end_of_right_branch)   unless last branch (because leading zeros)
-
-           if the offest is here, the popcnt of the diff is 2, 1 would mean valid tree,
-           so it is not a valid left branch, if the diff was ever 0, it would be "malformed"
-           v
-    1__11100_110_0__0
-
-    */
-
-    let structure_0 = 0b_1_11010_1101100_00_u64;
-
-    let top_bit = |s: u64| ((!0_u64 << u64::BITS - s.leading_zeros()) >> 1).wrapping_neg();
-    let left_split = /* 0 11 pattern represents a "non-trivial" split, where 0 is the left node */
-    ( !structure_0>> 1 & structure_0 &  structure_0 << 1 
-    & !top_bit(structure_0)
-    ) << 1;
-    //                           0b_1__11010_1101100_00_u64;
-    core::assert_eq!(left_split, 0b_0__00001_0010000_00);
-
-    let structure_0 = 0b_1_11010_1101100_00_u64;
-
-    let top_bit = |s: u64| ((!0_u64 << u64::BITS - s.leading_zeros()) >> 1).wrapping_neg();
-    let left_split = /* 0 11 pattern represents a "non-trivial" split, where 0 is the left node */
-      !structure_0 & structure_0 <<1  &  structure_0 << 2;
-
-    //                           0b___1__11010_1101100_00_u64;
-    core::assert_eq!(left_split, 0b_1_0__00001_0010000_00, "{:b}", left_split);
-
-    //                                                  0b_1__11010_1101100_00_u64;
-    core::assert_eq!(left_split & !top_bit(left_split), 0b_0__00001_0010000_00, "{:b}", left_split & !top_bit(left_split));
-  }
 }

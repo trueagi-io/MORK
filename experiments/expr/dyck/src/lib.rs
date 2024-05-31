@@ -4,9 +4,8 @@ extern crate alloc;
 extern crate core;
 extern crate std;
 
-
-extern crate num_bigint;
 extern crate bnum;
+extern crate num_bigint;
 
 use alloc::{sync::Arc, vec::Vec};
 use core::{
@@ -122,89 +121,132 @@ impl<'a, L> core::marker::Copy for DyckZipper<'a, L> {}
 // }
 
 // this can be refactored to be less repitive, but then I would have to use some traits, I'm avoiding the complexity for now
-pub(crate)mod left_branch_impl {
+pub(crate) mod left_branch_impl {
   macro_rules! left_branch {($($INT:ident)+) => {$(
     pub(crate)mod $INT {
-      pub(crate)fn left_branch(structure: $INT) -> $INT {
-        // left branches can only appear inn trees, not nodes or the empty tree
-        // core::assert!(structure.count_ones() > 1);
-        if structure.count_ones() <=1 { return 0;}
-        
+      pub(crate)fn left_branch(mut structure: $INT) -> $INT {
+        if structure<=1 { return 0;}
+
         if 0b10 & structure == 0b10 {
           return 0b100;
         }
-        
+
         /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
            the bit one past the end will always be a "non-trivial" split,
         */
-        let left_splits = !structure & structure << 1 & structure << 2;
-        
-        let top_mask = !((1 << $INT::BITS - structure.leading_zeros()) - 1);
-        let mut remaining = left_splits;
-        
-        // moving from right to left
-        loop {
-          let current = remaining & remaining.wrapping_neg();
-          match remaining.count_ones() {
-            1 => break remaining >> 1,
-            2 => break current,
-        
-            _ => {
-              let mask_out = top_mask | (current << 1) - 1;
-              if (structure & !mask_out).count_ones() - (structure | mask_out).count_zeros() == 0 {
-                break current;
-              }
-        
-              remaining ^= current;
+        let mut left_splits = !structure & structure << 1 & structure << 2;
+
+        // let top_mask = !((1 << $INT::BITS - structure.leading_zeros()) - 1);
+        // let mut remaining = left_splits;
+
+        // // moving from right to left
+        // loop {
+        //   let current = remaining & remaining.wrapping_neg();
+        //   match remaining.count_ones() {
+        //     1 => break remaining >> 1,
+        //     2 => break current,
+
+        //     _ => {
+        //       let mask_out = top_mask | (current << 1) - 1;
+        //       if (structure & !mask_out).count_ones() - (structure | mask_out).count_zeros() == 0 {
+        //         break current;
+        //       }
+
+        //       remaining ^= current;
+        //     }
+        //   }
+        // }
+
+      
+      // moving from right to left
+      loop {
+        let trailing = left_splits.trailing_zeros();
+        let current = 1<<trailing;
+        match left_splits.count_ones() {
+          1 => return current >> 1,
+          2 => return current,
+          _ => {
+            let tmp = structure >> trailing;
+            
+            if ($INT::BITS-tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
+              return current;
             }
+
+            // clear right most candidate
+            left_splits ^= current;
           }
         }
       }
+
+
+
+
+
+      }
     }
   )+};}
-  left_branch!{u8 u16 u32 u64 u128 usize}
+  left_branch! {u8 u16 u32 u64 u128 usize}
 
-  // we might be interested in testing the 512 fixed size, as that makes for 256 leaves max, which means the backing Vec can be indexed by a byte
+  // we might be interested in testing the 512 fixed size, as that makes for 256 leaves max, which means the backing Vec can be indexed by a byte.
+  // unfortunately, this appears to be as slow as the unbounded version, likely due to a subpar implementation on the U512 type if the issue is the same as Adam had.
+  // It currently used the version of the algorithim that the unbounded one uses as it is a tad faster
   pub(crate) mod u512 {
     use crate::*;
     pub(crate) use bnum::types::U512;
 
-    pub(crate)fn left_branch(structure: U512) -> U512 {
-      // left branches can only appear inn trees, not nodes or the empty tree
-      // core::assert!(structure.count_ones() > 1);
-      if structure.count_ones() <=1 { return U512::ZERO;}
-      
+    pub(crate) fn left_branch(mut structure: U512) -> U512 {
+      if structure.count_ones() <= 1 {
+        return U512::ZERO;
+      }
+
       #[allow(non_upper_case_globals)]
-      const u_0b10 : U512 = U512::TWO;
+      const u_0b10: U512 = U512::TWO;
       #[allow(non_upper_case_globals)]
-      const u_0b100 : U512 = U512::FOUR;
-    
-      if  u_0b10 & structure == u_0b10 {
+      const u_0b100: U512 = U512::FOUR;
+
+      if structure.bit(1) && !structure.bit(0) {
         return u_0b100;
       }
-      
+
       /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
          the bit one past the end will always be a "non-trivial" split,
       */
-      let left_splits : U512 = !structure & structure << 1 & structure << 2;
+  
+      let mut left_splits = U512::ONE << structure.bits()+1;
+
+      // [0]11
+      left_splits -= U512::ONE;
+      left_splits ^= &structure; 
       
-      let top_mask = !((U512::ONE << U512::BITS - structure.leading_zeros()) - U512::ONE);
-      let mut remaining = left_splits;
+      // [0]11 & 0[1]1 => [01]1
+      structure <<= 1;
+      left_splits &= &structure; 
+
+      // [01]1 & 01[1] => [011]
+      structure <<= 1;
+      left_splits &= &structure;
       
+      // reset
+      structure >>= 2;
+      let mut current_shift = 0;
+
       // moving from right to left
       loop {
-        let current = remaining & remaining.wrapping_neg();
-        match remaining.count_ones() {
-          1 => break remaining >> 1,
-          2 => break current,
-      
+        let trailing = left_splits.trailing_zeros();
+        let current = U512::ONE<<trailing;
+        match left_splits.count_ones() {
+          1 => return current >> 1,
+          2 => return current,
           _ => {
-            let mask_out : U512 = top_mask | (current << 1) - U512::ONE;
-            if (structure & !mask_out).count_ones() - (structure | mask_out).count_zeros() == 0 {
-              break current;
+            structure >>= trailing - current_shift;
+            
+            if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
+              return current;
             }
-      
-            remaining ^= current;
+
+            // clear right most candidate
+            left_splits ^= current;
+            current_shift = trailing;
           }
         }
       }
@@ -215,65 +257,54 @@ pub(crate)mod left_branch_impl {
   // this is for the unbounded case
   pub(crate) mod big_uint {
     use crate::*;
-    pub(crate)fn left_branch(structure: BigUint) -> BigUint {
-      // I've done my best to keep allocations low by using mutation where possible
-      // It has made the code very imperative
-
-      if structure.count_ones() <= 1 { return BigUint::ZERO;}
-      
+    pub(crate) fn left_branch(mut structure: BigUint) -> BigUint {
+      if structure.count_ones() <= 1 {
+        return BigUint::ZERO;
+      }
       if structure.bit(1) && !structure.bit(0) {
         return BigUint::from(0b100_u32);
       }
-      
+
       /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
-         the bit one past the end will always be a "non-trivial" split,
+         the bit one past the end will always be a "non-trivial" split
       */
-      let mut i_structure = BigInt::from(structure.clone());
-
-      let mut left_splits : BigInt = !(&i_structure);
-      i_structure <<= 1;
-      left_splits &= &i_structure;
-      i_structure <<= 2;
-      left_splits &= i_structure;
-
-      let mut remaining = left_splits.to_biguint().unwrap();
-      
       let u_0b1 = BigUint::from(1_u32);
+  
+      let mut left_splits = &u_0b1 << structure.bits()+1;
+
+      // [0]11
+      left_splits -= &u_0b1;
+      left_splits ^= &structure; 
       
+      // [0]11 & 0[1]1 => [01]1
+      structure <<= 1;
+      left_splits &= & structure; 
+
+      // [01]1 & 01[1] => [011]
+      structure <<= 1;
+      left_splits &= & structure;
+      
+      // reset
+      structure >>= 2;
+      let mut current_shift = 0;
+
       // moving from right to left
-
-      let mut current : BigUint = u_0b1.clone();
-      'iterate_right_to_left : loop {
-        // to avoid allocating too much, we try to reuse `current` position, it needs to be reset later
-        let trailing = remaining.trailing_zeros().unwrap();
-        current <<= trailing;
+      loop {
+        let trailing = left_splits.trailing_zeros().expect("TRAILING ZEROS");
         
-        match remaining.count_ones() {
-          1 => {
-            remaining >>= 1;
-            break 'iterate_right_to_left remaining 
-          },
-          2 => break 'iterate_right_to_left current,
-      
+        match left_splits.count_ones() {
+          1 => return u_0b1 << trailing-1,
+          2 => return  u_0b1 << trailing,
           _ => {
-            let mut mask_bot : BigUint = &current << 1;
-            mask_bot -= &u_0b1;
-
-            let shift = mask_bot.count_ones();
+            structure >>= trailing - current_shift;
             
-            let mut left_candidate_tree = mask_bot;
-            left_candidate_tree &= &structure;
-            left_candidate_tree ^= &structure;
-            left_candidate_tree >>= shift;
-
-            if (left_candidate_tree.bits()+1) - left_candidate_tree.count_ones()*2 == 0 {
-              break 'iterate_right_to_left current;
+            if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
+              return u_0b1<<trailing;
             }
-      
-            remaining ^= &current;
-            // reset current
-            current >>= trailing;
 
+            // clear right most candidate
+            left_splits.set_bit(trailing as u64, false);
+            current_shift = trailing;
           }
         }
       }
@@ -281,12 +312,11 @@ pub(crate)mod left_branch_impl {
   }
 }
 
-
-type Int = u16;
+type Int = u32;
 
 // only run this test if Int is u8, u16, or u32
-fn all_trees()->Vec<Int> {
-  let max_leaves = Int::BITS/2;
+fn all_trees() -> Vec<Int> {
+  let max_leaves = Int::BITS / 2;
 
   use alloc::collections::BTreeMap;
   use alloc::collections::BTreeSet;
@@ -301,33 +331,61 @@ fn all_trees()->Vec<Int> {
     let mut s = BTreeSet::<Int>::new();
     for left in 1..each {
       let right = each - left;
-      
-      core::debug_assert_ne!(left,each);
-      core::debug_assert_ne!(left,0);
-      core::debug_assert_ne!(right,0);
 
       for l in &trees[&left] {
         for r in &trees[&right] {
-          let val = (*l<<right*2-1 | *r) << 1 ;
+          let val = (*l << right * 2 - 1 | *r) << 1;
           s.insert(val);
         }
       }
     }
     trees.insert(each, s);
   }
-  trees.into_iter().flat_map(|(_,v)|v).collect::<Vec<_>>()
+  trees.into_iter().flat_map(|(_, v)| v).collect::<Vec<_>>()
 }
 
-// only run this test if Int is u8, u16, or u32
 #[test]
-fn test_for_byte(){
+fn test_for_u64() {
+
   let trees = all_trees();
-  let count = trees.len();
-  for each in trees
-  {
-    std::println!("num\t{each:016b} at\t{:016b}", left_branch_impl::u16::left_branch(each))
+  let now = std::time::Instant::now();
+    for each in trees {
+      // std::print!("{each:016b}\t{:016b}\n", 
+        core::hint::black_box(left_branch_impl::u64::left_branch(each as u64))
+      // )
+      ;
   }
-  std::println!("count : {count}")
+  std::println!("time : {} micros", now.elapsed().as_micros())
+}
+#[test]
+fn test_for_biguint() {
+  
+  let trees = all_trees();
+  let now = std::time::Instant::now();
+    for each in trees {
+      // std::print!("{each:016b}\t{:016b}\n", 
+        core::hint::black_box(
+          left_branch_impl::big_uint::left_branch(BigUint::from(each))
+      )
+      // )
+      ;
+    }
+  std::println!("time : {} micros", now.elapsed().as_micros())
+}
+#[test]
+fn test_for_u512() {
+  
+  let trees = all_trees();
+  let now = std::time::Instant::now();
+    for each in trees {
+      // std::print!("{each:016b}\t{:016b}\n", 
+        core::hint::black_box(
+          left_branch_impl::u512::left_branch(bnum::types::U512::from_digit(each as u64))
+      )
+      // )
+      ;
+    }
+  std::println!("time : {} micros", now.elapsed().as_micros())
 }
 
 #[cfg(test)]

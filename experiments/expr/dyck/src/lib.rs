@@ -121,6 +121,12 @@ impl<'a, L> core::marker::Copy for DyckZipper<'a, L> {}
 // }
 
 
+
+pub trait DyckPathFindLeftBranch where usize : From<Self::Offset>{
+  type Offset;  
+  fn left_branch(self) -> Self::Offset;
+}
+
 // this can be refactored to be less repitive, but then I would have to use some traits, I'm avoiding the complexity for now
 pub(crate) mod left_branch_impl {
   macro_rules! left_branch {($($INT:ident)+) => {$(
@@ -164,71 +170,77 @@ pub(crate) mod left_branch_impl {
     use crate::*;
     pub(crate) use bnum::types::U512;
     
-    pub(crate) fn left_branch(mut structure: U512) -> U512 {
-      if structure.count_ones() <= 1 {
-        return U512::ZERO;
-      }
-      
-      #[allow(non_upper_case_globals)]
-      const u_0b10: U512 = U512::TWO;
-      #[allow(non_upper_case_globals)]
-      const u_0b100: U512 = U512::FOUR;
-      
-      if structure.bit(1) && !structure.bit(0) {
-        return u_0b100;
-      }
+    pub(crate) fn left_branch(mut structure: U512) -> Option<core::num::NonZeroU32> {
+      let offset = 'find_offset : {
 
-      /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
-         the bit one past the end will always be a "non-trivial" split,
-      */
-  
-      let mut left_splits = U512::ONE << structure.bits()+1;
-
-      // [0]11
-      left_splits -= U512::ONE;
-      left_splits ^= &structure; 
-      
-      // [0]11 & 0[1]1 => [01]1
-      structure <<= 1;
-      left_splits &= &structure; 
-
-      // [01]1 & 01[1] => [011]
-      structure <<= 1;
-      left_splits &= &structure;
-      
-      // reset
-      structure >>= 2;
-      let mut current_shift = 0;
-      
-      // moving from right to left
-      loop {
-        let trailing = left_splits.trailing_zeros();
-        let current = U512::ONE<<trailing;
-        if let 1 = left_splits.count_ones() { return current >> 1 }
-        
-        structure >>= trailing - current_shift;
-        
-        if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
-          return current;
+        if structure.count_ones() <= 1 {
+          break 'find_offset 0;
         }
         
-        // clear right most candidate
-        left_splits ^= current;
-        current_shift = trailing;
-         
-      }
+        #[allow(non_upper_case_globals)]
+        const u_0b10: U512 = U512::TWO;
+        #[allow(non_upper_case_globals)]
+        const u_0b100: U512 = U512::FOUR;
+        
+        if structure.bit(1) && !structure.bit(0) {
+          break 'find_offset 2;
+        }
+        
+        /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
+        the bit one past the end will always be a "non-trivial" split,
+        */
+        
+        let mut left_splits = U512::ONE << structure.bits()+1;
+        
+        // [0]11
+        left_splits -= U512::ONE;
+        left_splits ^= &structure; 
+        
+        // [0]11 & 0[1]1 => [01]1
+        structure <<= 1;
+        left_splits &= &structure; 
+        
+        // [01]1 & 01[1] => [011]
+        structure <<= 1;
+        left_splits &= &structure;
+        
+        // reset
+        structure >>= 2;
+        let mut current_shift = 0;
+        
+        // moving from right to left
+        loop {
+          let trailing = left_splits.trailing_zeros();
+          if let 1 = left_splits.count_ones() { break 'find_offset trailing- 1 }
+          
+          structure >>= trailing - current_shift;
+          
+          if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
+            break 'find_offset trailing;
+          }
+          
+          // clear right most candidate
+          left_splits ^= U512::ONE<<trailing;
+          current_shift = trailing;
+          
+        }
+      };
+      core::num::NonZeroU32::new(offset)
     }
   }
 
   // this is for the unbounded case
   pub(crate) mod big_uint {
     use crate::*;
-    pub(crate) fn left_branch(mut structure: BigUint) -> BigUint {
+    pub(crate) fn left_branch(mut structure: BigUint) -> Option<core::num::NonZeroU64> {
+      let offset = 'find_offset : {
       if structure.count_ones() <= 1 {
-        return BigUint::ZERO;
+        break 'find_offset 0;
+        // return BigUint::ZERO;
       }
       if structure.bit(1) && !structure.bit(0) {
-        return BigUint::from(0b100_u32);
+        // return BigUint::from(0b100_u32);
+        break 'find_offset 2;
       }
 
       /* 011 bit pattern represents a "non-trivial" split, where 0 is the left node
@@ -258,18 +270,23 @@ pub(crate) mod left_branch_impl {
       loop {
         let trailing = left_splits.trailing_zeros().expect("TRAILING ZEROS");
         
-        if let 1 = left_splits.count_ones() { return u_0b1 << trailing-1 }
+        if let 1 = left_splits.count_ones() { 
+        break 'find_offset trailing-1 }
+          // return u_0b1 << trailing-1 }
         
         structure >>= trailing - current_shift;
         
         if (structure.bits() + 1).wrapping_sub(structure.count_ones() * 2) == 0 {
-          return u_0b1<<trailing;
+        break 'find_offset trailing;
+          // return u_0b1<<trailing;
         }
         
         // clear right most candidate
         left_splits.set_bit(trailing as u64, false);
         current_shift = trailing;
       }
+      };
+      core::num::NonZeroU64::new(offset)
     }
   }
 }
@@ -326,7 +343,7 @@ fn test_for_biguint() {
   let trees = all_trees();
   let now = std::time::Instant::now();
     for each in trees {
-      // std::print!("{each:016b}\t{:016b}\n", 
+      // std::print!("{each:032b}\t{:?}\n", 
         core::hint::black_box(
           left_branch_impl::big_uint::left_branch(BigUint::from(each))
       )
@@ -341,7 +358,7 @@ fn test_for_u512() {
   let trees = all_trees();
   let now = std::time::Instant::now();
     for each in trees {
-      // std::print!("{each:016b}\t{:016b}\n", 
+      // std::print!("{each:016b}\t{}\n", 
         core::hint::black_box(
           left_branch_impl::u512::left_branch(bnum::types::U512::from_digit(each as u64))
       )

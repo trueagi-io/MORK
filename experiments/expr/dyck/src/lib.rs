@@ -10,14 +10,15 @@ extern crate num_bigint;
 use alloc::{sync::Arc, vec::Vec};
 use core::{
   clone::Clone,
+  cmp::Ord,
   convert::From,
   default::Default,
-  iter::{IntoIterator, Iterator},
+  iter::{IntoIterator, Iterator, Extend},
   option::Option,
   result::Result,
-  cmp::Ord,
 };
 use num_bigint::BigUint;
+use std::process::Output;
 
 mod finite;
 
@@ -100,11 +101,6 @@ impl<L> Dyck<L> {
   }
 }
 
-
-
-
-
-
 #[derive(Clone, Copy)]
 pub(crate) struct SubtreeSlice {
   /// the position of the terminating __0__ bit after the last leaf
@@ -112,16 +108,20 @@ pub(crate) struct SubtreeSlice {
   pub(crate) head: u8,
 }
 impl SubtreeSlice {
+  const fn zeroes() -> Self {
+    Self { terminal: 0, head: 0 }
+  }
   fn is_leaf(&self) -> bool {
     1 == self.terminal - self.head
   }
   fn left_subtree_head(self, structure: u64) -> u64 {
-    let slice = (structure & (10_u64 << self.terminal - 1).wrapping_sub(1)) >> self.head;
+    let slice = (structure & (0b_10_u64 << self.terminal - 1).wrapping_sub(1)) >> self.head;
 
     left_branch_impl::u64::left_branch(slice) << self.head
   }
 }
 
+#[derive(Clone)]
 pub struct DyckStructureZipperU64 {
   structure: u64,
   current_depth: u8,
@@ -129,26 +129,31 @@ pub struct DyckStructureZipperU64 {
 }
 
 impl core::fmt::Debug for DyckStructureZipperU64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      core::write!(f, "\
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    core::write!(
+      f,
+      "\
         DyckStructureZipperU64 {{\
         \n  structure     : {:b},\
         \n  current_depth : {},\
-        \n  stack         : [ ", self.structure, self.current_depth)?;
-      for each in &self.stack[..=self.current_depth as usize] {
-        core::write!(f,"\n\t{{ term:{}, head:{} }} => ", each.terminal, each.head)?;
-        for _ in 0..u64::BITS as u8-each.terminal {
-          core::write!(f,"_")?
-        }
-        core::write!(f,"{:b}", (self.structure&((1 << each.terminal) - (1 << each.head))) >> each.head )?;
-        for _ in 0..each.head {
-          core::write!(f,"_")?
-        }
-        core::write!(f,",")?
+        \n  stack         : [ ",
+      self.structure,
+      self.current_depth
+    )?;
+    for each in &self.stack[..=self.current_depth as usize] {
+      core::write!(f, "\n\t{{ term:{}, head:{} }} => ", each.terminal, each.head)?;
+      for _ in 0..u64::BITS as u8 - each.terminal {
+        core::write!(f, "_")?
       }
-
-      core::writeln!(f,"\n  ],\n}}")
+      core::write!(f, "{:b}", (self.structure & ((1 << each.terminal) - (1 << each.head))) >> each.head)?;
+      for _ in 0..each.head {
+        core::write!(f, "_")?
+      }
+      core::write!(f, ",")?
     }
+
+    core::writeln!(f, "\n  ],\n}}")
+  }
 }
 
 impl DyckStructureZipperU64 {
@@ -160,7 +165,7 @@ impl DyckStructureZipperU64 {
       return Option::None;
     }
 
-    let mut stack = [SubtreeSlice { terminal: 0, head: 0 }; Self::STACK_LEN];
+    let mut stack = [SubtreeSlice::zeroes(); Self::STACK_LEN];
     stack[0].terminal = (u64::BITS).wrapping_sub(structure.leading_zeros()) as u8;
 
     Option::Some(Self { structure, current_depth: 0, stack })
@@ -213,14 +218,13 @@ impl DyckStructureZipperU64 {
   }
   pub fn switch_right(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
-    if *structure <= 1  || 0 == *current_depth {
+    if *structure <= 1 || 0 == *current_depth {
       return false;
     }
 
     // Safety: The current depth is > 0
     let prev = unsafe { stack.get_unchecked(*current_depth as usize - 1) };
     let cur = unsafe { stack.get_unchecked(*current_depth as usize) };
-
 
     // avoid double right
     if prev.head == cur.head + 1 {
@@ -242,13 +246,13 @@ impl DyckStructureZipperU64 {
     // not left
     core::debug_assert_ne!(prev.terminal, cur.terminal);
     // is right
-    core::debug_assert_eq!(prev.head, cur.head-1);
+    core::debug_assert_eq!(prev.head, cur.head - 1);
 
-    *cur =  SubtreeSlice { terminal: prev.terminal, head: cur.terminal };
+    *cur = SubtreeSlice { terminal: prev.terminal, head: cur.terminal };
   }
   pub fn switch_left(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
-    if *structure <= 1|| 0 == *current_depth {
+    if *structure <= 1 || 0 == *current_depth {
       return false;
     }
 
@@ -266,51 +270,98 @@ impl DyckStructureZipperU64 {
     true
   }
 
-  pub unsafe fn closest_rightmost_store_index_unchecked(&self, tree_offset: u8) -> usize {
-    core::assert_ne!(self.structure & 1<<tree_offset as u32, 0);
-    (self.structure & !((0b_10 << tree_offset as u32)-1)).count_ones() as usize
+  pub unsafe fn leaf_store_index_unchecked(&self, tree_offset: u8) -> usize {
+    core::assert_ne!(self.structure & 1 << tree_offset as u32, 0, "zipper :\n{:?}\ntree_offset : {}", self, tree_offset);
+    (self.structure & !((0b_10 << tree_offset as u32) - 1)).count_ones() as usize
   }
 
   pub fn current_leaf_store_index_range(&self) -> core::ops::Range<usize> {
     unsafe {
       let cur = self.stack.get_unchecked(self.current_depth as usize);
-      let right = (
-        ( self.structure 
-        ^   self.structure 
-          & ((0b_1 << (cur.head as u32))-1)
-        ).trailing_zeros() as u8)
-        .min(cur.terminal-1);
-      
-      let first = self.closest_rightmost_store_index_unchecked(cur.terminal - 1);
+      let right = ((self.structure ^ self.structure & ((0b_1 << (cur.head as u32)) - 1)).trailing_zeros() as u8).min(cur.terminal - 1);
 
-      let last = self.closest_rightmost_store_index_unchecked(right);
+      let first = self.leaf_store_index_unchecked(cur.terminal - 1);
 
-         
-      first .. last.max(first)+1
+      let last = self.leaf_store_index_unchecked(right);
+
+      first..last.max(first) + 1
     }
   }
 
   /// Index of the first in the current scope
   pub fn current_first_leaf_store_index(&self) -> usize {
-    unsafe { 
-      let cur =  self.stack.get_unchecked(self.current_depth as usize);
-      self.closest_rightmost_store_index_unchecked(cur.terminal - 1) 
+    unsafe {
+      let cur = self.stack.get_unchecked(self.current_depth as usize);
+      self.leaf_store_index_unchecked(cur.terminal - 1)
     }
   }
 
-  pub fn accend(&mut self)->bool {
-    if self.current_depth == 0 { return false; }
-    self.current_depth-=1;
+  pub fn accend(&mut self) -> bool {
+    if self.current_depth == 0 {
+      return false;
+    }
+    self.current_depth -= 1;
     true
   }
 
-  pub fn accend_n(&mut self, n : u8)->bool {
-    if self.current_depth < n { return false;}
-    self.current_depth-=n;
+  pub fn accend_root(&mut self) {
+    self.current_depth = 0;
+  }
+
+  pub fn accend_n(&mut self, n: u8) -> bool {
+    if self.current_depth < n {
+      return false;
+    }
+    self.current_depth -= n;
     true
   }
 
+  pub fn current_is_leaf(&self) -> bool {
+    self.stack[self.current_depth as usize].is_leaf()
+  }
 
+  pub fn current_depth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
+    self.current_leaf_store_index_range()
+  }
+
+  pub fn current_breadth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
+    const MAX_DEFERED: usize = DyckStructureZipperU64::STACK_LEN;
+
+    // the iterator state
+    let mut tmp = Self { structure : self.structure, current_depth: 0, stack: [SubtreeSlice::zeroes(); Self::STACK_LEN] };
+    let mut ring_buffer = [SubtreeSlice::zeroes(); MAX_DEFERED];
+    let mut front = 0;
+    let mut end = 1;
+    ring_buffer[0] = self.stack[self.current_depth as usize];
+
+    // the iterator
+    core::iter::from_fn(move || {
+      loop {
+        if front == end {
+          break Option::None;
+        }
+
+        // dequeue
+        tmp.accend_root();
+        tmp.stack[0] = ring_buffer[front];
+        front = (front + 1) % MAX_DEFERED;
+
+        if tmp.decend_left() {
+          // enqueue left
+          ring_buffer[end] = tmp.stack[1];
+          end = (end + 1) % MAX_DEFERED;
+
+          unsafe { tmp.switch_right_unchecked() };
+
+          // enqueue right
+          ring_buffer[end] = tmp.stack[1];
+          end = (end + 1) % MAX_DEFERED;
+        } else {
+          break Option::Some(unsafe { tmp.leaf_store_index_unchecked(tmp.stack[0].head) });
+        }
+      }
+    })
+  }
 }
 
 pub trait DyckPathFindLeftBranch
@@ -323,6 +374,7 @@ where
 
 pub(crate) mod left_branch_impl {
   pub(crate) mod u64 {
+    extern crate core;
     pub(crate) fn left_branch(structure: u64) -> u64 {
       if structure <= 1 {
         return 0;
@@ -333,6 +385,7 @@ pub(crate) mod left_branch_impl {
       let mut left_splits = !structure & structure << 1 & structure << 2;
       loop {
         let trailing = left_splits.trailing_zeros();
+        core::debug_assert!(trailing<64, "structure {structure:064b}");
         let current = 1 << trailing;
         if let 1 = left_splits.count_ones() {
           return current >> 1;
@@ -549,8 +602,6 @@ fn test_for_u512() {
   std::println!("time : {} micros", now.elapsed().as_micros())
 }
 
-
-
 #[test]
 fn test_zipper_basics() {
   type DSZ = DyckStructureZipperU64;
@@ -559,9 +610,9 @@ fn test_zipper_basics() {
   // 0b_0
   ///////
   std::println!("\n# 0b_0\nNone");
-  core::assert!( core::matches!( DSZ::new(0b_0), Option::None) );
-  
-  '_0b_1:{
+  core::assert!(core::matches!(DSZ::new(0b_0), Option::None));
+
+  '_0b_1: {
     std::println!("\n# 0b_1\n");
     let mut tree_0b_1 = DSZ::new(0b_1).unwrap();
     let count = tree_0b_1.structure.count_ones() as usize;
@@ -579,7 +630,7 @@ fn test_zipper_basics() {
     core::assert_eq!(tree_0b_1.current_leaf_store_index_range(), 0..count);
   }
 
-  '_0b_110:{
+  '_0b_110: {
     std::println!("\n# 0b_110\n");
     let mut tree_0b_110 = DSZ::new(0b_110).unwrap();
     let count = tree_0b_110.structure.count_ones() as usize;
@@ -613,8 +664,8 @@ fn test_zipper_basics() {
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..1);
     core::assert!(tree_0b_110.accend());
   }
-  
-  '_0b_11010:{
+
+  '_0b_11010: {
     std::println!("\n# 0b_11010\n");
     let mut tree_0b_11010 = DSZ::new(0b_11010).unwrap();
     let count = tree_0b_11010.structure.count_ones() as usize;
@@ -652,7 +703,62 @@ fn test_zipper_basics() {
     core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 0..1);
   }
-
-  
 }
 
+#[test]
+fn test_zipper_traversal(){
+  type DSZ = DyckStructureZipperU64;
+  let tree_0b_110110010 = DSZ::new(0b_11010110010).unwrap();
+
+  tree_0b_110110010.current_depth_first_indicies().zip(0..tree_0b_110110010.structure.count_ones() as usize).for_each(|(l,r)| core::assert_eq!(l,r));
+  tree_0b_110110010.current_breadth_first_indicies().zip([5,2,3,4,0,1].into_iter()).for_each(|(l,r)| core::assert_eq!(l,r));
+}
+
+#[test]
+fn test_zipper_breadth_first_traversal_perf() {
+  let trees = all_trees();
+  let mut idxs = Vec::with_capacity(32);
+  let total_indicies = trees.iter().fold(0_u64, |acc, x| acc + x.count_ones() as u64);
+  std::println!("number of trees {}\ntotal indicies {}\nperf test begin", trees.len(), total_indicies );
+  let now = std::time::Instant::now();
+  for each in trees.iter().copied().skip(1) {
+    let z = DyckStructureZipperU64::new(each as u64).unwrap();
+
+    idxs.extend( z.current_breadth_first_indicies() );
+    // std::println!("{each:032b}\t{:?}\n", idxs);
+    idxs.clear();
+
+  }
+  let time = now.elapsed();
+  std::println!("time : {} micros", time.as_micros());
+  core::assert!(time.as_nanos() as f64 / (total_indicies as f64) < 100.0);
+
+
+
+  
+  // now for all symmetric trees
+  let trees2 = trees.iter().copied().skip(1).map(|x| x as u64).map(|l| ((l << u64::BITS - l.leading_zeros()) | l) << 1 );
+  std::println!("perf test symetric begin");
+  let (mut min, mut max) = (u128::MAX, u128::MIN);
+  let now = std::time::Instant::now();
+  for each in trees2 {
+    let now_inner = std::time::Instant::now();
+    let z = DyckStructureZipperU64::new(each as u64).unwrap();
+
+    idxs.extend( z.current_breadth_first_indicies() );
+    // std::println!("{each:032b}\t{:?}\n", idxs);
+
+    let time = now_inner.elapsed().as_nanos();
+    min = min.min(time/(idxs.len() as u128+1));
+    max = max.max(time/(idxs.len() as u128+1));
+    
+    idxs.clear();
+
+  }
+  let time = now.elapsed();
+  std::println!("time : {} micros", time.as_micros());
+  std::println!("min time : {} nanos, min time : {} nanos", max, min);
+
+  // core::assert!(time.as_nanos() as f64 / (2.0*total_indicies as f64) < 100.0);
+
+}

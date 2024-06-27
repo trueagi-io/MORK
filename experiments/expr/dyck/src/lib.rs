@@ -125,7 +125,7 @@ impl SubtreeSlice {
 pub struct DyckStructureZipperU64 {
   structure: u64,
   current_depth: u8,
-  stack: [SubtreeSlice; DyckStructureZipperU64::STACK_LEN],
+  stack: [SubtreeSlice; DyckStructureZipperU64::MAX_LEAVES],
 }
 
 impl core::fmt::Debug for DyckStructureZipperU64 {
@@ -157,7 +157,7 @@ impl core::fmt::Debug for DyckStructureZipperU64 {
 }
 
 impl DyckStructureZipperU64 {
-  const STACK_LEN: usize = u64::BITS as usize / 2;
+  const MAX_LEAVES: usize = u64::BITS as usize / 2;
 
   // TODO : add debug assert that checks that the tree is valid
   pub fn new(structure: u64) -> Option<Self> {
@@ -165,7 +165,7 @@ impl DyckStructureZipperU64 {
       return Option::None;
     }
 
-    let mut stack = [SubtreeSlice::zeroes(); Self::STACK_LEN];
+    let mut stack = [SubtreeSlice::zeroes(); Self::MAX_LEAVES];
     stack[0].terminal = (u64::BITS).wrapping_sub(structure.leading_zeros()) as u8;
 
     Option::Some(Self { structure, current_depth: 0, stack })
@@ -325,10 +325,10 @@ impl DyckStructureZipperU64 {
   }
 
   pub fn current_breadth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
-    const MAX_DEFERED: usize = DyckStructureZipperU64::STACK_LEN;
+    const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
 
     // the iterator state
-    let mut tmp = Self { structure : self.structure, current_depth: 0, stack: [SubtreeSlice::zeroes(); Self::STACK_LEN] };
+    let mut tmp = Self { structure : self.structure, current_depth: 0, stack: [SubtreeSlice::zeroes(); Self::MAX_LEAVES] };
     let mut ring_buffer = [SubtreeSlice::zeroes(); MAX_DEFERED];
     let mut front = 0;
     let mut end = 1;
@@ -362,14 +362,91 @@ impl DyckStructureZipperU64 {
       }
     })
   }
+
+
+//   pub fn unifies_at_current<T, U: Unify<Element = T>>(&self, self_leaves : &[T], other: &mut Self, other_leaves : &[T]) -> Option<SubstitutionIndicesList>
+//   { type DSZ = DyckStructureZipperU64;
+//     const INIT :DSZ = DSZ{ structure: 1, current_depth: 0, stack: [SubtreeSlice{terminal :0, head : 0}; DSZ::MAX_LEAVES] };
+//     let [mut self_root, other_root,mut scratch] = [INIT; 3];
+
+//     self_root.structure = self.structure;
+//     self_root.stack[0]=self.stack[self.current_depth as usize];
+    
+//     other_root.structure=other.structure;
+//     other_root.stack[0]=other.stack[other.current_depth as usize];
+
+//     const NULL_SUBST : Both<SubtreeSlice, SubtreeSlice> = Both {left : 0..0, right: 0..0};
+//     let mut substs = SubstitutionIndicesList { len : 0, subst : [NULL_SUBST; Self::MAX_LEAVES] };
+
+//     let return_value = loop {
+      
+//       match (self.decend_left() , other.decend_left()) {
+//         (false, false) => {
+
+//           // TODO check if the leaves match!
+//           match (
+//             U::atomtype(&self_leaves[self.current_first_leaf_store_index()]) , 
+//             U::atomtype(&other_leaves[other.current_first_leaf_store_index()])
+//           ) {
+//             (ElementType::Atom(l), ElementType::Atom(r)) => if !U::atom_eq(l, r) { break Option::None},
+//             (ElementType::Var(l), ElementType::Var(r)) => {
+//               if !U::var_eq(l, r) { 
+//                 let 
+//                 substs.subst[substs.len] = (self.in) 
+//               }
+//               /* Equal, or add Subst */ todo!()
+//             },
+            
+//             (ElementType::Atom(_), ElementType::Var(_)) => todo!(),
+//             (ElementType::Var(_), ElementType::Atom(_)) => todo!(),
+            
+//             (_, ElementType::Hole) | (ElementType::Hole, _) => (),
+//                   }
+
+//           match (self.current_depth==self_root, other.current_depth==other_root) {
+//             (true, true) => break Option::Some(substs),
+//             (true, false) | (false, true) => break Option::None,
+//             (false, false) => {
+//               match (self.switch_right(), other.switch_right()) {
+//                 (true, true) => continue,
+//                 (true, false) | (false, true) => break Option::None,
+//                 (false, false) => {
+//                   if !self.accend()&&other.accend() { break Option::None }
+//                 },
+//                           }
+//             }
+//                   }
+
+//         },
+//         (true, true) => todo!(),
+//         (true, false) | (false, true) => break Option::None,
+//           }
+//     };
+//     self.current_depth=self_root;
+//     self.current_depth=self_root;
+
+//     return_value
+//   }
+}
+struct Both<L,R> {left:L, right:R}
+struct SubstitutionIndicesList {
+  len : usize,
+  subst: [Both<SubtreeSlice,SubtreeSlice>; DyckStructureZipperU64::MAX_LEAVES],
 }
 
-pub trait DyckPathFindLeftBranch
-where
-  usize: From<Self::Offset>,
-{
-  type Offset;
-  fn left_branch(self) -> Self::Offset;
+pub enum ElementType<'e, A,V> {
+  Atom(&'e A),
+  Var(&'e V),
+  Hole,
+}
+pub trait Unify {
+  type Element;
+  type Atom;
+  type Var;
+  fn atomtype(e : &Self::Element)->ElementType<Self::Atom, Self::Var>;
+
+  fn atom_eq(left : &Self::Atom, right : &Self::Atom)->bool; 
+  fn var_eq(left : &Self::Var, right : &Self::Var)->bool;
 }
 
 pub(crate) mod left_branch_impl {
@@ -759,6 +836,6 @@ fn test_zipper_breadth_first_traversal_perf() {
   std::println!("time : {} micros", time.as_micros());
   std::println!("min time : {} nanos, min time : {} nanos", max, min);
 
-  // core::assert!(time.as_nanos() as f64 / (2.0*total_indicies as f64) < 100.0);
+  core::assert!(time.as_nanos() as f64 / (2.0*total_indicies as f64) < 100.0);
 
 }

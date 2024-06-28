@@ -13,12 +13,12 @@ use core::{
   cmp::Ord,
   convert::From,
   default::Default,
-  iter::{IntoIterator, Iterator, Extend},
+  iter::{Extend, IntoIterator, Iterator},
   option::Option,
   result::Result,
 };
 use num_bigint::BigUint;
-use std::process::Output;
+use std::{process::Output, slice::SliceIndex};
 
 mod finite;
 
@@ -235,6 +235,18 @@ impl DyckStructureZipperU64 {
 
     true
   }
+  pub fn current_is_left_branch(&self) -> bool {
+    let Self { structure, current_depth, stack } = self;
+
+    if let 0 = current_depth {
+      return false;
+    }
+
+    let prev = stack[*current_depth as usize - 1];
+    let cur = stack[*current_depth as usize];
+    prev.terminal == cur.terminal && prev.head != cur.head - 1
+  }
+
   pub unsafe fn switch_left_unchecked(&mut self) {
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
@@ -328,7 +340,7 @@ impl DyckStructureZipperU64 {
     const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
 
     // the iterator state
-    let mut tmp = Self { structure : self.structure, current_depth: 0, stack: [SubtreeSlice::zeroes(); Self::MAX_LEAVES] };
+    let mut tmp = Self { structure: self.structure, current_depth: 0, stack: [SubtreeSlice::zeroes(); Self::MAX_LEAVES] };
     let mut ring_buffer = [SubtreeSlice::zeroes(); MAX_DEFERED];
     let mut front = 0;
     let mut end = 1;
@@ -363,90 +375,148 @@ impl DyckStructureZipperU64 {
     })
   }
 
+  pub fn match_template_at_current<E: MatchElement>(
+    &self,
+    self_data: &[E::Element],
+    pattern: &Self,
+    pattern_data: &[E::Element],
+    template: &Self,
+    template_data: &[E::Element],
+  ) -> Option<(Vec<BinaryTreeInstruction>, Vec<E::Element>)>
+  where
+    E::Element: Clone,
+  {
+    let [mut self_z, mut pattern_z, mut template_z] = [self, pattern, template].map(|z| {
+      const NULL_SLICE: SubtreeSlice = SubtreeSlice { terminal: 0, head: 0 };
+      let mut z1 = Self { structure: z.structure, current_depth: 0, stack: [NULL_SLICE; Self::MAX_LEAVES] };
+      z1.stack[0] = z.stack[z.current_depth as usize];
+      z1
+    });
 
-//   pub fn unifies_at_current<T, U: Unify<Element = T>>(&self, self_leaves : &[T], other: &mut Self, other_leaves : &[T]) -> Option<SubstitutionIndicesList>
-//   { type DSZ = DyckStructureZipperU64;
-//     const INIT :DSZ = DSZ{ structure: 1, current_depth: 0, stack: [SubtreeSlice{terminal :0, head : 0}; DSZ::MAX_LEAVES] };
-//     let [mut self_root, other_root,mut scratch] = [INIT; 3];
+    let mut de_bruin_level_offset: Option<usize> = Option::None;
+    let mut de_bruin_offset_bindings_to_self = [Option::None; Self::MAX_LEAVES];
 
-//     self_root.structure = self.structure;
-//     self_root.stack[0]=self.stack[self.current_depth as usize];
-    
-//     other_root.structure=other.structure;
-//     other_root.stack[0]=other.stack[other.current_depth as usize];
+    'matching: loop {
+      if pattern_z.current_is_leaf() {
+        match E::atomtype(&pattern_data[pattern_z.current_first_leaf_store_index()]) {
+          ElementType::Atom(pat_atom) => {
+            if !self_z.current_is_leaf() {
+              return Option::None;
+            }
+            match E::atomtype(&self_data[self_z.current_first_leaf_store_index()]) {
+              ElementType::Atom(self_atom) => {
+                if !E::atom_eq(self_atom, pat_atom) {
+                  return Option::None;
+                };
+              }
+              ElementType::Var(_) => core::unimplemented!(),
+              ElementType::Hole => {}
+            }
+          }
+          ElementType::Var(v) => {
+            let level = E::var_de_bruin_level(v);
+            match de_bruin_level_offset {
+              Option::None => de_bruin_level_offset = Option::Some(level),
 
-//     const NULL_SUBST : Both<SubtreeSlice, SubtreeSlice> = Both {left : 0..0, right: 0..0};
-//     let mut substs = SubstitutionIndicesList { len : 0, subst : [NULL_SUBST; Self::MAX_LEAVES] };
+              Option::Some(offset) => core::debug_assert!(offset <= level),
+            }
+            let idx = level - de_bruin_level_offset.unwrap_or(0);
+            de_bruin_offset_bindings_to_self[idx] = Option::Some(self_z.stack[self_z.current_depth as usize]);
+          }
+          ElementType::Hole => {}
+        }
 
-//     let return_value = loop {
-      
-//       match (self.decend_left() , other.decend_left()) {
-//         (false, false) => {
+        '_pop: {
+          while !pattern_z.current_is_left_branch() {
+            if pattern_z.accend() {
+              self_z.accend();
+            } else {
+              break 'matching;
+            }
+          }
 
-//           // TODO check if the leaves match!
-//           match (
-//             U::atomtype(&self_leaves[self.current_first_leaf_store_index()]) , 
-//             U::atomtype(&other_leaves[other.current_first_leaf_store_index()])
-//           ) {
-//             (ElementType::Atom(l), ElementType::Atom(r)) => if !U::atom_eq(l, r) { break Option::None},
-//             (ElementType::Var(l), ElementType::Var(r)) => {
-//               if !U::var_eq(l, r) { 
-//                 let 
-//                 substs.subst[substs.len] = (self.in) 
-//               }
-//               /* Equal, or add Subst */ todo!()
-//             },
-            
-//             (ElementType::Atom(_), ElementType::Var(_)) => todo!(),
-//             (ElementType::Var(_), ElementType::Atom(_)) => todo!(),
-            
-//             (_, ElementType::Hole) | (ElementType::Hole, _) => (),
-//                   }
+          // Safety: the reaching the end of the while loop
+          //   guarantees that we are on a left branch, so there must be a right branch
+          unsafe {
+            pattern_z.switch_right_unchecked();
+            self_z.switch_right_unchecked();
+          };
+        }
+      } else {
+        // current is a branch
 
-//           match (self.current_depth==self_root, other.current_depth==other_root) {
-//             (true, true) => break Option::Some(substs),
-//             (true, false) | (false, true) => break Option::None,
-//             (false, false) => {
-//               match (self.switch_right(), other.switch_right()) {
-//                 (true, true) => continue,
-//                 (true, false) | (false, true) => break Option::None,
-//                 (false, false) => {
-//                   if !self.accend()&&other.accend() { break Option::None }
-//                 },
-//                           }
-//             }
-//                   }
+        let both_left = self_z.decend_left() && pattern_z.decend_left();
+        if !both_left {
+          return Option::None;
+        }
+      }
+    }
 
-//         },
-//         (true, true) => todo!(),
-//         (true, false) | (false, true) => break Option::None,
-//           }
-//     };
-//     self.current_depth=self_root;
-//     self.current_depth=self_root;
+    //construct from the template
+    let mut structure = Vec::with_capacity(32);
+    let mut values = Vec::with_capacity(32);
 
-//     return_value
-//   }
+    self_z.current_depth = 0;
+
+    let out = 'templating: loop {
+      if template_z.decend_left() {
+        continue 'templating;
+      }
+
+      let e = &template_data[template_z.current_first_leaf_store_index()];
+      match E::atomtype(e) {
+        ElementType::Atom(_) | ElementType::Hole => '_push_atom :{
+          values.push(e.clone());
+          structure.push(BinaryTreeInstruction::Leaf)
+        }
+        ElementType::Var(v) => '_push_binding : {
+          let level = E::var_de_bruin_level(v);
+          let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
+          let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
+
+          self_z.stack[0] = binding;
+
+          let indices = self_z.current_leaf_store_index_range();
+          values.extend_from_slice(&self_data[indices]);
+
+          let sub_structure = self_z.structure >> binding.head;
+          let mut bit_ptr = 1_u64 << binding.terminal - binding.head;
+
+          '_convert_subtree_structure :while bit_ptr != 0 {
+            structure.push(if bit_ptr & sub_structure == 0 { BinaryTreeInstruction::Node } else { BinaryTreeInstruction::Leaf });
+            bit_ptr >>= 1
+          }
+        }
+      }
+
+      '_pop: while !template_z.switch_right() {
+        if !template_z.accend() {
+          break 'templating Option::Some((structure, values));
+        }
+      }
+    };
+
+    out
+  }
 }
-struct Both<L,R> {left:L, right:R}
-struct SubstitutionIndicesList {
-  len : usize,
-  subst: [Both<SubtreeSlice,SubtreeSlice>; DyckStructureZipperU64::MAX_LEAVES],
+enum BinaryTreeInstruction {
+  Leaf,
+  Node,
 }
 
-pub enum ElementType<'e, A,V> {
+pub enum ElementType<'e, A, V> {
   Atom(&'e A),
   Var(&'e V),
   Hole,
 }
-pub trait Unify {
+pub trait MatchElement {
   type Element;
   type Atom;
   type Var;
-  fn atomtype(e : &Self::Element)->ElementType<Self::Atom, Self::Var>;
-
-  fn atom_eq(left : &Self::Atom, right : &Self::Atom)->bool; 
-  fn var_eq(left : &Self::Var, right : &Self::Var)->bool;
+  fn atomtype(e: &Self::Element) -> ElementType<Self::Atom, Self::Var>;
+  fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool;
+  // fn var_eq(left : &Self::Var, right : &Self::Var)->bool;
+  fn var_de_bruin_level(left: &Self::Var) -> usize;
 }
 
 pub(crate) mod left_branch_impl {
@@ -462,7 +532,7 @@ pub(crate) mod left_branch_impl {
       let mut left_splits = !structure & structure << 1 & structure << 2;
       loop {
         let trailing = left_splits.trailing_zeros();
-        core::debug_assert!(trailing<64, "structure {structure:064b}");
+        core::debug_assert!(trailing < 64, "structure {structure:064b}");
         let current = 1 << trailing;
         if let 1 = left_splits.count_ones() {
           return current >> 1;
@@ -783,59 +853,91 @@ fn test_zipper_basics() {
 }
 
 #[test]
-fn test_zipper_traversal(){
+fn test_zipper_traversal() {
   type DSZ = DyckStructureZipperU64;
   let tree_0b_110110010 = DSZ::new(0b_11010110010).unwrap();
 
-  tree_0b_110110010.current_depth_first_indicies().zip(0..tree_0b_110110010.structure.count_ones() as usize).for_each(|(l,r)| core::assert_eq!(l,r));
-  tree_0b_110110010.current_breadth_first_indicies().zip([5,2,3,4,0,1].into_iter()).for_each(|(l,r)| core::assert_eq!(l,r));
+  tree_0b_110110010
+    .current_depth_first_indicies()
+    .zip(0..tree_0b_110110010.structure.count_ones() as usize)
+    .for_each(|(l, r)| core::assert_eq!(l, r));
+  tree_0b_110110010.current_breadth_first_indicies().zip([5, 2, 3, 4, 0, 1].into_iter()).for_each(|(l, r)| core::assert_eq!(l, r));
 }
 
 #[test]
-fn test_zipper_breadth_first_traversal_perf() {
+fn test_zipper_breadth_and_depth_first_traversal_perf() {
   let trees = all_trees();
   let mut idxs = Vec::with_capacity(32);
   let total_indicies = trees.iter().fold(0_u64, |acc, x| acc + x.count_ones() as u64);
-  std::println!("number of trees {}\ntotal indicies {}\nperf test begin", trees.len(), total_indicies );
-  let now = std::time::Instant::now();
+  std::println!("number of trees {}\ntotal indicies {}\nperf test begin", trees.len(), total_indicies);
+  let mut now = std::time::Instant::now();
   for each in trees.iter().copied().skip(1) {
     let z = DyckStructureZipperU64::new(each as u64).unwrap();
 
-    idxs.extend( z.current_breadth_first_indicies() );
+    idxs.extend(z.current_breadth_first_indicies());
     // std::println!("{each:032b}\t{:?}\n", idxs);
     idxs.clear();
-
   }
   let time = now.elapsed();
-  std::println!("time : {} micros", time.as_micros());
+  std::println!("Breadth first all 16 element trees or less\n\ttime : {} micros", time.as_micros());
   core::assert!(time.as_nanos() as f64 / (total_indicies as f64) < 100.0);
 
+  now = std::time::Instant::now();
 
+  for each in trees.iter().copied().skip(1) {
+    let z = DyckStructureZipperU64::new(each as u64).unwrap();
 
-  
+    idxs.extend(z.current_depth_first_indicies());
+    // std::println!("{each:032b}\t{:?}\n", idxs);
+    idxs.clear();
+  }
+  let time = now.elapsed();
+  std::println!("Depth first all 16 element trees or less\n\ttime : {} micros", time.as_micros());
+  core::assert!(time.as_nanos() as f64 / (total_indicies as f64) < 100.0);
+
   // now for all symmetric trees
-  let trees2 = trees.iter().copied().skip(1).map(|x| x as u64).map(|l| ((l << u64::BITS - l.leading_zeros()) | l) << 1 );
-  std::println!("perf test symetric begin");
+  let trees2 = trees.iter().copied().skip(1).map(|x| x as u64).map(|l| ((l << u64::BITS - l.leading_zeros()) | l) << 1);
+  std::println!("\nperf test symetric begin");
   let (mut min, mut max) = (u128::MAX, u128::MIN);
   let now = std::time::Instant::now();
   for each in trees2 {
     let now_inner = std::time::Instant::now();
     let z = DyckStructureZipperU64::new(each as u64).unwrap();
 
-    idxs.extend( z.current_breadth_first_indicies() );
+    idxs.extend(z.current_breadth_first_indicies());
     // std::println!("{each:032b}\t{:?}\n", idxs);
 
     let time = now_inner.elapsed().as_nanos();
-    min = min.min(time/(idxs.len() as u128+1));
-    max = max.max(time/(idxs.len() as u128+1));
-    
-    idxs.clear();
+    min = min.min(time / (idxs.len() as u128 + 1));
+    max = max.max(time / (idxs.len() as u128 + 1));
 
+    idxs.clear();
   }
   let time = now.elapsed();
-  std::println!("time : {} micros", time.as_micros());
-  std::println!("min time : {} nanos, min time : {} nanos", max, min);
+  std::println!("Breadth first all duplicated 32 leaf trees or less\ntime : {} micros", time.as_micros());
+  std::println!("\nmax time : {} nanos, min time : {} nanos", max, min);
+  core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
 
-  core::assert!(time.as_nanos() as f64 / (2.0*total_indicies as f64) < 100.0);
+  // now for all symmetric trees
+  let trees2 = trees.iter().copied().skip(1).map(|x| x as u64).map(|l| ((l << u64::BITS - l.leading_zeros()) | l) << 1);
+  std::println!("\nperf test duplicated trees begin");
+  let (mut min, mut max) = (u128::MAX, u128::MIN);
+  let now = std::time::Instant::now();
+  for each in trees2 {
+    let now_inner = std::time::Instant::now();
+    let z = DyckStructureZipperU64::new(each as u64).unwrap();
 
+    idxs.extend(z.current_depth_first_indicies());
+    // std::println!("{each:032b}\t{:?}\n", idxs);
+
+    let time = now_inner.elapsed().as_nanos();
+    min = min.min(time / (idxs.len() as u128 + 1));
+    max = max.max(time / (idxs.len() as u128 + 1));
+
+    idxs.clear();
+  }
+  let time = now.elapsed();
+  std::println!("Depth first all duplicated 32 leaf trees or less\ntime : {} micros", time.as_micros());
+  std::println!("\nmax time : {} nanos, min time : {} nanos", max, min);
+  core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
 }

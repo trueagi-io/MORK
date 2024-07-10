@@ -227,7 +227,7 @@ impl DyckStructureZipperU64 {
     let cur = unsafe { stack.get_unchecked(*current_depth as usize) };
 
     // avoid double right
-    if prev.head == cur.head + 1 {
+    if prev.head == cur.head - 1 {
       return false;
     }
 
@@ -236,7 +236,7 @@ impl DyckStructureZipperU64 {
     true
   }
   pub fn current_is_left_branch(&self) -> bool {
-    let Self { structure, current_depth, stack } = self;
+    let Self { current_depth, stack, .. } = self;
 
     if let 0 = current_depth {
       return false;
@@ -374,6 +374,9 @@ impl DyckStructureZipperU64 {
       }
     })
   }
+  pub fn current_substructure(&self) -> u64 {
+    self.structure >> self.stack[self.current_depth as usize].head
+  }
 
   pub fn match_template_at_current<E: MatchElement>(
     &self,
@@ -386,6 +389,10 @@ impl DyckStructureZipperU64 {
   where
     E::Element: Clone,
   {
+    core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
+    core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
+    core::debug_assert_eq!(template.structure.count_ones() as usize, template_data.len());
+
     let [mut self_z, mut pattern_z, mut template_z] = [self, pattern, template].map(|z| {
       const NULL_SLICE: SubtreeSlice = SubtreeSlice { terminal: 0, head: 0 };
       let mut z1 = Self { structure: z.structure, current_depth: 0, stack: [NULL_SLICE; Self::MAX_LEAVES] };
@@ -444,7 +451,6 @@ impl DyckStructureZipperU64 {
         }
       } else {
         // current is a branch
-
         let both_left = self_z.decend_left() && pattern_z.decend_left();
         if !both_left {
           return Option::None;
@@ -465,11 +471,11 @@ impl DyckStructureZipperU64 {
 
       let e = &template_data[template_z.current_first_leaf_store_index()];
       match E::atomtype(e) {
-        ElementType::Atom(_) | ElementType::Hole => '_push_atom :{
+        ElementType::Atom(_) | ElementType::Hole => '_push_atom: {
           values.push(e.clone());
           structure.push(BinaryTreeInstruction::Leaf)
         }
-        ElementType::Var(v) => '_push_binding : {
+        ElementType::Var(v) => '_push_binding: {
           let level = E::var_de_bruin_level(v);
           let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
           let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
@@ -480,30 +486,34 @@ impl DyckStructureZipperU64 {
           values.extend_from_slice(&self_data[indices]);
 
           let sub_structure = self_z.structure >> binding.head;
-          let mut bit_ptr = 1_u64 << binding.terminal - binding.head;
+          let mut bit_ptr = 1_u64 << binding.terminal - binding.head - 1;
 
-          '_convert_subtree_structure :while bit_ptr != 0 {
-            structure.push(if bit_ptr & sub_structure == 0 { BinaryTreeInstruction::Node } else { BinaryTreeInstruction::Leaf });
-            bit_ptr >>= 1
+          '_convert_subtree_structure: while bit_ptr != 0 {
+            structure.push(if bit_ptr & sub_structure == 0 { BinaryTreeInstruction::Branch } else { BinaryTreeInstruction::Leaf });
+            bit_ptr >>= 1;
           }
         }
       }
 
       '_pop: while !template_z.switch_right() {
         if !template_z.accend() {
+          core::debug_assert_eq!(structure.iter().filter(|s| **s == BinaryTreeInstruction::Leaf).count(), values.len());
           break 'templating Option::Some((structure, values));
         }
+        structure.push(BinaryTreeInstruction::Branch);
       }
     };
 
     out
   }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BinaryTreeInstruction {
   Leaf,
-  Node,
+  Branch,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElementType<'e, A, V> {
   Atom(&'e A),
   Var(&'e V),
@@ -940,4 +950,149 @@ fn test_zipper_breadth_and_depth_first_traversal_perf() {
   std::println!("Depth first all duplicated 32 leaf trees or less\ntime : {} micros", time.as_micros());
   std::println!("\nmax time : {} nanos, min time : {} nanos", max, min);
   core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
+}
+
+#[test]
+fn test_naive_matching() {
+  use BinaryTreeInstruction::{Branch as B, Leaf as L};
+
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  enum E {
+    A(&'static str),
+    V(isize),
+    Hole,
+  }
+
+  enum TestExpr {}
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  impl MatchElement for TestExpr {
+    type Element = E;
+    type Atom = &'static str;
+    type Var = isize;
+  
+    fn atomtype(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
+      match e {
+        E::A(a) => ElementType::Atom(a),
+        E::V(v) => ElementType::Var(v),
+        E::Hole => ElementType::Hole,
+      }
+    }
+  
+    fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
+    fn var_de_bruin_level(left: &Self::Var) -> usize { *left as usize }
+  }
+
+  let input_zipper = DyckStructureZipperU64::new(0b_110_110_0).unwrap();
+  let input_data = [E::A("a"), E::V(0), E::A("b"), E::A("c")];
+  let pattern_zipper = DyckStructureZipperU64::new(0b_110_10).unwrap();
+  let pattern_data = [E::A("a"), E::Hole, E::V(1)];
+  let template_zipper = DyckStructureZipperU64::new(0b_110).unwrap();
+  let template_data = [E::A("x"), E::V(1)];
+
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+
+  let expected_structure = [L, L, L, B, B];
+  let expected_data = [E::A("x"), E::A("b"), E::A("c")];
+
+  core::assert_eq!(&result.0[..], &expected_structure[..]);
+  core::assert_eq!(&result.1[..], &expected_data[..]);
+
+  // simple point matching
+
+  // (Point2d ((X 15.4) (Y -34.9)))
+  let input_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let input_data = [
+    "Pointed2d", "X", "15.4", 
+                 "Y", "-34.9"
+  ].map(E::A);
+  // (Point2d ((X x) (Y x)))
+  let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let mut pattern_data = [
+    "Pointed2d", "X", "x",
+                 "Y", "y"
+  ].map(E::A);
+  pattern_data[2] = E::V(0);
+  pattern_data[4] = E::V(1);
+
+  // (Sqrt (+ ( (* (x x))
+  //            (* (y y)) )))
+  let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let mut template_data = [
+    "Sqrt","+","*","x","x",
+               "*","y","y"
+  ].map(E::A);
+
+  template_data[3] = E::V(0);
+  template_data[4] = E::V(0);
+
+  template_data[6] = E::V(1);
+  template_data[7] = E::V(1);
+
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+
+  let expected_structure = [L, L, L, L, L, B, B, L, L, L, B, B, B, B, B];
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let expected_data = [
+    "Sqrt","+","*", "15.4", "15.4",
+               "*","-34.9","-34.9"
+    ].map(E::A);
+
+  core::assert_eq!(&result.0[..], &expected_structure[..]);
+  core::assert_eq!(&result.1[..], &expected_data[..]);
+
+  // expression point matching
+
+  // (Point2d ((X (+ (3.0 2.2))) (Y -34.9)))
+  let input_zipper = DyckStructureZipperU64::new(0b_1__1111000_110_0__0).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let input_data = [
+    "Pointed2d", "X", "+", "3.0", 
+                           "2.2", 
+                 "Y", "-34.9"
+  ].map(E::A);
+  // (Point2d ((X x) (Y x)))
+  let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let mut pattern_data = [
+    "Pointed2d", "X", "x",
+                 "Y", "y"
+  ].map(E::A);
+  pattern_data[2] = E::V(0);
+  pattern_data[4] = E::V(1);
+
+  // (Sqrt (+ ( (* (x x))
+  //            (* (y y)) )))
+  let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let mut template_data = [
+    "Sqrt","+","*","x","x",
+               "*","y","y"
+  ].map(E::A);
+
+  template_data[3] = E::V(0);
+  template_data[4] = E::V(0);
+
+  template_data[6] = E::V(1);
+  template_data[7] = E::V(1);
+
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let expected_structure = [
+    L,L,  L, L,L,L,B,B,
+             L,L,L,B,B, B,B,
+             
+          L, L,L,       B,B,
+                             B,B,B];
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  let expected_data = ["Sqrt","+","*", "+", "3.0", "2.2",
+                                       "+", "3.0", "2.2",
+                                  "*","-34.9","-34.9"
+  ].map(E::A);
+
+  core::assert_eq!(&result.0[..], &expected_structure[..]);
+  core::assert_eq!(&result.1[..], &expected_data[..]);
 }

@@ -1,4 +1,5 @@
 #![no_implicit_prelude]
+#![allow(unused)]
 
 extern crate alloc;
 extern crate core;
@@ -22,91 +23,23 @@ use std::{process::Output, slice::SliceIndex};
 
 mod finite;
 
-type Shared<T> = Arc<T>;
-type PathInt = u64;
-
-pub struct BoundedDyck<L> {
-  path: PathInt,
-  leaves: Arc<[L]>,
-}
-
-pub struct UnboundedDyck<L> {
-  path: BigUint,
-  leaves: Arc<[L]>,
-}
-
-pub enum Dyck<L> {
-  Bounded(BoundedDyck<L>),
-  UnboundedDyck(UnboundedDyck<L>),
-}
-
-impl<L> BoundedDyck<L> {
-  fn zero() -> Self {
-    Self { path: 0, leaves: Shared::from([]) }
-  }
-  unsafe fn new_unchecked(path: PathInt, leaves: Arc<[L]>) -> Self {
-    Self { path, leaves }
-  }
-  fn new(path: PathInt, leaves: Arc<[L]>) -> Option<Self> {
-    if path.count_ones() as usize > leaves.len() {
-      return Option::None;
-    }
-    unsafe { Option::Some(Self::new_unchecked(path, leaves)) }
-  }
-}
-impl<L> UnboundedDyck<L> {
-  fn zero() -> Self {
-    Self { path: BigUint::ZERO, leaves: Shared::from([]) }
-  }
-  unsafe fn new_unchecked(path: BigUint, leaves: Shared<[L]>) -> Self {
-    Self { path, leaves }
-  }
-  fn new(path: BigUint, leaves: Shared<[L]>) -> Option<Self> {
-    if path.count_ones() as usize > leaves.len() {
-      return Option::None;
-    }
-    unsafe { Option::Some(Self::new_unchecked(path, leaves)) }
-  }
-}
-
-impl<L> Dyck<L> {
-  fn new_unchecked(path: &[u32], leaves: Shared<[L]>) -> Self {
-    if path.len() * u32::BITS as usize > PathInt::BITS as usize {
-      let mut v: Vec<u32> = path.into_iter().rev().copied().collect();
-      let path_bui = BigUint::new(v);
-      unsafe { Dyck::UnboundedDyck(UnboundedDyck::new_unchecked(path_bui, leaves)) }
-    } else {
-      let mut path_i = 0;
-      for each in path {
-        path_i <<= 1;
-        path_i |= *each as u64;
-      }
-      unsafe { Dyck::Bounded(BoundedDyck::new_unchecked(path_i, leaves)) }
-    }
-  }
-
-  fn new(path: &[u32], leaves: Shared<[L]>) -> Option<Self> {
-    if path.len() * u32::BITS as usize > PathInt::BITS as usize {
-      let v: Vec<u32> = path.into_iter().rev().copied().collect();
-      let path_bui = BigUint::new(v);
-      UnboundedDyck::new(path_bui, leaves).map(Dyck::UnboundedDyck)
-    } else {
-      let mut path_i = 0;
-      for each in path {
-        path_i <<= u32::BITS;
-        path_i |= *each as u64;
-      }
-      BoundedDyck::new(path_i, leaves).map(Dyck::Bounded)
-    }
-  }
-}
-
+/// It should be noted that the terminal is _NEVER_ equal to the head. 
+/// In the case of a leaf, the head is at the leaf position, and the terminal is one after it.
+/// In other words, if t is the terminal, and h is the head, then
+/// for a tree `0...001` we have `0..0th` (_t_=1, _h_=0),
+/// 
+/// example
+/// - `0..0t____h` (_t_=5, _h_=0) tree `0..0011010`
+/// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree         
+/// - `0..0___th_` (_t_=2, _h_=1) the right sub tree (a leaf)
 #[derive(Clone, Copy)]
 pub(crate) struct SubtreeSlice {
-  /// the position of the terminating __0__ bit after the last leaf
+  /// the position right after the last leaf of a subtree.
   pub(crate) terminal: u8,
+  /// the position of the subtree (the root is a subtree of itself)
   pub(crate) head: u8,
 }
+/// this is used exclusively for initializing data. 
 impl SubtreeSlice {
   const fn zeroes() -> Self {
     Self { terminal: 0, head: 0 }
@@ -159,10 +92,34 @@ impl core::fmt::Debug for DyckStructureZipperU64 {
 impl DyckStructureZipperU64 {
   const MAX_LEAVES: usize = u64::BITS as usize / 2;
 
-  // TODO : add debug assert that checks that the tree is valid
+  /// Creates a Zipper for the Dyck Path, if the tree is empty (Dyck path of all 0s), it will return [`Option::None`]; this avoids uneeded checks when traversing.
+  /// A valid Zipper is therefore always on a non-empty tree.
+  /// Validating the structure of a Zipper is costly, so it is only checked in debug builds (TODO: is there a fast algorithm for doing the check using bit shifts and masks?).
   pub fn new(structure: u64) -> Option<Self> {
     if let 0 = structure {
       return Option::None;
+    }
+
+    
+    #[cfg(debug_assertions)]
+    '_validate_structure : {
+      let trailing = structure.leading_zeros();
+      core::debug_assert_ne!(trailing, 0);
+
+      let mut cursor = 1 << u64::BITS - trailing - 1;
+      let mut sum: i32 = 0;
+
+      // a valid structure must have enough children to pair up before constructing a branch
+      loop {
+        core::debug_assert!(!sum.is_negative());
+        if cursor == 0 {
+          core::debug_assert_eq!(1, sum);
+          break;
+        }
+
+        sum += if (cursor & structure) == 0 { -1 } else { 1 };
+        cursor >>= 1;
+      }
     }
 
     let mut stack = [SubtreeSlice::zeroes(); Self::MAX_LEAVES];
@@ -171,6 +128,7 @@ impl DyckStructureZipperU64 {
     Option::Some(Self { structure, current_depth: 0, stack })
   }
 
+  /// Decend to the left child if there is one.
   pub fn decend_left(&mut self) -> bool {
     let cur = self.stack[self.current_depth as usize];
     if cur.is_leaf() {
@@ -186,21 +144,17 @@ impl DyckStructureZipperU64 {
     true
   }
 
+  /// Decend to the right child if there is one.
   pub fn decend_right(&mut self) -> bool {
-    let cur = self.stack[self.current_depth as usize];
-    if cur.is_leaf() {
-      return false;
+    if self.decend_left() {
+      unsafe { self.switch_right_unchecked() };
+      true
+    } else {
+      false
     }
-    let l_head @ (1..=u64::MAX) = cur.left_subtree_head(self.structure) else {
-      return false;
-    };
-
-    self.current_depth += 1;
-    self.stack[self.current_depth as usize] = SubtreeSlice { terminal: l_head.trailing_zeros() as u8, head: cur.head + 1 };
-
-    true
   }
 
+  /// Switch from a left branch to the sibling right branch. Invariants are enfored in debug builds.
   pub unsafe fn switch_right_unchecked(&mut self) {
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
@@ -216,6 +170,7 @@ impl DyckStructureZipperU64 {
 
     *cur = SubtreeSlice { terminal: cur.head, head: prev.head + 1 };
   }
+  /// Switch from a left branch to the sibling right branch.
   pub fn switch_right(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
@@ -235,6 +190,7 @@ impl DyckStructureZipperU64 {
 
     true
   }
+  /// check if the current branch is a left branch. The root is never a left branch.
   pub fn current_is_left_branch(&self) -> bool {
     let Self { current_depth, stack, .. } = self;
 
@@ -247,6 +203,7 @@ impl DyckStructureZipperU64 {
     prev.terminal == cur.terminal && prev.head != cur.head - 1
   }
 
+  /// Switch from a right branch to the sibling left branch. Invariants are enfored in debug builds.
   pub unsafe fn switch_left_unchecked(&mut self) {
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
@@ -262,6 +219,7 @@ impl DyckStructureZipperU64 {
 
     *cur = SubtreeSlice { terminal: prev.terminal, head: cur.terminal };
   }
+  /// Switch from a right branch to the sibling left branch.
   pub fn switch_left(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
@@ -282,25 +240,28 @@ impl DyckStructureZipperU64 {
     true
   }
 
+  /// Finds the index of the leaf that is at the bit offset `tree_offset`.
+  /// If this function is used on a branch bit (a zero bit) it will instead find the right most leaf of that branch,
+  /// and if the position is past the end of the last leaf it will create an index out of bounds; both of these cases should not be relied upon, and will panic in debug builds.
   pub unsafe fn leaf_store_index_unchecked(&self, tree_offset: u8) -> usize {
     core::assert_ne!(self.structure & 1 << tree_offset as u32, 0, "zipper :\n{:?}\ntree_offset : {}", self, tree_offset);
     (self.structure & !((0b_10 << tree_offset as u32) - 1)).count_ones() as usize
   }
 
+  /// Produce the range of indices that can be used to subslice the store of leaf elements.
   pub fn current_leaf_store_index_range(&self) -> core::ops::Range<usize> {
     unsafe {
       let cur = self.stack.get_unchecked(self.current_depth as usize);
       let right = ((self.structure ^ self.structure & ((0b_1 << (cur.head as u32)) - 1)).trailing_zeros() as u8).min(cur.terminal - 1);
 
       let first = self.leaf_store_index_unchecked(cur.terminal - 1);
-
       let last = self.leaf_store_index_unchecked(right);
 
       first..last.max(first) + 1
     }
   }
 
-  /// Index of the first in the current scope
+  /// Index of the first leaf in the current scope
   pub fn current_first_leaf_store_index(&self) -> usize {
     unsafe {
       let cur = self.stack.get_unchecked(self.current_depth as usize);
@@ -308,6 +269,7 @@ impl DyckStructureZipperU64 {
     }
   }
 
+  /// Move up to the parent.
   pub fn accend(&mut self) -> bool {
     if self.current_depth == 0 {
       return false;
@@ -316,10 +278,12 @@ impl DyckStructureZipperU64 {
     true
   }
 
-  pub fn accend_root(&mut self) {
+  /// Move to the top of the tree, setting current depth to 0.
+  pub fn accend_to_root(&mut self) {
     self.current_depth = 0;
   }
 
+  /// Move up the tree `n` times.
   pub fn accend_n(&mut self, n: u8) -> bool {
     if self.current_depth < n {
       return false;
@@ -328,14 +292,17 @@ impl DyckStructureZipperU64 {
     true
   }
 
+  /// Determines if the focus of the zipper is at a leaf.
   pub fn current_is_leaf(&self) -> bool {
     self.stack[self.current_depth as usize].is_leaf()
   }
 
+  /// Produce an iterator that generates the indices of the leaves in depth first traversal order
   pub fn current_depth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
     self.current_leaf_store_index_range()
   }
 
+  /// Produce an iterator that generates the indices of the leaves in breadth first traversal order
   pub fn current_breadth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
     const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
 
@@ -354,7 +321,7 @@ impl DyckStructureZipperU64 {
         }
 
         // dequeue
-        tmp.accend_root();
+        tmp.accend_to_root();
         tmp.stack[0] = ring_buffer[front];
         front = (front + 1) % MAX_DEFERED;
 
@@ -374,53 +341,63 @@ impl DyckStructureZipperU64 {
       }
     })
   }
+
+  /// Obtain the current subtree Dyck path.
   pub fn current_substructure(&self) -> u64 {
-    self.structure >> self.stack[self.current_depth as usize].head
+    let SubtreeSlice { terminal, head } = self.stack[self.current_depth as usize];
+    ((1 << terminal) - 1 & self.structure) >> head
   }
 
-  pub fn match_template_at_current<E: MatchElement>(
-    &self,
-    self_data: &[E::Element],
-    pattern: &Self,
-    pattern_data: &[E::Element],
-    template: &Self,
-    template_data: &[E::Element],
-  ) -> Option<(Vec<BinaryTreeInstruction>, Vec<E::Element>)>
+  /// Match the self argument with the pattern. As Zippers must have at least one element, an empty template should have [`Option::None`] as the template argument with the template data being `&[]`
+  pub fn match_template_at_current<E: MatchElement>(&self, self_data: &[E::Element], pattern: &Self, pattern_data: &[E::Element], template: Option<&Self>, template_data: &[E::Element]) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
   where
     E::Element: Clone,
   {
     core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
     core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
-    core::debug_assert_eq!(template.structure.count_ones() as usize, template_data.len());
 
-    let [mut self_z, mut pattern_z, mut template_z] = [self, pattern, template].map(|z| {
-      const NULL_SLICE: SubtreeSlice = SubtreeSlice { terminal: 0, head: 0 };
-      let mut z1 = Self { structure: z.structure, current_depth: 0, stack: [NULL_SLICE; Self::MAX_LEAVES] };
+    // initialize zippers
+    type DZ = DyckStructureZipperU64;
+    const NULL_ZIPPER: DZ = DZ { structure: 0, current_depth: 0, stack: [SubtreeSlice::zeroes(); DZ::MAX_LEAVES] };
+    fn init_sub_zipper(z: &DZ) -> DZ {
+      let mut z1 = DZ { structure: z.structure, ..NULL_ZIPPER };
       z1.stack[0] = z.stack[z.current_depth as usize];
       z1
-    });
+    }
 
+    let mut maybe_template_z = if let Option::Some(t) = template {
+      core::debug_assert_eq!(t.structure.count_ones() as usize, template_data.len());
+      Option::Some(init_sub_zipper(t))
+    } else {
+      core::debug_assert_eq!(0, template_data.len());
+      Option::None
+    };
+    let [mut self_z, mut pattern_z] = [self, pattern].map(init_sub_zipper);
+
+    // initialize substitution table
     let mut de_bruin_level_offset: Option<usize> = Option::None;
     let mut de_bruin_offset_bindings_to_self = [Option::None; Self::MAX_LEAVES];
 
+    // dfs the pattern and follow along with the argument
     'matching: loop {
       if pattern_z.current_is_leaf() {
-        match E::atomtype(&pattern_data[pattern_z.current_first_leaf_store_index()]) {
+        match E::element_type(&pattern_data[pattern_z.current_first_leaf_store_index()]) {
           ElementType::Atom(pat_atom) => {
             if !self_z.current_is_leaf() {
               return Option::None;
             }
-            match E::atomtype(&self_data[self_z.current_first_leaf_store_index()]) {
+            match E::element_type(&self_data[self_z.current_first_leaf_store_index()]) {
               ElementType::Atom(self_atom) => {
                 if !E::atom_eq(self_atom, pat_atom) {
                   return Option::None;
-                };
+                }
               }
-              ElementType::Var(_) => core::unimplemented!(),
+              ElementType::Var(_) => core::unimplemented!("This matching algoritm does not do unification!"),
               ElementType::Hole => {}
             }
           }
           ElementType::Var(v) => {
+            // bind pattern variables, new variables must have a higher de Bruin level
             let level = E::var_de_bruin_level(v);
             match de_bruin_level_offset {
               Option::None => de_bruin_level_offset = Option::Some(level),
@@ -458,11 +435,15 @@ impl DyckStructureZipperU64 {
       }
     }
 
-    //construct from the template
+    let Option::Some(mut template_z) = maybe_template_z else {
+      return Option::Some((Vec::new(), Vec::new()));
+    };
+
+    // construct from the template
     let mut structure = Vec::with_capacity(32);
     let mut values = Vec::with_capacity(32);
 
-    self_z.current_depth = 0;
+    self_z.accend_to_root();
 
     let out = 'templating: loop {
       if template_z.decend_left() {
@@ -470,10 +451,10 @@ impl DyckStructureZipperU64 {
       }
 
       let e = &template_data[template_z.current_first_leaf_store_index()];
-      match E::atomtype(e) {
+      match E::element_type(e) {
         ElementType::Atom(_) | ElementType::Hole => '_push_atom: {
           values.push(e.clone());
-          structure.push(BinaryTreeInstruction::Leaf)
+          structure.push(LeafBranch::L)
         }
         ElementType::Var(v) => '_push_binding: {
           let level = E::var_de_bruin_level(v);
@@ -489,7 +470,7 @@ impl DyckStructureZipperU64 {
           let mut bit_ptr = 1_u64 << binding.terminal - binding.head - 1;
 
           '_convert_subtree_structure: while bit_ptr != 0 {
-            structure.push(if bit_ptr & sub_structure == 0 { BinaryTreeInstruction::Branch } else { BinaryTreeInstruction::Leaf });
+            structure.push(if bit_ptr & sub_structure == 0 { LeafBranch::B } else { LeafBranch::L });
             bit_ptr >>= 1;
           }
         }
@@ -497,48 +478,69 @@ impl DyckStructureZipperU64 {
 
       '_pop: while !template_z.switch_right() {
         if !template_z.accend() {
-          core::debug_assert_eq!(structure.iter().filter(|s| **s == BinaryTreeInstruction::Leaf).count(), values.len());
+          core::debug_assert_eq!(structure.iter().filter(|s| **s == LeafBranch::L).count(), values.len());
           break 'templating Option::Some((structure, values));
         }
-        structure.push(BinaryTreeInstruction::Branch);
+        structure.push(LeafBranch::B);
       }
     };
 
     out
   }
 }
+
+/// Represents a stack machine instruction for
+/// building a binary tree in DFS order
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BinaryTreeInstruction {
-  Leaf,
-  Branch,
+pub enum LeafBranch {
+  /// Leaf
+  L,
+  /// Branch
+  B,
 }
 
+/// An ephemeral Data Structure used to dispatch on element types in an Expr
+/// Exists only for the trait [`MatchElement`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElementType<'e, A, V> {
+  /// Represents a single concrete value that is not a compound value
   Atom(&'e A),
+  /// Variable that was introduced by a "transform"/"lambda";
+  /// the de Bruin level is encoded in this value.
   Var(&'e V),
+  /// An variable empty binding, matches anything
   Hole,
 }
+/// Trait interface for doing basic pattern matching
 pub trait MatchElement {
   type Element;
   type Atom;
   type Var;
-  fn atomtype(e: &Self::Element) -> ElementType<Self::Atom, Self::Var>;
+  /// Inspects an element to determine if it is an atom or a variable to be bound.
+  fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var>;
+  /// Atoms that are considered equal are determined to match.
   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool;
-  // fn var_eq(left : &Self::Var, right : &Self::Var)->bool;
+  /// Variables of the same debruin index are determined to match.
   fn var_de_bruin_level(left: &Self::Var) -> usize;
 }
 
 pub(crate) mod left_branch_impl {
   pub(crate) mod u64 {
     extern crate core;
+
+    /// Finds the bit location of the head of the left branch.
+    /// If there is no left branch, no bit will be set.
+    /// If one would like to get the position as an index, take the return value and use `.trailing_zeros()`
     pub(crate) fn left_branch(structure: u64) -> u64 {
+      // the tree has a single element, there is no left branch
       if structure <= 1 {
         return 0;
       }
+      // the right branch is a leaf
       if 0b10 & structure == 0b10 {
         return 0b100;
       }
+      // looking for all locations of bit pattern `011`, the 0 is candidate location of a left branch
       let mut left_splits = !structure & structure << 1 & structure << 2;
       loop {
         let trailing = left_splits.trailing_zeros();
@@ -551,6 +553,7 @@ pub(crate) mod left_branch_impl {
         if (u64::BITS - tmp.leading_zeros() + 1).wrapping_sub(tmp.count_ones() * 2) == 0 {
           return current;
         }
+        // remove candidate
         left_splits ^= current;
       }
     }
@@ -687,7 +690,7 @@ pub(crate) mod left_branch_impl {
 
 type Int = u32;
 
-// only run this test if Int is u8, u16, or u32
+// only run this test if `Int`` is u8, u16, or u32
 fn all_trees() -> Vec<Int> {
   let max_leaves = Int::BITS / 2;
 
@@ -954,7 +957,7 @@ fn test_zipper_breadth_and_depth_first_traversal_perf() {
 
 #[test]
 fn test_naive_matching() {
-  use BinaryTreeInstruction::{Branch as B, Leaf as L};
+  use LeafBranch::{B, L};
 
   #[derive(Debug, Clone, PartialEq, Eq)]
   enum E {
@@ -970,7 +973,7 @@ fn test_naive_matching() {
     type Atom = &'static str;
     type Var = isize;
   
-    fn atomtype(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
+    fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
       match e {
         E::A(a) => ElementType::Atom(a),
         E::V(v) => ElementType::Var(v),
@@ -989,7 +992,7 @@ fn test_naive_matching() {
   let template_zipper = DyckStructureZipperU64::new(0b_110).unwrap();
   let template_data = [E::A("x"), E::V(1)];
 
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
 
   let expected_structure = [L, L, L, B, B];
   let expected_data = [E::A("x"), E::A("b"), E::A("c")];
@@ -1031,7 +1034,7 @@ fn test_naive_matching() {
   template_data[6] = E::V(1);
   template_data[7] = E::V(1);
 
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
 
   let expected_structure = [L, L, L, L, L, B, B, L, L, L, B, B, B, B, B];
   #[cfg_attr(rustfmt, rustfmt::skip)]
@@ -1078,13 +1081,13 @@ fn test_naive_matching() {
   template_data[6] = E::V(1);
   template_data[7] = E::V(1);
 
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, &template_zipper, &template_data).unwrap();
+  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
 
   #[cfg_attr(rustfmt, rustfmt::skip)]
   let expected_structure = [
     L,L,  L, L,L,L,B,B,
              L,L,L,B,B, B,B,
-             
+
           L, L,L,       B,B,
                              B,B,B];
   #[cfg_attr(rustfmt, rustfmt::skip)]

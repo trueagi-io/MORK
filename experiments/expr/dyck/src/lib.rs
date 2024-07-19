@@ -1,5 +1,5 @@
 #![no_implicit_prelude]
-#![allow(unused)]
+// #![allow(unused)]
 
 extern crate alloc;
 extern crate core;
@@ -8,26 +8,29 @@ extern crate std;
 extern crate bnum;
 extern crate num_bigint;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+#[allow(unused_imports)]
+use core::iter::Extend;
 use core::{
   clone::Clone,
   cmp::Ord,
   convert::From,
   default::Default,
-  iter::{Extend, IntoIterator, Iterator},
+  iter::{IntoIterator, Iterator},
+  ops::FnMut,
   option::Option,
   result::Result,
 };
+use std::fmt::{Debug, Display};
 use num_bigint::BigUint;
-use std::{process::Output, slice::SliceIndex};
 
 mod finite;
 
-/// It should be noted that the terminal is _NEVER_ equal to the head. 
+/// It should be noted that the terminal is _NEVER_ equal to the head.
 /// In the case of a leaf, the head is at the leaf position, and the terminal is one after it.
 /// In other words, if t is the terminal, and h is the head, then
 /// for a tree `0...001` we have `0..0th` (_t_=1, _h_=0),
-/// 
+///
 /// example
 /// - `0..0t____h` (_t_=5, _h_=0) tree `0..0011010`
 /// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree         
@@ -39,7 +42,7 @@ pub(crate) struct SubtreeSlice {
   /// the position of the subtree (the root is a subtree of itself)
   pub(crate) head: u8,
 }
-/// this is used exclusively for initializing data. 
+/// this is used exclusively for initializing data.
 impl SubtreeSlice {
   const fn zeroes() -> Self {
     Self { terminal: 0, head: 0 }
@@ -100,9 +103,8 @@ impl DyckStructureZipperU64 {
       return Option::None;
     }
 
-    
     #[cfg(debug_assertions)]
-    '_validate_structure : {
+    '_validate_structure: {
       let trailing = structure.leading_zeros();
       core::debug_assert_ne!(trailing, 0);
 
@@ -365,7 +367,7 @@ impl DyckStructureZipperU64 {
       z1
     }
 
-    let mut maybe_template_z = if let Option::Some(t) = template {
+    let maybe_template_z = if let Option::Some(t) = template {
       core::debug_assert_eq!(t.structure.count_ones() as usize, template_data.len());
       Option::Some(init_sub_zipper(t))
     } else {
@@ -562,6 +564,7 @@ pub(crate) mod left_branch_impl {
   // we might be interested in testing the 512 fixed size, as that makes for 256 leaves max, which means the backing Vec can be indexed by a byte.
   // unfortunately, this appears to be as slow as the unbounded version, likely due to a subpar implementation on the U512 type if the issue is the same as Adam had.
   // It currently used the version of the algorithim that the unbounded one uses as it is a tad faster
+  #[allow(unused)]
   pub(crate) mod u512 {
     use crate::*;
     pub(crate) use bnum::types::U512;
@@ -626,6 +629,7 @@ pub(crate) mod left_branch_impl {
   }
 
   // this is for the unbounded case
+  #[allow(unused)]
   pub(crate) mod big_uint {
     use crate::*;
     pub(crate) fn left_branch(mut structure: BigUint) -> Option<core::num::NonZeroU64> {
@@ -688,9 +692,11 @@ pub(crate) mod left_branch_impl {
   }
 }
 
+#[allow(unused)]
 type Int = u32;
 
 // only run this test if `Int`` is u8, u16, or u32
+#[allow(unused)]
 fn all_trees() -> Vec<Int> {
   let max_leaves = Int::BITS / 2;
 
@@ -985,6 +991,7 @@ fn test_naive_matching() {
     fn var_de_bruin_level(left: &Self::Var) -> usize { *left as usize }
   }
 
+  // ((a $0) (b c))
   let input_zipper = DyckStructureZipperU64::new(0b_110_110_0).unwrap();
   let input_data = [E::A("a"), E::V(0), E::A("b"), E::A("c")];
   let pattern_zipper = DyckStructureZipperU64::new(0b_110_10).unwrap();
@@ -1098,4 +1105,372 @@ fn test_naive_matching() {
 
   core::assert_eq!(&result.0[..], &expected_structure[..]);
   core::assert_eq!(&result.1[..], &expected_data[..]);
+}
+// struct FixSexpr(Sexpr<alloc::boxed::Box<FixSexpr>>);
+
+#[derive(Debug, Clone, Copy)]
+enum DeBruinLevel {
+  Intro,
+  Ref(core::num::NonZero<usize>)
+}
+#[derive(Debug)]
+struct Variables {
+  /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
+  store: Vec<Sym>,
+}
+impl Variables {
+  const MAX_LEVELS : usize = 33;
+  fn new() -> Variables {
+    Variables { store: Vec::from([Sym("")]) }
+  }
+  fn aquire_de_bruin(&mut self, sym : Sym)->DeBruinLevel {
+   let mut idx = self.store.len();
+   while idx != 0 {
+     idx -= 1;
+     if self.store[idx] == sym {
+      // Safety: `idx` never enters the loop if it is equal to `0`
+      return DeBruinLevel::Ref(unsafe {core::num::NonZeroUsize::new_unchecked(idx)});
+     }
+   }
+   self.store.push(sym);
+   DeBruinLevel::Intro
+  }
+  fn clear(&mut self) {
+    self.store.clear();
+    self.store.push(Sym(""))
+  }
+}
+
+// if string interning is slow, it could be split into buckets, and use a ReadWrite lock, perhaps even Semaphores. but for testing this should be enough
+static INTERNED_STR: std::sync::Mutex<alloc::collections::BTreeSet<&'static str>> = std::sync::Mutex::new(alloc::collections::BTreeSet::new());
+
+// Sym is valid if it has an empty str, or if it holds and interned str.
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, Eq)]
+pub struct Sym(pub &'static str);
+impl Sym {
+  fn new(s: &str) -> Sym {
+    '_lock_scope: {
+      let mut l = INTERNED_STR.lock().unwrap();
+      if let Option::Some(&interned) = l.get(s) {
+        return Sym(interned);
+      }
+      let s_static = <str as alloc::borrow::ToOwned>::to_owned(s).leak();
+      l.insert(s_static);
+      Sym(s_static)
+    }
+  }
+}
+impl core::cmp::PartialEq for Sym {
+  fn eq(&self, other: &Self) -> bool {
+    self.0.as_ptr() == other.0.as_ptr() || (self.0.len() | other.0.len() == 0)
+  }
+}
+
+// enum SExpr_ {
+//   Var(usize),
+//   Atom(Sym),
+//   App(App<Box<SExpr_>>),
+// }
+
+/// An empty enum to make recursive cases not constructable
+#[derive(Debug)]
+enum Void {}
+
+
+#[derive(Clone,Copy,Debug)]
+enum SExpr<A> {
+  Var((DeBruinLevel,Sym)),
+  Atom(Sym),
+  App(App<A>),
+}
+
+struct DbgSexpr<'a,A>(&'a SExpr<A>);
+impl<'a, A : Debug> core::fmt::Debug for DbgSexpr<'a, A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+      #[cfg_attr(rustfmt, rustfmt::skip)]                             
+      match &self.0 {
+        SExpr::Var((DeBruinLevel::Intro,Sym(sym)))  => core::write!(f,"{sym}"),
+        SExpr::Var((DeBruinLevel::Ref(i),Sym(sym))) => core::write!(f,"{sym}[{i}]"),
+        SExpr::Atom(Sym(sym))                       => core::write!(f,"{sym}"),
+        SExpr::App(App(l,r))                        => core::write!(f,"({l:?} {r:?})"),
+      }
+    }
+}
+
+#[derive(Clone,Copy,Debug)]
+struct App<A>(A, A);
+
+trait Functor {
+  type F<T>;
+  fn fmap<A, B>(f: Self::F<A>, func: impl FnMut(A) -> B) -> Self::F<B>;
+}
+trait Indirect {
+  type I<T>;
+
+  fn fold<A>(i: Self::I<A>) -> A;
+  fn unfold<A>(v: A) -> Self::I<A>;
+}
+struct FixPoint<Rec: Functor, Ind: Indirect>(Rec::F<Ind::I<Self>>);
+
+enum SExpresion {}
+enum Boxed {}
+impl Functor for SExpresion {
+  type F<T> = SExpr<T>;
+  fn fmap<A, B>(f: Self::F<A>, mut func: impl FnMut(A) -> B) -> Self::F<B> {
+    match f {
+      SExpr::Var(idx) => SExpr::Var(idx),
+      SExpr::Atom(atom) => SExpr::Atom(atom),
+      SExpr::App(App(l, r)) => {
+        let l = func(l);
+        let r = func(r);
+        SExpr::App(App(l, r))
+      }
+    }
+  }
+}
+
+impl Indirect for Boxed {
+  type I<T> = Box<T>;
+
+  fn fold<A>(i: Self::I<A>) -> A {
+    *i
+  }
+  fn unfold<A>(v: A) -> Self::I<A> {
+    Box::new(v)
+  }
+}
+
+type SExprFix = FixPoint<SExpresion, Boxed>;
+
+#[derive(Debug)]
+pub enum ParseErr {
+  TooManyClosingParenthesis(LineCol),
+  UnclosedString(LineCol),
+  UnexpectedEndOfFile(LineCol),
+  OnlyOneExpressionAllowed(LineCol),
+  MissingOpenParrenthesis(LineCol),
+  TokenizationError(TokenErr),
+  DyckReprLimitedTo32Elements,
+  EmptySexpr(LineCol),
+  SingleElementListNotSuported(LineCol)
+}
+#[derive(Debug)]
+pub enum TokenErr {
+  InvalidHexEscape(LineCol),
+  InvalidUnicodeEscape(LineCol),
+  InvalidEscapeSequence(LineCol),
+  InvalidStringLiteral(LineCol),
+  InvalidIdentifier(LineCol),
+}
+#[derive(Debug)]
+pub struct LineCol(pub usize, pub usize);
+
+struct Token { src_offset : usize, r#type : TokenType }
+#[derive(Debug)]
+pub enum TokenType {
+  LPar,
+  RPar,
+  Var(Sym),
+  Atom(Sym),
+}
+
+struct DyckParser<'a>{tokenizer : Tokenizer<'a>, /** Tokenizer has the src too, but this keeps lifetimes simpler */ src : &'a str}
+impl<'a> DyckParser<'a> {
+  fn new(src : &'a str)->Self {
+    Self { tokenizer: Tokenizer::init(src), src }
+  }
+
+
+  #[cfg_attr(rustfmt, rustfmt::skip)]                             
+  fn parse_first_sexrs_to_dyck(&mut self) -> Option<(Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>)> {
+    let err = |e| Option::Some(Result::Err(e)); 
+
+    let Self { ref mut tokenizer, src } = self;
+    let Option::Some(Result::Ok(Token {src_offset, r#type, .. })) = tokenizer.next() else { return Option::None; };
+    let TokenType::LPar = r#type else { return err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
+    let mut s_expr_vec = Vec::with_capacity(32);
+    
+    let mut list_length = 0;
+    let mut depth       = 0;
+    let mut stack       = [0u8;33];
+    let mut dyck_word   = 0;
+    let mut variables   = Variables::new();
+    
+    'build_sexpr : while let Option::Some(result) = tokenizer.next() { 
+      // std::println!("\n\
+      //   s_expr_vec  ~ {s_expr_vec:?}\n\
+      //   list_length = {list_length:?}\n\
+      //   depth       = {depth:?}\n\
+      //   stack       = {stack:?}\n\
+      //   dyck_word   = {dyck_word:b}\n\
+      //   variables   = {variables:?}\n\
+      // ");
+      match result {
+        Result::Err(e)                           => return err(ParseErr::TokenizationError(e)),
+        Result::Ok(Token { src_offset, r#type }) =>
+          match r#type {
+            TokenType::LPar => { /* push */ 
+              if depth == 33 { return err(ParseErr::DyckReprLimitedTo32Elements); }
+              list_length+=1;stack[depth]=list_length; depth+=1; list_length=0;
+            },
+            TokenType::RPar => { /* pop */
+              if list_length == 0 { return err(ParseErr::EmptySexpr(                  Tokenizer::at_line(src, src_offset)));}
+              if list_length == 1 { return err(ParseErr::SingleElementListNotSuported(Tokenizer::at_line(src, src_offset)));}
+              for _ in 0..list_length-1 { dyck_word<<=1 }
+              // std::println!("!!! {dyck_word:b}");
+              if depth       == 0 { break 'build_sexpr; }
+              depth-=1; list_length=stack[depth];
+            },
+            TokenType::Var(sym)  => { s_expr_vec.push(SExpr::Var((variables.aquire_de_bruin(sym),sym))); list_length+=1; dyck_word<<=1; dyck_word|=1;}
+            TokenType::Atom(sym) => { s_expr_vec.push(SExpr::Atom(sym));                                 list_length+=1; dyck_word<<=1; dyck_word|=1;},
+          },
+        }
+      }
+
+    Option::Some(Result::Ok((DyckStructureZipperU64::new(dyck_word).unwrap(), s_expr_vec, variables)))
+  }
+}
+impl<'a> Iterator for DyckParser<'a> {
+  type Item = Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>;
+  fn next(&mut self) -> Option<Self::Item> {
+      self.parse_first_sexrs_to_dyck()
+  }
+}
+
+
+
+struct Tokenizer<'a>{
+  src : &'a str,
+  indicies_chars : core::iter::Peekable<core::str::CharIndices<'a>>,
+}
+impl<'a> Tokenizer<'a> {
+  fn init(src: &'a str)->Self {
+    Tokenizer { src: src, indicies_chars: src.char_indices().peekable() }
+  }
+  fn at_line (src : &str, idx :usize)->LineCol {
+    if let Option::Some((line_idx, precedeing)) = src.get(0..idx).unwrap().lines().enumerate().last() { LineCol(line_idx, precedeing.len()) } else { LineCol(0, 0) }
+  }
+
+  /// doing Rust style escape sequence
+  #[cfg_attr(rustfmt, rustfmt::skip)]                             
+  fn escape_sequence(src: &'a str, (lead_idx, lead_char): (usize, char), indicies_chars: &mut impl Iterator<Item = (usize, char)>) -> Result<(), TokenErr> {
+    macro_rules! hex {() => { 'a'..='f'|'A'..='F'|'0'..='9'};}
+    
+    let err = |idx, err : fn(_)->_| Result::Err(err(Tokenizer::at_line(src, idx)));
+    let Option::Some((escape_idx, escape)) = indicies_chars.next()  else { return err(lead_idx, TokenErr::InvalidEscapeSequence); };
+    core::debug_assert_eq!('\\', src.get(escape_idx-1..).unwrap().chars().next().unwrap());
+    match escape {                                                  
+      'n' | 'r' | 't' | '\\' | '0' | '\'' | '\"' => {}              
+      'x' => '_ascii_hex_escape: {                                  
+        let h_l = [indicies_chars.next(), indicies_chars.next()];   
+        let [Option::Some((_, high)), Option::Some((_, low))] = h_l else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+        let ['0'..='7', hex!()] = [high, low]                       else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+      }                                                             
+      'u' => '_unicode_escape: {                                    
+        let mut buf = ['\0'; 6];                                    
+        for i in 0..6 {                                             
+          let Option::Some((_, c)) = indicies_chars.next()          else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+          buf[i] = c                                                
+        }                                                           
+        let ['{', '0'..='7', hex!(), hex!(), hex!(), '}'] = buf     else { return err(escape_idx, TokenErr::InvalidUnicodeEscape); };
+      }                                                             
+      _ =>                                                                 return err(escape_idx, TokenErr::InvalidEscapeSequence),
+    }
+    Result::Ok(())
+  }
+}
+
+impl<'a> Iterator for Tokenizer<'a>{
+  type Item = Result<Token, TokenErr>;
+  fn next(&mut self) -> Option<Self::Item> {
+    let Self { src, indicies_chars } = self;
+
+    #[cfg_attr(rustfmt, rustfmt::skip)]
+    '_make_token: loop {
+      let Option::Some(&lead @ (lead_idx, lead_char)) = indicies_chars.peek() else {
+        return Option::None;
+      };
+      let item = |i                           | Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : i}));
+      let err  = |err: fn(LineCol) -> TokenErr| Option::Some(Result::Err(err(Tokenizer::at_line(src, lead_idx))));
+      let sym  = |end_idx                     | Sym::new(unsafe { src.get_unchecked(lead_idx..end_idx) });
+      
+      match lead_char {
+        '(' => { indicies_chars.next(); return item(TokenType::LPar);}
+        ')' => { indicies_chars.next(); return item(TokenType::RPar);}
+        ';' => 'ignore_comment: loop {
+          let Option::Some((_, c)) = indicies_chars.next() else { break 'ignore_comment; };
+          indicies_chars.next();
+          if let '\n' = c { break 'ignore_comment; }
+        },
+        '\"' => 'string: {
+          /* ground string, rust style, we do not support raw strings */
+          indicies_chars.next();
+          loop {
+            let Option::Some((_, c)) = indicies_chars.next() else { break 'string; };
+            match c {
+              '\"' => {
+                let Option::Some(&(e_idx, e)) = indicies_chars.peek() else { break 'string; };
+                let valid =  core::matches!(e, '('|')') || e.is_whitespace();
+                return if valid { Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : TokenType::Atom(sym(e_idx))})) } 
+                       else     { err(TokenErr::InvalidStringLiteral) }}
+              '\\' => if let Result::Err(e) = Tokenizer::escape_sequence(src, lead, indicies_chars) {return Option::Some(Result::Err(e));},
+              _ => {}
+            }
+          }
+        },
+        w if w.is_whitespace() => core::mem::drop(indicies_chars.next()),
+        x => { 
+          // a var that is just "$" is a hole */
+          let token_type = if let '$' = x { TokenType::Var } else { TokenType::Atom};
+          
+          let _ = 'ident : loop {
+            let Option::Some(&(c_idx, c)) = indicies_chars.peek() else { break 'ident; };
+            let var_or_atom = || item(token_type(sym(c_idx)) );
+            match c {
+              '\"'                   => return err(TokenErr::InvalidIdentifier),
+              '(' | ')'              => return var_or_atom(),
+              w if w.is_whitespace() => return var_or_atom(),
+              _                      => indicies_chars.next(),
+            };
+          };
+        }
+      };
+    }
+  }
+}
+
+#[test]
+fn test_dyck_parser(){
+  let s = r#"
+    (+ 1 2 3)
+    (- 4 5 6)
+
+    (eq ($X 3) (4 $Y) ($X $Y))
+
+    (let ((x "given a lot of \x4A \u{0001}")
+          (y "yup"))
+         (print x y))
+
+    ((\ (x) x) of love)
+
+    (a be e)
+  "#;
+  let p = DyckParser::new(s);
+  for each in p {
+    match each {
+        Result::Ok((zip,store,vars)) => {
+          std::print!("\n{zip:?}store: [  ");
+          for leaf in store.iter().map(DbgSexpr) {
+            std::print!("{leaf:?}  ")
+          }
+          std::print!("]\nvars  : [");
+          for leaf in vars.store.iter() {
+            std::print!("{leaf:?}  ")
+          }
+          std::println!("]")
+        }
+        ,
+        Result::Err(e) => std::println!("{e:?}"),
+    }
+  }
 }

@@ -1111,7 +1111,7 @@ fn test_naive_matching() {
 #[derive(Debug, Clone, Copy)]
 enum DeBruinLevel {
   Intro,
-  Ref(core::num::NonZero<usize>)
+  Ref(core::num::NonZeroUsize)
 }
 #[derive(Debug)]
 struct Variables {

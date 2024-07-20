@@ -1246,13 +1246,13 @@ type SExprFix = FixPoint<SExpresion, Boxed>;
 pub enum ParseErr {
   TooManyClosingParenthesis(LineCol),
   UnclosedString(LineCol),
-  UnexpectedEndOfFile(LineCol),
+  UnexpectedEndOfSource(LineCol),
   OnlyOneExpressionAllowed(LineCol),
   MissingOpenParrenthesis(LineCol),
   TokenizationError(TokenErr),
-  DyckReprLimitedTo32Elements,
+  DyckReprLimitedTo32Elements(LineCol),
   EmptySexpr(LineCol),
-  SingleElementListNotSuported(LineCol)
+  SingleElementListNotSupported(LineCol)
 }
 #[derive(Debug)]
 pub enum TokenErr {
@@ -1297,32 +1297,51 @@ impl<'a> DyckParser<'a> {
     let mut variables   = Variables::new();
     
     'build_sexpr : while let Option::Some(result) = tokenizer.next() { 
-      // std::println!("\n\
-      //   s_expr_vec  ~ {s_expr_vec:?}\n\
-      //   list_length = {list_length:?}\n\
-      //   depth       = {depth:?}\n\
-      //   stack       = {stack:?}\n\
-      //   dyck_word   = {dyck_word:b}\n\
-      //   variables   = {variables:?}\n\
-      // ");
+      // // for debugging
+      // std::println!("\ns_expr_vec  ~ {s_expr_vec:?}\nlist_length = {list_length:?}\ndepth       = {depth:?}\nstack       = {stack:?}\ndyck_word   = {dyck_word:b}\nvariables   = {variables:?}\n");
+
+      let ref mut consume_till_balanced = |depth : &mut _, error| 'consume_till_balanced : loop {
+        let Option::Some(t)                                                     = tokenizer.next() else { return err(error);};
+        let Result::Ok(Token{ r#type : r#type @ (TokenType::LPar | TokenType::RPar) ,.. }) = t                else { continue 'consume_till_balanced};
+        
+        match r#type {
+          TokenType::RPar if *depth == 0 => return err(error),
+          TokenType::RPar                => *depth-=1,
+          TokenType::LPar                => *depth+=1,
+          _                              => {},
+        } 
+      };
       match result {
-        Result::Err(e)                           => return err(ParseErr::TokenizationError(e)),
+        Result::Err(e)                           => return consume_till_balanced(&mut depth,ParseErr::TokenizationError(e)),
         Result::Ok(Token { src_offset, r#type }) =>
           match r#type {
-            TokenType::LPar => { /* push */ 
-              if depth == 33 { return err(ParseErr::DyckReprLimitedTo32Elements); }
-              list_length+=1;stack[depth]=list_length; depth+=1; list_length=0;
-            },
-            TokenType::RPar => { /* pop */
-              if list_length == 0 { return err(ParseErr::EmptySexpr(                  Tokenizer::at_line(src, src_offset)));}
-              if list_length == 1 { return err(ParseErr::SingleElementListNotSuported(Tokenizer::at_line(src, src_offset)));}
-              for _ in 0..list_length-1 { dyck_word<<=1 }
-              // std::println!("!!! {dyck_word:b}");
-              if depth       == 0 { break 'build_sexpr; }
-              depth-=1; list_length=stack[depth];
-            },
-            TokenType::Var(sym)  => { s_expr_vec.push(SExpr::Var((variables.aquire_de_bruin(sym),sym))); list_length+=1; dyck_word<<=1; dyck_word|=1;}
-            TokenType::Atom(sym) => { s_expr_vec.push(SExpr::Atom(sym));                                 list_length+=1; dyck_word<<=1; dyck_word|=1;},
+            TokenType::LPar        => { if depth == 32 { return consume_till_balanced(&mut depth, ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(src, src_offset))); }
+                                        // push
+                                        list_length+=1;  stack[depth]=list_length;  depth+=1;  list_length=0;
+                                      },
+            TokenType::RPar        => { let mut list_err = |err_variant : fn(_)->_| { let error = err_variant(Tokenizer::at_line(src, src_offset));
+                                                                                      if depth == 0 {           err(error) } 
+                                                                                      else          { depth-=1; consume_till_balanced(&mut depth, error)}
+                                                                                    };
+                                        match list_length {
+                                          0 => return list_err(ParseErr::EmptySexpr),
+                                          1 => return list_err(ParseErr::SingleElementListNotSupported) /* should I add nil at the end of lists? */,
+                                          // pop
+                                          _ => { for _ in 0..list_length-1 { dyck_word<<=1 }
+                                                 if depth       == 0 { break 'build_sexpr; }
+                                                 depth-=1;  
+                                                 list_length=stack[depth];
+                                               },
+                                      }
+                                      },
+            ref t @ 
+            ( TokenType::Var(sym) 
+            | TokenType::Atom(sym) 
+            )                      => {
+                                        if s_expr_vec.len() == 32 { return consume_till_balanced(&mut depth, ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(src, src_offset)))}
+                                        s_expr_vec.push(if let TokenType::Var(_) = &t {SExpr::Var((variables.aquire_de_bruin(sym),sym))} else {SExpr::Atom(sym)}); 
+                                        list_length+=1;  dyck_word<<=1;  dyck_word|=1;
+                                      }
           },
         }
       }
@@ -1361,20 +1380,20 @@ impl<'a> Tokenizer<'a> {
     core::debug_assert_eq!('\\', src.get(escape_idx-1..).unwrap().chars().next().unwrap());
     match escape {                                                  
       'n' | 'r' | 't' | '\\' | '0' | '\'' | '\"' => {}              
-      'x' => '_ascii_hex_escape: {                                  
-        let h_l = [indicies_chars.next(), indicies_chars.next()];   
-        let [Option::Some((_, high)), Option::Some((_, low))] = h_l else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-        let ['0'..='7', hex!()] = [high, low]                       else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-      }                                                             
-      'u' => '_unicode_escape: {                                    
-        let mut buf = ['\0'; 6];                                    
-        for i in 0..6 {                                             
-          let Option::Some((_, c)) = indicies_chars.next()          else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-          buf[i] = c                                                
-        }                                                           
-        let ['{', '0'..='7', hex!(), hex!(), hex!(), '}'] = buf     else { return err(escape_idx, TokenErr::InvalidUnicodeEscape); };
-      }                                                             
-      _ =>                                                                 return err(escape_idx, TokenErr::InvalidEscapeSequence),
+      'x' =>  '_ascii_hex_escape: {                                  
+                let h_l = [indicies_chars.next(), indicies_chars.next()];   
+                let [Option::Some((_, high)), Option::Some((_, low))] = h_l else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+                let ['0'..='7', hex!()] = [high, low]                       else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+              }                                                             
+      'u' =>  '_unicode_escape: {                                    
+                let mut buf = ['\0'; 6];                                    
+                for i in 0..6 {                                             
+                  let Option::Some((_, c)) = indicies_chars.next()          else { return err(escape_idx, TokenErr::InvalidHexEscape); };
+                  buf[i] = c                                                
+                }                                                           
+                let ['{', '0'..='7', hex!(), hex!(), hex!(), '}'] = buf     else { return err(escape_idx, TokenErr::InvalidUnicodeEscape); };
+              }                                                             
+      _   =>                                                                       return err(escape_idx, TokenErr::InvalidEscapeSequence),
     }
     Result::Ok(())
   }
@@ -1408,22 +1427,22 @@ impl<'a> Iterator for Tokenizer<'a>{
           loop {
             let Option::Some((_, c)) = indicies_chars.next() else { break 'string; };
             match c {
-              '\"' => {
-                let Option::Some(&(e_idx, e)) = indicies_chars.peek() else { break 'string; };
-                let valid =  core::matches!(e, '('|')') || e.is_whitespace();
-                return if valid { Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : TokenType::Atom(sym(e_idx))})) } 
-                       else     { err(TokenErr::InvalidStringLiteral) }}
+              '\"' => { let Option::Some(&(e_idx, e)) = indicies_chars.peek() else { break 'string; };
+                        let valid =  core::matches!(e, '('|')') || e.is_whitespace();
+                        return if valid { Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : TokenType::Atom(sym(e_idx))})) } 
+                               else     { err(TokenErr::InvalidStringLiteral) }
+                      }
               '\\' => if let Result::Err(e) = Tokenizer::escape_sequence(src, lead, indicies_chars) {return Option::Some(Result::Err(e));},
-              _ => {}
+              _    => {}
             }
           }
         },
         w if w.is_whitespace() => core::mem::drop(indicies_chars.next()),
         x => { 
-          // a var that is just "$" is a hole */
+          // a var that is just "$" is a hole ? */
           let token_type = if let '$' = x { TokenType::Var } else { TokenType::Atom};
           
-          let _ = 'ident : loop {
+          'ident : loop {
             let Option::Some(&(c_idx, c)) = indicies_chars.peek() else { break 'ident; };
             let var_or_atom = || item(token_type(sym(c_idx)) );
             match c {
@@ -1441,7 +1460,7 @@ impl<'a> Iterator for Tokenizer<'a>{
 
 #[test]
 fn test_dyck_parser(){
-  let s = r#"
+  let _s = r#"
     (+ 1 2 3)
     (- 4 5 6)
 
@@ -1453,24 +1472,41 @@ fn test_dyck_parser(){
 
     ((\ (x) x) of love)
 
+)))
+    ((\ (x) x) of love)
+    ((\ (x) x) of love
+    ((\ (x) x) of love)
+    ((\ (x) x) of love)
+)))))))
     (a be e)
   "#;
-  let p = DyckParser::new(s);
-  for each in p {
-    match each {
-        Result::Ok((zip,store,vars)) => {
-          std::print!("\n{zip:?}store: [  ");
-          for leaf in store.iter().map(DbgSexpr) {
-            std::print!("{leaf:?}  ")
+
+let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("tmp/edges5000.metta"));
+let s = std::fs::read_to_string(path).unwrap();
+  // let p = DyckParser::new(&s);
+  let mut count = 0;
+  let start = std::time::Instant::now();
+  for _ in 0..1000 {
+    for each in DyckParser::new(&s) {
+      count +=1;
+      continue;
+      match each {
+          Result::Ok((zip,store,vars)) => {
+            std::print!("\n{zip:?}store: [  ");
+            for leaf in store.iter().map(DbgSexpr) {
+              std::print!("{leaf:?}  ")
+            }
+            std::print!("]\nvars  : [");
+            for leaf in vars.store.iter() {
+              std::print!("{leaf:?}  ")
+            }
+            std::println!("]")
           }
-          std::print!("]\nvars  : [");
-          for leaf in vars.store.iter() {
-            std::print!("{leaf:?}  ")
-          }
-          std::println!("]")
-        }
-        ,
-        Result::Err(e) => std::println!("{e:?}"),
+          ,
+          Result::Err(e) => std::println!("{e:?}"),
+      }
     }
   }
+  let end = start.elapsed().as_millis();
+  std::println!("count : {count}\ntime : {end}")
 }

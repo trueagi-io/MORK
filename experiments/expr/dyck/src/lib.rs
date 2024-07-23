@@ -21,8 +21,8 @@ use core::{
   option::Option,
   result::Result,
 };
-use std::fmt::{Debug, Display};
 use num_bigint::BigUint;
+use std::fmt::{Debug, Display};
 
 mod finite;
 
@@ -33,7 +33,7 @@ mod finite;
 ///
 /// example
 /// - `0..0t____h` (_t_=5, _h_=0) tree `0..0011010`
-/// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree         
+/// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree
 /// - `0..0___th_` (_t_=2, _h_=1) the right sub tree (a leaf)
 #[derive(Clone, Copy)]
 pub(crate) struct SubtreeSlice {
@@ -978,7 +978,7 @@ fn test_naive_matching() {
     type Element = E;
     type Atom = &'static str;
     type Var = isize;
-  
+
     fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
       match e {
         E::A(a) => ElementType::Atom(a),
@@ -986,7 +986,7 @@ fn test_naive_matching() {
         E::Hole => ElementType::Hole,
       }
     }
-  
+
     fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
     fn var_de_bruin_level(left: &Self::Var) -> usize { *left as usize }
   }
@@ -1013,7 +1013,7 @@ fn test_naive_matching() {
   let input_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
   #[cfg_attr(rustfmt, rustfmt::skip)]
   let input_data = [
-    "Pointed2d", "X", "15.4", 
+    "Pointed2d", "X", "15.4",
                  "Y", "-34.9"
   ].map(E::A);
   // (Point2d ((X x) (Y x)))
@@ -1059,8 +1059,8 @@ fn test_naive_matching() {
   let input_zipper = DyckStructureZipperU64::new(0b_1__1111000_110_0__0).unwrap();
   #[cfg_attr(rustfmt, rustfmt::skip)]
   let input_data = [
-    "Pointed2d", "X", "+", "3.0", 
-                           "2.2", 
+    "Pointed2d", "X", "+", "3.0",
+                           "2.2",
                  "Y", "-34.9"
   ].map(E::A);
   // (Point2d ((X x) (Y x)))
@@ -1109,31 +1109,30 @@ fn test_naive_matching() {
 // struct FixSexpr(Sexpr<alloc::boxed::Box<FixSexpr>>);
 
 #[derive(Debug, Clone, Copy)]
-enum DeBruinLevel {
+pub enum DeBruinLevel {
   Intro,
-  Ref(core::num::NonZeroUsize)
+  Ref(core::num::NonZeroUsize),
 }
 #[derive(Debug)]
-struct Variables {
+pub struct Variables {
   /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
   store: Vec<Sym>,
 }
 impl Variables {
-  const MAX_LEVELS : usize = 33;
   fn new() -> Variables {
     Variables { store: Vec::from([Sym("")]) }
   }
-  fn aquire_de_bruin(&mut self, sym : Sym)->DeBruinLevel {
-   let mut idx = self.store.len();
-   while idx != 0 {
-     idx -= 1;
-     if self.store[idx] == sym {
-      // Safety: `idx` never enters the loop if it is equal to `0`
-      return DeBruinLevel::Ref(unsafe {core::num::NonZeroUsize::new_unchecked(idx)});
-     }
-   }
-   self.store.push(sym);
-   DeBruinLevel::Intro
+  fn aquire_de_bruin(&mut self, sym: Sym) -> DeBruinLevel {
+    let mut idx = self.store.len();
+    while idx != 0 {
+      idx -= 1;
+      if self.store[idx] == sym {
+        // Safety: `idx` never enters the loop if it is equal to `0`
+        return DeBruinLevel::Ref(unsafe { core::num::NonZeroUsize::new_unchecked(idx) });
+      }
+    }
+    self.store.push(sym);
+    DeBruinLevel::Intro
   }
   fn clear(&mut self) {
     self.store.clear();
@@ -1174,31 +1173,30 @@ impl core::cmp::PartialEq for Sym {
 
 /// An empty enum to make recursive cases not constructable
 #[derive(Debug)]
-enum Void {}
+pub enum Void {}
 
-
-#[derive(Clone,Copy,Debug)]
-enum SExpr<A> {
-  Var((DeBruinLevel,Sym)),
+#[derive(Clone, Copy, Debug)]
+pub enum SExpr<A> {
+  Var((DeBruinLevel, Sym)),
   Atom(Sym),
   App(App<A>),
 }
 
-struct DbgSexpr<'a,A>(&'a SExpr<A>);
-impl<'a, A : Debug> core::fmt::Debug for DbgSexpr<'a, A> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-      #[cfg_attr(rustfmt, rustfmt::skip)]                             
+struct DbgSexpr<'a, A>(&'a SExpr<A>);
+impl<'a, A: Debug> core::fmt::Debug for DbgSexpr<'a, A> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    #[cfg_attr(rustfmt, rustfmt::skip)]
       match &self.0 {
         SExpr::Var((DeBruinLevel::Intro,Sym(sym)))  => core::write!(f,"{sym}"),
         SExpr::Var((DeBruinLevel::Ref(i),Sym(sym))) => core::write!(f,"{sym}[{i}]"),
         SExpr::Atom(Sym(sym))                       => core::write!(f,"{sym}"),
         SExpr::App(App(l,r))                        => core::write!(f,"({l:?} {r:?})"),
       }
-    }
+  }
 }
 
-#[derive(Clone,Copy,Debug)]
-struct App<A>(A, A);
+#[derive(Clone, Copy, Debug)]
+pub struct App<A>(A, A);
 
 trait Functor {
   type F<T>;
@@ -1245,14 +1243,10 @@ type SExprFix = FixPoint<SExpresion, Boxed>;
 #[derive(Debug)]
 pub enum ParseErr {
   TooManyClosingParenthesis(LineCol),
-  UnclosedString(LineCol),
-  UnexpectedEndOfSource(LineCol),
   OnlyOneExpressionAllowed(LineCol),
   MissingOpenParrenthesis(LineCol),
   TokenizationError(TokenErr),
   DyckReprLimitedTo32Elements(LineCol),
-  EmptySexpr(LineCol),
-  SingleElementListNotSupported(LineCol)
 }
 #[derive(Debug)]
 pub enum TokenErr {
@@ -1265,7 +1259,10 @@ pub enum TokenErr {
 #[derive(Debug)]
 pub struct LineCol(pub usize, pub usize);
 
-struct Token { src_offset : usize, r#type : TokenType }
+struct Token {
+  src_offset: usize,
+  r#type: TokenType,
+}
 #[derive(Debug)]
 pub enum TokenType {
   LPar,
@@ -1274,132 +1271,244 @@ pub enum TokenType {
   Atom(Sym),
 }
 
-struct DyckParser<'a>{tokenizer : Tokenizer<'a>, /** Tokenizer has the src too, but this keeps lifetimes simpler */ src : &'a str}
+/// The Dyck Parser can either make applicative or list Sexprs into Zippers. The difference is very slight, so the implementation of each looks similar, but they are marked with !!! to show th differences
+pub struct DyckParser<'a> {
+  tokenizer: Tokenizer<'a>,
+  /** Tokenizer has the src too, but this keeps lifetimes simpler */
+  src: &'a str,
+}
+
+struct DyckParserIterState<'a, 't> {
+  tokenizer: &'t mut Tokenizer<'a>,
+  src: &'a str,
+  s_expr_vec: Vec<SExpr<Void>>,
+  list_length: u8,
+  depth: usize,
+  stack: [u8; 32],
+  dyck_word: u64,
+  variables: Variables,
+}
+impl<'a, 't> DyckParserIterState<'a, 't> {
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  fn init(DyckParser { tokenizer, src }: &'t mut DyckParser<'a>) -> Result<Option<Self>, ParseErr> {
+    let Option::Some(Result::Ok(Token { src_offset, r#type, .. })) = tokenizer.next() else { return Result::Ok(Option::None); };
+    let TokenType::LPar                                            = r#type           else { return Result::Err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
+    Result::Ok(Option::Some(Self {
+      tokenizer,
+      src,
+      s_expr_vec  : Vec::with_capacity(32),
+      list_length : 0,
+      depth       : 0,
+      stack       : [0u8; 32],
+      dyck_word   : 0,
+      variables   : Variables::new(),
+    }))
+  }
+  fn append_element(&mut self, e: SExpr<Void>) {
+    self.s_expr_vec.push(e);
+    self.list_length += 1;
+    self.dyck_word <<= 1;
+    self.dyck_word |= 1;
+  }
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  fn consume_till_balanced(&mut self) {
+    loop {
+      let Option::Some(t)                                                                 = self.tokenizer.next() else { return };
+      let Result::Ok(Token{ r#type : par_tok @ (TokenType::LPar | TokenType::RPar) ,.. }) = t                     else { continue };
+
+      match par_tok {
+        TokenType::RPar if self.depth == 0 => return,
+        TokenType::RPar                => self.depth-=1,
+        TokenType::LPar                => self.depth+=1,
+        _                              => {},
+      }
+    }
+  }
+  fn push(&mut self) -> bool {
+    if self.depth == 32 {
+      return false;
+    }
+    self.stack[self.depth] = self.list_length;
+    self.depth += 1;
+    self.list_length = 0;
+    true
+  }
+  fn pop(&mut self) -> bool {
+    if self.depth == 0 {
+      return false;
+    }
+    self.depth -= 1;
+    self.list_length = self.stack[self.depth];
+    self.list_length += 1;
+    true
+  }
+  fn make_singleton(&mut self) {
+    let new_index = self.s_expr_vec.len();
+    self.append_element(SExpr::Atom(Sym("Singleton")));
+    self.s_expr_vec.swap(new_index - 1, new_index);
+  }
+  fn make_empty(&mut self) {
+    self.append_element(SExpr::Atom(Sym::new("Empty")))
+  }
+
+  fn make_var(&mut self, sym: Sym) {
+    let elem = SExpr::Var((self.variables.aquire_de_bruin(sym), sym));
+    self.append_element(elem);
+  }
+  fn make_atom(&mut self, sym: Sym) {
+    let elem = SExpr::Atom(sym);
+    self.append_element(elem);
+  }
+}
+
 impl<'a> DyckParser<'a> {
-  fn new(src : &'a str)->Self {
+  pub fn new(src: &'a str) -> Self {
     Self { tokenizer: Tokenizer::init(src), src }
   }
 
+  /// the applicative representation
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  pub fn parse_first_sexrs_to_dyck_app_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>> {
+    let err = |e| Option::Some(Result::Err(e));
 
-  #[cfg_attr(rustfmt, rustfmt::skip)]                             
-  fn parse_first_sexrs_to_dyck(&mut self) -> Option<(Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>)> {
-    let err = |e| Option::Some(Result::Err(e)); 
+    let mut state = match DyckParserIterState::init(self) {
+        Result::Ok(s) => s?,
+        Result::Err(e) => return err(e),
+    };
 
-    let Self { ref mut tokenizer, src } = self;
-    let Option::Some(Result::Ok(Token {src_offset, r#type, .. })) = tokenizer.next() else { return Option::None; };
-    let TokenType::LPar = r#type else { return err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
-    let mut s_expr_vec = Vec::with_capacity(32);
-    
-    let mut list_length = 0;
-    let mut depth       = 0;
-    let mut stack       = [0u8;33];
-    let mut dyck_word   = 0;
-    let mut variables   = Variables::new();
-    
-    'build_sexpr : while let Option::Some(result) = tokenizer.next() { 
-      // // for debugging
-      // std::println!("\ns_expr_vec  ~ {s_expr_vec:?}\nlist_length = {list_length:?}\ndepth       = {depth:?}\nstack       = {stack:?}\ndyck_word   = {dyck_word:b}\nvariables   = {variables:?}\n");
-
-      let ref mut consume_till_balanced = |depth : &mut _, error| 'consume_till_balanced : loop {
-        let Option::Some(t)                                                     = tokenizer.next() else { return err(error);};
-        let Result::Ok(Token{ r#type : r#type @ (TokenType::LPar | TokenType::RPar) ,.. }) = t                else { continue 'consume_till_balanced};
-        
-        match r#type {
-          TokenType::RPar if *depth == 0 => return err(error),
-          TokenType::RPar                => *depth-=1,
-          TokenType::LPar                => *depth+=1,
-          _                              => {},
-        } 
-      };
+    'build_sexpr : while let Option::Some(result) = state.tokenizer.next() {
       match result {
-        Result::Err(e)                           => return consume_till_balanced(&mut depth,ParseErr::TokenizationError(e)),
+        Result::Err(e)                           =>    { state.consume_till_balanced(); return err(ParseErr::TokenizationError(e)) },
         Result::Ok(Token { src_offset, r#type }) =>
           match r#type {
-            TokenType::LPar        => { if depth == 32 { return consume_till_balanced(&mut depth, ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(src, src_offset))); }
-                                        // push
-                                        list_length+=1;  stack[depth]=list_length;  depth+=1;  list_length=0;
+            TokenType::LPar        => if !state.push() { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))); },
+            TokenType::RPar        => {
+                                        match state.list_length {
+                                          0 => state.make_empty(),
+                                          1 => {
+                                            state.make_singleton();
+                                            // !!!
+                                            state.dyck_word<<=1;
+                                          }
+                                          _ => {}
+                                        }
+                                        if !state.pop() { break 'build_sexpr; }
+                                        // !!!
+                                        if state.list_length > 1 { state.dyck_word<<=1 }
                                       },
-            TokenType::RPar        => { let mut list_err = |err_variant : fn(_)->_| { let error = err_variant(Tokenizer::at_line(src, src_offset));
-                                                                                      if depth == 0 {           err(error) } 
-                                                                                      else          { depth-=1; consume_till_balanced(&mut depth, error)}
-                                                                                    };
-                                        match list_length {
-                                          0 => return list_err(ParseErr::EmptySexpr),
-                                          1 => return list_err(ParseErr::SingleElementListNotSupported) /* should I add nil at the end of lists? */,
-                                          // pop
-                                          _ => { for _ in 0..list_length-1 { dyck_word<<=1 }
-                                                 if depth       == 0 { break 'build_sexpr; }
-                                                 depth-=1;  
-                                                 list_length=stack[depth];
-                                               },
-                                      }
-                                      },
-            ref t @ 
-            ( TokenType::Var(sym) 
-            | TokenType::Atom(sym) 
-            )                      => {
-                                        if s_expr_vec.len() == 32 { return consume_till_balanced(&mut depth, ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(src, src_offset)))}
-                                        s_expr_vec.push(if let TokenType::Var(_) = &t {SExpr::Var((variables.aquire_de_bruin(sym),sym))} else {SExpr::Atom(sym)}); 
-                                        list_length+=1;  dyck_word<<=1;  dyck_word|=1;
-                                      }
+            ref t @
+            ( TokenType::Var(sym)
+            | TokenType::Atom(sym)
+            )                      =>  { if state.s_expr_vec.len() == 32 { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))) }
+                                         if let TokenType::Var(_) = &t {state.make_var(sym)}
+                                         else                          {state.make_atom(sym)}
+                                         // !!!
+                                         if state.list_length > 1 { state.dyck_word<<=1 }
+                                       },
           },
-        }
       }
+    }
 
-    Option::Some(Result::Ok((DyckStructureZipperU64::new(dyck_word).unwrap(), s_expr_vec, variables)))
+    Option::Some(Result::Ok((DyckStructureZipperU64::new(state.dyck_word).unwrap(), state.s_expr_vec, state.variables)))
+  }
+
+  /// the list representation
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  pub fn parse_first_sexrs_to_dyck_list_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>> {
+    let err = |e| Option::Some(Result::Err(e));
+
+    let mut state = match DyckParserIterState::init(self) {
+        Result::Ok(s) => s?,
+        Result::Err(e) => return err(e),
+    };
+
+    'build_sexpr : while let Option::Some(result) = state.tokenizer.next() {
+      match result {
+        Result::Err(e)                           =>    { state.consume_till_balanced(); return err(ParseErr::TokenizationError(e)) },
+        Result::Ok(Token { src_offset, r#type }) =>
+          match r#type {
+            TokenType::LPar        => if !state.push() { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))); },
+            TokenType::RPar        => {
+                                        match state.list_length {
+                                          0 => state.make_empty(),
+                                          1 => state.make_singleton(),
+                                          _ => {}
+                                        }
+                                        // !!!
+                                        for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
+
+                                        if !state.pop() { break 'build_sexpr; }
+                                      },
+            ref t @
+            ( TokenType::Var(sym)
+            | TokenType::Atom(sym)
+            )                      =>  { if state.s_expr_vec.len() == 32 { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))) }
+                                         if let TokenType::Var(_) = &t {state.make_var(sym)}
+                                         else                          {state.make_atom(sym)}
+                                       },
+          },
+      }
+    }
+
+    Option::Some(Result::Ok((DyckStructureZipperU64::new(state.dyck_word).unwrap(), state.s_expr_vec, state.variables)))
   }
 }
 impl<'a> Iterator for DyckParser<'a> {
   type Item = Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>;
   fn next(&mut self) -> Option<Self::Item> {
-      self.parse_first_sexrs_to_dyck()
+    self.parse_first_sexrs_to_dyck_app_repr()
   }
 }
 
-
-
-struct Tokenizer<'a>{
-  src : &'a str,
-  indicies_chars : core::iter::Peekable<core::str::CharIndices<'a>>,
+struct Tokenizer<'a> {
+  src: &'a str,
+  indicies_chars: core::iter::Peekable<core::str::CharIndices<'a>>,
 }
 impl<'a> Tokenizer<'a> {
-  fn init(src: &'a str)->Self {
+  fn init(src: &'a str) -> Self {
     Tokenizer { src: src, indicies_chars: src.char_indices().peekable() }
   }
-  fn at_line (src : &str, idx :usize)->LineCol {
-    if let Option::Some((line_idx, precedeing)) = src.get(0..idx).unwrap().lines().enumerate().last() { LineCol(line_idx, precedeing.len()) } else { LineCol(0, 0) }
+  fn at_line(src: &str, idx: usize) -> LineCol {
+    if let Option::Some((line_idx, precedeing)) = src.get(0..idx).unwrap().lines().enumerate().last() {
+      LineCol(line_idx, precedeing.len())
+    } else {
+      LineCol(0, 0)
+    }
   }
 
   /// doing Rust style escape sequence
-  #[cfg_attr(rustfmt, rustfmt::skip)]                             
-  fn escape_sequence(src: &'a str, (lead_idx, lead_char): (usize, char), indicies_chars: &mut impl Iterator<Item = (usize, char)>) -> Result<(), TokenErr> {
-    macro_rules! hex {() => { 'a'..='f'|'A'..='F'|'0'..='9'};}
-    
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  fn escape_sequence(src: &'a str, (lead_idx, _lead_char): (usize, char), indicies_chars: &mut impl Iterator<Item = (usize, char)>) -> Result<(), TokenErr> {
+
     let err = |idx, err : fn(_)->_| Result::Err(err(Tokenizer::at_line(src, idx)));
-    let Option::Some((escape_idx, escape)) = indicies_chars.next()  else { return err(lead_idx, TokenErr::InvalidEscapeSequence); };
+
+    let Option::Some((escape_idx, escape)) = indicies_chars.next()          else { return err(lead_idx,   TokenErr::InvalidEscapeSequence); };
     core::debug_assert_eq!('\\', src.get(escape_idx-1..).unwrap().chars().next().unwrap());
-    match escape {                                                  
-      'n' | 'r' | 't' | '\\' | '0' | '\'' | '\"' => {}              
-      'x' =>  '_ascii_hex_escape: {                                  
-                let h_l = [indicies_chars.next(), indicies_chars.next()];   
-                let [Option::Some((_, high)), Option::Some((_, low))] = h_l else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-                let ['0'..='7', hex!()] = [high, low]                       else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-              }                                                             
-      'u' =>  '_unicode_escape: {                                    
-                let mut buf = ['\0'; 6];                                    
-                for i in 0..6 {                                             
-                  let Option::Some((_, c)) = indicies_chars.next()          else { return err(escape_idx, TokenErr::InvalidHexEscape); };
-                  buf[i] = c                                                
-                }                                                           
-                let ['{', '0'..='7', hex!(), hex!(), hex!(), '}'] = buf     else { return err(escape_idx, TokenErr::InvalidUnicodeEscape); };
-              }                                                             
-      _   =>                                                                       return err(escape_idx, TokenErr::InvalidEscapeSequence),
+
+    macro_rules! hex {() => { 'a'..='f'|'A'..='F'|'0'..='9'};}
+    macro_rules! ret_err {($TOK_ERR:ident) => { return err(escape_idx, TokenErr::$TOK_ERR) };}
+    match escape {
+      'n' | 'r' | 't' | '\\' | '0' | '\'' | '\"' => {}
+      'x' =>  '_ascii_hex_escape: {
+                let h_l = [indicies_chars.next(), indicies_chars.next()];
+                let [Option::Some((_, high)), Option::Some((_, low))] = h_l else { ret_err!(InvalidHexEscape) };
+                let ['0'..='7', hex!()] = [high, low]                       else { ret_err!(InvalidHexEscape) };
+              }
+      'u' =>  '_unicode_escape: {
+                let mut buf = ['\0'; 6];
+                for i in 0..6 {
+                  let Option::Some((_, c)) = indicies_chars.next()          else { ret_err!(InvalidHexEscape) };
+                  buf[i] = c
+                }
+                let ['{', '0'..='7', hex!(), hex!(), hex!(), '}'] = buf     else { ret_err!(InvalidUnicodeEscape) };
+              }
+      _   =>                                                                       ret_err!(InvalidEscapeSequence),
     }
     Result::Ok(())
   }
 }
 
-impl<'a> Iterator for Tokenizer<'a>{
+impl<'a> Iterator for Tokenizer<'a> {
   type Item = Result<Token, TokenErr>;
   fn next(&mut self) -> Option<Self::Item> {
     let Self { src, indicies_chars } = self;
@@ -1409,16 +1518,15 @@ impl<'a> Iterator for Tokenizer<'a>{
       let Option::Some(&lead @ (lead_idx, lead_char)) = indicies_chars.peek() else {
         return Option::None;
       };
-      let item = |i                           | Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : i}));
-      let err  = |err: fn(LineCol) -> TokenErr| Option::Some(Result::Err(err(Tokenizer::at_line(src, lead_idx))));
-      let sym  = |end_idx                     | Sym::new(unsafe { src.get_unchecked(lead_idx..end_idx) });
-      
+      let item = |i                                | Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : i}));
+      let err  = |err_type: fn(LineCol) -> TokenErr| Option::Some(Result::Err(err_type(Tokenizer::at_line(src, lead_idx))));
+      let sym  = |end_idx                          | Sym::new(unsafe { src.get_unchecked(lead_idx..end_idx) });
+
       match lead_char {
         '(' => { indicies_chars.next(); return item(TokenType::LPar);}
         ')' => { indicies_chars.next(); return item(TokenType::RPar);}
         ';' => 'ignore_comment: loop {
           let Option::Some((_, c)) = indicies_chars.next() else { break 'ignore_comment; };
-          indicies_chars.next();
           if let '\n' = c { break 'ignore_comment; }
         },
         '\"' => 'string: {
@@ -1429,7 +1537,7 @@ impl<'a> Iterator for Tokenizer<'a>{
             match c {
               '\"' => { let Option::Some(&(e_idx, e)) = indicies_chars.peek() else { break 'string; };
                         let valid =  core::matches!(e, '('|')') || e.is_whitespace();
-                        return if valid { Option::Some(Result::Ok(Token{src_offset: lead_idx, r#type : TokenType::Atom(sym(e_idx))})) } 
+                        return if valid { item(TokenType::Atom(sym(e_idx))) }
                                else     { err(TokenErr::InvalidStringLiteral) }
                       }
               '\\' => if let Result::Err(e) = Tokenizer::escape_sequence(src, lead, indicies_chars) {return Option::Some(Result::Err(e));},
@@ -1438,11 +1546,11 @@ impl<'a> Iterator for Tokenizer<'a>{
           }
         },
         w if w.is_whitespace() => core::mem::drop(indicies_chars.next()),
-        x => { 
+        x => 'ident :{
           // a var that is just "$" is a hole ? */
           let token_type = if let '$' = x { TokenType::Var } else { TokenType::Atom};
-          
-          'ident : loop {
+
+          loop {
             let Option::Some(&(c_idx, c)) = indicies_chars.peek() else { break 'ident; };
             let var_or_atom = || item(token_type(sym(c_idx)) );
             match c {
@@ -1459,51 +1567,55 @@ impl<'a> Iterator for Tokenizer<'a>{
 }
 
 #[test]
-fn test_dyck_parser(){
-  let _s = r#"
-    (+ 1 2 3)
-    (- 4 5 6)
+fn test_dyck_parser() {
+  let s = r#"
+  (+ 1 2 3)
+  (- 4 5 6)
 
-    (eq ($X 3) (4 $Y) ($X $Y))
+  (eq ($X 3) (4 $Y) ($X $Y))
 
-    (let ((x "given a lot of \x4A \u{0001}")
-          (y "yup"))
-         (print x y))
+  (let ((x "given a lot of \x4A \u{0001}")
+  (y "yup"))
+  (print x y))
 
-    ((\ (x) x) of love)
+  ((\ (x) x) of love)
 
-)))
-    ((\ (x) x) of love)
-    ((\ (x) x) of love
-    ((\ (x) x) of love)
-    ((\ (x) x) of love)
-)))))))
-    (a be e)
+  )))
+  ((\ (x) x) of love)
+  ((\ (x) x) of love
+  ((\ (x) x) of love)
+  ((\ (x) x) of love)
+  )))))))
+  (a b c d e)
+  (a (b c) (d e f))
+  (a be e)
+  (()(()))
   "#;
 
-let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("tmp/edges5000.metta"));
-let s = std::fs::read_to_string(path).unwrap();
+  // let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("tmp/edges5000.metta"));
+  // let s = std::fs::read_to_string(path).unwrap();
+
   // let p = DyckParser::new(&s);
   let mut count = 0;
   let start = std::time::Instant::now();
   for _ in 0..1000 {
-    for each in DyckParser::new(&s) {
-      count +=1;
-      continue;
-      match each {
-          Result::Ok((zip,store,vars)) => {
-            std::print!("\n{zip:?}store: [  ");
-            for leaf in store.iter().map(DbgSexpr) {
-              std::print!("{leaf:?}  ")
-            }
-            std::print!("]\nvars  : [");
-            for leaf in vars.store.iter() {
-              std::print!("{leaf:?}  ")
-            }
-            std::println!("]")
+    for _each in DyckParser::new(&s) {
+      count += 1;
+      // continue;
+      #[allow(unreachable_code)]
+      match _each {
+        Result::Ok((zip, store, vars)) => {
+          std::print!("\n{zip:?}store: [  ");
+          for leaf in store.iter().map(DbgSexpr) {
+            std::print!("{leaf:?}  ")
           }
-          ,
-          Result::Err(e) => std::println!("{e:?}"),
+          std::print!("]\nvars  : [");
+          for leaf in vars.store.iter() {
+            std::print!("{leaf:?}  ")
+          }
+          std::println!("]")
+        }
+        Result::Err(e) => std::println!("{e:?}"),
       }
     }
   }

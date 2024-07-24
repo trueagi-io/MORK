@@ -149,7 +149,7 @@ impl DyckStructureZipperU64 {
   /// Decend to the right child if there is one.
   pub fn decend_right(&mut self) -> bool {
     if self.decend_left() {
-      unsafe { self.switch_right_unchecked() };
+      unsafe { self.left_to_right_unchecked() };
       true
     } else {
       false
@@ -157,7 +157,7 @@ impl DyckStructureZipperU64 {
   }
 
   /// Switch from a left branch to the sibling right branch. Invariants are enfored in debug builds.
-  pub unsafe fn switch_right_unchecked(&mut self) {
+  pub unsafe fn left_to_right_unchecked(&mut self) {
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
     core::debug_assert_ne!(*current_depth, 0);
@@ -173,7 +173,7 @@ impl DyckStructureZipperU64 {
     *cur = SubtreeSlice { terminal: cur.head, head: prev.head + 1 };
   }
   /// Switch from a left branch to the sibling right branch.
-  pub fn switch_right(&mut self) -> bool {
+  pub fn left_to_right(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
       return false;
@@ -188,7 +188,7 @@ impl DyckStructureZipperU64 {
       return false;
     }
 
-    unsafe { self.switch_right_unchecked() }
+    unsafe { self.left_to_right_unchecked() }
 
     true
   }
@@ -206,7 +206,7 @@ impl DyckStructureZipperU64 {
   }
 
   /// Switch from a right branch to the sibling left branch. Invariants are enfored in debug builds.
-  pub unsafe fn switch_left_unchecked(&mut self) {
+  pub unsafe fn right_to_left_unchecked(&mut self) {
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
     core::debug_assert_ne!(*current_depth, 0);
@@ -222,7 +222,7 @@ impl DyckStructureZipperU64 {
     *cur = SubtreeSlice { terminal: prev.terminal, head: cur.terminal };
   }
   /// Switch from a right branch to the sibling left branch.
-  pub fn switch_left(&mut self) -> bool {
+  pub fn right_to_left(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
       return false;
@@ -237,7 +237,7 @@ impl DyckStructureZipperU64 {
       return false;
     }
 
-    unsafe { self.switch_left_unchecked() };
+    unsafe { self.right_to_left_unchecked() };
 
     true
   }
@@ -303,6 +303,43 @@ impl DyckStructureZipperU64 {
   pub fn current_depth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
     self.current_leaf_store_index_range()
   }
+  pub fn at_root(&self) -> bool {
+    self.current_depth == 0
+  }
+  // This moves in a cycle. so if you return to the root and make this call, it will start the iteration again
+  pub fn next_depth_first_left_to_right_action(&self) -> DFSLeftToRightAction  {
+    core::todo!("ADD TESTS");
+    
+    type Action = DFSLeftToRightAction;
+    let is_left = self.current_is_left_branch();
+    let is_leaf = self.current_is_leaf();
+    if self.current_depth == 0 { 
+      return if is_leaf {Action::Root}
+             else       {Action::DecendLeft}
+    }
+    if is_left && is_leaf  {return Action::GoRight; }
+    if is_left && !is_leaf {return Action::DecendLeft;}
+    
+    if self.current_depth == 1 { return Action::Root; }
+    Action::AccendRight
+  }
+
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  pub fn advance_depth_first_left_to_right_action(&mut self) -> DFSLeftToRightAction {
+    core::todo!("ADD TESTS");
+
+    let action = self.next_depth_first_left_to_right_action();
+    match &action {
+        DFSLeftToRightAction::Root        =>        { self.accend_to_root();         }
+        DFSLeftToRightAction::DecendLeft  =>        { self.decend_left();            }
+        DFSLeftToRightAction::GoRight     => unsafe { self.left_to_right_unchecked();}
+        DFSLeftToRightAction::AccendRight =>        { self.accend(); 
+                                                      self.left_to_right();
+                                                    }
+    }
+    action
+  }
+
 
   /// Produce an iterator that generates the indices of the leaves in breadth first traversal order
   pub fn current_breadth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
@@ -332,13 +369,74 @@ impl DyckStructureZipperU64 {
           ring_buffer[end] = tmp.stack[1];
           end = (end + 1) % MAX_DEFERED;
 
-          unsafe { tmp.switch_right_unchecked() };
+          unsafe { tmp.left_to_right_unchecked() };
 
           // enqueue right
           ring_buffer[end] = tmp.stack[1];
           end = (end + 1) % MAX_DEFERED;
         } else {
           break Option::Some(unsafe { tmp.leaf_store_index_unchecked(tmp.stack[0].head) });
+        }
+      }
+    })
+  }
+
+  /// Produce an iterator that generates the traversal metadata in breadth first traversal order
+  pub fn current_breadth_first_with_traversal_metadata(&self) -> impl Iterator<Item = ( SubtreeSlice, TraversalPath)> + core::marker::Send + core::marker::Sync + 'static {
+    const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
+
+    core::todo!("ADD TESTS");
+
+    // the iterator state
+    let mut tmp = self.clone();
+    let mut ring_buffer = [(SubtreeSlice::zeroes(), TraversalPath(0b_0)); MAX_DEFERED];
+
+    let mut cur_path = 0b_0;
+    for each in 0..=self.current_depth {
+      tmp.current_depth = each;
+      cur_path <<= 1;
+      if !tmp.current_is_left_branch() { cur_path |= 1 }
+    }
+
+    // after this point `tmp`'s only needs to mantain the structure field from self, the rest is scratch space. 
+    let mut front = 0;
+    let mut end = 1;
+    ring_buffer[0] = (self.stack[self.current_depth as usize], TraversalPath(cur_path));
+    let mut recent_enqueue = 0;
+
+    // the iterator
+    core::iter::from_fn(move || {
+      loop {
+        if front == end {
+          break Option::None;
+        }
+
+        if recent_enqueue > 0 {
+          let idx = (end - recent_enqueue) % MAX_DEFERED;
+          recent_enqueue-=1;
+          break Option::Some(ring_buffer[idx]);
+        }
+
+        // dequeue
+        tmp.accend_to_root();
+        let traversal = ring_buffer[front].1;
+        tmp.stack[0] = ring_buffer[front].0;
+        front = (front + 1) % MAX_DEFERED;
+
+        if tmp.decend_left() {
+          // enqueue left
+          ring_buffer[end] = (tmp.stack[1], TraversalPath(traversal.0 << 1));
+          end = (end + 1) % MAX_DEFERED;
+
+          unsafe { tmp.left_to_right_unchecked() };
+
+          // enqueue right
+          ring_buffer[end] = (tmp.stack[1], TraversalPath(traversal.0 << 1 | 1));
+          end = (end + 1) % MAX_DEFERED;
+
+          recent_enqueue = 2
+        } else {
+          break Option::Some((tmp.stack[0], traversal));
         }
       }
     })
@@ -424,8 +522,8 @@ impl DyckStructureZipperU64 {
           // Safety: the reaching the end of the while loop
           //   guarantees that we are on a left branch, so there must be a right branch
           unsafe {
-            pattern_z.switch_right_unchecked();
-            self_z.switch_right_unchecked();
+            pattern_z.left_to_right_unchecked();
+            self_z.left_to_right_unchecked();
           };
         }
       } else {
@@ -478,7 +576,7 @@ impl DyckStructureZipperU64 {
         }
       }
 
-      '_pop: while !template_z.switch_right() {
+      '_pop: while !template_z.left_to_right() {
         if !template_z.accend() {
           core::debug_assert_eq!(structure.iter().filter(|s| **s == LeafBranch::L).count(), values.len());
           break 'templating Option::Some((structure, values));
@@ -490,6 +588,23 @@ impl DyckStructureZipperU64 {
     out
   }
 }
+pub enum DFSLeftToRightAction {
+  Root,
+  DecendLeft,
+  GoRight,
+  // coresponds to an accend followed by an 
+  AccendRight,
+}
+
+/// ```ignore
+/// // 0b0.......01 root            or []
+/// // 0b0......010 left  from root or [L]
+/// // 0b0......011 right from root or [R]
+/// // 0b0..0101100                    [L R R L L]
+/// // 0b1........1 rightmost element of a dyck word 0b01..(32 ones)..10..(31 zeroes)..0
+/// ```
+#[derive(Clone, Copy)]
+pub struct TraversalPath(u32);
 
 /// Represents a stack machine instruction for
 /// building a binary tree in DFS order
@@ -789,8 +904,8 @@ fn test_zipper_basics() {
     core::assert!(!tree_0b_1.decend_left());
     core::assert!(!tree_0b_1.decend_right());
     // no branching
-    core::assert!(!tree_0b_1.switch_left());
-    core::assert!(!tree_0b_1.switch_right());
+    core::assert!(!tree_0b_1.right_to_left());
+    core::assert!(!tree_0b_1.left_to_right());
     // single element
     core::assert_eq!(tree_0b_1.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_1.current_leaf_store_index_range(), 0..count);
@@ -803,8 +918,8 @@ fn test_zipper_basics() {
     std::println!("{:#?}", tree_0b_110);
 
     // at root
-    core::assert!(!tree_0b_110.switch_left());
-    core::assert!(!tree_0b_110.switch_right());
+    core::assert!(!tree_0b_110.right_to_left());
+    core::assert!(!tree_0b_110.left_to_right());
     core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..count);
     core::assert!(!tree_0b_110.accend());
@@ -813,7 +928,7 @@ fn test_zipper_basics() {
     core::assert!(tree_0b_110.decend_left());
     core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..1);
-    core::assert!(tree_0b_110.switch_right());
+    core::assert!(tree_0b_110.left_to_right());
     core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 1);
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 1..count);
     core::assert!(tree_0b_110.accend());
@@ -825,7 +940,7 @@ fn test_zipper_basics() {
     core::assert!(tree_0b_110.decend_right());
     core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 1);
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 1..count);
-    core::assert!(tree_0b_110.switch_left());
+    core::assert!(tree_0b_110.right_to_left());
     core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..1);
     core::assert!(tree_0b_110.accend());
@@ -838,8 +953,8 @@ fn test_zipper_basics() {
     std::println!("{:#?}", tree_0b_11010);
 
     // at root
-    core::assert!(!tree_0b_11010.switch_left());
-    core::assert!(!tree_0b_11010.switch_right());
+    core::assert!(!tree_0b_11010.right_to_left());
+    core::assert!(!tree_0b_11010.left_to_right());
     core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 0);
     core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 0..count);
     core::assert!(!tree_0b_11010.accend());
@@ -852,7 +967,7 @@ fn test_zipper_basics() {
     core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 2..count);
     core::assert!(!tree_0b_11010.decend_right());
 
-    core::assert!(tree_0b_11010.switch_left());
+    core::assert!(tree_0b_11010.right_to_left());
     std::println!("{:#?}", tree_0b_11010);
 
     core::assert!(tree_0b_11010.decend_right());
@@ -862,7 +977,7 @@ fn test_zipper_basics() {
     core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 1..2);
     core::assert!(!tree_0b_11010.decend_right());
 
-    core::assert!(tree_0b_11010.switch_left());
+    core::assert!(tree_0b_11010.right_to_left());
     std::println!("{:#?}", tree_0b_11010);
     core::assert!(!tree_0b_11010.decend_left());
 
@@ -976,8 +1091,8 @@ fn test_naive_matching() {
   #[cfg_attr(rustfmt, rustfmt::skip)]
   impl MatchElement for TestExpr {
     type Element = E;
-    type Atom = &'static str;
-    type Var = isize;
+    type Atom    = &'static str;
+    type Var     = isize;
 
     fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
       match e {
@@ -1243,7 +1358,6 @@ type SExprFix = FixPoint<SExpresion, Boxed>;
 #[derive(Debug)]
 pub enum ParseErr {
   TooManyClosingParenthesis(LineCol),
-  OnlyOneExpressionAllowed(LineCol),
   MissingOpenParrenthesis(LineCol),
   TokenizationError(TokenErr),
   DyckReprLimitedTo32Elements(LineCol),
@@ -1263,7 +1377,7 @@ struct Token {
   src_offset: usize,
   r#type: TokenType,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TokenType {
   LPar,
   RPar,
@@ -1287,12 +1401,13 @@ struct DyckParserIterState<'a, 't> {
   stack: [u8; 32],
   dyck_word: u64,
   variables: Variables,
+  cur_token: Token, 
 }
 impl<'a, 't> DyckParserIterState<'a, 't> {
   #[cfg_attr(rustfmt, rustfmt::skip)]
   fn init(DyckParser { tokenizer, src }: &'t mut DyckParser<'a>) -> Result<Option<Self>, ParseErr> {
-    let Option::Some(Result::Ok(Token { src_offset, r#type, .. })) = tokenizer.next() else { return Result::Ok(Option::None); };
-    let TokenType::LPar                                            = r#type           else { return Result::Err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
+    let Option::Some(Result::Ok(Token { src_offset, r#type})) = tokenizer.next() else { return Result::Ok(Option::None); };
+    let TokenType::LPar                                       = r#type           else { return Result::Err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
     Result::Ok(Option::Some(Self {
       tokenizer,
       src,
@@ -1302,6 +1417,7 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
       stack       : [0u8; 32],
       dyck_word   : 0,
       variables   : Variables::new(),
+      cur_token   : Token {src_offset, r#type}
     }))
   }
   fn append_element(&mut self, e: SExpr<Void>) {
@@ -1324,14 +1440,15 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
       }
     }
   }
-  fn push(&mut self) -> bool {
+  fn push(&mut self) -> Result<(), ParseErr>  {
     if self.depth == 32 {
-      return false;
+      self.consume_till_balanced();
+      return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset)));
     }
     self.stack[self.depth] = self.list_length;
     self.depth += 1;
     self.list_length = 0;
-    true
+    Result::Ok(())
   }
   fn pop(&mut self) -> bool {
     if self.depth == 0 {
@@ -1351,13 +1468,31 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
     self.append_element(SExpr::Atom(Sym::new("Empty")))
   }
 
-  fn make_var(&mut self, sym: Sym) {
+  fn make_var(&mut self, sym: Sym) -> Result<(), ParseErr> {
+    if self.s_expr_vec.len() == 32 { self.consume_till_balanced(); return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset))); }
     let elem = SExpr::Var((self.variables.aquire_de_bruin(sym), sym));
     self.append_element(elem);
+    Result::Ok(())
   }
-  fn make_atom(&mut self, sym: Sym) {
+  fn make_atom(&mut self, sym: Sym) -> Result<(), ParseErr>  {
+    if self.s_expr_vec.len() == 32 { self.consume_till_balanced(); return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset))); }
     let elem = SExpr::Atom(sym);
     self.append_element(elem);
+    Result::Ok(())
+  }
+  fn next_token(&mut self) -> Option<Result<Token, ParseErr>> {
+    let r = self.tokenizer.next();
+    match r {
+        Option::Some(Result::Ok(t @ Token { src_offset, r#type })) => {
+          self.cur_token = Token {src_offset, r#type};
+          Option::Some(Result::Ok(t))
+        },
+        Option::Some(Result::Err(e)) => {
+          self.consume_till_balanced();
+          Option::Some(Result::Err(ParseErr::TokenizationError(e)))
+        },
+        Option::None => Option::None,
+    }
   }
 }
 
@@ -1376,35 +1511,33 @@ impl<'a> DyckParser<'a> {
         Result::Err(e) => return err(e),
     };
 
-    'build_sexpr : while let Option::Some(result) = state.tokenizer.next() {
+    'build_sexpr : while let Option::Some(result) = state.next_token() {
       match result {
-        Result::Err(e)                           =>    { state.consume_till_balanced(); return err(ParseErr::TokenizationError(e)) },
-        Result::Ok(Token { src_offset, r#type }) =>
+        Result::Err(e)                  => return err(e) ,
+        Result::Ok(Token { r#type,.. }) =>
           match r#type {
-            TokenType::LPar        => if !state.push() { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))); },
-            TokenType::RPar        => {
-                                        match state.list_length {
-                                          0 => state.make_empty(),
-                                          1 => {
-                                            state.make_singleton();
-                                            // !!!
-                                            state.dyck_word<<=1;
-                                          }
-                                          _ => {}
-                                        }
-                                        if !state.pop() { break 'build_sexpr; }
-                                        // !!!
-                                        if state.list_length > 1 { state.dyck_word<<=1 }
-                                      },
-            ref t @
-            ( TokenType::Var(sym)
-            | TokenType::Atom(sym)
-            )                      =>  { if state.s_expr_vec.len() == 32 { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))) }
-                                         if let TokenType::Var(_) = &t {state.make_var(sym)}
-                                         else                          {state.make_atom(sym)}
-                                         // !!!
-                                         if state.list_length > 1 { state.dyck_word<<=1 }
-                                       },
+            TokenType::LPar      => if let Result::Err(e) = state.push() { return err(e); },
+            TokenType::RPar       => { match state.list_length {
+                                         0 => state.make_empty(),
+                                         1 => {
+                                           state.make_singleton();
+                                           // !!!
+                                           state.dyck_word<<=1;
+                                         }
+                                         _ => {}
+                                       }
+                                       if !state.pop() { break 'build_sexpr; }
+                                       // !!!
+                                       if state.list_length > 1 { state.dyck_word<<=1 }
+                                     },
+            TokenType::Var(sym)  => { if let Result::Err(e) = state.make_var(sym)  { return err(e) }
+                                      // !!!
+                                      if state.list_length > 1 { state.dyck_word<<=1 }
+                                    }
+            TokenType::Atom(sym) => { if let Result::Err(e) = state.make_atom(sym) { return err(e) }
+                                      // !!!
+                                      if state.list_length > 1 { state.dyck_word<<=1 }
+                                    },
           },
       }
     }
@@ -1422,30 +1555,24 @@ impl<'a> DyckParser<'a> {
         Result::Err(e) => return err(e),
     };
 
-    'build_sexpr : while let Option::Some(result) = state.tokenizer.next() {
+    'build_sexpr : while let Option::Some(result) = state.next_token() {
       match result {
-        Result::Err(e)                           =>    { state.consume_till_balanced(); return err(ParseErr::TokenizationError(e)) },
-        Result::Ok(Token { src_offset, r#type }) =>
+        Result::Err(e)                  => return err(e),
+        Result::Ok(Token { r#type,.. }) =>
           match r#type {
-            TokenType::LPar        => if !state.push() { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))); },
-            TokenType::RPar        => {
-                                        match state.list_length {
-                                          0 => state.make_empty(),
-                                          1 => state.make_singleton(),
-                                          _ => {}
-                                        }
-                                        // !!!
-                                        for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
-
-                                        if !state.pop() { break 'build_sexpr; }
-                                      },
-            ref t @
-            ( TokenType::Var(sym)
-            | TokenType::Atom(sym)
-            )                      =>  { if state.s_expr_vec.len() == 32 { state.consume_till_balanced(); return err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(state.src, src_offset))) }
-                                         if let TokenType::Var(_) = &t {state.make_var(sym)}
-                                         else                          {state.make_atom(sym)}
-                                       },
+            TokenType::LPar      => if let Result::Err(e) = state.push() { return err(e); },
+            TokenType::RPar      => { match state.list_length {
+                                        0 => state.make_empty(),
+                                        1 => state.make_singleton(),
+                                        _ => {}
+                                      }
+                                      // !!!
+                                      for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
+                                 
+                                      if !state.pop() { break 'build_sexpr; }
+                                    },
+            TokenType::Var(sym)  => if let Result::Err(e) = state.make_var(sym)  { return err(e) },
+            TokenType::Atom(sym) => if let Result::Err(e) = state.make_atom(sym) { return err(e) },
           },
       }
     }

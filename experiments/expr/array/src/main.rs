@@ -6,29 +6,29 @@ struct Breadcrumb {
 }
 
 #[derive(Copy, Clone)]
-enum Item {
+pub enum Item {
     NewVar,
     VarRef(u8),
     Symbol(u32),
     Arity(u8),
 }
 
-struct Expr {
-    ptr: *mut Item,
+pub struct Expr {
+    pub ptr: *mut Item,
 }
 
-struct ExprZipper {
-    root: Expr,
+pub struct ExprZipper {
+    pub root: Expr,
     loc: usize,
     trace: Vec<Breadcrumb>,
 }
 
 impl ExprZipper {
-    fn new(e: Expr) -> Self {
+    pub fn new(e: Expr) -> Self {
         match unsafe { *e.ptr } { // todo, should a zipper be allowed on a single item?
-            Item::NewVar => { unreachable!() }
-            Item::VarRef(r) => { unreachable!() }
-            Item::Symbol(s) => { unreachable!() }
+            Item::NewVar => { Self { root: e, loc: 0, trace: vec![] } }
+            Item::VarRef(r) => { Self { root: e, loc: 0, trace: vec![] } }
+            Item::Symbol(s) => { Self { root: e, loc: 0, trace: vec![] } }
             Item::Arity(a) => {
                 Self {
                     root: e,

@@ -1,15 +1,7 @@
 [package]
-name = "dyck"
+name = "mork-bytestring"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-num-bigint = "0.4.5"
-bnum = "0.11.0"
-
-
-# [target.wasm32-wasi]
-# runner = "wasmtime"
 
 [build]
 rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"

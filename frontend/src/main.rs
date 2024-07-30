@@ -128,42 +128,74 @@ use std::time::Instant;
 // }
 
 
-use mork::cz3_parser::{Expr, ExprZipper, Parser, isDigit, BufferedIterator};
+// use mork::cz3_parser::{Expr, ExprZipper, Parser, isDigit, BufferedIterator};
+//
+// struct DataParser {
+//     count: i64,
+//     symbols: HashMap<String, i64>,
+//     floats: HashMap<i64, i64>,
+//     strings: HashMap<String, i64>,
+// }
+//
+// impl DataParser {
+//     fn new() -> Self {
+//         Self {
+//             count: 3,
+//             symbols: HashMap::new(),
+//             floats: HashMap::new(),
+//             strings: HashMap::new(),
+//         }
+//     }
+// }
+//
+// impl Parser for DataParser {
+//     fn tokenizer(&mut self, s: String) -> i64 {
+//         self.count += 1;
+//         if s.chars().next().unwrap() == '"' { self.strings.insert(s, self.count); }
+//         else if !isDigit(s.chars().next().unwrap()) { self.symbols.insert(s, self.count); }
+//         else { self.floats.insert(s.parse::<f64>().unwrap() as i64, self.count); }
+//         self.count
+//     }
+// }
+//
+// fn main() {
+//     // let mut file = std::fs::File::open("resources/edges5000.metta")
+//     let mut file = std::fs::File::open("resources/edges67458171.metta")
+//         .expect("Should have been able to read the file");
+//     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
+//     let mut parser = DataParser::new();
+//
+//     let t0 = Instant::now();
+//     let mut i = 0;
+//     let mut stack = Vec::with_capacity(100);
+//     let mut vs = Vec::with_capacity(100);
+//     loop {
+//         unsafe {
+//             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+//             if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+//                 // ExprZipper::new(ez.root).traverse(0); println!();
+//                 black_box(ez.root);
+//             } else { break }
+//             i += 1;
+//             vs.set_len(0);
+//         }
+//     }
+//     println!("parsed {}", i);
+//     println!("took {} ms", t0.elapsed().as_millis()); // 42 seconds
+// }
 
-struct DataParser {
-    count: i64,
-    symbols: HashMap<String, i64>,
-    floats: HashMap<i64, i64>,
-    strings: HashMap<String, i64>,
-}
+use mork::bytestring_parser::{Expr, ExprZipper, Parser, isDigit, BufferedIterator};
 
-impl DataParser {
-    fn new() -> Self {
-        Self {
-            count: 3,
-            symbols: HashMap::new(),
-            floats: HashMap::new(),
-            strings: HashMap::new(),
-        }
-    }
-}
+struct DataParser {}
 
-impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> i64 {
-        self.count += 1;
-        if s.chars().next().unwrap() == '"' { self.strings.insert(s, self.count); }
-        else if !isDigit(s.chars().next().unwrap()) { self.symbols.insert(s, self.count); }
-        else { self.floats.insert(s.parse::<f64>().unwrap() as i64, self.count); }
-        self.count
-    }
-}
+impl Parser for DataParser {}
 
 fn main() {
     // let mut file = std::fs::File::open("resources/edges5000.metta")
     let mut file = std::fs::File::open("resources/edges67458171.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
-    let mut parser = DataParser::new();
+    let mut parser = DataParser { };
 
     let t0 = Instant::now();
     let mut i = 0;
@@ -173,6 +205,9 @@ fn main() {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+                // stack.set_len(ez.loc);
+                // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
+                // println!("{:?}", stack);
                 // ExprZipper::new(ez.root).traverse(0); println!();
                 black_box(ez.root);
             } else { break }
@@ -181,5 +216,5 @@ fn main() {
         }
     }
     println!("parsed {}", i);
-    println!("took {} ms", t0.elapsed().as_millis()); // 42 seconds
+    println!("took {} ms", t0.elapsed().as_millis()); // 34 seconds
 }

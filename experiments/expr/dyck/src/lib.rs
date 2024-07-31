@@ -22,7 +22,7 @@ use core::{
   result::Result,
 };
 use num_bigint::BigUint;
-use std::fmt::{Debug, Display};
+use std::{fmt::{Debug, Display}, num::NonZeroUsize, ops::Neg};
 
 mod finite;
 
@@ -449,12 +449,32 @@ impl DyckStructureZipperU64 {
   }
 
   /// Match the self argument with the pattern. As Zippers must have at least one element, an empty template should have [`Option::None`] as the template argument with the template data being `&[]`
-  pub fn match_template_at_current<E: MatchElement>(&self, self_data: &[E::Element], pattern: &Self, pattern_data: &[E::Element], template: Option<&Self>, template_data: &[E::Element]) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
+  pub fn match_template_at_current<E: MatchElement>(
+    self          : &Self, 
+    self_data     : &[E::Element], 
+    pattern       : &Self, 
+    pattern_data  : &[E::Element], 
+    template      : Option<&Self>, 
+    template_data : &[E::Element],
+    var_table     : &E::VarTable,
+  ) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
   where
-    E::Element: Clone,
+    E::Element : Clone,
   {
     core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
     core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
+
+
+    #[track_caller]
+    fn get_binding_index<E : MatchElement>(var_table: &<E as MatchElement>::VarTable, v : &E::Var) -> usize {
+    // let get_binding_index = |var_table: &<E as MatchElement>::VarTable, v : &E::Var| {
+      // bind pattern variables, new variables must have a higher de Bruin level
+      let DeBruinLevel::Ref(l) = E::var_de_bruin_level(var_table, v)
+      else {
+        core::panic!("The variables should have been in the table already! {:?}", core::panic::Location::caller())
+      };
+      (!l.get()) as usize
+    };
 
     // initialize zippers
     type DZ = DyckStructureZipperU64;
@@ -493,12 +513,12 @@ impl DyckStructureZipperU64 {
                 }
               }
               ElementType::Var(_) => core::unimplemented!("This matching algoritm does not do unification!"),
-              ElementType::Hole => {}
             }
           }
           ElementType::Var(v) => {
-            // bind pattern variables, new variables must have a higher de Bruin level
-            let level = E::var_de_bruin_level(v);
+
+            let level = get_binding_index::<E>(var_table,v);
+
             match de_bruin_level_offset {
               Option::None => de_bruin_level_offset = Option::Some(level),
 
@@ -507,7 +527,6 @@ impl DyckStructureZipperU64 {
             let idx = level - de_bruin_level_offset.unwrap_or(0);
             de_bruin_offset_bindings_to_self[idx] = Option::Some(self_z.stack[self_z.current_depth as usize]);
           }
-          ElementType::Hole => {}
         }
 
         '_pop: {
@@ -552,12 +571,12 @@ impl DyckStructureZipperU64 {
 
       let e = &template_data[template_z.current_first_leaf_store_index()];
       match E::element_type(e) {
-        ElementType::Atom(_) | ElementType::Hole => '_push_atom: {
+        ElementType::Atom(_)  => '_push_atom: {
           values.push(e.clone());
           structure.push(LeafBranch::L)
         }
         ElementType::Var(v) => '_push_binding: {
-          let level = E::var_de_bruin_level(v);
+          let level =  get_binding_index::<E>(var_table,v);
           let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
           let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
 
@@ -592,7 +611,7 @@ pub enum DFSLeftToRightAction {
   Root,
   DecendLeft,
   GoRight,
-  // coresponds to an accend followed by an 
+  // coresponds to an accend followed by an  left_to_right
   AccendRight,
 }
 
@@ -625,20 +644,19 @@ pub enum ElementType<'e, A, V> {
   /// Variable that was introduced by a "transform"/"lambda";
   /// the de Bruin level is encoded in this value.
   Var(&'e V),
-  /// An variable empty binding, matches anything
-  Hole,
 }
 /// Trait interface for doing basic pattern matching
 pub trait MatchElement {
   type Element;
   type Atom;
   type Var;
+  type VarTable;
   /// Inspects an element to determine if it is an atom or a variable to be bound.
   fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var>;
   /// Atoms that are considered equal are determined to match.
   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool;
-  /// Variables of the same debruin index are determined to match.
-  fn var_de_bruin_level(left: &Self::Var) -> usize;
+  /// if the var is not in the table, it returns DeBruinLevel::Intro
+  fn var_de_bruin_level(table: &Self::VarTable ,var: &Self::Var) -> DeBruinLevel;
 }
 
 pub(crate) mod left_branch_impl {
@@ -1076,182 +1094,298 @@ fn test_zipper_breadth_and_depth_first_traversal_perf() {
   core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
 }
 
-#[test]
-fn test_naive_matching() {
-  use LeafBranch::{B, L};
+// #[test]
+// fn test_naive_matching() {
+//   use LeafBranch::{B, L};
 
-  #[derive(Debug, Clone, PartialEq, Eq)]
-  enum E {
-    A(&'static str),
-    V(isize),
-    Hole,
-  }
+//   #[derive(Debug, Clone, PartialEq, Eq)]
+//   enum E {
+//     A(&'static str),
+//     V(isize),
+//     Hole,
+//   }
+
+//   enum TestExpr {}
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   impl MatchElement for TestExpr {
+//     type Element = E;
+//     type Atom    = &'static str;
+//     type Var     = isize;
+
+//     fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
+//       match e {
+//         E::A(a) => ElementType::Atom(a),
+//         E::V(v) => ElementType::Var(v),
+//         E::Hole => ElementType::Hole,
+//       }
+//     }
+
+//     fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
+//     fn var_de_bruin_level(left: &Self::Var) -> usize { *left as usize }
+//   }
+
+//   // ((a $0) (b c))
+//   let input_zipper = DyckStructureZipperU64::new(0b_110_110_0).unwrap();
+//   let input_data = [E::A("a"), E::V(0), E::A("b"), E::A("c")];
+//   let pattern_zipper = DyckStructureZipperU64::new(0b_110_10).unwrap();
+//   let pattern_data = [E::A("a"), E::Hole, E::V(1)];
+//   let template_zipper = DyckStructureZipperU64::new(0b_110).unwrap();
+//   let template_data = [E::A("x"), E::V(1)];
+
+//   let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
+
+//   let expected_structure = [L, L, L, B, B];
+//   let expected_data = [E::A("x"), E::A("b"), E::A("c")];
+
+//   core::assert_eq!(&result.0[..], &expected_structure[..]);
+//   core::assert_eq!(&result.1[..], &expected_data[..]);
+
+//   // simple point matching
+
+//   // (Point2d ((X 15.4) (Y -34.9)))
+//   let input_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let input_data = [
+//     "Pointed2d", "X", "15.4",
+//                  "Y", "-34.9"
+//   ].map(E::A);
+//   // (Point2d ((X x) (Y x)))
+//   let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let mut pattern_data = [
+//     "Pointed2d", "X", "x",
+//                  "Y", "y"
+//   ].map(E::A);
+//   pattern_data[2] = E::V(0);
+//   pattern_data[4] = E::V(1);
+
+//   // (Sqrt (+ ( (* (x x))
+//   //            (* (y y)) )))
+//   let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let mut template_data = [
+//     "Sqrt","+","*","x","x",
+//                "*","y","y"
+//   ].map(E::A);
+
+//   template_data[3] = E::V(0);
+//   template_data[4] = E::V(0);
+
+//   template_data[6] = E::V(1);
+//   template_data[7] = E::V(1);
+
+//   let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
+
+//   let expected_structure = [L, L, L, L, L, B, B, L, L, L, B, B, B, B, B];
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let expected_data = [
+//     "Sqrt","+","*", "15.4", "15.4",
+//                "*","-34.9","-34.9"
+//     ].map(E::A);
+
+//   core::assert_eq!(&result.0[..], &expected_structure[..]);
+//   core::assert_eq!(&result.1[..], &expected_data[..]);
+
+//   // expression point matching
+
+//   // (Point2d ((X (+ (3.0 2.2))) (Y -34.9)))
+//   let input_zipper = DyckStructureZipperU64::new(0b_1__1111000_110_0__0).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let input_data = [
+//     "Pointed2d", "X", "+", "3.0",
+//                            "2.2",
+//                  "Y", "-34.9"
+//   ].map(E::A);
+//   // (Point2d ((X x) (Y x)))
+//   let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let mut pattern_data = [
+//     "Pointed2d", "X", "x",
+//                  "Y", "y"
+//   ].map(E::A);
+//   pattern_data[2] = E::V(0);
+//   pattern_data[4] = E::V(1);
+
+//   // (Sqrt (+ ( (* (x x))
+//   //            (* (y y)) )))
+//   let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let mut template_data = [
+//     "Sqrt","+","*","x","x",
+//                "*","y","y"
+//   ].map(E::A);
+
+//   template_data[3] = E::V(0);
+//   template_data[4] = E::V(0);
+
+//   template_data[6] = E::V(1);
+//   template_data[7] = E::V(1);
+
+//   let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
+
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let expected_structure = [
+//     L,L,  L, L,L,L,B,B,
+//              L,L,L,B,B, B,B,
+
+//           L, L,L,       B,B,
+//                              B,B,B];
+//   #[cfg_attr(rustfmt, rustfmt::skip)]
+//   let expected_data = ["Sqrt","+","*", "+", "3.0", "2.2",
+//                                        "+", "3.0", "2.2",
+//                                   "*","-34.9","-34.9"
+//   ].map(E::A);
+
+//   core::assert_eq!(&result.0[..], &expected_structure[..]);
+//   core::assert_eq!(&result.1[..], &expected_data[..]);
+// }
+
+
+#[cfg_attr(rustfmt, rustfmt::skip)]
+#[test]
+fn test_naive_matching_() {
+  // use LeafBranch::{B, L};
+  type E = SExpr<Void>;
 
   enum TestExpr {}
   #[cfg_attr(rustfmt, rustfmt::skip)]
   impl MatchElement for TestExpr {
     type Element = E;
-    type Atom    = &'static str;
-    type Var     = isize;
+    type Atom    = Sym;
+    type Var     = (DeBruinLevel, Sym);
+    type VarTable = Variables;
 
     fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
       match e {
-        E::A(a) => ElementType::Atom(a),
-        E::V(v) => ElementType::Var(v),
-        E::Hole => ElementType::Hole,
+        E::Atom(a) => ElementType::Atom(a),
+        E::Var(v) => ElementType::Var(v),
+        E::App(_)=> core::unreachable!(),
       }
     }
 
     fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
-    fn var_de_bruin_level(left: &Self::Var) -> usize { *left as usize }
+    
+    
+    fn var_de_bruin_level(table: &Variables,var: &Self::Var) -> DeBruinLevel {
+      let DeBruinLevel::Ref(_) =  var.0 else {return table.lookup(var.1) };
+      var.0.clone()
+    } 
   }
 
-  // ((a $0) (b c))
-  let input_zipper = DyckStructureZipperU64::new(0b_110_110_0).unwrap();
-  let input_data = [E::A("a"), E::V(0), E::A("b"), E::A("c")];
-  let pattern_zipper = DyckStructureZipperU64::new(0b_110_10).unwrap();
-  let pattern_data = [E::A("a"), E::Hole, E::V(1)];
-  let template_zipper = DyckStructureZipperU64::new(0b_110).unwrap();
-  let template_data = [E::A("x"), E::V(1)];
 
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
+  fn test_matcher(src: &str) {
+    let mut parser = DyckParser::new(src);
+    parser.thread_variables(Option::Some(Variables::new()));
+    let mut next = || parser.next().unwrap().unwrap();
+    let (   input_zipper,    input_data,    _input_vars) = next();
+    let ( pattern_zipper,  pattern_data,  _pattern_vars) = next();
+    let (template_zipper, template_data, _template_vars) = next();
+    let (expected_zipper, expected_data, _expected_vars) = next();
+    let DyckStructureZipperU64 { structure, .. } = expected_zipper;
 
-  let expected_structure = [L, L, L, B, B];
-  let expected_data = [E::A("x"), E::A("b"), E::A("c")];
+    let expected_structure = '_convert_dyck_word : {
+      let mut structure_vec = Vec::new();
+      let mut cursor = 1 << (u64::BITS - structure.leading_zeros() - 1);
+      core::debug_assert_ne!(cursor & structure, 0);
+      while cursor !=0 {
+        structure_vec.push(if cursor & structure == 0 { LeafBranch::B } else { LeafBranch::L });
+        cursor >>= 1;
+      }
+      structure_vec
+    };
+    let vars = parser.thread_variables(Option::None).unwrap();
+  
+    let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(
+      &input_zipper, 
+      &input_data, 
+      &pattern_zipper, 
+      &pattern_data, 
+      Option::Some(&template_zipper), 
+      &template_data, 
+      &vars
+    ).unwrap();
 
-  core::assert_eq!(&result.0[..], &expected_structure[..]);
-  core::assert_eq!(&result.1[..], &expected_data[..]);
+    core::assert_eq!(&result.0[..], &expected_structure[..]);
+    core::assert_eq!(&result.1[..], &expected_data[..]);
+  }
 
-  // simple point matching
 
-  // (Point2d ((X 15.4) (Y -34.9)))
-  let input_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let input_data = [
-    "Pointed2d", "X", "15.4",
-                 "Y", "-34.9"
-  ].map(E::A);
-  // (Point2d ((X x) (Y x)))
-  let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let mut pattern_data = [
-    "Pointed2d", "X", "x",
-                 "Y", "y"
-  ].map(E::A);
-  pattern_data[2] = E::V(0);
-  pattern_data[4] = E::V(1);
+  let src1 = "
+    (a $X (b c)) ;; input
+    (a $  $Y)    ;; pattern
+    (x $Y)       ;; template
+    (x (b c))    ;; expected
+    ";  
+  test_matcher(src1);
 
-  // (Sqrt (+ ( (* (x x))
-  //            (* (y y)) )))
-  let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let mut template_data = [
-    "Sqrt","+","*","x","x",
-               "*","y","y"
-  ].map(E::A);
 
-  template_data[3] = E::V(0);
-  template_data[4] = E::V(0);
+  let src2 ="
+    (Point2d (X 15.4) (Y -34.9)) ;; input
+    (Point2d (X   $X) (Y    $Y)) ;; pattern
 
-  template_data[6] = E::V(1);
-  template_data[7] = E::V(1);
+    (Sqrt (+ (*    $X    $X) 
+             (*    $Y    $Y)))   ;; template
+    (Sqrt (+ (*  15.4  15.4) 
+             (* -34.9 -34.9)))   ;; expected
+  ";
+  test_matcher(src2);
 
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
+  let src3 = "
+    (Point2d (X (+ 3.0 2.2)) (Y -34.9))     ;; input
+    (Point2d (X          $X) (Y    $Y))     ;; pattern
 
-  let expected_structure = [L, L, L, L, L, B, B, L, L, L, B, B, B, B, B];
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let expected_data = [
-    "Sqrt","+","*", "15.4", "15.4",
-               "*","-34.9","-34.9"
-    ].map(E::A);
-
-  core::assert_eq!(&result.0[..], &expected_structure[..]);
-  core::assert_eq!(&result.1[..], &expected_data[..]);
-
-  // expression point matching
-
-  // (Point2d ((X (+ (3.0 2.2))) (Y -34.9)))
-  let input_zipper = DyckStructureZipperU64::new(0b_1__1111000_110_0__0).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let input_data = [
-    "Pointed2d", "X", "+", "3.0",
-                           "2.2",
-                 "Y", "-34.9"
-  ].map(E::A);
-  // (Point2d ((X x) (Y x)))
-  let pattern_zipper = DyckStructureZipperU64::new(0b_1_1101100_0).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let mut pattern_data = [
-    "Pointed2d", "X", "x",
-                 "Y", "y"
-  ].map(E::A);
-  pattern_data[2] = E::V(0);
-  pattern_data[4] = E::V(1);
-
-  // (Sqrt (+ ( (* (x x))
-  //            (* (y y)) )))
-  let template_zipper = DyckStructureZipperU64::new(0b_11_11100_11100_000).unwrap();
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let mut template_data = [
-    "Sqrt","+","*","x","x",
-               "*","y","y"
-  ].map(E::A);
-
-  template_data[3] = E::V(0);
-  template_data[4] = E::V(0);
-
-  template_data[6] = E::V(1);
-  template_data[7] = E::V(1);
-
-  let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(&input_zipper, &input_data, &pattern_zipper, &pattern_data, Option::Some(&template_zipper), &template_data).unwrap();
-
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let expected_structure = [
-    L,L,  L, L,L,L,B,B,
-             L,L,L,B,B, B,B,
-
-          L, L,L,       B,B,
-                             B,B,B];
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  let expected_data = ["Sqrt","+","*", "+", "3.0", "2.2",
-                                       "+", "3.0", "2.2",
-                                  "*","-34.9","-34.9"
-  ].map(E::A);
-
-  core::assert_eq!(&result.0[..], &expected_structure[..]);
-  core::assert_eq!(&result.1[..], &expected_data[..]);
+    (Sqrt (+ (*           $X          $X) 
+             (*           $Y          $Y))) ;; template
+    (Sqrt (+ (*  (+ 3.0 2.2)  (+ 3.0 2.2)) 
+             (*        -34.9       -34.9))) ;; expected
+  ";
+  test_matcher(src3);
 }
-// struct FixSexpr(Sexpr<alloc::boxed::Box<FixSexpr>>);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeBruinLevel {
   Intro,
-  Ref(core::num::NonZeroUsize),
+  Ref(core::num::NonZeroIsize),
 }
-#[derive(Debug)]
+impl DeBruinLevel {
+  fn as_index(self) -> usize {
+    match self {
+        DeBruinLevel::Intro => 0,
+        DeBruinLevel::Ref(nzu) => (!nzu.get()) as usize,
+    }
+  }
+}
+#[derive(Debug,Clone)]
 pub struct Variables {
   /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
   store: Vec<Sym>,
 }
 impl Variables {
   fn new() -> Variables {
-    Variables { store: Vec::from([Sym("")]) }
+    Variables { store: Vec::new() }
   }
   fn aquire_de_bruin(&mut self, sym: Sym) -> DeBruinLevel {
+    if let level @ DeBruinLevel::Ref(_) = self.lookup(sym) {return level ;}
+    self.store.push(sym);
+    DeBruinLevel::Intro
+  }
+
+  fn clear(&mut self) {
+    self.store.clear();
+  }
+  
+  /// returns DeBruinLevel::Intro if the value is not yet in the table
+  fn lookup(&self, sym:Sym) -> DeBruinLevel {
     let mut idx = self.store.len();
     while idx != 0 {
       idx -= 1;
       if self.store[idx] == sym {
         // Safety: `idx` never enters the loop if it is equal to `0`
-        return DeBruinLevel::Ref(unsafe { core::num::NonZeroUsize::new_unchecked(idx) });
+        return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!(idx as isize)) });
       }
     }
-    self.store.push(sym);
     DeBruinLevel::Intro
-  }
-  fn clear(&mut self) {
-    self.store.clear();
-    self.store.push(Sym(""))
+
   }
 }
 
@@ -1287,10 +1421,10 @@ impl core::cmp::PartialEq for Sym {
 // }
 
 /// An empty enum to make recursive cases not constructable
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Void {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SExpr<A> {
   Var((DeBruinLevel, Sym)),
   Atom(Sym),
@@ -1310,7 +1444,7 @@ impl<'a, A: Debug> core::fmt::Debug for DbgSexpr<'a, A> {
   }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct App<A>(A, A);
 
 trait Functor {
@@ -1390,6 +1524,7 @@ pub struct DyckParser<'a> {
   tokenizer: Tokenizer<'a>,
   /** Tokenizer has the src too, but this keeps lifetimes simpler */
   src: &'a str,
+  threaded_variables : Option<Variables>
 }
 
 struct DyckParserIterState<'a, 't> {
@@ -1405,7 +1540,7 @@ struct DyckParserIterState<'a, 't> {
 }
 impl<'a, 't> DyckParserIterState<'a, 't> {
   #[cfg_attr(rustfmt, rustfmt::skip)]
-  fn init(DyckParser { tokenizer, src }: &'t mut DyckParser<'a>) -> Result<Option<Self>, ParseErr> {
+  fn init(DyckParser { tokenizer, src , threaded_variables}: &'t mut DyckParser<'a>) -> Result<Option<Self>, ParseErr> {
     let Option::Some(Result::Ok(Token { src_offset, r#type})) = tokenizer.next() else { return Result::Ok(Option::None); };
     let TokenType::LPar                                       = r#type           else { return Result::Err(ParseErr::MissingOpenParrenthesis(Tokenizer::at_line(src, src_offset))); };
     Result::Ok(Option::Some(Self {
@@ -1416,10 +1551,11 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
       depth       : 0,
       stack       : [0u8; 32],
       dyck_word   : 0,
-      variables   : Variables::new(),
+      variables   : if let Option::Some(vars) = threaded_variables {vars.clone()} else {Variables::new()},
       cur_token   : Token {src_offset, r#type}
     }))
   }
+
   fn append_element(&mut self, e: SExpr<Void>) {
     self.s_expr_vec.push(e);
     self.list_length += 1;
@@ -1498,9 +1634,12 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
 
 impl<'a> DyckParser<'a> {
   pub fn new(src: &'a str) -> Self {
-    Self { tokenizer: Tokenizer::init(src), src }
+    Self { tokenizer: Tokenizer::init(src), src, threaded_variables : Option::None }
   }
-
+  fn thread_variables(&mut self, mut vars : Option<Variables>) -> Option<Variables> {
+    core::mem::swap(&mut vars, &mut self.threaded_variables);
+    vars
+  }
   /// the applicative representation
   #[cfg_attr(rustfmt, rustfmt::skip)]
   pub fn parse_first_sexrs_to_dyck_app_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>> {
@@ -1541,8 +1680,12 @@ impl<'a> DyckParser<'a> {
           },
       }
     }
-
-    Option::Some(Result::Ok((DyckStructureZipperU64::new(state.dyck_word).unwrap(), state.s_expr_vec, state.variables)))
+    let zipper = DyckStructureZipperU64::new(state.dyck_word).unwrap();
+    let s_expr_vec = state.s_expr_vec;
+    let variables = state.variables;
+    if let Option::Some(v) =  &mut self.threaded_variables { *v = variables.clone() };
+    
+    Option::Some(Result::Ok((zipper, s_expr_vec, variables)))
   }
 
   /// the list representation
@@ -1576,8 +1719,12 @@ impl<'a> DyckParser<'a> {
           },
       }
     }
-
-    Option::Some(Result::Ok((DyckStructureZipperU64::new(state.dyck_word).unwrap(), state.s_expr_vec, state.variables)))
+    let zipper = DyckStructureZipperU64::new(state.dyck_word).unwrap();
+    let s_expr_vec = state.s_expr_vec;
+    let variables = state.variables;
+    if let Option::Some(v) =  &mut self.threaded_variables { *v = variables.clone() };
+    
+    Option::Some(Result::Ok((zipper, s_expr_vec, variables)))
   }
 }
 impl<'a> Iterator for DyckParser<'a> {

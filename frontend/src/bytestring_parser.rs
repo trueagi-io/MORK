@@ -21,7 +21,7 @@ pub enum Tag {
   Arity(u8),
 }
 
-fn item_byte(b: Tag) -> u8 {
+pub fn item_byte(b: Tag) -> u8 {
   match b {
     Tag::NewVar => { 0b1100_0000 | 0 }
     Tag::SymbolSize(s) => { debug_assert!(s > 0 && s < 64); 0b1100_0000 | s }
@@ -279,6 +279,8 @@ impl BufferedIterator {
 // }
 
 pub trait Parser {
+  fn tokenizer(&mut self, s: String) -> String { return s }
+
   fn sexprUnsafe(&mut self, it: &mut BufferedIterator, variables: &mut Vec<String>, target: &mut ExprZipper) -> bool {
     while it.hasNext() {
       match it.head() as char {
@@ -336,7 +338,7 @@ pub trait Parser {
         } }
         ')' => { panic!("Unexpected right bracket") }
         _ => {
-          let e = {
+          let e = self.tokenizer({
             if it.hasNext() && it.head() == '"' as u8 {
               {
                 let mut sb = "".to_string();
@@ -375,7 +377,7 @@ pub trait Parser {
                 sb
               }
             }
-          };
+          });
           target.write_symbol(e.as_bytes());
           target.loc += 1 + e.len();
           return true;

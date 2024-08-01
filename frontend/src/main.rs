@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs;
+use std::{fs, ptr};
 use std::hint::black_box;
 use std::io::{BufReader, Read};
 use std::time::Instant;
@@ -185,19 +185,54 @@ use std::time::Instant;
 // }
 
 use mork::bytestring_parser::{Expr, ExprZipper, Parser, isDigit, BufferedIterator};
+use ringmap::trie_map::BytesTrieMap;
 
-struct DataParser {}
+struct DataParser {
+    count: u64,
+    symbols: BytesTrieMap<String>,
+}
 
-impl Parser for DataParser {}
+impl DataParser {
+    fn new() -> Self {
+        Self {
+            count: 3,
+            symbols: BytesTrieMap::new(),
+        }
+    }
+}
+
+fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
+    let ir = u64::from_be(i);
+    unsafe { ptr::write_unaligned(buffer as *mut u64, ir) };
+    let bs = (8 - ir.trailing_zeros()/8) as usize;
+    let l = bs.max(1);
+    unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
+}
+
+impl Parser for DataParser {
+    fn tokenizer(&mut self, s: String) -> String {
+        if let Some(r) = self.symbols.get(s.as_bytes()) {
+            r.clone()
+        } else {
+            self.count += 1;
+            let mut buf: [u8; 8] = [0; 8];
+            let slice = gen_key(self.count, buf.as_mut_ptr());
+            let string = String::from_utf8_lossy(slice).to_string();
+            self.symbols.insert(s.as_bytes(), string.clone());
+            string
+        }
+    }
+}
 
 fn main() {
     // let mut file = std::fs::File::open("resources/edges5000.metta")
     let mut file = std::fs::File::open("resources/edges67458171.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
-    let mut parser = DataParser { };
+    let mut parser = DataParser::new();
 
     let t0 = Instant::now();
+    let mut btm = BytesTrieMap::new();
     let mut i = 0;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
@@ -205,16 +240,18 @@ fn main() {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
-                // stack.set_len(ez.loc);
+                stack.set_len(ez.loc);
+                btm.insert(&stack[..], i);
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
                 // println!("{:?}", stack);
                 // ExprZipper::new(ez.root).traverse(0); println!();
-                black_box(ez.root);
+                // black_box(ez.root);
             } else { break }
             i += 1;
             vs.set_len(0);
         }
     }
-    println!("parsed {}", i);
-    println!("took {} ms", t0.elapsed().as_millis()); // 34 seconds
+    println!("built {}", i);
+    println!("took {} ms", t0.elapsed().as_millis()); // 11GB, 44 seconds
+    // println!("map contains: {}", btm.len());
 }

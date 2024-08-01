@@ -1,0 +1,13 @@
+[package]
+name = "aunt-kg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[dependencies.mork]
+path = "../../frontend"
+
+[dependencies.ringmap]
+path = "../../../RingMap"
+#features = ["all_dense_nodes"]

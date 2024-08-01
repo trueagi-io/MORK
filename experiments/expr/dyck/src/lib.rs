@@ -22,7 +22,12 @@ use core::{
   result::Result,
 };
 use num_bigint::BigUint;
-use std::{fmt::{Debug, Display}, num::NonZeroUsize, ops::Neg};
+use std::{
+  env::var,
+  fmt::{Debug, Display},
+  num::{NonZeroIsize, NonZeroUsize},
+  ops::Neg, usize,
+};
 
 mod finite;
 
@@ -35,7 +40,7 @@ mod finite;
 /// - `0..0t____h` (_t_=5, _h_=0) tree `0..0011010`
 /// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree
 /// - `0..0___th_` (_t_=2, _h_=1) the right sub tree (a leaf)
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct SubtreeSlice {
   /// the position right after the last leaf of a subtree.
   pub(crate) terminal: u8,
@@ -57,7 +62,7 @@ impl SubtreeSlice {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct DyckStructureZipperU64 {
   structure: u64,
   current_depth: u8,
@@ -307,20 +312,25 @@ impl DyckStructureZipperU64 {
     self.current_depth == 0
   }
   // This moves in a cycle. so if you return to the root and make this call, it will start the iteration again
-  pub fn next_depth_first_left_to_right_action(&self) -> DFSLeftToRightAction  {
+  pub fn next_depth_first_left_to_right_action(&self) -> DFSLeftToRightAction {
     core::todo!("ADD TESTS");
-    
+
     type Action = DFSLeftToRightAction;
     let is_left = self.current_is_left_branch();
     let is_leaf = self.current_is_leaf();
-    if self.current_depth == 0 { 
-      return if is_leaf {Action::Root}
-             else       {Action::DecendLeft}
+    if self.current_depth == 0 {
+      return if is_leaf { Action::Root } else { Action::DecendLeft };
     }
-    if is_left && is_leaf  {return Action::GoRight; }
-    if is_left && !is_leaf {return Action::DecendLeft;}
-    
-    if self.current_depth == 1 { return Action::Root; }
+    if is_left && is_leaf {
+      return Action::GoRight;
+    }
+    if is_left && !is_leaf {
+      return Action::DecendLeft;
+    }
+
+    if self.current_depth == 1 {
+      return Action::Root;
+    }
     Action::AccendRight
   }
 
@@ -339,7 +349,6 @@ impl DyckStructureZipperU64 {
     }
     action
   }
-
 
   /// Produce an iterator that generates the indices of the leaves in breadth first traversal order
   pub fn current_breadth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
@@ -382,7 +391,7 @@ impl DyckStructureZipperU64 {
   }
 
   /// Produce an iterator that generates the traversal metadata in breadth first traversal order
-  pub fn current_breadth_first_with_traversal_metadata(&self) -> impl Iterator<Item = ( SubtreeSlice, TraversalPath)> + core::marker::Send + core::marker::Sync + 'static {
+  pub fn current_breadth_first_with_traversal_metadata(&self) -> impl Iterator<Item = (SubtreeSlice, TraversalPath)> + core::marker::Send + core::marker::Sync + 'static {
     const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
 
     core::todo!("ADD TESTS");
@@ -395,10 +404,12 @@ impl DyckStructureZipperU64 {
     for each in 0..=self.current_depth {
       tmp.current_depth = each;
       cur_path <<= 1;
-      if !tmp.current_is_left_branch() { cur_path |= 1 }
+      if !tmp.current_is_left_branch() {
+        cur_path |= 1
+      }
     }
 
-    // after this point `tmp`'s only needs to mantain the structure field from self, the rest is scratch space. 
+    // after this point `tmp`'s only needs to mantain the structure field from self, the rest is scratch space.
     let mut front = 0;
     let mut end = 1;
     ring_buffer[0] = (self.stack[self.current_depth as usize], TraversalPath(cur_path));
@@ -413,7 +424,7 @@ impl DyckStructureZipperU64 {
 
         if recent_enqueue > 0 {
           let idx = (end - recent_enqueue) % MAX_DEFERED;
-          recent_enqueue-=1;
+          recent_enqueue -= 1;
           break Option::Some(ring_buffer[idx]);
         }
 
@@ -450,25 +461,23 @@ impl DyckStructureZipperU64 {
 
   /// Match the self argument with the pattern. As Zippers must have at least one element, an empty template should have [`Option::None`] as the template argument with the template data being `&[]`
   pub fn match_template_at_current<E: MatchElement>(
-    self          : &Self, 
-    self_data     : &[E::Element], 
-    pattern       : &Self, 
-    pattern_data  : &[E::Element], 
-    template      : Option<&Self>, 
-    template_data : &[E::Element],
-    var_table     : &E::VarTable,
+    self: &Self,
+    self_data: &[E::Element],
+    pattern: &Self,
+    pattern_data: &[E::Element],
+    template: Option<&Self>,
+    template_data: &[E::Element],
+    var_table: &E::VarTable,
   ) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
   where
-    E::Element : Clone,
+    E::Element: Clone,
   {
     core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
     core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
 
-
     #[track_caller]
-    fn get_binding_index<E : MatchElement>(var_table: &<E as MatchElement>::VarTable, v : &E::Var) -> usize {
-      let DeBruinLevel::Ref(l) = E::var_de_bruin_level(var_table, v)
-      else {
+    fn get_binding_index<E: MatchElement>(var_table: &<E as MatchElement>::VarTable, v: &E::Var) -> usize {
+      let DeBruinLevel::Ref(l) = E::var_de_bruin_level(var_table, v) else {
         core::panic!("The variables should have been in the table already! {:?}", core::panic::Location::caller())
       };
       (!l.get()) as usize
@@ -514,8 +523,7 @@ impl DyckStructureZipperU64 {
             }
           }
           ElementType::Var(v) => {
-
-            let level = get_binding_index::<E>(var_table,v);
+            let level = get_binding_index::<E>(var_table, v);
 
             match de_bruin_level_offset {
               Option::None => de_bruin_level_offset = Option::Some(level),
@@ -569,12 +577,12 @@ impl DyckStructureZipperU64 {
 
       let e = &template_data[template_z.current_first_leaf_store_index()];
       match E::element_type(e) {
-        ElementType::Atom(_)  => '_push_atom: {
+        ElementType::Atom(_) => '_push_atom: {
           values.push(e.clone());
           structure.push(LeafBranch::L)
         }
         ElementType::Var(v) => '_push_binding: {
-          let level =  get_binding_index::<E>(var_table,v);
+          let level = get_binding_index::<E>(var_table, v);
           let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
           let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
 
@@ -654,7 +662,7 @@ pub trait MatchElement {
   /// Atoms that are considered equal are determined to match.
   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool;
   /// if the var is not in the table, it returns DeBruinLevel::Intro
-  fn var_de_bruin_level(table: &Self::VarTable ,var: &Self::Var) -> DeBruinLevel;
+  fn var_de_bruin_level(table: &Self::VarTable, var: &Self::Var) -> DeBruinLevel;
 }
 
 pub(crate) mod left_branch_impl {
@@ -1092,7 +1100,6 @@ fn test_zipper_breadth_and_depth_first_traversal_perf() {
   core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
 }
 
-
 #[cfg_attr(rustfmt, rustfmt::skip)]
 #[test]
 fn test_naive_matching() {
@@ -1175,42 +1182,56 @@ pub enum DeBruinLevel {
 impl DeBruinLevel {
   fn as_index(self) -> usize {
     match self {
-        DeBruinLevel::Intro => 0,
-        DeBruinLevel::Ref(nzu) => (!nzu.get()) as usize,
+      DeBruinLevel::Intro => 0,
+      DeBruinLevel::Ref(nzu) => (!nzu.get()) as usize,
     }
   }
 }
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Variables {
   /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
   store: Vec<Sym>,
+  absolute: Option<usize>,
 }
 impl Variables {
   fn new() -> Variables {
-    Variables { store: Vec::new() }
+    Variables { store: Vec::new(), absolute: Option::None }
   }
   fn aquire_de_bruin(&mut self, sym: Sym) -> DeBruinLevel {
-    if let level @ DeBruinLevel::Ref(_) = self.lookup(sym) {return level ;}
+    if let level @ DeBruinLevel::Ref(_) = self.lookup(sym) {
+      return level;
+    }
     self.store.push(sym);
+    if let Option::Some(v) = self.absolute {
+      //Safety: We just pushed to the vec, so len > 0
+      return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((self.store.len() + v) as isize - 1)) });
+    }
     DeBruinLevel::Intro
   }
 
   fn clear(&mut self) {
     self.store.clear();
   }
-  
+
   /// returns DeBruinLevel::Intro if the value is not yet in the table
-  fn lookup(&self, sym:Sym) -> DeBruinLevel {
+  fn lookup(&self, sym: Sym) -> DeBruinLevel {
+    let offset = self.absolute.unwrap_or(0);
     let mut idx = self.store.len();
     while idx != 0 {
       idx -= 1;
       if self.store[idx] == sym {
         // Safety: `idx` never enters the loop if it is equal to `0`
-        return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!(idx as isize)) });
+        return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((idx + offset) as isize)) });
       }
     }
     DeBruinLevel::Intro
+  }
 
+  fn to_relative(&mut self) {
+    self.absolute=Option::None
+  }
+  fn to_absolute(&mut self, offset: usize) {
+    self.absolute=Option::Some(offset)
   }
 }
 
@@ -1368,7 +1389,7 @@ pub struct DyckParser<'a> {
   tokenizer: Tokenizer<'a>,
   /** Tokenizer has the src too, but this keeps lifetimes simpler */
   src: &'a str,
-  threaded_variables : Option<Variables>
+  threaded_variables: Option<Variables>,
 }
 
 struct DyckParserIterState<'a, 't> {
@@ -1380,7 +1401,7 @@ struct DyckParserIterState<'a, 't> {
   stack: [u8; 32],
   dyck_word: u64,
   variables: Variables,
-  cur_token: Token, 
+  cur_token: Token,
 }
 impl<'a, 't> DyckParserIterState<'a, 't> {
   #[cfg_attr(rustfmt, rustfmt::skip)]
@@ -1420,7 +1441,7 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
       }
     }
   }
-  fn push(&mut self) -> Result<(), ParseErr>  {
+  fn push(&mut self) -> Result<(), ParseErr> {
     if self.depth == 32 {
       self.consume_till_balanced();
       return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset)));
@@ -1449,13 +1470,19 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
   }
 
   fn make_var(&mut self, sym: Sym) -> Result<(), ParseErr> {
-    if self.s_expr_vec.len() == 32 { self.consume_till_balanced(); return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset))); }
+    if self.s_expr_vec.len() == 32 {
+      self.consume_till_balanced();
+      return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset)));
+    }
     let elem = SExpr::Var((self.variables.aquire_de_bruin(sym), sym));
     self.append_element(elem);
     Result::Ok(())
   }
-  fn make_atom(&mut self, sym: Sym) -> Result<(), ParseErr>  {
-    if self.s_expr_vec.len() == 32 { self.consume_till_balanced(); return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset))); }
+  fn make_atom(&mut self, sym: Sym) -> Result<(), ParseErr> {
+    if self.s_expr_vec.len() == 32 {
+      self.consume_till_balanced();
+      return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset)));
+    }
     let elem = SExpr::Atom(sym);
     self.append_element(elem);
     Result::Ok(())
@@ -1463,24 +1490,24 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
   fn next_token(&mut self) -> Option<Result<Token, ParseErr>> {
     let r = self.tokenizer.next();
     match r {
-        Option::Some(Result::Ok(t @ Token { src_offset, r#type })) => {
-          self.cur_token = Token {src_offset, r#type};
-          Option::Some(Result::Ok(t))
-        },
-        Option::Some(Result::Err(e)) => {
-          self.consume_till_balanced();
-          Option::Some(Result::Err(ParseErr::TokenizationError(e)))
-        },
-        Option::None => Option::None,
+      Option::Some(Result::Ok(t @ Token { src_offset, r#type })) => {
+        self.cur_token = Token { src_offset, r#type };
+        Option::Some(Result::Ok(t))
+      }
+      Option::Some(Result::Err(e)) => {
+        self.consume_till_balanced();
+        Option::Some(Result::Err(ParseErr::TokenizationError(e)))
+      }
+      Option::None => Option::None,
     }
   }
 }
 
 impl<'a> DyckParser<'a> {
   pub fn new(src: &'a str) -> Self {
-    Self { tokenizer: Tokenizer::init(src), src, threaded_variables : Option::None }
+    Self { tokenizer: Tokenizer::init(src), src, threaded_variables: Option::None }
   }
-  fn thread_variables(&mut self, mut vars : Option<Variables>) -> Option<Variables> {
+  fn thread_variables(&mut self, mut vars: Option<Variables>) -> Option<Variables> {
     core::mem::swap(&mut vars, &mut self.threaded_variables);
     vars
   }
@@ -1739,4 +1766,330 @@ fn test_dyck_parser() {
   }
   let end = start.elapsed().as_millis();
   std::println!("count : {count}\ntime : {end}")
+}
+
+#[cfg_attr(rustfmt, rustfmt::skip)]
+#[test]
+fn test_examples(){
+  let sym = |c| Sym::new(c); 
+  let [f,g,h] = ["f", "g", "h"].map(sym); 
+  let [a,b,c] = ["a", "b", "c"].map(sym); 
+  let [A,B,C] = ["A", "B", "C"].map(sym);
+  let S = sym("S");
+  let [eq,comma,colon,arrow,star,plus] = ["=", ",", ":", "-->", "*", "+"].map(sym);
+
+  let parse = |src| DyckParser::new(src).next().unwrap().unwrap();
+  type ParserOutput = (DyckStructureZipperU64, Vec<SExpr<Void>>, Variables);
+  let [e1,e2,e3,r1] = [
+    "(f $x a)",
+    "(f $x $y $y $x)",
+    "(f $y (g $y $x))",
+    "(= (nTimes (, $x (S (S $n)))) (Plus (, $x (S Z)) (, $x (S $n))))",
+  ].map(parse);
+  
+  fn atom(a : Sym)->SExpr<Void> {SExpr::Atom(a)}
+  fn atoms<const L : usize>(a : [Sym; L])->[SExpr<Void>;L] {a.map(SExpr::Atom)}
+  
+  '_foldMap_size_fvars :{
+    // shared/src/test/scala/ExprTest.scala
+    // ```scala
+    //   test("foldMap size fvars") {
+    //   assert(e1.size == 5)
+    //   assert(e1.fvars == Seq(1, 10))
+    //   assert(e2.size == 9)
+    //   assert(e2.fvars == Seq(1))
+    //   assert(e3.size == 9)
+    //   assert(e2.fvars == Seq(1))
+    // }
+    // ```
+      
+    // `size` can be computed with the dyck word
+    // `fvars`` can be done with just an slice filter    
+    let size = |&(DyckStructureZipperU64 { structure, ..},_,_) : &ParserOutput| u64::BITS - structure.leading_zeros();
+    let fvars = |(_,data,_) : &ParserOutput| data.iter().copied().filter(|e| match e {
+      SExpr::Atom(_) => true,
+      _ => false,
+    }).collect::<Vec<_>>();
+    
+    core::assert_eq!(size(&e1), 5);
+    core::assert_eq!(&fvars(&e1), &atoms([f,a]));
+    
+    core::assert_eq!(size(&e2), 9);
+    core::assert_eq!(&fvars(&e2), &atoms([f]));
+    
+    core::assert_eq!(size(&e3), 9);
+    core::assert_eq!(&fvars(&e3), &atoms([f,g]));
+    
+    core::assert_eq!(size(&r1), 31);
+    core::assert_eq!(&fvars(&r1), &atoms([eq, sym("nTimes"), comma, S, S, sym("Plus"), comma, S, sym("Z"), comma, S]));
+  }
+
+  '_toAbsolute_toRelative : {
+    // shared/src/test/scala/ExprTest.scala
+    // ```scala
+    // test("toAbsolute toRelative") {
+    //   val e1a = Expr(f, Expr.Var(-100), a)
+    //   val e2a = Expr(f, Expr.Var(-100), Expr.Var(-101), Expr.Var(-101), Expr.Var(-100))
+    //   val e3a = Expr(f, Expr.Var(-100), Expr(g, Expr.Var(-100), Expr.Var(-101)))
+    //   assert(e1.toAbsolute(100) == e1a)
+    //   assert(e2.toAbsolute(100) == e2a)
+    //   assert(e3.toAbsolute(100) == e3a)
+    //   assert(e1a.toRelative == e1)
+    //   assert(e2a.toRelative == e2)
+    //   assert(e3a.toRelative == e3)
+    //   assert(r1.toAbsolute(100).toRelative == r1)
+    //   assert(r1.toAbsolute(100).toRelative.toAbsolute(200) == r1.toAbsolute(200))
+    // }
+    // ```
+  
+    // `toAbsolute` variables are "classical", Introductions are removed, an offset is added
+    // `toRelative` variables use DeBruin Levels, Introductions are given a different value
+    // I'm not sure why CZ2 is using a numeric constant for this, so I will omit the argument
+
+    let to_absolute = |p : &ParserOutput, offset : usize| {
+      let mut p1 = p.clone();
+      let (_,p_data,p_vars) = &mut p1;
+      p_vars.to_absolute(offset);
+      for each in p_data.iter_mut() { if let SExpr::Var((_, s)) = each { *each=SExpr::Var((p_vars.lookup(*s),*s)) };}
+      p1
+    };
+    let to_relative = |p : &ParserOutput| {
+      let mut p1 = p.clone();
+      let (_,p_data,p_vars) = &mut p1;
+      p_vars.clear();
+      for each in p_data.iter_mut() { if let SExpr::Var((_,s)) = each { *each = SExpr::Var((p_vars.aquire_de_bruin(*s),*s)); }; }
+      p1
+    };
+    
+    let abs_var = |val : usize, offset :usize, s : &'static str| SExpr::Var((DeBruinLevel::Ref(unsafe{NonZeroIsize::new_unchecked(!(val+offset) as isize)}), sym(s)));
+    
+    let mut e1a = e1.clone();
+    e1a.2.to_absolute(100);
+    let x = abs_var(0,100, "$x");
+    e1a.1= alloc::vec![atom(f), x, atom(a)];
+
+    let mut e2a = e2.clone();
+    e2a.2.to_absolute(100);
+    let x = abs_var(0,100, "$x");
+    let y = abs_var(0,101, "$y");
+    e2a.1= alloc::vec![atom(f), x, y, y, x];
+    
+
+    let mut e3a = e3.clone();
+    e3a.2.to_absolute(100);
+    let y = abs_var(0,100, "$y");
+    let x = abs_var(0,101, "$x");
+    e3a.1= alloc::vec![atom(f), y, atom(g), y, x];
+
+    core::assert_eq!(to_absolute(&e1, 100), e1a);
+    core::assert_eq!(to_absolute(&e2, 100), e2a);
+    core::assert_eq!(to_absolute(&e3, 100), e3a);
+
+    core::assert_eq!(e1, to_relative(&e1a));
+    core::assert_eq!(e2, to_relative(&e2a));
+    core::assert_eq!(e3, to_relative(&e3a));
+
+    core::assert_eq!(to_relative(&to_absolute(&r1,100)), r1);
+    core::assert_eq!(to_absolute(&to_relative(&to_absolute(&r1,100)),200), to_absolute(&r1, 200));
+  }
+
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("substReIndex") {
+  //   val r1 = Expr(f, $, _1)
+  //   assert(r1.substReIndex(Seq($)) == r1)
+  //   assert(r1.substReIndex(Seq(Expr(a, $, $))) == Expr(f, Expr(a, $, $), Expr(a, _1, _2)))
+  //   val r2 = Expr(f, $, $, _1)
+  //   assert(r2.substReIndex(Seq(Expr(a, $, $), A)) == Expr(f, Expr(a, $, $), A, Expr(a, _1, _2)))
+  //   assert(r2.substReIndex(Seq(Expr(a, $, $), $)) == Expr(f, Expr(a, $, $), $, Expr(a, _1, _2)))
+  //   assert(r2.substReIndex(Seq(Expr(a, $, _1), $)) == Expr(f, Expr(a, $, _1), $, Expr(a, _1, _1)))
+  //   val r3 = Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3))
+  //   assert(r3.substReIndex(Seq(a, b, c)) == Expr(`,`, Expr(f, a, b), Expr(g, b, c, c)))
+  //   assert(r3.substReIndex(Seq(a, $, c)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, c, c)))
+  //   assert(r3.substReIndex(Seq(a, $, $)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, $, _2)))
+  //   assert(r3.substReIndex(Seq($, $, $)) == Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3)))
+  //   assert(r3.substReIndex(Seq(a, Expr(B, $, $), c)) == Expr(`,`, Expr(f, a, Expr(B, $, $)), Expr(g, Expr(B, _1, _2), c, c)))
+  //   assert(r3.substReIndex(Seq($, Expr(B, $, $), $)) == Expr(`,`, Expr(f, $, Expr(B, $, $)), Expr(g, Expr(B, _2, _3), $, _4)))
+  //   assert(r3.substReIndex(Seq($, Expr(B, $, _1), c)) == Expr(`,`, Expr(f, $, Expr(B, $, _2)), Expr(g, Expr(B, _2, _2), c, c)))
+  //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, _1), c)) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, _3)), Expr(g, Expr(B, _3, _3), c, c)))
+  //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, $, _2), Expr(C, $, _1))) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, $, _4)), Expr(g, Expr(B, _3, _4, _4), Expr(C, $, _5), Expr(C, _5, _5))))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("matches") {
+  //   /*
+  //   for all matching lhs, rhs
+  //   val Some((lhs_vars, rhs_vars)) = (lhs matches rhs)
+  //   assert(lhs.substRel(lhs_vars) == rhs.substRel(rhs_vars))
+  //   */
+  //   assert((a matches a).contains((List(), List())))
+  //   assert((a matches b).isEmpty)
+  //   assert(($ matches $).contains((List($),List($))))
+  //   assert((Expr(a, b) matches Expr(a, b)).contains((List(), List())))
+  //   assert((Expr(a, b) matches Expr(a, c)).isEmpty)
+  //   assert((Expr($, b) matches Expr(a, b)).contains((List(a),List())))
+  //   assert((Expr(Expr($, a), Expr(_1, b)) matches Expr(Expr(c, a), Expr(c, b))).contains((List(c),List())))
+  //   assert((Expr(Expr($, a), Expr(_1, b)) matches Expr(Expr(c, a), Expr(a, b))).isEmpty)
+  //   assert((Expr(Expr($, a), Expr(_1, b)) matches Expr(Expr(a, $), Expr(a, _1))).isEmpty)
+  //   assert((Expr(Expr($, a), Expr(_1, a)) matches Expr(Expr(b, $), Expr(b, _1))).contains((List(b), List(a))))
+  //   // println(Expr(Expr($, a), Expr(_1, b)) matches Expr(Expr($, a), Expr(b, _1)))
+  //   assert((Expr(Expr(a, $), Expr(_1, b)) matches Expr(Expr($, a), Expr(_1, b))).contains((List(a),List(a))))
+  //   // println(Expr($, _1, a, _1) matches Expr($, _1, _1, a))
+  //   assert((Expr($, _1, a, _1) matches Expr($, _1, _1, b)).isEmpty)
+  //   assert((Expr($, _1, a, _1) matches Expr($, _1, _1, b)).isEmpty)
+  //   assert((Expr($, a, _1) matches Expr(Expr(b, $), $, Expr(_2, _1))).isEmpty)
+  //   // println(Expr($, a, _1) matches Expr(Expr(b, $), $, Expr($, _1)))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("unifiable") {
+  //   assert(a unifiable a)
+  //   assert(!(a unifiable b))
+  //   assert($ unifiable $)
+  //   assert(Expr(a, b) unifiable Expr(a, b))
+  //   assert(!(Expr(a, b) unifiable Expr(a, c)))
+  //   assert(Expr($, b) unifiable Expr(a, b))
+  //   assert(Expr(Expr($, a), Expr(_1, b)) unifiable Expr(Expr(c, a), Expr(c, b)))
+  //   assert(!(Expr(Expr($, a), Expr(_1, b)) unifiable Expr(Expr(c, a), Expr(a, b))))
+  //   assert(!(Expr(Expr($, a), Expr(_1, b)) unifiable Expr(Expr(a, $), Expr(a, _1))))
+  //   assert(Expr(Expr($, a), Expr(_1, a)) unifiable Expr(Expr(b, $), Expr(b, _1)))
+  //   assert(Expr(Expr($, a), Expr(_1, b)) unifiable Expr(Expr($, a), Expr(b, _1)))
+  //   assert(Expr(Expr(a, $), Expr(_1, b)) unifiable Expr(Expr($, a), Expr(_1, b)))
+  //   assert(Expr($, _1, a, _1) unifiable Expr($, _1, _1, a))
+  //   assert(!(Expr($, _1, a, _1) unifiable Expr($, _1, _1, b)))
+  //   assert(!(Expr($, _1, a, _1) unifiable Expr($, _1, _1, b)))
+  //   assert(!(Expr($, a, _1) unifiable Expr(Expr(b, $), $, Expr(_2, _1))))
+  //   assert(Expr($, a, _1) unifiable Expr(Expr(b, $), $, Expr($, _1)))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("unify bindings") {
+  //   val $v = Var(-301)
+  //   val $w = Var(-302)
+  //   assert(Expr.unify(Expr(a, Expr(b, $x), Expr(f, $y, $x)),
+  //     Expr(a, Expr(b, $z), Expr(f, $z, Expr(g, $v, $w)))) ==
+  //   Map($x.leftMost -> App(App(g, $v), $w),
+  //       $y.leftMost -> App(App(g, $v), $w),
+  //       $z.leftMost -> App(App(g, $v), $w)))
+
+  //   try
+  //     Expr.unifyTo(Expr(`=`, App(App(App(f, $), _1), $), _2), Expr(`=`, App(App($, $), $), $))
+  //     assert(false)
+  //   catch case Solver.Cycle(r, d) => ()
+
+  //   try
+  //     Expr.unifyTo(Expr(`=`, App(App(App(f, $), _1), $), _2), Expr(`=`, App(App(f, $), App(App(_1, $), $)), $))
+  //     assert(false)
+  //   catch case Solver.Conflict(_, _) => ()
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("unify multiple") {
+  //   /*
+  //   for all unifiable E1, E2, E3
+  //   val m = Expr.unify(E1, E2, E3)
+  //   E1.substAbs(m) == E2.substAbs(m) == E3.substAbs(m)
+  //   */
+  //   assert(Expr.unify(Expr($x, a, $x), $y, Expr(Expr(a, b), $z, Expr($z, b))) == Map(
+  //     $x -> Expr(a, b),
+  //     $y -> Expr(Expr(a, b), a, Expr(a, b)),
+  //     $z -> a
+  //   ).map{ case (Var(i), e) => i -> e })
+
+  //   assert(Expr.unify(Expr(a, Expr(a, $x), Expr(a, $x, $y)), Expr($z, Expr($z, b), Expr($z, b, c))) == Map(
+  //     $x -> b,
+  //     $y -> c,
+  //     $z -> a
+  //   ).map{ case (Var(i), e) => i -> e })
+
+  //   assert(Expr.unify(
+  //     Expr(Expr(f, Var(-11)), Expr(Var(-12), Var(-13))),
+  //     Expr(Expr(Var(-20), a), Expr(Var(-22), Var(-23))),
+  //     Expr(Expr(Var(-30), Var(-31)), Expr(g, Var(-33))),
+  //     Expr(Expr(Var(-40), Var(-41)), Expr(Var(-42), b))
+  //   ) == Map(-22 -> g, -40 -> f, -11 -> a, -23 -> b, -30 -> f, -42 -> g, -20 -> f, -33 -> b, -31 -> a, -12 -> g, -13 -> b, -41 -> a))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("transform") {
+  //   assert(Expr(A, a, b).transform(Expr(A, $, $), Expr(B, _2, _1)) == Expr(B, b, a))
+
+  //   val pair = Var(1000)
+  //   val rightItem = Var(1001)
+  //   val list = Var(1002)
+  //   val head = Var(1003)
+  //   val last = Var(1004)
+
+  //   {
+  //     val data =    Expr(pair, a, b)
+  //     val pattern = Expr(pair, a, $)
+  //     val template = Expr(rightItem, _1)
+  //     assert(data.transform(pattern, template) == Expr(rightItem, b))      
+  //   }
+    
+  //   {
+  //     val listData = Expr(list, Expr(pair, a, b), Expr(pair, b, c), Expr(pair, A, A))
+  //     val listOf3pattern = Expr(list, $, $, $)
+  //     val headTemplate = Expr(head, _1)
+  //     val lastTemplate = Expr(last, _3)
+
+  //     val extremaTemplate = Expr(pair, _1, _3)
+
+  //     assert(listData.transform(listOf3pattern, headTemplate) == Expr(head, Expr(pair, a, b)))
+  //     assert(listData.transform(listOf3pattern, lastTemplate) == Expr(last, Expr(pair, A, A)))
+  //     assert(listData.transform(listOf3pattern, extremaTemplate) == Expr(pair, Expr(pair, a, b), Expr(pair, A, A)))
+  //   }
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("subst") {
+  //   assert(e1.substRel(Seq(b)) == Expr(f, b, a))
+  //   assert(e2.substRel(Seq(a, b)) == Expr(f, a, b, b, a))
+  //   assert(e3.substRel(Seq(a, b)) == Expr(f, a, Expr(g, a, b)))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("large subst") {
+  //   import Expr.*
+  //   val `5` = Var(200)
+  //   val Z = Var(201)
+  //   assert(r1.substRel(Seq(`5`, App(g,App(g,Z)))) == App(App(`=`,App(f,App(App(`,`,`5`),App(g,App(g,App(g,App(g,Z))))))),App(App(h,App(App(`,`,`5`),App(g,a))),App(App(`,`,`5`),App(g,App(g,App(g,Z)))))))
+  // }
+  // ```
+
+
+  // shared/src/test/scala/ExprTest.scala
+  // ```scala
+  // test("show pretty") {
+  //   assert(e1.show == "Expr(Var(1), Var(0), Var(10))")
+  //   assert(e2.show == "Expr(Var(1), Var(0), Var(0), Var(-2), Var(-1))")
+  //   assert(e3.show == "Expr(Var(1), Var(0), Expr(Var(2), Var(-1), Var(0)))")
+  //   assert(e1.pretty(false) == "(1 ◆ 10)")
+  //   assert(e2.pretty(false) == "(1 ◆ ◆ ⏴₂ ⏴₁)")
+  //   assert(e3.pretty(false) == "(1 ◆ (2 ⏴₁ ◆))")
+  // }
+  // ```
 }

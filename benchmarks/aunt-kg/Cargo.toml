@@ -10,4 +10,4 @@ path = "../../frontend"
 
 [dependencies.ringmap]
 path = "../../../RingMap"
-#features = ["all_dense_nodes"]
+features = ["all_dense_nodes"]

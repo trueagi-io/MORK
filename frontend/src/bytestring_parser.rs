@@ -7,7 +7,7 @@ use std::ptr::slice_from_raw_parts;
 use std::str::Utf8Error;
 
 #[derive(Copy, Clone, Debug)]
-struct Breadcrumb {
+pub struct Breadcrumb {
   parent: u32,
   arity: u8,
   seen: u8,
@@ -38,14 +38,34 @@ fn byte_item(b: u8) -> Tag {
   else { panic!("reserved") }
 }
 
+#[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Expr {
   pub ptr: *mut u8,
+}
+
+impl Expr {
+  pub fn span(self) -> *const [u8] {
+    let root = self.ptr;
+    let mut ez = ExprZipper::new(self);
+    loop {
+      if !ez.next() {
+        let size = ez.loc + match ez.tag() {
+          Tag::NewVar => { 1 }
+          Tag::VarRef(r) => { 1 }
+          Tag::SymbolSize(s) => { 1 + (s as usize) }
+          Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+        };
+        return slice_from_raw_parts(root, size)
+      }
+    }
+  }
 }
 
 pub struct ExprZipper {
   pub root: Expr,
   pub loc: usize,
-  trace: Vec<Breadcrumb>,
+  pub trace: Vec<Breadcrumb>,
 }
 
 impl ExprZipper {
@@ -71,7 +91,7 @@ impl ExprZipper {
     if let Tag::SymbolSize(n) = tag { return unsafe { Err(&*slice_from_raw_parts(self.root.ptr.byte_add(self.loc + 1), n as usize)) } }
     else { return Ok(tag) }
   }
-  fn subexpr(&self) -> Expr { unsafe { Expr { ptr: self.root.ptr.byte_add(self.loc) } } }
+  pub fn subexpr(&self) -> Expr { unsafe { Expr { ptr: self.root.ptr.byte_add(self.loc) } } }
 
   fn write_arity(&mut self, arity: u8) -> bool {
     unsafe {
@@ -79,7 +99,13 @@ impl ExprZipper {
       true
     }
   }
-  fn write_symbol(&mut self, value: &[u8]) -> bool {
+  pub fn write(&mut self, value: &[u8]) -> bool {
+    unsafe {
+      std::ptr::copy_nonoverlapping(value.as_ptr(), self.root.ptr.byte_add(self.loc), value.len());
+      true
+    }
+  }
+  pub fn write_symbol(&mut self, value: &[u8]) -> bool {
     unsafe {
       let l = value.len();
       debug_assert!(l < 64);
@@ -102,7 +128,7 @@ impl ExprZipper {
     }
   }
 
-  fn tag_str(&self) -> String {
+  pub fn tag_str(&self) -> String {
     match self.tag() {
       Tag::NewVar => { "$".to_string() }
       Tag::VarRef(r) => { format!("_{}", r + 1) }
@@ -130,7 +156,7 @@ impl ExprZipper {
     }
   }
 
-  fn next(&mut self) -> bool {
+  pub fn next(&mut self) -> bool {
     match self.trace.last_mut() {
       None => { false }
       Some(&mut Breadcrumb { parent: p, arity: a, seen: ref mut s }) => {
@@ -154,14 +180,14 @@ impl ExprZipper {
     }
   }
 
-  fn parent(&mut self) -> bool {
+  pub fn parent(&mut self) -> bool {
     let Some(Breadcrumb { parent: p, arity: a, seen: s }) = self.trace.last() else { return false; };
     self.loc = *p as usize;
     self.trace.pop();
     true
   }
 
-  fn next_child(&mut self) -> bool {
+  pub fn next_child(&mut self) -> bool {
     loop {
       // println!("#");
       if !self.next() { return false; }

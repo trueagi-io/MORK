@@ -35,7 +35,7 @@ fn byte_item(b: u8) -> Tag {
   else if (b & 0b1100_0000) == 0b1100_0000 { return Tag::SymbolSize(b & 0b0011_1111) }
   else if (b & 0b1100_0000) == 0b1000_0000 { return Tag::VarRef(b & 0b0011_1111) }
   else if (b & 0b1100_0000) == 0b0000_0000 { return Tag::Arity(b & 0b0011_1111) }
-  else { panic!("reserved") }
+  else { panic!("reserved {}", b) }
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +62,7 @@ impl Expr {
   }
 }
 
+#[derive(Clone)]
 pub struct ExprZipper {
   pub root: Expr,
   pub loc: usize,
@@ -99,9 +100,11 @@ impl ExprZipper {
       true
     }
   }
-  pub fn write(&mut self, value: &[u8]) -> bool {
+  pub fn write_move(&mut self, value: &[u8]) -> bool {
     unsafe {
-      std::ptr::copy_nonoverlapping(value.as_ptr(), self.root.ptr.byte_add(self.loc), value.len());
+      let l = value.len();
+      std::ptr::copy_nonoverlapping(value.as_ptr(), self.root.ptr.byte_add(self.loc), l);
+      self.loc += l;
       true
     }
   }
@@ -157,9 +160,12 @@ impl ExprZipper {
   }
 
   pub fn next(&mut self) -> bool {
+    // let t = self.tag();
+    // let ct = self.tag_str();
     match self.trace.last_mut() {
       None => { false }
       Some(&mut Breadcrumb { parent: p, arity: a, seen: ref mut s }) => {
+        // println!("parent {} loc {} tag {}", p, self.loc, ct);
         // println!("{} < {}", s, a);
         if *s < a {
           *s += 1;

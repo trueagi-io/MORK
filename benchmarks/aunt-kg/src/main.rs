@@ -45,8 +45,8 @@ impl Parser for DataParser {
 }
 
 fn main() {
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
-    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
@@ -98,7 +98,7 @@ fn main() {
             None => { break }
             Some(v) => {
                 j += 1;
-                // println!("iter {}", v);
+                // println!("iter {} value {}", j, v);
                 full_parent_path.extend(parent_zipper.path());
                 debug_assert!(family.contains(full_parent_path.clone()));
                 // println!("zipper path {:?}", parent_zipper.path());
@@ -119,10 +119,11 @@ fn main() {
 
                 rhsz.next_child();
                 rhsz.next_child();
-                rhsz.write(_2_span);
-                rhsz.next_child();
-                rhsz.write(_1_span);
-                rhsz.parent();
+                rhsz.write_move(_2_span);
+                // println!("{}", rhsz.tag_str());
+                // rhsz.next_child();
+                // println!("{}", rhsz.tag_str());
+                rhsz.write_move(_1_span);
                 // println!("{:?}", &full_child_path[0..30]);
                 // println!("{}", unsafe { std::str::from_utf8_unchecked(&full_child_path[0..30]) });
                 // print!("rhs: "); ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() }).traverse(0); println!();

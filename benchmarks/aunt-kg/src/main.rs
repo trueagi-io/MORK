@@ -1,3 +1,4 @@
+use std::hint::black_box;
 use std::io::Read;
 use std::ptr;
 use std::ptr::slice_from_raw_parts;
@@ -30,7 +31,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> String {
-        return s;
+        // return s;
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
@@ -73,15 +74,23 @@ fn main() {
         }
     }
     println!("built {}", i);
-    println!("parsing and loading took {} ms", t0.elapsed().as_millis()); // 7ms
+    println!("parsing and loading took {} microseconds", t0.elapsed().as_micros());
     let t1 = Instant::now();
 
     // family |= family.subst((parent $x $y), (child $y $x))
-    let parent_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(6)), b'p', b'a', b'r', b'e', b'n', b't'];
+    // let parent_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(6)), b'p', b'a', b'r', b'e', b'n', b't'];
+    let mut parent_path = vec![item_byte(Tag::Arity(3))];
+    let parent_symbol = parser.tokenizer("parent".to_string());
+    parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
+    parent_path.extend(parent_symbol.as_bytes());
     let mut full_parent_path = parent_path.clone();
     // println!("parent prefix {:?}", parent_path);
     let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
-    let child_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'h', b'i', b'l', b'd'];
+    // let child_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'h', b'i', b'l', b'd'];
+    let mut child_path = vec![item_byte(Tag::Arity(3))];
+    let child_symbol = parser.tokenizer("child".to_string());
+    child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
+    child_path.extend(child_symbol.as_bytes());
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
     let mut child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
 
@@ -89,7 +98,7 @@ fn main() {
     // loop {
     //     match cs.next() {
     //         None => { break }
-    //         Some((k, v)) => { println!("cursor {:?}", k) }
+    //         Some((k, v)) => { black_box(k); /*println!("cursor {:?}", k)*/ }
     //     }
     // }
     let mut j = 0;
@@ -131,15 +140,16 @@ fn main() {
                 // assumes rhsz is at the rhs of the expression
                 let slice = unsafe { ptr::slice_from_raw_parts(rhsz.root.ptr.byte_offset(child_path.len() as isize), unsafe{&*Expr{ ptr: full_child_path.as_mut_ptr() }.span()}.len() - child_path.len()).as_ref().unwrap() };
                 // println!("descending slice {:?}", slice);
+                // black_box(slice);
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(-v);
                 child_zipper.reset();
-                // break
+
                 full_parent_path.truncate(parent_path.len())
             }
         }
     }
 
-    println!("creating extra indices took {} ms", t1.elapsed().as_micros()); // ms
+    println!("creating extra indices took {} microseconds", t1.elapsed().as_micros());
     println!("total now {}", family.val_count())
 }

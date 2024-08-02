@@ -8,7 +8,7 @@ typed-arena = "2.0.2"
 regex = "1.10.4"
 
 [build]
-rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"
+rustflags = "-C opt-level=3 -C target-cpu=native"
 
 [dependencies.ringmap]
 path = "../../RingMap"

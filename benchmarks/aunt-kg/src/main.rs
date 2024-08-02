@@ -52,6 +52,7 @@ fn main() {
 
     let t0 = Instant::now();
     let mut family = BytesTrieMap::new();
+    let family_ptr = &mut family as *mut BytesTrieMap<i32>;
     let mut i = 0;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
@@ -76,26 +77,44 @@ fn main() {
 
     // family |= family.subst((parent $x $y), (child $y $x))
     let parent_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(6)), b'p', b'a', b'r', b'e', b'n', b't'];
+    let mut full_parent_path = parent_path.clone();
     println!("parent prefix {:?}", parent_path);
     let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
     let child_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'h', b'i', b'l', b'd'];
-    let mut child_zipper = family.write_zipper_at_path(&child_path[..]);
+    let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
+    let mut child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
+
+    let mut cs = family.cursor();
+    loop {
+        match cs.next() {
+            None => { break }
+            Some((k, v)) => { println!("cursor {:?}", k) }
+        }
+    }
+
     loop {
         match parent_zipper.to_next_val() {
             None => { break }
             Some(v) => {
-                println!("sub path {:?}", parent_zipper.full_path());
-                println!("{}", unsafe { std::str::from_utf8_unchecked(parent_zipper.full_path()) });
-                let lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(parent_zipper.full_path().as_ptr()) } });
-                println!("{}", lhsz.traverse(0));
-                // TODO: do the transform
-                let rhsz = ExprZipper::new(Expr{ ptr: ptr::null_mut() });
+                full_parent_path.extend(parent_zipper.path());
+                assert!(family.contains(full_parent_path.clone()));
+                println!("zipper path {:?}", parent_zipper.path());
+                println!("sub path {:?}", full_parent_path);
+                println!("sub path {}", unsafe { std::str::from_utf8_unchecked(full_parent_path.as_ref()) });
+                // should be read zipper
+                let lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(full_parent_path.as_ptr()) } });
+                println!("lhs {}", lhsz.traverse(0));
+                let mut rhsz = ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() });
+                rhsz.next_child();
+                println!("rhs {}", rhsz.traverse(0));
 
                 // assumes rhsz is at the rhs of the expression
-                let slice = unsafe { ptr::slice_from_raw_parts(rhsz.root.ptr.byte_offset(child_path.len() as isize), rhsz.loc - child_path.len()) };
+                let slice = unsafe { ptr::slice_from_raw_parts(rhsz.root.ptr.byte_offset(child_path.len() as isize), rhsz.loc - child_path.len()).as_ref().unwrap() };
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(-v);
                 child_zipper.reset();
+
+                full_parent_path = parent_path.clone();
             }
         }
     }

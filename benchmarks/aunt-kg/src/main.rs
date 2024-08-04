@@ -1,11 +1,14 @@
 use std::hint::black_box;
 use std::io::Read;
+use std::ops::Deref;
 use std::ptr;
 use std::ptr::slice_from_raw_parts;
 use std::time::Instant;
-use mork::bytestring_parser::{Expr, ExprZipper, Parser, item_byte, BufferedIterator, Tag};
+use mork_bytestring::*;
+use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
 use ringmap::trie_map::BytesTrieMap;
 use ringmap::zipper::Zipper;
+use ringmap::ring::Lattice;
 
 struct DataParser {
     count: u64,
@@ -75,6 +78,7 @@ fn main() {
     }
     println!("built {}", i);
     println!("parsing and loading took {} microseconds", t0.elapsed().as_micros());
+    println!("total now {}", family.val_count());
     let t1 = Instant::now();
 
     // family |= family.subst((parent $x $y), (child $y $x))
@@ -83,7 +87,6 @@ fn main() {
     let parent_symbol = parser.tokenizer("parent".to_string());
     parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
     parent_path.extend(parent_symbol.as_bytes());
-    let mut full_parent_path = parent_path.clone();
     // println!("parent prefix {:?}", parent_path);
     let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
     // let child_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'h', b'i', b'l', b'd'];
@@ -108,13 +111,12 @@ fn main() {
             Some(v) => {
                 j += 1;
                 // println!("iter {} value {}", j, v);
-                full_parent_path.extend(parent_zipper.path());
-                debug_assert!(family.contains(full_parent_path.clone()));
+                debug_assert!(family.contains(parent_zipper.origin_path().unwrap()));
                 // println!("zipper path {:?}", parent_zipper.path());
                 // println!("sub path {:?}", full_parent_path);
                 // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(full_parent_path.as_ref()) });
                 // should be read zipper
-                let mut lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(full_parent_path.as_ptr()) } });
+                let mut lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(parent_zipper.origin_path().unwrap().as_ptr()) } });
                 let mut rhsz = ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() });
                 // print!("lhs: "); lhsz.traverse(0); println!();
                 lhsz.next_child(); // parent
@@ -144,12 +146,58 @@ fn main() {
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(-v);
                 child_zipper.reset();
-
-                full_parent_path.truncate(parent_path.len())
             }
         }
     }
 
-    println!("creating extra indices took {} microseconds", t1.elapsed().as_micros());
-    println!("total now {}", family.val_count())
+    println!("creating extra index took (child) {} microseconds", t1.elapsed().as_micros());
+    println!("total now {}", family.val_count());
+    // let t2 = Instant::now();
+    //
+    // let mut female_path = vec![item_byte(Tag::Arity(2))];
+    // let female_symbol = parser.tokenizer("female".to_string());
+    // female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
+    // female_path.extend(child_symbol.as_bytes());
+    //
+    // let mut female_zipper = family.read_zipper_at_path(&female_path[..]);
+    //
+    // let mut male_path = vec![item_byte(Tag::Arity(2))];
+    // let male_symbol = parser.tokenizer("male".to_string());
+    // male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
+    // male_path.extend(child_symbol.as_bytes());
+    //
+    // let mut male_zipper = family.read_zipper_at_path(&male_path[..]);
+    //
+    // let mut person_path = vec![item_byte(Tag::Arity(2))];
+    // let person_symbol = parser.tokenizer("person".to_string());
+    // person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
+    // person_path.extend(child_symbol.as_bytes());
+    //
+    // let mut person_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]);
+    //
+    // female_zipper.focus_node.join_dyn(male_zipper.focus_node)
+    // // unsafe{ &mut *family_ptr }.
+    //
+    // println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
+    // println!("total now {}", family.val_count());
+
+    /*let t3 = Instant::now();
+
+    // for person <- people.present do
+    //     val em = family.em.apps.em.apps.em.vars(child.leftMost).em.vars(person).em
+
+    let mut j = 0;
+    loop {
+        match parent_zipper.to_next_val() {
+            None => { break }
+            Some(v) => {
+                j += 1;
+                // println!("iter {} value {}", j, v);
+
+
+            }
+        }
+    }
+
+    println!("getting all parents took {} microseconds", t3.elapsed().as_micros());*/
 }

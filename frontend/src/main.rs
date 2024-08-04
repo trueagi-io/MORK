@@ -184,7 +184,8 @@ use std::time::Instant;
 //     println!("took {} ms", t0.elapsed().as_millis()); // 42 seconds
 // }
 
-use mork::bytestring_parser::{Expr, ExprZipper, Parser, isDigit, BufferedIterator};
+use mork_bytestring::{Expr, ExprZipper};
+use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
 use ringmap::trie_map::BytesTrieMap;
 
 struct DataParser {
@@ -232,7 +233,7 @@ fn main() {
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
-    let mut btm = BytesTrieMap::new();
+    // let mut btm = BytesTrieMap::new();
     let mut i = 0;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
@@ -240,12 +241,12 @@ fn main() {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
-                stack.set_len(ez.loc);
-                btm.insert(&stack[..], i);
+                // stack.set_len(ez.loc);
+                // btm.insert(&stack[..], i);
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
                 // println!("{:?}", stack);
                 // ExprZipper::new(ez.root).traverse(0); println!();
-                // black_box(ez.root);
+                black_box(ez.root);
             } else { break }
             i += 1;
             vs.set_len(0);

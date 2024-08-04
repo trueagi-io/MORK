@@ -6,11 +6,13 @@ edition = "2021"
 [build]
 rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"
 
-[dependencies]
-
-[dependencies.mork]
-path = "../../frontend"
 
 [dependencies.ringmap]
 path = "../../../RingMap"
 features = ["all_dense_nodes"]
+
+[dependencies.mork-frontend]
+path = "../../frontend"
+
+[dependencies.mork-bytestring]
+path = "../../experiments/expr/bytestring"

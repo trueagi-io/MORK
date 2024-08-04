@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [build]
-rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"
+rustflags = "-C opt-level=3 -C target-cpu=native"

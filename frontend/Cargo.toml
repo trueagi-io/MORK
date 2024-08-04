@@ -1,5 +1,5 @@
 [package]
-name = "mork"
+name = "mork-frontend"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,3 +13,6 @@ rustflags = "-C opt-level=3 -C target-cpu=native"
 [dependencies.ringmap]
 path = "../../RingMap"
 #features = ["all_dense_nodes"]
+
+[dependencies.mork-bytestring]
+path = "../experiments/expr/bytestring"

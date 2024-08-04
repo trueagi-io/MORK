@@ -54,6 +54,30 @@ impl Expr {
             }
         }
     }
+
+    pub fn substitute(self, substitutions: &[Expr], buffer: *mut u8) -> *const [u8] {
+        let mut ez = ExprZipper::new(self);
+        let mut oz = ExprZipper::new(Expr{ ptr: buffer });
+        let mut var_count = 0;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => { oz.write_move(unsafe { substitutions[var_count].span().as_ref().unwrap() }); var_count += 1; }
+                Tag::VarRef(r) => { oz.write_move(unsafe { substitutions[r as usize].span().as_ref().unwrap() }); }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                let size = ez.loc + match ez.tag() {
+                    Tag::NewVar => { 1 }
+                    Tag::VarRef(r) => { 1 }
+                    Tag::SymbolSize(s) => { 1 + (s as usize) }
+                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+                };
+                return slice_from_raw_parts(self.ptr, size)
+            }
+        }
+    }
 }
 
 #[derive(Clone)]

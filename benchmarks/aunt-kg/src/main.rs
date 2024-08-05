@@ -34,7 +34,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> String {
-        // return s;
+        return s;
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
@@ -49,16 +49,16 @@ impl Parser for DataParser {
 }
 
 fn main() {
-    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
     let mut family = BytesTrieMap::new();
-    let family_ptr = &mut family as *mut BytesTrieMap<i32>;
-    let mut i = 0;
+    let family_ptr = &mut family as *mut BytesTrieMap<u32>;
+    let mut i = 0u32;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
     loop {
@@ -69,7 +69,7 @@ fn main() {
                 family.insert(&stack[..], i);
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
                 // println!("{:?}", stack);
-                // ExprZipper::new(ez.root).traverse(0); println!();
+                ExprZipper::new(ez.root).traverse(0); println!();
                 // black_box(ez.root);
             } else { break }
             i += 1;
@@ -144,7 +144,7 @@ fn main() {
                 // println!("descending slice {:?}", slice);
                 // black_box(slice);
                 child_zipper.descend_to(slice);
-                child_zipper.set_value(-v);
+                child_zipper.set_value(!v);
                 child_zipper.reset();
             }
         }
@@ -152,34 +152,45 @@ fn main() {
 
     println!("creating extra index took (child) {} microseconds", t1.elapsed().as_micros());
     println!("total now {}", family.val_count());
-    // let t2 = Instant::now();
-    //
-    // let mut female_path = vec![item_byte(Tag::Arity(2))];
-    // let female_symbol = parser.tokenizer("female".to_string());
-    // female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
-    // female_path.extend(child_symbol.as_bytes());
-    //
-    // let mut female_zipper = family.read_zipper_at_path(&female_path[..]);
-    //
-    // let mut male_path = vec![item_byte(Tag::Arity(2))];
-    // let male_symbol = parser.tokenizer("male".to_string());
-    // male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
-    // male_path.extend(child_symbol.as_bytes());
-    //
-    // let mut male_zipper = family.read_zipper_at_path(&male_path[..]);
-    //
-    // let mut person_path = vec![item_byte(Tag::Arity(2))];
-    // let person_symbol = parser.tokenizer("person".to_string());
-    // person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
-    // person_path.extend(child_symbol.as_bytes());
-    //
-    // let mut person_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]);
-    //
-    // female_zipper.focus_node.join_dyn(male_zipper.focus_node)
-    // // unsafe{ &mut *family_ptr }.
-    //
-    // println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
-    // println!("total now {}", family.val_count());
+    let t2 = Instant::now();
+
+    let mut female_path = vec![item_byte(Tag::Arity(2))];
+    let female_symbol = parser.tokenizer("female".to_string());
+    female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
+    female_path.extend(child_symbol.as_bytes());
+
+    let female_zipper = family.read_zipper_at_path(&female_path[..]);
+
+    let mut male_path = vec![item_byte(Tag::Arity(2))];
+    let male_symbol = parser.tokenizer("male".to_string());
+    male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
+    male_path.extend(child_symbol.as_bytes());
+
+    let male_zipper = family.read_zipper_at_path(&male_path[..]);
+
+    let mut person_path = vec![item_byte(Tag::Arity(2))];
+    let person_symbol = parser.tokenizer("person".to_string());
+    person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
+    person_path.extend(child_symbol.as_bytes());
+
+    println!("{:?}", family_ptr);
+    println!("{:?}", &family as *const BytesTrieMap<u32>);
+    let mut person_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]);
+
+    println!("female now {}", female_zipper.fork_zipper().val_count());
+    println!("male now {}", male_zipper.fork_zipper().val_count());
+    person_zipper.graft(female_zipper);
+    person_zipper.join(male_zipper);
+
+    println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
+    println!("total now {}", family.val_count());
+    // let mut cs = family.cursor();
+    // loop {
+    //     match cs.next() {
+    //         None => { break }
+    //         Some((k, v)) => { println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) }) }
+    //     }
+    // }
 
     /*let t3 = Instant::now();
 

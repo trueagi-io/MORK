@@ -57,6 +57,10 @@ read `x < y` as x is a prefix of y
 `{e | e∈x and ∃k∈y(e=k)}` <- intersection
 `{e | e∈x and ∃p∈y(p ≤ e)}` <- restriction
 
+**Explanation**
+return each path "p" of left map 
+ such that there exists a path in the right map that's a prefix of "p"
+
 ### Subspace
 `s(p)`
 

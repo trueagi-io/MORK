@@ -55,9 +55,8 @@ impl Expr {
         }
     }
 
-    pub fn substitute(self, substitutions: &[Expr], buffer: *mut u8) -> *const [u8] {
+    pub fn substitute(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
-        let mut oz = ExprZipper::new(Expr{ ptr: buffer });
         let mut var_count = 0;
         loop {
             match ez.tag() {
@@ -75,6 +74,88 @@ impl Expr {
                     Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
                 };
                 return slice_from_raw_parts(self.ptr, size)
+            }
+        }
+    }
+
+    pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
+        let mut ez = ExprZipper::new(self);
+        let mut additions = vec![0u8; substitutions.len()];
+        let mut var_count = 0;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    let nvars = substitutions[var_count].shift(additions[var_count], oz);
+                    var_count += 1;
+                    // ideally this is something like `_mm512_mask_add_epi8(additions, ~0 << var_count, _mm512_set1_epi8(nvars), additions)`
+                    for j in var_count..additions.len() { additions[j] += nvars; }
+                }
+                Tag::VarRef(r) => {
+                    substitutions[r as usize].bind(additions[r as usize], oz);
+                }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                let size = ez.loc + match ez.tag() {
+                    Tag::NewVar => { 1 }
+                    Tag::VarRef(r) => { 1 }
+                    Tag::SymbolSize(s) => { 1 + (s as usize) }
+                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+                };
+                // println!("additions {:?}", additions);
+                return slice_from_raw_parts(self.ptr, size)
+            }
+        }
+    }
+
+
+    fn bind(self, n: u8, oz: &mut ExprZipper) -> usize {
+        // this.foldMap(i => Var(if i == 0 then {index += 1; -index - n} else if i > 0 then i else i - n), App(_, _))
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0u8;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    if n >= var_count { oz.write_var_ref(n + var_count); oz.loc += 1; var_count += 1; }
+                    else { oz.write_var_ref(var_count - n); oz.loc += 1; var_count += 1; } }
+                Tag::VarRef(i) => { oz.write_var_ref(n + i); oz.loc += 1; } // good
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                return ez.loc + match ez.tag() {
+                    Tag::NewVar => { 1 }
+                    Tag::VarRef(r) => { 1 }
+                    Tag::SymbolSize(s) => { 1 + (s as usize) }
+                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+                }
+            }
+        }
+    }
+
+    fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
+        // this.foldMap(i => Var(if i >= 0 then i else i - n), App(_, _))
+        let mut ez = ExprZipper::new(self);
+        let mut new_var = 0u8;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => { oz.write_new_var(); oz.loc += 1; new_var += 1; }
+                Tag::VarRef(i) => { oz.write_var_ref(i + n); oz.loc += 1; }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                // return self.loc + match self.tag() {
+                //     Tag::NewVar => { 1 }
+                //     Tag::VarRef(r) => { 1 }
+                //     Tag::SymbolSize(s) => { 1 + (s as usize) }
+                //     Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+                // }
+                return new_var;
             }
         }
     }
@@ -208,6 +289,12 @@ impl ExprZipper {
         let Some(Breadcrumb { parent: p, arity: a, seen: s }) = self.trace.last() else { return false; };
         self.loc = *p as usize;
         self.trace.pop();
+        true
+    }
+
+    pub fn reset(&mut self) -> bool {
+        self.loc = 0;
+        unsafe { self.trace.set_len(0); }
         true
     }
 

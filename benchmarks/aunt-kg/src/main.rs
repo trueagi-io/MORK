@@ -49,8 +49,8 @@ impl Parser for DataParser {
 }
 
 fn main() {
-    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
@@ -99,6 +99,8 @@ fn main() {
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
     let mut child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
 
+    const RESET_WORKS: bool = true;
+
     let mut j = 0;
     loop {
         match parent_zipper.to_next_val() {
@@ -141,7 +143,8 @@ fn main() {
                 // black_box(slice);
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(!v);
-                child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
+                if RESET_WORKS { child_zipper.reset(); }
+                else { child_zipper = unsafe { &mut *family_ptr }.write_zipper_at_path(&child_path[..]); }
             }
         }
     }
@@ -188,8 +191,8 @@ fn main() {
 
     let t3 = Instant::now();
 
-    let mut person_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
-    let mut person_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&person_query_out_path[..]);
+    let mut parent_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
+    let mut parent_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&parent_query_out_path[..]);
 
     assert!(family.read_zipper_at_path(&person_path[..]).path_exists());
 
@@ -200,21 +203,34 @@ fn main() {
     // println!("person path {:?}", unsafe { std::str::from_utf8_unchecked(person_path.as_ref()) });
     // println!("child path {:?}", unsafe { std::str::from_utf8_unchecked(child_path.as_ref()) });
     // println!("child subtrie size {:?}", unsafe{ &mut *family_ptr }.read_zipper_at_path(&child_path[..]).val_count());
-    person_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
-    // person_query_out_zipper.reset(); // doesn't work, so recreating
-    assert!(unsafe{ &mut *output_ptr }.write_zipper_at_path(&person_query_out_path[..]).restrict(&family.read_zipper_at_path(&person_path[..])));
+    parent_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
+    if RESET_WORKS { parent_query_out_zipper.reset(); }
+    else { parent_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&parent_query_out_path[..]); }
+    assert!(parent_query_out_zipper.restrict(&family.read_zipper_at_path(&person_path[..])));
 
     println!("getting all parents took {} microseconds", t3.elapsed().as_micros());
 
-    // let mut cs = output.cursor();
-    // loop {
-    //     match cs.next() {
-    //         None => { break }
-    //         Some((k, v)) => {
-    //             println!("cursor {:?}", k);
-    //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
-    //             ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
-    //         }
-    //     }
-    // }
+    // let t4 = Instant::now();
+    // let mut mother_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
+    // let mut mother_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]);
+    //
+    //
+    // mother_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
+    // assert!(unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]).restrict(&family.read_zipper_at_path(&person_path[..])));
+    //
+    //
+    // println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
+
+    let mut cs = output.cursor();
+    loop {
+        match cs.next() {
+            None => { break }
+            Some((k, v)) => {
+                println!("cursor {:?}", k);
+                println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
+                ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+            }
+        }
+    }
+
 }

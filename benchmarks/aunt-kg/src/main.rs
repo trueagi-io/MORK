@@ -1,6 +1,7 @@
 use std::hint::black_box;
 use std::io::Read;
 use std::ops::Deref;
+use std::process::exit;
 use std::ptr;
 use std::ptr::slice_from_raw_parts;
 use std::time::Instant;
@@ -40,8 +41,11 @@ impl Parser for DataParser {
         } else {
             self.count += 1;
             let mut buf: [u8; 8] = [0; 8];
-            let slice = gen_key(self.count, buf.as_mut_ptr());
-            let string = String::from_utf8_lossy(slice).to_string();
+            // let slice = gen_key(self.count, buf.as_mut_ptr());
+            let slice = self.count.to_ne_bytes();
+            let mut c = 8;
+            while (c > 1) { if slice[c - 1] == 0 { c -= 1; } else { break; } }
+            let string = String::from_utf8_lossy(&slice[0..c]).to_string();
             self.symbols.insert(s.as_bytes(), string.clone());
             string
         }
@@ -49,8 +53,8 @@ impl Parser for DataParser {
 }
 
 fn main() {
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
-    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
@@ -99,8 +103,6 @@ fn main() {
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
     let mut child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
 
-    const RESET_WORKS: bool = true;
-
     let mut j = 0;
     loop {
         match parent_zipper.to_next_val() {
@@ -143,8 +145,7 @@ fn main() {
                 // black_box(slice);
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(!v);
-                if RESET_WORKS { child_zipper.reset(); }
-                else { child_zipper = unsafe { &mut *family_ptr }.write_zipper_at_path(&child_path[..]); }
+                child_zipper.reset();
             }
         }
     }
@@ -167,7 +168,7 @@ fn main() {
     let female_symbol = parser.tokenizer("female".to_string());
     female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
     female_path.extend(female_symbol.as_bytes());
-    let female_zipper = family.read_zipper_at_path(&female_path[..]);
+    let mut female_zipper = family.read_zipper_at_path(&female_path[..]);
 
     let mut male_path = vec![item_byte(Tag::Arity(2))];
     let male_symbol = parser.tokenizer("male".to_string());
@@ -204,33 +205,70 @@ fn main() {
     // println!("child path {:?}", unsafe { std::str::from_utf8_unchecked(child_path.as_ref()) });
     // println!("child subtrie size {:?}", unsafe{ &mut *family_ptr }.read_zipper_at_path(&child_path[..]).val_count());
     parent_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
-    if RESET_WORKS { parent_query_out_zipper.reset(); }
-    else { parent_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&parent_query_out_path[..]); }
+    parent_query_out_zipper.reset();
     assert!(parent_query_out_zipper.restrict(&family.read_zipper_at_path(&person_path[..])));
 
     println!("getting all parents took {} microseconds", t3.elapsed().as_micros());
+    println!("total out now {}", output.val_count());
+    let t4 = Instant::now();
+    let mut mother_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
+    let mut mother_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]);
 
-    // let t4 = Instant::now();
-    // let mut mother_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
-    // let mut mother_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]);
-    //
-    //
-    // mother_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
-    // assert!(unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]).restrict(&family.read_zipper_at_path(&person_path[..])));
-    //
-    //
-    // println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
+    let mut person_rzipper = family.read_zipper_at_path(&person_path[..]);
+    let mut child_rzipper = family.read_zipper_at_path(&child_path[..]);
+    female_zipper.reset();
 
-    let mut cs = output.cursor();
+    // use ringmap::counters;
+    // let C1 = counters::Counters::count_ocupancy(&output);
+    // println!("previous tn count {}", C1.total_child_items() as f64/C1.total_nodes() as f64);
+    // C1.print_histogram_by_depth();
+    let mut j = 0;
     loop {
-        match cs.next() {
+        match person_rzipper.to_next_val() {
             None => { break }
-            Some((k, v)) => {
-                println!("cursor {:?}", k);
-                println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
-                ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+            Some(v) => {
+                j += 1;
+                // println!("iter {} value {}", j, v);
+                // debug_assert!(family.contains(person_rzipper.origin_path().unwrap()));
+                // println!("zipper path {:?}", person_rzipper.path());
+                // println!("sub path {:?}", person_rzipper.origin_path().unwrap());
+                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.origin_path().unwrap()) });
+
+                child_rzipper.reset();
+                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+
+                // println!("child zipper path {:?}", child_rzipper.path());
+                // println!("child sub path {:?}", child_rzipper.origin_path().unwrap());
+                // println!("child sub path {}", unsafe { std::str::from_utf8_unchecked(child_rzipper.origin_path().unwrap()) });
+                mother_query_out_zipper.reset();
+                mother_query_out_zipper.descend_to(person_rzipper.path());
+
+                // mother_query_out_zipper.set_value(0);
+                // assert!(mother_query_out_zipper.path_exists());
+                mother_query_out_zipper.graft(&child_rzipper);
+
+                // assert!(mother_query_out_zipper.path_exists());
+                assert!(mother_query_out_zipper.meet(&female_zipper));
             }
         }
     }
 
+    println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
+    println!("j {}", j);
+    println!("total out now {}", output.val_count());
+    // let C2 = counters::Counters::count_ocupancy(&output);
+    // println!("previous tn count {}", C2.total_child_items() as f64/C2.total_nodes() as f64);
+    // C2.print_histogram_by_depth();
+
+    // let mut cs = output.cursor();
+    // loop {
+    //     match cs.next() {
+    //         None => { break }
+    //         Some((k, v)) => {
+    //             println!("cursor {:?}", k);
+    //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
+    //             ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+    //         }
+    //     }
+    // }
 }

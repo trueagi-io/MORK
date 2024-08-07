@@ -82,6 +82,34 @@ When `s = Foo.(Bar.(1 | 2 | 3) | Baz.(A | B | C)) | Cuz.(A | B)` then result is
 **Formula**
 `{e dropPrefix | e∈s}`
 
+### Subsumption
+`^ s`
+
+**Formula**
+`{e | e∈s and no e'∈s such that e' > e}`
+
+### Instantiation
+`v s`
+
+**Formula**
+`{e | e∈s and no e'∈s such that e' < e}`
+
+### Sharing
+`x ** y`
+
+**Example**
+
+
+**Intuition**
+Like the GCD: Longest shared paths.
+
+**Formula**
+`{p sharedPrefix e | p∈x and e∈y and no p'∈x and e'∈y such that (p' sharedPrefix e') > (p sharedPrefix e)}`
+`^ {p sharedPrefix e | p∈x and e∈y}`
+
+**Laws**
+`x = x <| (x ** y)`, `y = y <| (x ** y)`
+
 ### Transform
 `x \p -> q`
 

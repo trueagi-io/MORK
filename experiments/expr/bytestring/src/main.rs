@@ -15,6 +15,27 @@ fn traverse(ez: &mut ExprZipper) {
     // println!("{:?}", ez.parents);
 }
 
+fn traverse_bracketed(ez: &mut ExprZipper) {
+    //(, (f(A $ $)(B $ $ _4))(g(B _3 _4 _4)(C $ _5)(C _5 _5)))
+    loop {
+        // println!("       {:?}", ez.trace);
+        let d = ez.trace.len();
+
+        if let Tag::Arity(a) = ez.tag() { print!("(") }
+        else { print!(" {} ", &*ez.item_str()) }
+
+        if ez.next_descendant(-1, 0) { continue; }
+        // if d > 3 && ez.next_descendant(3, 0) { continue; }
+        // if d > 2 && ez.next_descendant(3, 0) { continue; }
+        // if d > 1 && ez.next_descendant(2, 0) { continue; }
+        // if d > 0 && ez.next_descendant(1, 0) { continue; }
+        // if ez.next_descendant(0, 0) { print!("%"); continue; }
+        else if ez.parent() { ez.next_child(); print!(")"); continue }
+        else { break; }
+    }
+    // println!("{:?}", ez.parents);
+}
+
 
 fn subexpr() {
     // (foo $ (200 201))
@@ -31,20 +52,78 @@ fn subexpr() {
 }
 
 fn children() {
-    // (= (func $) (add`0 (123456789 _1)))
-    let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
-    let mut ecz = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
-    println!("{} {}", ecz.item_str(), ecz.loc);
-    assert!(ecz.next_child());
-    println!("{} {}", ecz.item_str(), ecz.loc);
-    assert!(ecz.next_child());
-    println!("{} {}", ecz.item_str(), ecz.loc);
-    assert!(ecz.next_child());
-    println!("{} {}", ecz.item_str(), ecz.loc);
-    assert!(!ecz.next_child());
+    {
+        // (= (func $) (add`0 (123456789 _1)))
+        let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
+                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
+                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
+                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+        let mut ecz = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
+        println!("{} {}", ecz.item_str(), ecz.loc);
+        assert!(ecz.next_child());
+        println!("{} {}", ecz.item_str(), ecz.loc);
+        assert!(ecz.next_child());
+        println!("{} {}", ecz.item_str(), ecz.loc);
+        assert!(ecz.next_child());
+        println!("{} {}", ecz.item_str(), ecz.loc);
+        assert!(!ecz.next_child());
+    }
+
+    {
+        //(, (f(A $ $)(B $ $ _4))(g(B _3 _4 _4)(C $ _5)(C _5 _5)))
+        let mut e = vec![
+            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
+            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
+            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
+            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar), item_byte(Tag::VarRef(3)),
+            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
+            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(2)), item_byte(Tag::VarRef(3)), item_byte(Tag::VarRef(3)),
+            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::NewVar), item_byte(Tag::VarRef(4)),
+            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::VarRef(4)), item_byte(Tag::VarRef(4)),
+        ];
+        let mut ecz = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
+        print!("e: "); traverse_bracketed(&mut ExprZipper::new(Expr { ptr: e.as_mut_ptr() })); println!();
+
+        assert!(ecz.next_child());
+        print!("se: "); ecz.traverse(0); println!();
+        assert!(ecz.next_child());
+        let f = ecz.subexpr();
+        let mut fz = ExprZipper::new(f);
+        print!("se: "); ecz.traverse(0); println!();
+        // assert!(ecz.next_child());
+        assert!(ecz.next_descendant(1, 1));
+        // assert!(ecz.next_descendant(-1, 1));
+        print!("mv: "); ecz.traverse(0); println!();
+        // assert!(ecz.next_descendant(1, 1));
+        // assert!(ecz.next_descendant(2, 1));
+        // assert!(ecz.next_descendant(2, 1));
+        assert!(ecz.next_descendant(0, 0));
+        let g = ecz.subexpr();
+        let mut gz = ExprZipper::new(g);
+        print!("se: "); ecz.traverse(0); println!();
+        assert!(!ecz.next_child());
+
+        assert!(fz.next_child());
+        print!("sf: "); fz.traverse(0); println!();
+        assert!(fz.next_child());
+        // assert!(fz.next_child_relative(1, 1));
+        print!("sf: "); fz.traverse(0); println!();
+        assert!(fz.next_child());
+        // assert!(fz.next_child_relative(0, 0));
+        print!("sf: "); fz.traverse(0); println!();
+        assert!(!fz.next_child());
+
+        assert!(gz.next_child());
+        print!("sg: "); gz.traverse(0); println!();
+        assert!(gz.next_child());
+        print!("sg: "); gz.traverse(0); println!();
+        assert!(gz.next_child());
+        print!("sg: "); gz.traverse(0); println!();
+        assert!(gz.next_child());
+        print!("sg: "); gz.traverse(0); println!();
+        assert!(!gz.next_child());
+    }
+
 }
 
 fn substitute() {

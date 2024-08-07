@@ -40,17 +40,10 @@ pub struct Expr {
 
 impl Expr {
     pub fn span(self) -> *const [u8] {
-        let root = self.ptr;
         let mut ez = ExprZipper::new(self);
         loop {
             if !ez.next() {
-                let size = ez.loc + match ez.tag() {
-                    Tag::NewVar => { 1 }
-                    Tag::VarRef(r) => { 1 }
-                    Tag::SymbolSize(s) => { 1 + (s as usize) }
-                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
-                };
-                return slice_from_raw_parts(root, size)
+                return ez.finish_span();
             }
         }
     }
@@ -67,18 +60,13 @@ impl Expr {
             }
 
             if !ez.next() {
-                let size = ez.loc + match ez.tag() {
-                    Tag::NewVar => { 1 }
-                    Tag::VarRef(r) => { 1 }
-                    Tag::SymbolSize(s) => { 1 + (s as usize) }
-                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
-                };
-                return slice_from_raw_parts(self.ptr, size)
+                return ez.finish_span()
             }
         }
     }
 
     pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
+        // this can technically be done in place...
         let mut ez = ExprZipper::new(self);
         let mut additions = vec![0u8; substitutions.len()];
         let mut var_count = 0;
@@ -98,20 +86,13 @@ impl Expr {
             }
 
             if !ez.next() {
-                let size = ez.loc + match ez.tag() {
-                    Tag::NewVar => { 1 }
-                    Tag::VarRef(r) => { 1 }
-                    Tag::SymbolSize(s) => { 1 + (s as usize) }
-                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
-                };
-                // println!("additions {:?}", additions);
-                return slice_from_raw_parts(self.ptr, size)
+                return ez.finish_span()
             }
         }
     }
 
 
-    fn bind(self, n: u8, oz: &mut ExprZipper) -> usize {
+    fn bind(self, n: u8, oz: &mut ExprZipper) -> *const [u8] {
         // this.foldMap(i => Var(if i == 0 then {index += 1; -index - n} else if i > 0 then i else i - n), App(_, _))
         let mut ez = ExprZipper::new(self);
         let mut var_count = 0u8;
@@ -126,12 +107,7 @@ impl Expr {
             }
 
             if !ez.next() {
-                return ez.loc + match ez.tag() {
-                    Tag::NewVar => { 1 }
-                    Tag::VarRef(r) => { 1 }
-                    Tag::SymbolSize(s) => { 1 + (s as usize) }
-                    Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
-                }
+                return ez.finish_span()
             }
         }
     }
@@ -156,6 +132,61 @@ impl Expr {
                 //     Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
                 // }
                 return new_var;
+            }
+        }
+    }
+
+    pub fn extract_data(self, iz: &mut ExprZipper) -> Result<Option<Vec<Expr>>, Expr> {
+        let mut ez = ExprZipper::new(self);
+        let mut bindings: Vec<Expr> = vec![];
+        loop {
+            match (ez.tag(), iz.tag()) {
+                (_, Tag::NewVar) => { return Err(iz.subexpr()) }
+                (_, Tag::VarRef(_)) => { return Err(iz.subexpr()) }
+                (Tag::NewVar, Tag::SymbolSize(_)) => { bindings.push(iz.subexpr()); ez.next_child(); iz.next_child(); }
+                (Tag::NewVar, Tag::Arity(_)) => { iz.next_child(); bindings.push(iz.subexpr()); ez.next(); iz.next_child(); }
+                (Tag::VarRef(i), Tag::SymbolSize(s)) => {
+                    if let Tag::SymbolSize(s_) = unsafe { byte_item(*bindings[i as usize].ptr) } {
+                        if s != s_ { return Ok(None) }
+                        let aslice = unsafe { &*slice_from_raw_parts(bindings[i as usize].ptr.byte_add(1), s_ as usize) };
+                        let bslice = unsafe { &*slice_from_raw_parts(iz.subexpr().ptr.byte_add(1), s as usize) };
+                        if aslice != bslice { return Ok(None) }
+                        ez.next(); iz.next();
+                    } else {
+                        return Ok(None)
+                    }
+                }
+                (Tag::VarRef(i), Tag::Arity(s)) => {
+                    if let Tag::Arity(s_) = unsafe { byte_item(*bindings[i as usize].ptr) } {
+                        if s != s_ { return Ok(None) }
+                        // TODO this is quite wasteful: neither span should be re-calculated
+                        // for c in 0..s {
+                        //     iz.subexpr()
+                        // }
+                        let aslice = unsafe { &*bindings[i as usize].span() };
+                        let bslice = unsafe { &*iz.subexpr().span() };
+                        if aslice != bslice { return Ok(None) }
+                        ez.next(); iz.next();
+                    } else {
+                        return Ok(None)
+                    }
+                }
+                (Tag::SymbolSize(a), Tag::SymbolSize(b)) => {
+                    if a != b { return Ok(None) }
+                    let aslice = unsafe { &*slice_from_raw_parts(ez.subexpr().ptr.byte_add(1), a as usize) };
+                    let bslice = unsafe { &*slice_from_raw_parts(iz.subexpr().ptr.byte_add(1), b as usize) };
+                    if aslice != bslice { return Ok(None) }
+                    ez.next(); iz.next();
+                }
+                (Tag::Arity(a), Tag::Arity(b)) => {
+                    if a != b { return Ok(None) }
+                }
+                _ => { return Ok(None) }
+            }
+
+            if !ez.next() {
+
+                return Ok(Some(bindings));
             }
         }
     }
@@ -259,9 +290,13 @@ impl ExprZipper {
     }
 
     pub fn next(&mut self) -> bool {
+        self.gnext(0)
+    }
+
+    pub fn gnext(&mut self, offset: usize) -> bool {
         // let t = self.tag();
         // let ct = self.tag_str();
-        match self.trace.last_mut() {
+        match self.trace[offset..].last_mut() {
             None => { false }
             Some(&mut Breadcrumb { parent: p, arity: a, seen: ref mut s }) => {
                 // println!("parent {} loc {} tag {}", p, self.loc, ct);
@@ -299,20 +334,36 @@ impl ExprZipper {
     }
 
     pub fn next_child(&mut self) -> bool {
+        self.next_descendant(0, 0)
+    }
+
+    pub fn next_descendant(&mut self, to: i32, offset: usize) -> bool {
+        let (base, backup) = if to < 0 {
+            let last = self.trace.len() as i32 + to;
+            (self.trace[last as usize].parent, self.trace[last as usize])
+        } else if to > 0 {
+            (self.trace[(to - 1) as usize].parent, self.trace[(to - 1) as usize])
+        } else { (0, self.trace[0]) };
+        let initial = self.trace.clone();
+
+        let mut lc = 0;
         loop {
-            // println!("#");
-            if !self.next() { return false; }
-            let l = self.trace.len() - 1;
+            if !self.gnext(0) {
+                // println!("no next {} {}", lc, self.trace.len());
+                self.trace = initial;
+                return false; }
+            let l = self.trace.len() - 1 - offset;
             let parent = self.trace[l].parent;
             if let Tag::Arity(_) = self.tag() {
-                if l > 0 && self.trace[l - 1].parent == 0 {
+                if l > 0 && self.trace[l - 1].parent == base {
                     return true;
                 }
             } else {
-                if parent == 0 {
+                if parent == base {
                     return true;
                 }
             }
+            lc += 1;
         }
     }
 
@@ -340,5 +391,15 @@ impl ExprZipper {
                 offset
             }
         }
+    }
+
+    pub fn finish_span(&self) -> *const [u8] {
+        let size = self.loc + match self.tag() {
+            Tag::NewVar => { 1 }
+            Tag::VarRef(r) => { 1 }
+            Tag::SymbolSize(s) => { 1 + (s as usize) }
+            Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+        };
+        return slice_from_raw_parts(self.root.ptr, size)
     }
 }

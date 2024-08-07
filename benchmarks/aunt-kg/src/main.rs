@@ -8,7 +8,7 @@ use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
 use ringmap::trie_map::BytesTrieMap;
-use ringmap::zipper::Zipper;
+use ringmap::zipper::{ReadZipper, WriteZipper, Zipper};
 use ringmap::ring::Lattice;
 
 struct DataParser {
@@ -35,7 +35,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> String {
-        return s;
+        // return s;
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
@@ -52,7 +52,158 @@ impl Parser for DataParser {
     }
 }
 
+
+static mut ARITIES: [u64; 4] = [0u64; 4];
+
+struct CfIter<'a> {
+    i: u8,
+    w: u64,
+    mask: &'a [u64; 4]
+}
+
+impl <'a> CfIter<'a> {
+    fn new(mask: &'a [u64; 4]) -> Self {
+        Self {
+            i: 0,
+            w: mask[0],
+            mask: mask
+        }
+    }
+}
+
+impl <'a> Iterator for CfIter<'a> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        loop {
+            if self.w != 0 {
+                let wi = self.w.trailing_zeros() as u8;
+                self.w ^= 1u64 << wi;
+                let index = self.i*64 + wi;
+                return Some(index)
+            } else if self.i < 3 {
+                self.i += 1;
+                self.w = *unsafe{ self.mask.get_unchecked(self.i as usize) };
+            } else {
+                return None
+            }
+        }
+    }
+}
+
+fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
+    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
+}
+
+fn drop_symbol_head(loc: &mut ReadZipper<u64>, result: &mut WriteZipper<u64>) {
+    // println!("starting loc {:?}, {:?}", loc.path(), loc.origin_path());
+    // loop {
+    //     match loc.to_next_val() {
+    //         None => { break }
+    //         Some(_) => { println!("loc {:?}, {:?}", loc.path(), loc.origin_path()) }
+    //     }
+    // }
+
+    let m = mask_and(loc.direct_children(), unsafe { ARITIES });
+    let mut it = CfIter::new(&m);
+
+    while let Some(b) = it.next() {
+        if let Tag::SymbolSize(s) = byte_item(b) {
+            let buf = [b];
+            if loc.descend_to(buf) {
+                match s {
+                    1 => {
+                        assert!(loc.descend_indexed_child(0));
+                        loop {
+                            // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
+                            result.join(loc);
+                            // the || !part assume a well-formed map
+                            if !loc.to_sibling(true) { break };
+                        }
+                        loc.ascend(1);
+                    }
+                    2 => {
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        loop {
+                            loop {
+                                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
+                                result.join(loc);
+                                // the || !part assume a well-formed map
+                                if !loc.to_sibling(true) { break };
+                            }
+                            loc.ascend(1);
+                            if loc.to_sibling(true) { loc.descend_indexed_child(0); }
+                            else { break }
+                        }
+                        loc.ascend(1);
+                    }
+                    3 => {
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        loop {
+                            loop {
+                                loop {
+                                    // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
+                                    result.join(loc);
+                                    // the || !part assume a well-formed map
+                                    if !loc.to_sibling(true) { break };
+                                }
+                                loc.ascend(1);
+                                if loc.to_sibling(true) { loc.descend_indexed_child(0); }
+                                else { break }
+                            }
+                            loc.ascend(1);
+                            if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
+                            else { break }
+                        }
+                        loc.ascend(1);
+                    }
+                    4 => {
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        assert!(loc.descend_indexed_child(0));
+                        loop {
+                            loop {
+                                loop {
+                                    loop {
+                                        // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
+                                        result.join(loc);
+                                        // the || !part assume a well-formed map
+                                        if !loc.to_sibling(true) { break };
+                                    }
+                                    loc.ascend(1);
+                                    if loc.to_sibling(true) { loc.descend_indexed_child(0); }
+                                    else { break }
+                                }
+                                loc.ascend(1);
+                                if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
+                                else { break }
+                            }
+                            loc.ascend(1);
+                            if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
+                            else { break }
+                        }
+                        loc.ascend(1);
+                    }
+                    _ => { panic!("not symbol size 3 {}", s) }
+                }
+            }
+            loc.ascend(1);
+        } else {
+            unreachable!()
+        }
+    }
+}
+
 fn main() {
+    for size in 1..64 {
+        let k = item_byte(Tag::SymbolSize(size));
+        unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
+    }
+
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
     let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
@@ -244,10 +395,9 @@ fn main() {
                 mother_query_out_zipper.descend_to(person_rzipper.path());
 
                 // mother_query_out_zipper.set_value(0);
-                // assert!(mother_query_out_zipper.path_exists());
-                mother_query_out_zipper.graft(&child_rzipper);
+                // mother_query_out_zipper.meet_2(&child_rzipper, &female_zipper);
 
-                // assert!(mother_query_out_zipper.path_exists());
+                mother_query_out_zipper.graft(&child_rzipper);
                 assert!(mother_query_out_zipper.meet(&female_zipper));
             }
         }
@@ -260,6 +410,52 @@ fn main() {
     // println!("previous tn count {}", C2.total_child_items() as f64/C2.total_nodes() as f64);
     // C2.print_histogram_by_depth();
 
+    // val r = ((family("parent") <| family(Concat("child", person))).tail /\ family("female")) \ Singleton(person)
+    let t5 = Instant::now();
+
+
+    let mut sister_tmp_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
+    let mut sister_tmp_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&sister_tmp_query_out_path[..]);
+
+    let mut sister_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
+    let mut sister_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&sister_query_out_path[..]);
+
+    let mut j = 0;
+    loop {
+        match person_rzipper.to_next_val() {
+            None => { break }
+            Some(v) => {
+                j += 1;
+                if j == 1 { continue }
+                // println!("iter {} value {}", j, v);
+                // debug_assert!(family.contains(person_rzipper.origin_path().unwrap()));
+                // println!("zipper path {:?}", person_rzipper.path());
+                // println!("sub path {:?}", person_rzipper.origin_path().unwrap());
+                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.origin_path().unwrap()) });
+
+                child_rzipper.reset();
+                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+
+                sister_tmp_query_out_zipper.reset();
+                // sister_tmp_query_out_zipper.descend_to(person_rzipper.path());
+                sister_tmp_query_out_zipper.graft(&parent_zipper);
+
+                sister_tmp_query_out_zipper.restrict(&child_rzipper);
+
+                let nz = &mut output.read_zipper_at_path(&sister_tmp_query_out_path[..]);
+                // assert!(nz.descend_to(person_rzipper.path()));
+                sister_query_out_zipper.reset();
+                sister_query_out_zipper.descend_to(person_rzipper.path());
+                drop_symbol_head(nz, &mut sister_query_out_zipper);
+                sister_query_out_zipper.meet(&female_zipper);
+            }
+        }
+    }
+
+    println!("getting all sisters took {} microseconds", t5.elapsed().as_micros());
+    println!("j {}", j);
+    println!("total out now {}", output.val_count());
+
     // let mut cs = output.cursor();
     // loop {
     //     match cs.next() {
@@ -267,7 +463,7 @@ fn main() {
     //         Some((k, v)) => {
     //             println!("cursor {:?}", k);
     //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
-    //             ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+    //             // ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
     //         }
     //     }
     // }

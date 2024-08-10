@@ -95,101 +95,54 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head(loc: &mut ReadZipper<u64>, result: &mut WriteZipper<u64>) {
-    // println!("starting loc {:?}, {:?}", loc.path(), loc.origin_path());
-    // loop {
-    //     match loc.to_next_val() {
-    //         None => { break }
-    //         Some(_) => { println!("loc {:?}, {:?}", loc.path(), loc.origin_path()) }
-    //     }
-    // }
+fn all_at_depth<F>(loc: &mut ReadZipper<u64>, level: u32, mut action: F) where F: FnMut(&mut ReadZipper<u64>) -> () {
+    assert!(level > 0);
+    let mut i = 0;
+    while i < level {
+        if loc.descend_indexed_child(0) {
+            i += 1
+        } else if loc.to_sibling(true) {
+        } else if loc.ascend(1) {
+            i -= 1
+        } else {
+            return;
+        }
+    }
 
-    let m = mask_and(loc.direct_children(), unsafe { ARITIES });
+    while i > 0 {
+        if i == level {
+            action(loc);
+            if loc.to_sibling(true) {
+            } else {
+                assert!(loc.ascend(1));
+                i -= 1;
+            }
+        } else if i < level {
+            if loc.to_sibling(true) {
+                while i < level && loc.descend_indexed_child(0) {
+                    i += 1;
+                }
+            } else {
+                if loc.ascend(1) {
+                    i -= 1;
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+    }
+}
+
+
+fn drop_symbol_head(loc: &mut ReadZipper<u64>, result: &mut WriteZipper<u64>) {
+    let m = mask_and(loc.child_mask(), unsafe { ARITIES });
     let mut it = CfIter::new(&m);
 
     while let Some(b) = it.next() {
         if let Tag::SymbolSize(s) = byte_item(b) {
             let buf = [b];
             if loc.descend_to(buf) {
-                match s {
-                    1 => {
-                        assert!(loc.descend_indexed_child(0));
-                        loop {
-                            // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
-                            result.join(loc);
-                            // the || !part assume a well-formed map
-                            if !loc.to_sibling(true) { break };
-                        }
-                        loc.ascend(1);
-                    }
-                    2 => {
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        loop {
-                            loop {
-                                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
-                                result.join(loc);
-                                // the || !part assume a well-formed map
-                                if !loc.to_sibling(true) { break };
-                            }
-                            loc.ascend(1);
-                            if loc.to_sibling(true) { loc.descend_indexed_child(0); }
-                            else { break }
-                        }
-                        loc.ascend(1);
-                    }
-                    3 => {
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        loop {
-                            loop {
-                                loop {
-                                    // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
-                                    result.join(loc);
-                                    // the || !part assume a well-formed map
-                                    if !loc.to_sibling(true) { break };
-                                }
-                                loc.ascend(1);
-                                if loc.to_sibling(true) { loc.descend_indexed_child(0); }
-                                else { break }
-                            }
-                            loc.ascend(1);
-                            if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
-                            else { break }
-                        }
-                        loc.ascend(1);
-                    }
-                    4 => {
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        assert!(loc.descend_indexed_child(0));
-                        loop {
-                            loop {
-                                loop {
-                                    loop {
-                                        // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(loc.path()) });
-                                        result.join(loc);
-                                        // the || !part assume a well-formed map
-                                        if !loc.to_sibling(true) { break };
-                                    }
-                                    loc.ascend(1);
-                                    if loc.to_sibling(true) { loc.descend_indexed_child(0); }
-                                    else { break }
-                                }
-                                loc.ascend(1);
-                                if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
-                                else { break }
-                            }
-                            loc.ascend(1);
-                            if loc.to_sibling(true) { loc.descend_indexed_child(0); loc.descend_indexed_child(0); loc.descend_indexed_child(0); }
-                            else { break }
-                        }
-                        loc.ascend(1);
-                    }
-                    _ => { panic!("not symbol size 3 {}", s) }
-                }
+                all_at_depth(loc, s as u32, |l| { result.join_into(l); });
             }
             loc.ascend(1);
         } else {

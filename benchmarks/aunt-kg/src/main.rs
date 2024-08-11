@@ -35,7 +35,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> String {
-        // return s;
+        return s;
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
@@ -95,60 +95,24 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn all_at_depth<F>(loc: &mut ReadZipper<u64>, level: u32, mut action: F) where F: FnMut(&mut ReadZipper<u64>) -> () {
-    assert!(level > 0);
-    let mut i = 0;
-    while i < level {
-        if loc.descend_indexed_child(0) {
-            i += 1
-        } else if loc.to_sibling(true) {
-        } else if loc.ascend(1) {
-            i -= 1
-        } else {
-            return;
-        }
-    }
-
-    while i > 0 {
-        if i == level {
-            action(loc);
-            if loc.to_sibling(true) {
-            } else {
-                assert!(loc.ascend(1));
-                i -= 1;
-            }
-        } else if i < level {
-            if loc.to_sibling(true) {
-                while i < level && loc.descend_indexed_child(0) {
-                    i += 1;
-                }
-            } else {
-                if loc.ascend(1) {
-                    i -= 1;
-                } else {
-                    unreachable!();
-                }
-            }
-        }
-    }
-}
-
-
-fn drop_symbol_head(loc: &mut ReadZipper<u64>, result: &mut WriteZipper<u64>) {
+fn drop_symbol_head_2(loc: &mut WriteZipper<u64>) {
     let m = mask_and(loc.child_mask(), unsafe { ARITIES });
     let mut it = CfIter::new(&m);
 
+    let p = loc.path().to_vec();
     while let Some(b) = it.next() {
         if let Tag::SymbolSize(s) = byte_item(b) {
             let buf = [b];
-            if loc.descend_to(buf) {
-                all_at_depth(loc, s as u32, |l| { result.join_into(l); });
-            }
-            loc.ascend(1);
+            assert!(loc.descend_to(buf));
+            assert!(loc.drop_head(s as usize));
+            assert!(loc.ascend(1));
         } else {
             unreachable!()
         }
     }
+    loc.reset();
+    loc.descend_to(&p[..]);
+    loc.drop_head(1);
 }
 
 fn main() {
@@ -366,20 +330,16 @@ fn main() {
     // val r = ((family("parent") <| family(Concat("child", person))).tail /\ family("female")) \ Singleton(person)
     let t5 = Instant::now();
 
-
-    let mut sister_tmp_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
-    let mut sister_tmp_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&sister_tmp_query_out_path[..]);
-
-    let mut sister_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
+    let mut sister_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
     let mut sister_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&sister_query_out_path[..]);
 
+    person_rzipper.reset();
     let mut j = 0;
     loop {
         match person_rzipper.to_next_val() {
             None => { break }
             Some(v) => {
                 j += 1;
-                if j == 1 { continue }
                 // println!("iter {} value {}", j, v);
                 // debug_assert!(family.contains(person_rzipper.origin_path().unwrap()));
                 // println!("zipper path {:?}", person_rzipper.path());
@@ -389,18 +349,13 @@ fn main() {
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
 
-                sister_tmp_query_out_zipper.reset();
-                // sister_tmp_query_out_zipper.descend_to(person_rzipper.path());
-                sister_tmp_query_out_zipper.graft(&parent_zipper);
-
-                sister_tmp_query_out_zipper.restrict(&child_rzipper);
-
-                let nz = &mut output.read_zipper_at_path(&sister_tmp_query_out_path[..]);
-                // assert!(nz.descend_to(person_rzipper.path()));
                 sister_query_out_zipper.reset();
                 sister_query_out_zipper.descend_to(person_rzipper.path());
-                drop_symbol_head(nz, &mut sister_query_out_zipper);
-                sister_query_out_zipper.meet(&female_zipper);
+                sister_query_out_zipper.graft(&parent_zipper);
+                sister_query_out_zipper.restrict(&child_rzipper);
+                drop_symbol_head_2(&mut sister_query_out_zipper);
+                assert!(sister_query_out_zipper.meet(&female_zipper));
+                // todo remove person_rzipper.path() from sister_query_out_zipper
             }
         }
     }

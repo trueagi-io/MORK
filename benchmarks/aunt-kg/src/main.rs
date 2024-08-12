@@ -177,40 +177,24 @@ fn main() {
             None => { break }
             Some(v) => {
                 j += 1;
-                // println!("iter {} value {}", j, v);
                 debug_assert!(family.contains(parent_zipper.origin_path().unwrap()));
-                // println!("zipper path {:?}", parent_zipper.path());
-                // println!("sub path {:?}", full_parent_path);
-                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(full_parent_path.as_ref()) });
-                // should be read zipper
+
+                // should be an Expr read zipper
                 let mut lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(parent_zipper.origin_path().unwrap().as_ptr()) } });
                 let mut rhsz = ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() });
-                // print!("lhs: "); lhsz.traverse(0); println!();
+
                 lhsz.next_child(); // parent
                 lhsz.next_child(); let _1 = lhsz.subexpr(); let _1_span = unsafe { _1.span().as_ref().unwrap() }; // _1_span can actually be constructed from _2 without re-traversing
                 lhsz.next_child(); let _2 = lhsz.subexpr(); let _2_span = unsafe { _2.span().as_ref().unwrap() };
 
-                // print!("$1: "); ExprZipper::new(_1).traverse(0); println!();
-                // print!("$2: "); ExprZipper::new(_2).traverse(0); println!();
-                // println!("$1 span: {:?}", _1_span);
-                // println!("$2 span: {:?}", _2_span);
-
                 rhsz.next_child();
                 rhsz.next_child();
                 rhsz.write_move(_2_span);
-                // println!("{}", rhsz.tag_str());
-                // rhsz.next_child();
-                // println!("{}", rhsz.tag_str());
                 rhsz.write_move(_1_span);
-                // println!("{:?}", &full_child_path[0..30]);
-                // println!("{}", unsafe { std::str::from_utf8_unchecked(&full_child_path[0..30]) });
-                // print!("rhs: "); ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() }).traverse(0); println!();
 
                 // assumes rhsz is at the rhs of the expression
                 let slice = unsafe { ptr::slice_from_raw_parts(rhsz.root.ptr.byte_offset(child_path.len() as isize), unsafe{&*Expr{ ptr: full_child_path.as_mut_ptr() }.span()}.len() - child_path.len()).as_ref().unwrap() };
-                // println!("descending slice {:?}", unsafe { std::str::from_utf8_unchecked(slice.as_ref()) });
-                // println!("child_zipper loc {:?}", child_zipper.fork_zipper().origin_path());
-                // black_box(slice);
+
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(());
                 child_zipper.reset();
@@ -265,13 +249,6 @@ fn main() {
 
     assert!(family.read_zipper_at_path(&person_path[..]).path_exists());
 
-    // unsafe{ &mut *family_ptr }.write_zipper().subtract(
-    //     &family.read_zipper_at_path(& [3, 193, 48, 197, 76, 105, 122, 122, 121, 195, 84, 111, 109]));
-
-    // println!("person path {:?}", person_path);
-    // println!("person path {:?}", unsafe { std::str::from_utf8_unchecked(person_path.as_ref()) });
-    // println!("child path {:?}", unsafe { std::str::from_utf8_unchecked(child_path.as_ref()) });
-    // println!("child subtrie size {:?}", unsafe{ &mut *family_ptr }.read_zipper_at_path(&child_path[..]).val_count());
     parent_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
     parent_query_out_zipper.reset();
     assert!(parent_query_out_zipper.restrict(&family.read_zipper_at_path(&person_path[..])));
@@ -296,24 +273,11 @@ fn main() {
             None => { break }
             Some(v) => {
                 j += 1;
-                // println!("iter {} value {}", j, v);
-                // debug_assert!(family.contains(person_rzipper.origin_path().unwrap()));
-                // println!("zipper path {:?}", person_rzipper.path());
-                // println!("sub path {:?}", person_rzipper.origin_path().unwrap());
-                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.origin_path().unwrap()) });
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
-
-                // println!("child zipper path {:?}", child_rzipper.path());
-                // println!("child sub path {:?}", child_rzipper.origin_path().unwrap());
-                // println!("child sub path {}", unsafe { std::str::from_utf8_unchecked(child_rzipper.origin_path().unwrap()) });
                 mother_query_out_zipper.reset();
                 mother_query_out_zipper.descend_to(person_rzipper.path());
-
-                // mother_query_out_zipper.set_value(0);
-                // mother_query_out_zipper.meet_2(&child_rzipper, &female_zipper);
-
                 mother_query_out_zipper.graft(&child_rzipper);
                 assert!(mother_query_out_zipper.meet(&female_zipper));
             }
@@ -340,22 +304,18 @@ fn main() {
             None => { break }
             Some(v) => {
                 j += 1;
-                // println!("iter {} value {}", j, v);
-                // debug_assert!(family.contains(person_rzipper.origin_path().unwrap()));
-                // println!("zipper path {:?}", person_rzipper.path());
-                // println!("sub path {:?}", person_rzipper.origin_path().unwrap());
-                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.origin_path().unwrap()) });
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
-
                 sister_query_out_zipper.reset();
                 sister_query_out_zipper.descend_to(person_rzipper.path());
                 sister_query_out_zipper.graft(&parent_zipper);
-                sister_query_out_zipper.restrict(&child_rzipper);
+                assert!(sister_query_out_zipper.restrict(&child_rzipper));
                 drop_symbol_head_2(&mut sister_query_out_zipper);
                 assert!(sister_query_out_zipper.meet(&female_zipper));
-                // todo remove person_rzipper.path() from sister_query_out_zipper
+                if sister_query_out_zipper.descend_to(person_rzipper.path()) {
+                    sister_query_out_zipper.remove_value();
+                }
             }
         }
     }
@@ -381,7 +341,6 @@ fn main() {
             None => { break }
             Some(v) => {
                 j += 1;
-                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.path()) });
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }

@@ -9,7 +9,7 @@ use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
 use ringmap::trie_map::BytesTrieMap;
 use ringmap::zipper::{ReadZipper, WriteZipper, Zipper};
-use ringmap::ring::Lattice;
+use ringmap::ring::{Lattice, PartialDistributiveLattice};
 
 struct DataParser {
     count: u64,
@@ -95,7 +95,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head_2(loc: &mut WriteZipper<u64>) {
+fn drop_symbol_head_2(loc: &mut WriteZipper<()>) {
     let m = mask_and(loc.child_mask(), unsafe { ARITIES });
     let mut it = CfIter::new(&m);
 
@@ -129,9 +129,9 @@ fn main() {
 
     let t0 = Instant::now();
     let mut family = BytesTrieMap::new();
-    let family_ptr = &mut family as *mut BytesTrieMap<u64>;
+    let family_ptr = &mut family as *mut BytesTrieMap<()>;
     let mut output = BytesTrieMap::new();
-    let output_ptr = &mut output as *mut BytesTrieMap<u64>;
+    let output_ptr = &mut output as *mut BytesTrieMap<()>;
     let mut i = 0u64;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
@@ -140,7 +140,7 @@ fn main() {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
                 stack.set_len(ez.loc);
-                family.insert(&stack[..], i);
+                family.insert(&stack[..], ());
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
                 // println!("{:?}", stack);
                 // ExprZipper::new(ez.root).traverse(0); println!();
@@ -212,7 +212,7 @@ fn main() {
                 // println!("child_zipper loc {:?}", child_zipper.fork_zipper().origin_path());
                 // black_box(slice);
                 child_zipper.descend_to(slice);
-                child_zipper.set_value(!v);
+                child_zipper.set_value(());
                 child_zipper.reset();
             }
         }
@@ -321,7 +321,7 @@ fn main() {
     }
 
     println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
-    println!("j {}", j);
+    // println!("j {}", j);
     println!("total out now {}", output.val_count());
     // let C2 = counters::Counters::count_ocupancy(&output);
     // println!("previous tn count {}", C2.total_child_items() as f64/C2.total_nodes() as f64);
@@ -361,8 +361,60 @@ fn main() {
     }
 
     println!("getting all sisters took {} microseconds", t5.elapsed().as_micros());
-    println!("j {}", j);
+    // println!("j {}", j);
     println!("total out now {}", output.val_count());
+
+    //         val parents = family(Concat("child", person))
+    //         val grandparents = (family("child") <| parents).tail
+    //         val parent_siblings = (family("parent") <| grandparents).tail \ parents
+    //         val aunts = parent_siblings /\ family("female")
+    let t6 = Instant::now();
+
+    let mut aunt_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
+    let mut aunt_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&aunt_query_out_path[..]);
+
+    person_rzipper.reset();
+    parent_zipper.reset();
+    let mut j = 0;
+    loop {
+        match person_rzipper.to_next_val() {
+            None => { break }
+            Some(v) => {
+                j += 1;
+                // println!("sub path {}", unsafe { std::str::from_utf8_unchecked(person_rzipper.path()) });
+
+                child_rzipper.reset();
+                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+                aunt_query_out_zipper.reset();
+                aunt_query_out_zipper.descend_to(person_rzipper.path());
+                aunt_query_out_zipper.graft(&child_zipper);
+                assert!(aunt_query_out_zipper.restrict(&child_rzipper));
+                drop_symbol_head_2(&mut aunt_query_out_zipper);
+                if !aunt_query_out_zipper.restricting(&parent_zipper) { continue }
+                drop_symbol_head_2(&mut aunt_query_out_zipper);
+                assert!(aunt_query_out_zipper.subtract(&child_rzipper));
+                assert!(aunt_query_out_zipper.meet(&female_zipper));
+            }
+        }
+    }
+
+
+    println!("getting all aunts took {} microseconds", t6.elapsed().as_micros());
+    // println!("j {}", j);
+    println!("total out now {}", output.val_count());
+
+    // let mut cs = output.read_zipper();
+    // loop {
+    //     match cs.to_next_val() {
+    //         None => { break }
+    //         Some(_) => {
+    //             let k = cs.path();
+    //             println!("cursor {:?}", k);
+    //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
+    //             // ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+    //         }
+    //     }
+    // }
 
     // let mut cs = output.cursor();
     // loop {

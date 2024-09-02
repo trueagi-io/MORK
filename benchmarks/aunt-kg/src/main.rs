@@ -237,7 +237,8 @@ fn main() {
     let mut person_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]);
 
     person_zipper.graft(&female_zipper);
-    unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]).join(&male_zipper);
+    person_zipper.join(&male_zipper);
+    drop(person_zipper);
 
     println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
     println!("total now {}", family.val_count());
@@ -249,7 +250,7 @@ fn main() {
 
     assert!(family.read_zipper_at_path(&person_path[..]).path_exists());
 
-    parent_query_out_zipper.graft(&family.read_zipper_at_path(&child_path[..]));
+    parent_query_out_zipper.graft(&child_zipper);
     parent_query_out_zipper.reset();
     assert!(parent_query_out_zipper.restrict(&family.read_zipper_at_path(&person_path[..])));
 
@@ -260,7 +261,7 @@ fn main() {
     let mut mother_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]);
 
     let mut person_rzipper = family.read_zipper_at_path(&person_path[..]);
-    let mut child_rzipper = family.read_zipper_at_path(&child_path[..]);
+    let mut child_rzipper = child_zipper.fork_zipper();
     female_zipper.reset();
 
     // use ringmap::counters;

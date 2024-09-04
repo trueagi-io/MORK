@@ -129,9 +129,7 @@ fn main() {
 
     let t0 = Instant::now();
     let mut family = BytesTrieMap::new();
-    let family_ptr = &mut family as *mut BytesTrieMap<()>;
     let mut output = BytesTrieMap::new();
-    let output_ptr = &mut output as *mut BytesTrieMap<()>;
     let mut i = 0u64;
     let mut stack = Vec::with_capacity(100);
     let mut vs = Vec::with_capacity(100);
@@ -169,7 +167,7 @@ fn main() {
     child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
     child_path.extend(child_symbol.as_bytes());
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
-    let mut child_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&child_path[..]);
+    let mut child_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
 
     let mut j = 0;
     loop {
@@ -234,7 +232,7 @@ fn main() {
     person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
     person_path.extend(person_symbol.as_bytes());
 
-    let mut person_zipper = unsafe{ &mut *family_ptr }.write_zipper_at_path(&person_path[..]);
+    let mut person_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
 
     person_zipper.graft(&female_zipper);
     person_zipper.join(&male_zipper);
@@ -246,7 +244,7 @@ fn main() {
     let t3 = Instant::now();
 
     let mut parent_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
-    let mut parent_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&parent_query_out_path[..]);
+    let mut parent_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&parent_query_out_path[..]) };
 
     assert!(family.read_zipper_at_path(&person_path[..]).path_exists());
 
@@ -258,7 +256,7 @@ fn main() {
     println!("total out now {}", output.val_count());
     let t4 = Instant::now();
     let mut mother_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
-    let mut mother_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&mother_query_out_path[..]);
+    let mut mother_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&mother_query_out_path[..]) };
 
     let mut person_rzipper = family.read_zipper_at_path(&person_path[..]);
     let mut child_rzipper = child_zipper.fork_zipper();
@@ -296,7 +294,7 @@ fn main() {
     let t5 = Instant::now();
 
     let mut sister_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
-    let mut sister_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&sister_query_out_path[..]);
+    let mut sister_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&sister_query_out_path[..]) };
 
     person_rzipper.reset();
     let mut j = 0;
@@ -332,7 +330,7 @@ fn main() {
     let t6 = Instant::now();
 
     let mut aunt_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
-    let mut aunt_query_out_zipper = unsafe{ &mut *output_ptr }.write_zipper_at_path(&aunt_query_out_path[..]);
+    let mut aunt_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&aunt_query_out_path[..]) };
 
     person_rzipper.reset();
     parent_zipper.reset();

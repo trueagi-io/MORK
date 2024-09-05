@@ -111,7 +111,7 @@ fn main() {
     let t0 = Instant::now();
     let mut m = BytesTrieMap::new();
     let mut mp = &mut m as *mut BytesTrieMap<usize>;
-    let mut buildz = unsafe { &mut *mp }.write_zipper_at_path(&[0]);
+    let mut buildz = m.write_zipper_at_path(&[0]);
     let mut inserted = 0;
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
@@ -123,6 +123,7 @@ fn main() {
         buildz.ascend(s.len());
         inserted += 1;
     }
+    drop(buildz);
     // drop(mz);
     // let m = m;
     println!("building took {} ms", t0.elapsed().as_millis());
@@ -133,18 +134,18 @@ fn main() {
     for i in 1..(MAX_OFFSET + 1) {
         let k = &[i];
         let t1 = Instant::now();
-        let mut z1 = unsafe { &mut *mp }.write_zipper_at_path(k);
+        let mut z1 = unsafe{ m.write_zipper_at_exclusive_path_unchecked(k) };
 
         z1.graft(&m.read_zipper_at_path(&[i - 1]));
         drop_symbol_head_byte(&mut z1);
 
         println!("drophead {i} took {} ms", t1.elapsed().as_millis());
     }
-    println!("total seqs from start {}", unsafe { &mut *mp }.read_zipper_at_path(&[0]).val_count());
-    println!("total seqs from     1 {}", unsafe { &mut *mp }.read_zipper_at_path(&[1]).val_count());
-    println!("total seqs from     2 {}", unsafe { &mut *mp }.read_zipper_at_path(&[2]).val_count());
-    println!("total seqs from     3 {}", unsafe { &mut *mp }.read_zipper_at_path(&[3]).val_count());
-    println!("total seqs from     4 {}", unsafe { &mut *mp }.read_zipper_at_path(&[4]).val_count());
+    println!("total seqs from start {}", m.read_zipper_at_path(&[0]).val_count());
+    println!("total seqs from     1 {}", m.read_zipper_at_path(&[1]).val_count());
+    println!("total seqs from     2 {}", m.read_zipper_at_path(&[2]).val_count());
+    println!("total seqs from     3 {}", m.read_zipper_at_path(&[3]).val_count());
+    println!("total seqs from     4 {}", m.read_zipper_at_path(&[4]).val_count());
 
     const QSEQ: Vec<u64> = vec![1u64, 2, 3, 5, 8, 13];
     let qseq = encode_seq(QSEQ.into_iter().map(BigInt::from));

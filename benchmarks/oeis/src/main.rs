@@ -85,7 +85,7 @@ fn main() {
     let mut file = std::fs::File::open("/run/media/adam/14956caa-2539-4de7-bac9-d5d8416f5f11/OEIS/stripped")
         .expect("Should have been able to read the file");
     let mut s = String::new();
-    file.read_to_string(&mut s);
+    file.read_to_string(&mut s).unwrap();
     let mut sequences = vec![vec![]];
     let mut i = 0;
     for l in s.lines() {
@@ -96,11 +96,9 @@ fn main() {
             cs
         });
         let first = cs.next().unwrap();
-        // println!("{}", first);
         let a_number = first.strip_prefix("A").expect("First not A").parse::<usize>().expect("A not followed by a number");
         let numbers = cs.filter(|n| !n.is_empty()).map(|n| n.parse::<BigInt>().expect(format!("not a number {}", n).as_str()));
         let seq = encode_seq(numbers);
-        // println!("{} {:?}", a_number, numbers);
         if a_number > sequences.len() { sequences.resize(a_number + 1, vec![]) }
         sequences.insert(a_number, seq);
         i += 1;
@@ -110,9 +108,7 @@ fn main() {
 
     let t0 = Instant::now();
     let mut m = BytesTrieMap::new();
-    let mut mp = &mut m as *mut BytesTrieMap<usize>;
     let mut buildz = m.write_zipper_at_path(&[0]);
-    let mut inserted = 0;
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
         buildz.descend_to(&s[..]);
@@ -121,15 +117,11 @@ fn main() {
             Some(v) => { /* keep the smallest integer sequence */ }
         }
         buildz.ascend(s.len());
-        inserted += 1;
     }
     drop(buildz);
-    // drop(mz);
-    // let m = m;
+
     println!("building took {} ms", t0.elapsed().as_millis());
-    // println!("longest key {}", longest + 1);
-    // println!("inserted {}", inserted);
-    // println!("total leaves {}", m.val_count());
+
     const MAX_OFFSET: u8 = 10;
     for i in 1..(MAX_OFFSET + 1) {
         let k = &[i];
@@ -141,13 +133,12 @@ fn main() {
 
         println!("drophead {i} took {} ms", t1.elapsed().as_millis());
     }
-    println!("total seqs from start {}", m.read_zipper_at_path(&[0]).val_count());
-    println!("total seqs from     1 {}", m.read_zipper_at_path(&[1]).val_count());
-    println!("total seqs from     2 {}", m.read_zipper_at_path(&[2]).val_count());
-    println!("total seqs from     3 {}", m.read_zipper_at_path(&[3]).val_count());
-    println!("total seqs from     4 {}", m.read_zipper_at_path(&[4]).val_count());
 
-    const QSEQ: Vec<u64> = vec![1u64, 2, 3, 5, 8, 13];
+    for i in 0..(MAX_OFFSET + 1) {
+        println!("total seqs from {} {}", i, m.read_zipper_at_path(&[i]).val_count());
+    }
+
+    const QSEQ: [u64; 6] = [1, 2, 3, 5, 8, 13];
     let qseq = encode_seq(QSEQ.into_iter().map(BigInt::from));
     let mut q = BytesTrieMap::new();
     let mut qz = q.write_zipper();

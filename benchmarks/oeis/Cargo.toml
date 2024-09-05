@@ -1,0 +1,20 @@
+[package]
+name = "oeis"
+version = "0.1.0"
+edition = "2021"
+
+[build]
+rustflags = "-C opt-level=3 -C target-cpu=native"
+
+[dependencies]
+num = "0.4.3"
+
+[dependencies.ringmap]
+path = "../../../RingMap"
+features = ["all_dense_nodes"]
+
+[dependencies.mork-frontend]
+path = "../../frontend"
+
+[dependencies.mork-bytestring]
+path = "../../experiments/expr/bytestring"

@@ -100,11 +100,16 @@ impl core::fmt::Debug for DyckStructureZipperU64 {
 
 impl DyckStructureZipperU64 {
   const MAX_LEAVES: usize = u64::BITS as usize / 2;
+  const LEAF: Self = {
+    let mut stack = [SubtreeSlice::zeroes(); Self::MAX_LEAVES];
+    stack[0].terminal = 1;
+    Self { structure: 1, current_depth: 0, stack  }
+  };
 
   /// Creates a Zipper for the Dyck Path, if the tree is empty (Dyck path of all 0s), it will return [`Option::None`]; this avoids uneeded checks when traversing.
   /// A valid Zipper is therefore always on a non-empty tree.
   /// Validating the structure of a Zipper is costly, so it is only checked in debug builds (TODO: is there a fast algorithm for doing the check using bit shifts and masks?).
-  pub fn new(structure: u64) -> Option<Self> {
+  pub const fn new(structure: u64) -> Option<Self> {
     if let 0 = structure {
       return Option::None;
     }
@@ -112,7 +117,7 @@ impl DyckStructureZipperU64 {
     #[cfg(debug_assertions)]
     '_validate_structure: {
       let trailing = structure.leading_zeros();
-      core::debug_assert_ne!(trailing, 0);
+      core::debug_assert!(trailing != 0);
 
       let mut cursor = 1 << u64::BITS - trailing - 1;
       let mut sum: i32 = 0;
@@ -121,7 +126,7 @@ impl DyckStructureZipperU64 {
       loop {
         core::debug_assert!(!sum.is_negative());
         if cursor == 0 {
-          core::debug_assert_eq!(1, sum);
+          core::debug_assert!(1== sum);
           break;
         }
 
@@ -1922,6 +1927,112 @@ fn test_examples(){
     // }
     // ```
 
+    let pretty_print = |d : &DyckExprSubOutput| {
+      std::println!("DyckExperSubOutput(");
+      let data = match d {
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, data }) => {
+          std::println!("\tword : {word:?}");
+          data
+        }
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word, data }) => {
+          std::println!("\tword : {word:#?}");
+          data
+        },
+      };
+      std::println!("\tdata : [");
+      for each in data {
+        use alloc::string::ToString;
+        let (tag, val) = match each {
+            SExpr::Var(DebruijnLevel::Intro)  => ("Var ", "$".to_string()),
+            SExpr::Var(DebruijnLevel::Ref(r)) => ("Var ", alloc::format!("$[{}]", r.get() )),
+            SExpr::Atom(a)                    => ("Atom", a.0.to_string()),
+            _ => core::unreachable!(),
+        };
+        std::println!("\t\t{tag} {val}")
+      }
+      std::println!("]");
+      std::println!(")\n");
+    };
+
+    let intro_var = (&DyckStructureZipperU64::new(1).unwrap(),&[SExpr::Var::<Void>(DebruijnLevel::Intro)][..]);
+    let get_word = |expr : &DyckExprSubOutput| match expr {
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word,.. }) => *word,
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word,.. }) => word[0],
+    };
+    let get_data : fn(&_)->&_ = |expr : &DyckExprSubOutput|match expr {
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { data,.. }) |
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data,.. }) => data,
+    };
+    let sub_re_index_input : fn(&(DyckStructureZipperU64, Vec<SExpr>, Variables))->(&_,&_)= |x| (&x.0,&x.1[..]);
+
+
+    let r1_ = parse("(f $x $x)");      // [f $ $[-1]]  11010
+    let r1  = sub_re_index_input(&r1_);
+
+    let s1 = subst_re_index(r1, &[intro_var]);
+    core::assert_eq!{r1.0.current_substructure(), get_word(&s1).0 }
+    core::assert_eq!{r1.1,&get_data(&s1)[..]}
+
+
+    let in2_ = parse("(a $x $y)");
+    let in2  = sub_re_index_input(&in2_); 
+    let s2 = subst_re_index(r1, &[in2]);
+    let expected2_ = parse("(f (a $x $y) (a $x $y))");
+    let expected2  = subst_re_index(sub_re_index_input(&expected2_), &[intro_var, intro_var]); 
+    core::assert_eq!(get_word(&s2).0, get_word(&expected2).0);
+    core::assert_eq!(get_data(&s2), get_data(&expected2));
+
+
+    let r2_ = parse("(f $x $y $x)");
+    let r2  = sub_re_index_input(&r2_);
+    
+    let s3 = subst_re_index(r2, &[in2, (&DyckStructureZipperU64::new(1).unwrap() ,&[atom(A)])]);
+    let expected3_ = parse("(f (a $x $y) A (a $x $y))");
+    let expected3  = subst_re_index(sub_re_index_input(&expected3_), &[intro_var, intro_var]); 
+    core::assert_eq!(get_word(&s3).0, get_word(&expected3).0);
+    core::assert_eq!(get_data(&s3), get_data(&expected3));
+
+    let in4_ = parse("(a $x $x)");
+    let in4  = sub_re_index_input(&in4_); 
+    let s4 = subst_re_index(r2, &[in4, intro_var]);
+    let expected4_ = parse("(f (a $x $x) $ (a $x $x))");
+    let expected4  = subst_re_index(sub_re_index_input(&expected4_), &[intro_var, intro_var]); 
+    core::assert_eq!(get_word(&s4).0, get_word(&expected4).0);
+    core::assert_eq!(get_data(&s4), get_data(&expected4));
+
+    const LEAF : DyckStructureZipperU64 = DyckStructureZipperU64::LEAF;
+
+    let r3_ = parse("(, (f $x $y) (g $y $z $z))");
+    let r3  = sub_re_index_input(&r3_);
+
+    let s5 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), (&LEAF, &[atom(b)]), (&LEAF, &[atom(c)])]);
+    let expected5_ = parse("(, (f a b) (g b c c))");
+    let expected5  = subst_re_index(sub_re_index_input(&expected5_), &[]); 
+    core::assert_eq!(get_word(&s5).0, get_word(&expected5).0);
+    core::assert_eq!(get_data(&s5), get_data(&expected5));
+
+    let s6 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, (&LEAF, &[atom(c)])]);
+    let expected6_ = parse("(, (f a $x) (g $x c c))");
+    let expected6  = subst_re_index(sub_re_index_input(&expected6_), &[intro_var]); 
+    core::assert_eq!(get_word(&s6).0, get_word(&expected6).0);
+    core::assert_eq!(get_data(&s6), get_data(&expected6));
+    
+    let s7 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, intro_var]);
+    let expected7_ = parse("(, (f a $x) (g $x $y $y))");
+    let expected7  = subst_re_index(sub_re_index_input(&expected7_), &[intro_var, intro_var]); 
+    core::assert_eq!(get_word(&s7).0, get_word(&expected7).0);
+    core::assert_eq!(get_data(&s7), get_data(&expected7));
+
+    let s8 = subst_re_index(r3, &[intro_var, intro_var, intro_var]);
+    let expected8_ = parse("(, (f $x $y) (g $y $z $z))");
+    let expected8  = subst_re_index(sub_re_index_input(&expected8_), &[intro_var, intro_var, intro_var]); 
+    core::assert_eq!(get_word(&s8).0, get_word(&expected8).0);
+    core::assert_eq!(get_data(&s8), get_data(&expected8));
+
+
+    // pretty_print(&sub_self);
+    // std::println!("{sub_self:?}");
+    return;
 
 
    // (f $ $ _1)   \  { (a $ $) , A }
@@ -1974,16 +2085,30 @@ fn test_examples(){
     */
 
 
-    struct SmallDyckExpr {word : u64, data : Vec<SExpr>}
-    struct LargeDyckExpr {word : Vec<u64>, data : Vec<SExpr>}
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    struct Bits(pub u64);
+    impl core::fmt::Debug for Bits {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::write!(f, "{:#066b}", self.0)
+    }
+    }
+    #[derive(Debug)]
+    struct SmallDyckExpr {word : Bits, data : Vec<SExpr>}
+    #[derive(Debug)]
+    struct LargeDyckExpr {word : Vec<Bits>, data : Vec<SExpr>}
+    #[derive(Debug)]
     enum DyckExprSubOutput {
       SmallDyckExpr(SmallDyckExpr),
       LargeDyckExpr(LargeDyckExpr),
     }
+
     #[cfg_attr(rustfmt, rustfmt::skip)]
     fn subst_re_index((pat_structure, pat_data) : (&DyckStructureZipperU64, &[SExpr]), subs : &[(&DyckStructureZipperU64,&[SExpr])]) -> DyckExprSubOutput{
       const MAX_LEAVES : usize = DyckStructureZipperU64::MAX_LEAVES;
-      
+
+      core::debug_assert_eq!(pat_data.into_iter().filter(|x| core::matches!(x, SExpr::Var(DebruijnLevel::Intro))).count(), subs.len());
+
       core::debug_assert!(pat_data.len() < MAX_LEAVES);
       core::debug_assert!(subs.len() < MAX_LEAVES);
       for each in subs {
@@ -2015,10 +2140,10 @@ fn test_examples(){
 
         for (i, each) in data_slice.into_iter().enumerate() {
           if let SExpr::Var(DebruijnLevel::Intro) = each {
-          m_idx[i] = LevelIndex(*intros);
-          var_lookup[*intros as usize] = i as u8;
-          *intros +=1;
-        }
+            m_idx[i] = LevelIndex(*intros);
+            var_lookup[*intros as usize] = i as u8;
+            *intros +=1;
+          }
         }
       }
       
@@ -2049,9 +2174,11 @@ fn test_examples(){
         let mut substitute = |intro_idx : usize, is_from_ref : bool| {
 
           let idx          = pat_meta_index[intro_idx].0 as usize;
+          
+          core::debug_assert!((idx as usize) < subs.len());
+          let (sub_struct, sub_data) = subs[idx as usize];
           let depth_offset = if idx == 0 { 0 } else { subs_intros_list[idx-1] };
 
-          let (sub_struct, sub_data) = subs[idx as usize];
           let sub_data_slice         = &sub_data[sub_struct.current_leaf_store_index_range()];
           
           // refs need to know how many intros they passed
@@ -2064,7 +2191,7 @@ fn test_examples(){
                 SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get()-depth_offset as isize)))
               },
               SExpr::Var(DebruijnLevel::Intro) if is_from_ref => {
-                let val = !(intros_count + depth_offset);
+                let val = !((intros_count + depth_offset) as isize);
                 intros_count+=1;
                 // Safety : values > 0 that are negagted are always non-zero
                 SExpr::Var(DebruijnLevel::Ref(unsafe {NonZeroIsize::new_unchecked(val as isize) }))
@@ -2107,7 +2234,7 @@ fn test_examples(){
       let mut finished        = Vec::new();
       let mut last_div        = 0;
 
-      for each in (0..output_len).rev() {
+      for each in (0..pat_data.len()).rev() {
         output_word_len += trailing_pairs[each] as usize;
         let (cur_div, cur_mod) = (output_word_len/64, output_word_len%64);
 
@@ -2122,7 +2249,10 @@ fn test_examples(){
 
         let cur_word = dyck_words[each];
 
-        [cur,next] = [cur | cur_word << cur_mod, next | cur_word >> u64::BITS as usize - cur_mod];
+        [cur,next] = [
+          cur  | cur_word << cur_mod, 
+          if cur_mod == 0 {0} else { next | cur_word >> u64::BITS - cur_mod as u32} 
+        ];
         output_word_len += (u64::BITS-cur_word.leading_zeros()) as usize;
         last_div = cur_div;
       }
@@ -2130,17 +2260,16 @@ fn test_examples(){
       let data = Vec::from(&output_data[0..output_len]);
 
       if next == 0 && finished.len() == 0 {
-        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: cur, data })
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: Bits(cur), data })
       } else {
      
         finished.push(cur);
         if next != 0 || cur.leading_zeros() == 0 { finished.push(next);}
         finished.reverse();
 
-        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: finished, data })
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: unsafe { core::mem::transmute(finished)}, data })
       }
     }
-
 
 
 

@@ -1,5 +1,5 @@
 #![no_implicit_prelude]
-// #![allow(unused)]
+#![allow(unused_imports, unused_variables, dead_code)]
 
 extern crate alloc;
 extern crate core;
@@ -23,13 +23,14 @@ use core::{
 };
 use num_bigint::BigUint;
 use std::{
+  ascii,
   env::var,
   fmt::{Debug, Display},
   num::{NonZeroIsize, NonZeroUsize},
-  ops::Neg, usize,
+  ops::Neg,
+  process::Output,
+  usize,
 };
-
-mod finite;
 
 /// It should be noted that the terminal is _NEVER_ equal to the head.
 /// In the case of a leaf, the head is at the leaf position, and the terminal is one after it.
@@ -41,7 +42,7 @@ mod finite;
 /// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree
 /// - `0..0___th_` (_t_=2, _h_=1) the right sub tree (a leaf)
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) struct SubtreeSlice {
+pub struct SubtreeSlice {
   /// the position right after the last leaf of a subtree.
   pub(crate) terminal: u8,
   /// the position of the subtree (the root is a subtree of itself)
@@ -343,7 +344,7 @@ impl DyckStructureZipperU64 {
         DFSLeftToRightAction::Root        =>        { self.accend_to_root();         }
         DFSLeftToRightAction::DecendLeft  =>        { self.decend_left();            }
         DFSLeftToRightAction::GoRight     => unsafe { self.left_to_right_unchecked();}
-        DFSLeftToRightAction::AccendRight =>        { self.accend(); 
+        DFSLeftToRightAction::AccendRight =>        { self.accend();
                                                       self.left_to_right();
                                                     }
     }
@@ -459,159 +460,159 @@ impl DyckStructureZipperU64 {
     ((1 << terminal) - 1 & self.structure) >> head
   }
 
-  /// Match the self argument with the pattern. As Zippers must have at least one element, an empty template should have [`Option::None`] as the template argument with the template data being `&[]`
-  pub fn match_template_at_current<E: MatchElement>(
-    self: &Self,
-    self_data: &[E::Element],
-    pattern: &Self,
-    pattern_data: &[E::Element],
-    template: Option<&Self>,
-    template_data: &[E::Element],
-    var_table: &E::VarTable,
-  ) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
-  where
-    E::Element: Clone,
-  {
-    core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
-    core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
+  // /// Match the self argument with the pattern. As Zippers must have at least one element, an empty template should have [`Option::None`] as the template argument with the template data being `&[]`
+  // pub fn match_template_at_current<E: MatchElement>(
+  //   self: &Self,
+  //   self_data: &[E::Element],
+  //   pattern: &Self,
+  //   pattern_data: &[E::Element],
+  //   template: Option<&Self>,
+  //   template_data: &[E::Element],
+  //   var_table: &E::VarTable,
+  // ) -> Option<(Vec<LeafBranch>, Vec<E::Element>)>
+  // where
+  //   E::Element: Clone,
+  // {
+  //   core::debug_assert_eq!(self.structure.count_ones() as usize, self_data.len());
+  //   core::debug_assert_eq!(pattern.structure.count_ones() as usize, pattern_data.len());
 
-    #[track_caller]
-    fn get_binding_index<E: MatchElement>(var_table: &<E as MatchElement>::VarTable, v: &E::Var) -> usize {
-      let DeBruinLevel::Ref(l) = E::var_de_bruin_level(var_table, v) else {
-        core::panic!("The variables should have been in the table already! {:?}", core::panic::Location::caller())
-      };
-      (!l.get()) as usize
-    };
+  //   #[track_caller]
+  //   fn get_binding_index<E: MatchElement>(var_table: &<E as MatchElement>::VarTable, v: &E::Var) -> usize {
+  //     let DebruijnLevel::Ref(l) = E::var_de_bruin_level(var_table, v) else {
+  //       core::panic!("The variables should have been in the table already! {:?}", core::panic::Location::caller())
+  //     };
+  //     (!l.get()) as usize
+  //   };
 
-    // initialize zippers
-    type DZ = DyckStructureZipperU64;
-    const NULL_ZIPPER: DZ = DZ { structure: 0, current_depth: 0, stack: [SubtreeSlice::zeroes(); DZ::MAX_LEAVES] };
-    fn init_sub_zipper(z: &DZ) -> DZ {
-      let mut z1 = DZ { structure: z.structure, ..NULL_ZIPPER };
-      z1.stack[0] = z.stack[z.current_depth as usize];
-      z1
-    }
+  //   // initialize zippers
+  //   type DZ = DyckStructureZipperU64;
+  //   const NULL_ZIPPER: DZ = DZ { structure: 0, current_depth: 0, stack: [SubtreeSlice::zeroes(); DZ::MAX_LEAVES] };
+  //   fn init_sub_zipper(z: &DZ) -> DZ {
+  //     let mut z1 = DZ { structure: z.structure, ..NULL_ZIPPER };
+  //     z1.stack[0] = z.stack[z.current_depth as usize];
+  //     z1
+  //   }
 
-    let maybe_template_z = if let Option::Some(t) = template {
-      core::debug_assert_eq!(t.structure.count_ones() as usize, template_data.len());
-      Option::Some(init_sub_zipper(t))
-    } else {
-      core::debug_assert_eq!(0, template_data.len());
-      Option::None
-    };
-    let [mut self_z, mut pattern_z] = [self, pattern].map(init_sub_zipper);
+  //   let maybe_template_z = if let Option::Some(t) = template {
+  //     core::debug_assert_eq!(t.structure.count_ones() as usize, template_data.len());
+  //     Option::Some(init_sub_zipper(t))
+  //   } else {
+  //     core::debug_assert_eq!(0, template_data.len());
+  //     Option::None
+  //   };
+  //   let [mut self_z, mut pattern_z] = [self, pattern].map(init_sub_zipper);
 
-    // initialize substitution table
-    let mut de_bruin_level_offset: Option<usize> = Option::None;
-    let mut de_bruin_offset_bindings_to_self = [Option::None; Self::MAX_LEAVES];
+  //   // initialize substitution table
+  //   let mut de_bruin_level_offset: Option<usize> = Option::None;
+  //   let mut de_bruin_offset_bindings_to_self = [Option::None; Self::MAX_LEAVES];
 
-    // dfs the pattern and follow along with the argument
-    'matching: loop {
-      if pattern_z.current_is_leaf() {
-        match E::element_type(&pattern_data[pattern_z.current_first_leaf_store_index()]) {
-          ElementType::Atom(pat_atom) => {
-            if !self_z.current_is_leaf() {
-              return Option::None;
-            }
-            match E::element_type(&self_data[self_z.current_first_leaf_store_index()]) {
-              ElementType::Atom(self_atom) => {
-                if !E::atom_eq(self_atom, pat_atom) {
-                  return Option::None;
-                }
-              }
-              ElementType::Var(_) => core::unimplemented!("This matching algoritm does not do unification!"),
-            }
-          }
-          ElementType::Var(v) => {
-            let level = get_binding_index::<E>(var_table, v);
+  //   // dfs the pattern and follow along with the argument
+  //   'matching: loop {
+  //     if pattern_z.current_is_leaf() {
+  //       match E::element_type(&pattern_data[pattern_z.current_first_leaf_store_index()]) {
+  //         ElementType::Atom(pat_atom) => {
+  //           if !self_z.current_is_leaf() {
+  //             return Option::None;
+  //           }
+  //           match E::element_type(&self_data[self_z.current_first_leaf_store_index()]) {
+  //             ElementType::Atom(self_atom) => {
+  //               if !E::atom_eq(self_atom, pat_atom) {
+  //                 return Option::None;
+  //               }
+  //             }
+  //             ElementType::Var(_) => core::unimplemented!("This matching algoritm does not do unification!"),
+  //           }
+  //         }
+  //         ElementType::Var(v) => {
+  //           let level = get_binding_index::<E>(var_table, v);
 
-            match de_bruin_level_offset {
-              Option::None => de_bruin_level_offset = Option::Some(level),
+  //           match de_bruin_level_offset {
+  //             Option::None => de_bruin_level_offset = Option::Some(level),
 
-              Option::Some(offset) => core::debug_assert!(offset <= level),
-            }
-            let idx = level - de_bruin_level_offset.unwrap_or(0);
-            de_bruin_offset_bindings_to_self[idx] = Option::Some(self_z.stack[self_z.current_depth as usize]);
-          }
-        }
+  //             Option::Some(offset) => core::debug_assert!(offset <= level),
+  //           }
+  //           let idx = level - de_bruin_level_offset.unwrap_or(0);
+  //           de_bruin_offset_bindings_to_self[idx] = Option::Some(self_z.stack[self_z.current_depth as usize]);
+  //         }
+  //       }
 
-        '_pop: {
-          while !pattern_z.current_is_left_branch() {
-            if pattern_z.accend() {
-              self_z.accend();
-            } else {
-              break 'matching;
-            }
-          }
+  //       '_pop: {
+  //         while !pattern_z.current_is_left_branch() {
+  //           if pattern_z.accend() {
+  //             self_z.accend();
+  //           } else {
+  //             break 'matching;
+  //           }
+  //         }
 
-          // Safety: the reaching the end of the while loop
-          //   guarantees that we are on a left branch, so there must be a right branch
-          unsafe {
-            pattern_z.left_to_right_unchecked();
-            self_z.left_to_right_unchecked();
-          };
-        }
-      } else {
-        // current is a branch
-        let both_left = self_z.decend_left() && pattern_z.decend_left();
-        if !both_left {
-          return Option::None;
-        }
-      }
-    }
+  //         // Safety: the reaching the end of the while loop
+  //         //   guarantees that we are on a left branch, so there must be a right branch
+  //         unsafe {
+  //           pattern_z.left_to_right_unchecked();
+  //           self_z.left_to_right_unchecked();
+  //         };
+  //       }
+  //     } else {
+  //       // current is a branch
+  //       let both_left = self_z.decend_left() && pattern_z.decend_left();
+  //       if !both_left {
+  //         return Option::None;
+  //       }
+  //     }
+  //   }
 
-    let Option::Some(mut template_z) = maybe_template_z else {
-      return Option::Some((Vec::new(), Vec::new()));
-    };
+  //   let Option::Some(mut template_z) = maybe_template_z else {
+  //     return Option::Some((Vec::new(), Vec::new()));
+  //   };
 
-    // construct from the template
-    let mut structure = Vec::with_capacity(32);
-    let mut values = Vec::with_capacity(32);
+  //   // construct from the template
+  //   let mut structure = Vec::with_capacity(32);
+  //   let mut values = Vec::with_capacity(32);
 
-    self_z.accend_to_root();
+  //   self_z.accend_to_root();
 
-    let out = 'templating: loop {
-      if template_z.decend_left() {
-        continue 'templating;
-      }
+  //   let out = 'templating: loop {
+  //     if template_z.decend_left() {
+  //       continue 'templating;
+  //     }
 
-      let e = &template_data[template_z.current_first_leaf_store_index()];
-      match E::element_type(e) {
-        ElementType::Atom(_) => '_push_atom: {
-          values.push(e.clone());
-          structure.push(LeafBranch::L)
-        }
-        ElementType::Var(v) => '_push_binding: {
-          let level = get_binding_index::<E>(var_table, v);
-          let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
-          let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
+  //     let e = &template_data[template_z.current_first_leaf_store_index()];
+  //     match E::element_type(e) {
+  //       ElementType::Atom(_) => '_push_atom: {
+  //         values.push(e.clone());
+  //         structure.push(LeafBranch::L)
+  //       }
+  //       ElementType::Var(v) => '_push_binding: {
+  //         let level = get_binding_index::<E>(var_table, v);
+  //         let Option::Some(offset) = de_bruin_level_offset else { core::panic!() };
+  //         let Option::Some(binding) = de_bruin_offset_bindings_to_self[level - offset] else { core::panic!() };
 
-          self_z.stack[0] = binding;
+  //         self_z.stack[0] = binding;
 
-          let indices = self_z.current_leaf_store_index_range();
-          values.extend_from_slice(&self_data[indices]);
+  //         let indices = self_z.current_leaf_store_index_range();
+  //         values.extend_from_slice(&self_data[indices]);
 
-          let sub_structure = self_z.structure >> binding.head;
-          let mut bit_ptr = 1_u64 << binding.terminal - binding.head - 1;
+  //         let sub_structure = self_z.structure >> binding.head;
+  //         let mut bit_ptr = 1_u64 << binding.terminal - binding.head - 1;
 
-          '_convert_subtree_structure: while bit_ptr != 0 {
-            structure.push(if bit_ptr & sub_structure == 0 { LeafBranch::B } else { LeafBranch::L });
-            bit_ptr >>= 1;
-          }
-        }
-      }
+  //         '_convert_subtree_structure: while bit_ptr != 0 {
+  //           structure.push(if bit_ptr & sub_structure == 0 { LeafBranch::B } else { LeafBranch::L });
+  //           bit_ptr >>= 1;
+  //         }
+  //       }
+  //     }
 
-      '_pop: while !template_z.left_to_right() {
-        if !template_z.accend() {
-          core::debug_assert_eq!(structure.iter().filter(|s| **s == LeafBranch::L).count(), values.len());
-          break 'templating Option::Some((structure, values));
-        }
-        structure.push(LeafBranch::B);
-      }
-    };
+  //     '_pop: while !template_z.left_to_right() {
+  //       if !template_z.accend() {
+  //         core::debug_assert_eq!(structure.iter().filter(|s| **s == LeafBranch::L).count(), values.len());
+  //         break 'templating Option::Some((structure, values));
+  //       }
+  //       structure.push(LeafBranch::B);
+  //     }
+  //   };
 
-    out
-  }
+  //   out
+  // }
 }
 pub enum DFSLeftToRightAction {
   Root,
@@ -661,8 +662,8 @@ pub trait MatchElement {
   fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var>;
   /// Atoms that are considered equal are determined to match.
   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool;
-  /// if the var is not in the table, it returns DeBruinLevel::Intro
-  fn var_de_bruin_level(table: &Self::VarTable, var: &Self::Var) -> DeBruinLevel;
+  /// if the var is not in the table, it returns DebruijnLevel::Intro
+  fn var_de_bruin_level(table: &Self::VarTable, var: &Self::Var) -> DebruijnLevel;
 }
 
 pub(crate) mod left_branch_impl {
@@ -1100,138 +1101,136 @@ fn test_zipper_breadth_and_depth_first_traversal_perf() {
   core::assert!(time.as_nanos() as f64 / (2.0 * total_indicies as f64) < 100.0);
 }
 
-#[cfg_attr(rustfmt, rustfmt::skip)]
-#[test]
-fn test_naive_matching() {
+// #[cfg_attr(rustfmt, rustfmt::skip)]
+// #[test]
+// fn test_naive_matching() {
 
-  fn test_matcher(src: &str) {
-    let mut parser = DyckParser::new(src);
-    parser.thread_variables(Option::Some(Variables::new()));
-    let mut next = || parser.next().unwrap().unwrap();
-    let (   input_zipper,    input_data, _) = next();
-    let ( pattern_zipper,  pattern_data, _) = next();
-    let (template_zipper, template_data, _) = next();
-    let (expected_zipper, expected_data, _) = next();
-    let vars = parser.thread_variables(Option::None).unwrap();
+//   fn test_matcher(src: &str) {
+//     let mut parser = DyckParser::new(src);
+//     parser.thread_variables(Option::Some(Variables::new()));
+//     let mut next = || parser.next().unwrap().unwrap();
+//     let (   input_zipper,    input_data, _) = next();
+//     let ( pattern_zipper,  pattern_data, _) = next();
+//     let (template_zipper, template_data, _) = next();
+//     let (expected_zipper, expected_data, _) = next();
+//     let vars = parser.thread_variables(Option::None).unwrap();
 
-    let structure = expected_zipper.structure;
+//     let structure = expected_zipper.structure;
 
-    let expected_structure = '_convert_dyck_word : {
-      let mut structure_vec = Vec::new();
-      let mut cursor = 1 << (u64::BITS - structure.leading_zeros() - 1);
-      core::debug_assert_ne!(cursor & structure, 0);
-      while cursor !=0 {
-        structure_vec.push(if cursor & structure == 0 { LeafBranch::B } else { LeafBranch::L });
-        cursor >>= 1;
-      }
-      structure_vec
-    };
-  
-    let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(
-      &input_zipper, 
-      &input_data, 
-      &pattern_zipper, 
-      &pattern_data, 
-      Option::Some(&template_zipper), 
-      &template_data, 
-      &vars
-    ).unwrap();
+//     let expected_structure = '_convert_dyck_word : {
+//       let mut structure_vec = Vec::new();
+//       let mut cursor = 1 << (u64::BITS - structure.leading_zeros() - 1);
+//       core::debug_assert_ne!(cursor & structure, 0);
+//       while cursor !=0 {
+//         structure_vec.push(if cursor & structure == 0 { LeafBranch::B } else { LeafBranch::L });
+//         cursor >>= 1;
+//       }
+//       structure_vec
+//     };
 
-    core::assert_eq!(&result.0[..], &expected_structure[..]);
-    core::assert_eq!(&result.1[..], &expected_data[..]);
-  }
+//     let result = DyckStructureZipperU64::match_template_at_current::<TestExpr>(
+//       &input_zipper,
+//       &input_data,
+//       &pattern_zipper,
+//       &pattern_data,
+//       Option::Some(&template_zipper),
+//       &template_data,
+//       &vars
+//     ).unwrap();
 
+//     core::assert_eq!(&result.0[..], &expected_structure[..]);
+//     core::assert_eq!(&result.1[..], &expected_data[..]);
+//   }
 
-  let src1 = "
-    (a $X (b c)) ;; input
-    (a $  $Y)    ;; pattern
-    (x $Y)       ;; template
-    (x (b c))    ;; expected
-    ";  
-  test_matcher(src1);
+//   let src1 = "
+//     (a $X (b c)) ;; input
+//     (a $  $Y)    ;; pattern
+//     (x $Y)       ;; template
+//     (x (b c))    ;; expected
+//     ";
+//   test_matcher(src1);
 
+//   let src2 ="
+//     (Point2d (X 15.4) (Y -34.9)) ;; input
+//     (Point2d (X   $X) (Y    $Y)) ;; pattern
 
-  let src2 ="
-    (Point2d (X 15.4) (Y -34.9)) ;; input
-    (Point2d (X   $X) (Y    $Y)) ;; pattern
+//     (Sqrt (+ (*    $X    $X)
+//              (*    $Y    $Y)))   ;; template
+//     (Sqrt (+ (*  15.4  15.4)
+//              (* -34.9 -34.9)))   ;; expected
+//   ";
+//   test_matcher(src2);
 
-    (Sqrt (+ (*    $X    $X) 
-             (*    $Y    $Y)))   ;; template
-    (Sqrt (+ (*  15.4  15.4) 
-             (* -34.9 -34.9)))   ;; expected
-  ";
-  test_matcher(src2);
+//   let src3 = "
+//     (Point2d (X (+ 3.0 2.2)) (Y -34.9))     ;; input
+//     (Point2d (X          $X) (Y    $Y))     ;; pattern
 
-  let src3 = "
-    (Point2d (X (+ 3.0 2.2)) (Y -34.9))     ;; input
-    (Point2d (X          $X) (Y    $Y))     ;; pattern
-
-    (Sqrt (+ (*           $X          $X) 
-             (*           $Y          $Y))) ;; template
-    (Sqrt (+ (*  (+ 3.0 2.2)  (+ 3.0 2.2)) 
-             (*        -34.9       -34.9))) ;; expected
-  ";
-  test_matcher(src3);
-}
+//     (Sqrt (+ (*           $X          $X)
+//              (*           $Y          $Y))) ;; template
+//     (Sqrt (+ (*  (+ 3.0 2.2)  (+ 3.0 2.2))
+//              (*        -34.9       -34.9))) ;; expected
+//   ";
+//   test_matcher(src3);
+// }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeBruinLevel {
+pub enum DebruijnLevel {
   Intro,
   Ref(core::num::NonZeroIsize),
 }
-impl DeBruinLevel {
+impl DebruijnLevel {
   fn as_index(self) -> usize {
     match self {
-      DeBruinLevel::Intro => 0,
-      DeBruinLevel::Ref(nzu) => (!nzu.get()) as usize,
+      DebruijnLevel::Intro => 0,
+      DebruijnLevel::Ref(nzu) => (!nzu.get()) as usize,
     }
   }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variables {
   /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
-  store: Vec<Sym>,
+  store: Vec<(usize, Sym)>,
   absolute: Option<usize>,
 }
 impl Variables {
   fn new() -> Variables {
     Variables { store: Vec::new(), absolute: Option::None }
   }
-  fn aquire_de_bruin(&mut self, sym: Sym) -> DeBruinLevel {
-    if let level @ DeBruinLevel::Ref(_) = self.lookup(sym) {
+  fn aquire_de_bruin(&mut self, pos: usize, sym: Sym) -> DebruijnLevel {
+    if let level @ DebruijnLevel::Ref(_) = self.lookup(sym) {
       return level;
     }
-    self.store.push(sym);
+    self.store.push((pos, sym));
     if let Option::Some(v) = self.absolute {
       //Safety: We just pushed to the vec, so len > 0
-      return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((self.store.len() + v) as isize - 1)) });
+      return DebruijnLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((self.store.len() + v) as isize - 1)) });
     }
-    DeBruinLevel::Intro
+    DebruijnLevel::Intro
   }
 
   fn clear(&mut self) {
     self.store.clear();
   }
 
-  /// returns DeBruinLevel::Intro if the value is not yet in the table
-  fn lookup(&self, sym: Sym) -> DeBruinLevel {
+  /// returns DebruijnLevel::Intro if the value is not yet in the table
+  fn lookup(&self, sym: Sym) -> DebruijnLevel {
     let offset = self.absolute.unwrap_or(0);
     let mut idx = self.store.len();
     while idx != 0 {
       idx -= 1;
-      if self.store[idx] == sym {
+      if self.store[idx].1 == sym {
         // Safety: `idx` never enters the loop if it is equal to `0`
-        return DeBruinLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((idx + offset) as isize)) });
+        return DebruijnLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((idx + offset) as isize)) });
       }
     }
-    DeBruinLevel::Intro
+    DebruijnLevel::Intro
   }
 
   fn to_relative(&mut self) {
-    self.absolute=Option::None
+    self.absolute = Option::None
   }
   fn to_absolute(&mut self, offset: usize) {
-    self.absolute=Option::Some(offset)
+    self.absolute = Option::Some(offset)
   }
 }
 
@@ -1240,8 +1239,9 @@ static INTERNED_STR: std::sync::Mutex<alloc::collections::BTreeSet<&'static str>
 
 // Sym is valid if it has an empty str, or if it holds and interned str.
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, Eq)]
-pub struct Sym(pub &'static str);
+pub struct Sym(&'static str);
 impl Sym {
+  const EMPTY : Self = Sym("");
   fn new(s: &str) -> Sym {
     '_lock_scope: {
       let mut l = INTERNED_STR.lock().unwrap();
@@ -1265,46 +1265,45 @@ impl core::cmp::PartialEq for Sym {
 pub enum Void {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SExpr<A> {
-  Var((DeBruinLevel, Sym)),
+pub enum SExpr<A = Void> {
+  Var(DebruijnLevel),
   Atom(Sym),
   App(App<A>),
 }
 
-enum TestExpr {}
-#[cfg_attr(rustfmt, rustfmt::skip)]
-impl MatchElement for TestExpr {
-  type Element = SExpr<Void>;
-  type Atom    = Sym;
-  type Var     = (DeBruinLevel, Sym);
-  type VarTable = Variables;
+// enum TestExpr {}
+// #[cfg_attr(rustfmt, rustfmt::skip)]
+// impl MatchElement for TestExpr {
+//   type Element = Sexpr;
+//   type Atom    = Sym;
+//   type Var     = (DebruijnLevel, Sym);
+//   type VarTable = Variables;
 
-  fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
-    match e {
-      SExpr::<Void>::Atom(a) => ElementType::Atom(a),
-      SExpr::<Void>::Var(v) => ElementType::Var(v),
-      SExpr::<Void>::App(_)=> core::unreachable!(),
-    }
-  }
+//   fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
+//     match e {
+//       SExpr::<Void>::Atom(a) => ElementType::Atom(a),
+//       SExpr::<Void>::Var(v) => ElementType::Var(v),
+//       SExpr::<Void>::App(_)=> core::unreachable!(),
+//     }
+//   }
 
-  fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
-  
-  
-  fn var_de_bruin_level(table: &Variables,var: &Self::Var) -> DeBruinLevel {
-    let DeBruinLevel::Ref(_) =  var.0 else {return table.lookup(var.1) };
-    var.0.clone()
-  } 
-}
+//   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
+
+//   fn var_de_bruin_level(table: &Variables,var: &Self::Var) -> DebruijnLevel {
+//     let DebruijnLevel::Ref(_) =  var.0 else {return table.lookup(var.1) };
+//     var.0.clone()
+//   }
+// }
 
 struct DbgSexpr<'a, A>(&'a SExpr<A>);
 impl<'a, A: Debug> core::fmt::Debug for DbgSexpr<'a, A> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     #[cfg_attr(rustfmt, rustfmt::skip)]
       match &self.0 {
-        SExpr::Var((DeBruinLevel::Intro,Sym(sym)))  => core::write!(f,"{sym}"),
-        SExpr::Var((DeBruinLevel::Ref(i),Sym(sym))) => core::write!(f,"{sym}[{i}]"),
-        SExpr::Atom(Sym(sym))                       => core::write!(f,"{sym}"),
-        SExpr::App(App(l,r))                        => core::write!(f,"({l:?} {r:?})"),
+        SExpr::Var(DebruijnLevel::Intro)  => core::write!(f,"$"),
+        SExpr::Var(DebruijnLevel::Ref(i)) => core::write!(f,"$[{i}]"),
+        SExpr::Atom(Sym(sym))            => core::write!(f,"{sym}"),
+        SExpr::App(App(l,r))             => core::write!(f,"({l:?} {r:?})"),
       }
   }
 }
@@ -1395,7 +1394,7 @@ pub struct DyckParser<'a> {
 struct DyckParserIterState<'a, 't> {
   tokenizer: &'t mut Tokenizer<'a>,
   src: &'a str,
-  s_expr_vec: Vec<SExpr<Void>>,
+  s_expr_vec: Vec<SExpr>,
   list_length: u8,
   depth: usize,
   stack: [u8; 32],
@@ -1421,7 +1420,7 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
     }))
   }
 
-  fn append_element(&mut self, e: SExpr<Void>) {
+  fn append_element(&mut self, e: SExpr) {
     self.s_expr_vec.push(e);
     self.list_length += 1;
     self.dyck_word <<= 1;
@@ -1462,7 +1461,7 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
   }
   fn make_singleton(&mut self) {
     let new_index = self.s_expr_vec.len();
-    self.append_element(SExpr::Atom(Sym("Singleton")));
+    self.append_element(SExpr::Atom(Sym::new("Singleton")));
     self.s_expr_vec.swap(new_index - 1, new_index);
   }
   fn make_empty(&mut self) {
@@ -1474,7 +1473,7 @@ impl<'a, 't> DyckParserIterState<'a, 't> {
       self.consume_till_balanced();
       return Result::Err(ParseErr::DyckReprLimitedTo32Elements(Tokenizer::at_line(self.src, self.cur_token.src_offset)));
     }
-    let elem = SExpr::Var((self.variables.aquire_de_bruin(sym), sym));
+    let elem = SExpr::Var(self.variables.aquire_de_bruin(self.s_expr_vec.len(), sym));
     self.append_element(elem);
     Result::Ok(())
   }
@@ -1513,7 +1512,7 @@ impl<'a> DyckParser<'a> {
   }
   /// the applicative representation
   #[cfg_attr(rustfmt, rustfmt::skip)]
-  pub fn parse_first_sexrs_to_dyck_app_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>> {
+  pub fn parse_first_sexrs_to_dyck_app_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
     let err = |e| Option::Some(Result::Err(e));
 
     let mut state = match DyckParserIterState::init(self) {
@@ -1555,13 +1554,13 @@ impl<'a> DyckParser<'a> {
     let s_expr_vec = state.s_expr_vec;
     let variables = state.variables;
     if let Option::Some(v) =  &mut self.threaded_variables { *v = variables.clone() };
-    
+
     Option::Some(Result::Ok((zipper, s_expr_vec, variables)))
   }
 
   /// the list representation
   #[cfg_attr(rustfmt, rustfmt::skip)]
-  pub fn parse_first_sexrs_to_dyck_list_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>> {
+  pub fn parse_first_sexrs_to_dyck_list_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
     let err = |e| Option::Some(Result::Err(e));
 
     let mut state = match DyckParserIterState::init(self) {
@@ -1582,7 +1581,7 @@ impl<'a> DyckParser<'a> {
                                       }
                                       // !!!
                                       for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
-                                 
+
                                       if !state.pop() { break 'build_sexpr; }
                                     },
             TokenType::Var(sym)  => if let Result::Err(e) = state.make_var(sym)  { return err(e) },
@@ -1594,12 +1593,12 @@ impl<'a> DyckParser<'a> {
     let s_expr_vec = state.s_expr_vec;
     let variables = state.variables;
     if let Option::Some(v) =  &mut self.threaded_variables { *v = variables.clone() };
-    
+
     Option::Some(Result::Ok((zipper, s_expr_vec, variables)))
   }
 }
 impl<'a> Iterator for DyckParser<'a> {
-  type Item = Result<(DyckStructureZipperU64, Vec<SExpr<Void>>, Variables), ParseErr>;
+  type Item = Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>;
   fn next(&mut self) -> Option<Self::Item> {
     self.parse_first_sexrs_to_dyck_app_repr()
   }
@@ -1769,6 +1768,7 @@ fn test_dyck_parser() {
 }
 
 #[cfg_attr(rustfmt, rustfmt::skip)]
+#[allow(non_snake_case)]
 #[test]
 fn test_examples(){
   let sym = |c| Sym::new(c); 
@@ -1779,7 +1779,7 @@ fn test_examples(){
   let [eq,comma,colon,arrow,star,plus] = ["=", ",", ":", "-->", "*", "+"].map(sym);
 
   let parse = |src| DyckParser::new(src).next().unwrap().unwrap();
-  type ParserOutput = (DyckStructureZipperU64, Vec<SExpr<Void>>, Variables);
+  type ParserOutput = (DyckStructureZipperU64, Vec<SExpr>, Variables);
   let [e1,e2,e3,r1] = [
     "(f $x a)",
     "(f $x $y $y $x)",
@@ -1787,8 +1787,8 @@ fn test_examples(){
     "(= (nTimes (, $x (S (S $n)))) (Plus (, $x (S Z)) (, $x (S $n))))",
   ].map(parse);
   
-  fn atom(a : Sym)->SExpr<Void> {SExpr::Atom(a)}
-  fn atoms<const L : usize>(a : [Sym; L])->[SExpr<Void>;L] {a.map(SExpr::Atom)}
+  fn atom(a : Sym)->SExpr {SExpr::Atom(a)}
+  fn atoms<const L : usize>(a : [Sym; L])->[SExpr;L] {a.map(SExpr::Atom)}
   
   '_foldMap_size_fvars :{
     // shared/src/test/scala/ExprTest.scala
@@ -1803,8 +1803,8 @@ fn test_examples(){
     // }
     // ```
       
-    // `size` can be computed with the dyck word
-    // `fvars`` can be done with just an slice filter    
+    // `size` can be computed with the dyck word, though to emulate the scala test, we have to include branches too
+    // `fvars`` can be done with just an slice filter
     let size = |&(DyckStructureZipperU64 { structure, ..},_,_) : &ParserOutput| u64::BITS - structure.leading_zeros();
     let fvars = |(_,data,_) : &ParserOutput| data.iter().copied().filter(|e| match e {
       SExpr::Atom(_) => true,
@@ -1843,81 +1843,373 @@ fn test_examples(){
     // ```
   
     // `toAbsolute` variables are "classical", Introductions are removed, an offset is added
-    // `toRelative` variables use DeBruin Levels, Introductions are given a different value
-    // I'm not sure why CZ2 is using a numeric constant for this, so I will omit the argument
-
-    let to_absolute = |p : &ParserOutput, offset : usize| {
-      let mut p1 = p.clone();
-      let (_,p_data,p_vars) = &mut p1;
-      p_vars.to_absolute(offset);
-      for each in p_data.iter_mut() { if let SExpr::Var((_, s)) = each { *each=SExpr::Var((p_vars.lookup(*s),*s)) };}
-      p1
-    };
-    let to_relative = |p : &ParserOutput| {
-      let mut p1 = p.clone();
-      let (_,p_data,p_vars) = &mut p1;
-      p_vars.clear();
-      for each in p_data.iter_mut() { if let SExpr::Var((_,s)) = each { *each = SExpr::Var((p_vars.aquire_de_bruin(*s),*s)); }; }
-      p1
-    };
+    // `toRelative` variables use Debruijn Levels, Introductions are given a different value
     
-    let abs_var = |val : usize, offset :usize, s : &'static str| SExpr::Var((DeBruinLevel::Ref(unsafe{NonZeroIsize::new_unchecked(!(val+offset) as isize)}), sym(s)));
+    // the current form is making use of the fact that it remembers what symbols were used to generated the expr,
+    // !TODO consider creating an anonymization technique of the variables
+
+  //   let to_absolute = |p : &ParserOutput, offset : usize| {
+  //     let mut p1 = p.clone();
+  //     let (_,p_data,p_vars) = &mut p1;
+  //     p_vars.to_absolute(offset);
+  //     for each in p_data.iter_mut() { if let SExpr::Var((_, s)) = each { *each=SExpr::Var((p_vars.lookup(*s),*s)) };}
+  //     p1
+  //   };
+  //   let to_relative = |p : &ParserOutput| {
+  //     let mut p1 = p.clone();
+  //     let (_,p_data,p_vars) = &mut p1;
+  //     p_vars.clear();
+  //     p_vars.to_relative();
+  //     for each in p_data.iter_mut() { if let SExpr::Var((_,s)) = each { *each = SExpr::Var((p_vars.aquire_de_bruin(*s),*s)); }; }
+  //     p1
+  //   };
     
-    let mut e1a = e1.clone();
-    e1a.2.to_absolute(100);
-    let x = abs_var(0,100, "$x");
-    e1a.1= alloc::vec![atom(f), x, atom(a)];
+  //   let abs_var = |val : usize, offset :usize, s : &'static str| SExpr::Var((DebruijnLevel::Ref(unsafe{NonZeroIsize::new_unchecked(!(val+offset) as isize)}), sym(s)));
+    
+  //   let mut e1a = e1.clone();
+  //   e1a.2.to_absolute(100);
+  //   let x = abs_var(0,100, "$x");
+  //   e1a.1= alloc::vec![atom(f), x, atom(a)];
 
-    let mut e2a = e2.clone();
-    e2a.2.to_absolute(100);
-    let x = abs_var(0,100, "$x");
-    let y = abs_var(0,101, "$y");
-    e2a.1= alloc::vec![atom(f), x, y, y, x];
+  //   let mut e2a = e2.clone();
+  //   e2a.2.to_absolute(100);
+  //   let x = abs_var(0,100, "$x");
+  //   let y = abs_var(0,101, "$y");
+  //   e2a.1= alloc::vec![atom(f), x, y, y, x];
     
 
-    let mut e3a = e3.clone();
-    e3a.2.to_absolute(100);
-    let y = abs_var(0,100, "$y");
-    let x = abs_var(0,101, "$x");
-    e3a.1= alloc::vec![atom(f), y, atom(g), y, x];
+  //   let mut e3a = e3.clone();
+  //   e3a.2.to_absolute(100);
+  //   let y = abs_var(0,100, "$y");
+  //   let x = abs_var(0,101, "$x");
+  //   e3a.1= alloc::vec![atom(f), y, atom(g), y, x];
 
-    core::assert_eq!(to_absolute(&e1, 100), e1a);
-    core::assert_eq!(to_absolute(&e2, 100), e2a);
-    core::assert_eq!(to_absolute(&e3, 100), e3a);
+  //   core::assert_eq!(to_absolute(&e1, 100), e1a);
+  //   core::assert_eq!(to_absolute(&e2, 100), e2a);
+  //   core::assert_eq!(to_absolute(&e3, 100), e3a);
 
-    core::assert_eq!(e1, to_relative(&e1a));
-    core::assert_eq!(e2, to_relative(&e2a));
-    core::assert_eq!(e3, to_relative(&e3a));
+  //   core::assert_eq!(e1, to_relative(&e1a));
+  //   core::assert_eq!(e2, to_relative(&e2a));
+  //   core::assert_eq!(e3, to_relative(&e3a));
 
-    core::assert_eq!(to_relative(&to_absolute(&r1,100)), r1);
-    core::assert_eq!(to_absolute(&to_relative(&to_absolute(&r1,100)),200), to_absolute(&r1, 200));
+  //   core::assert_eq!(to_relative(&to_absolute(&r1,100)), r1);
+  //   core::assert_eq!(to_absolute(&to_relative(&to_absolute(&r1,100)),200), to_absolute(&r1, 200));
   }
 
 
 
-  // shared/src/test/scala/ExprTest.scala
-  // ```scala
-  // test("substReIndex") {
-  //   val r1 = Expr(f, $, _1)
-  //   assert(r1.substReIndex(Seq($)) == r1)
-  //   assert(r1.substReIndex(Seq(Expr(a, $, $))) == Expr(f, Expr(a, $, $), Expr(a, _1, _2)))
-  //   val r2 = Expr(f, $, $, _1)
-  //   assert(r2.substReIndex(Seq(Expr(a, $, $), A)) == Expr(f, Expr(a, $, $), A, Expr(a, _1, _2)))
-  //   assert(r2.substReIndex(Seq(Expr(a, $, $), $)) == Expr(f, Expr(a, $, $), $, Expr(a, _1, _2)))
-  //   assert(r2.substReIndex(Seq(Expr(a, $, _1), $)) == Expr(f, Expr(a, $, _1), $, Expr(a, _1, _1)))
-  //   val r3 = Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3))
-  //   assert(r3.substReIndex(Seq(a, b, c)) == Expr(`,`, Expr(f, a, b), Expr(g, b, c, c)))
-  //   assert(r3.substReIndex(Seq(a, $, c)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, c, c)))
-  //   assert(r3.substReIndex(Seq(a, $, $)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, $, _2)))
-  //   assert(r3.substReIndex(Seq($, $, $)) == Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3)))
-  //   assert(r3.substReIndex(Seq(a, Expr(B, $, $), c)) == Expr(`,`, Expr(f, a, Expr(B, $, $)), Expr(g, Expr(B, _1, _2), c, c)))
-  //   assert(r3.substReIndex(Seq($, Expr(B, $, $), $)) == Expr(`,`, Expr(f, $, Expr(B, $, $)), Expr(g, Expr(B, _2, _3), $, _4)))
-  //   assert(r3.substReIndex(Seq($, Expr(B, $, _1), c)) == Expr(`,`, Expr(f, $, Expr(B, $, _2)), Expr(g, Expr(B, _2, _2), c, c)))
-  //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, _1), c)) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, _3)), Expr(g, Expr(B, _3, _3), c, c)))
-  //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, $, _2), Expr(C, $, _1))) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, $, _4)), Expr(g, Expr(B, _3, _4, _4), Expr(C, $, _5), Expr(C, _5, _5))))
-  // }
-  // ```
+  '_substReIndex : {
+    // shared/src/test/scala/ExprTest.scala
+    // ```scala
+    // test("substReIndex") {
+    //   val r1 = Expr(f, $, _1)
+    //   assert(r1.substReIndex(Seq($)) == r1)
+    //   assert(r1.substReIndex(Seq(Expr(a, $, $))) == Expr(f, Expr(a, $, $), Expr(a, _1, _2)))
+    //   val r2 = Expr(f, $, $, _1) 
+    //   assert(r2.substReIndex(Seq(Expr(a, $, $), A)) == Expr(f, Expr(a, $, $), A, Expr(a, _1, _2)))
+    //   assert(r2.substReIndex(Seq(Expr(a, $, $), $)) == Expr(f, Expr(a, $, $), $, Expr(a, _1, _2)))
+    //   assert(r2.substReIndex(Seq(Expr(a, $, _1), $)) == Expr(f, Expr(a, $, _1), $, Expr(a, _1, _1)))
+    //   val r3 = Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3))
+    //   assert(r3.substReIndex(Seq(a, b, c)) == Expr(`,`, Expr(f, a, b), Expr(g, b, c, c)))
+    //   assert(r3.substReIndex(Seq(a, $, c)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, c, c)))
+    //   assert(r3.substReIndex(Seq(a, $, $)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, $, _2)))
+    //   assert(r3.substReIndex(Seq($, $, $)) == Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3)))
+    //   assert(r3.substReIndex(Seq(a, Expr(B, $, $), c)) == Expr(`,`, Expr(f, a, Expr(B, $, $)), Expr(g, Expr(B, _1, _2), c, c)))
+    //   assert(r3.substReIndex(Seq($, Expr(B, $, $), $)) == Expr(`,`, Expr(f, $, Expr(B, $, $)), Expr(g, Expr(B, _2, _3), $, _4)))
+    //   assert(r3.substReIndex(Seq($, Expr(B, $, _1), c)) == Expr(`,`, Expr(f, $, Expr(B, $, _2)), Expr(g, Expr(B, _2, _2), c, c)))
+    //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, _1), c)) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, _3)), Expr(g, Expr(B, _3, _3), c, c)))
+    //   assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, $, _2), Expr(C, $, _1))) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, $, _4)), Expr(g, Expr(B, _3, _4, _4), Expr(C, $, _5), Expr(C, _5, _5))))
+    // }
+    // ```
 
+
+
+   // (f $ $ _1)   \  { (a $ $) , A }
+   // (f (a $ $) A (a _1 _2))
+
+   /*
+    N (f $ $ _1)   1101010
+
+    [(0 L f), (1 $ 0), (2 $ 1), (3 V 0)]
+    [(0 1), (1 2)]
+
+    N (a $ $)  11010
+
+    [(0 L a), (1 $ 0), (2 $ 1)]
+    [(0 1), (1 2)]
+
+    L A     1
+
+     1  (11010)0  10 (11010)0    # 111010010110100
+    (f  (a $ $)   A  (a _1 _2) )
+    
+    [f a $ $ A a _1 _2]
+    
+
+
+
+    (, (f $ $) (g _2 $ _3))  \ { (A $ $), (B $ $ _2), (C $ _1) }
+
+    (, (f $ $) (g _2 $ _3))  1(11010)0(1101010)0
+    [(0 L ,) (1 L f) (2 $ 0) (3 $ 1) (4 L g) (5 V _2) (6 $ 2) (7 V _3)]
+    [(0 2) (1 3) (2 6)]
+
+    (A $ $)  11010
+    [(0 L A), (1 $ 0), (2 $ 1)]
+    [(0 1), (1 2)]
+
+    (B $ $ _2) 1101010
+    [(0 L B), (1 $ 0), (2 $ 1) (3 V _2)]
+    [(0 1), (1 2)]
+     
+    (C $ _1) 11010
+    [(0 L C), (1 $ 0), (2 V _1)]
+    [(0 1)]
+
+    
+    
+    [, f (A $ $) (B $ $ _2) g ] 
+
+  
+    */
+
+
+    struct SmallDyckExpr {word : u64, data : Vec<SExpr>}
+    struct LargeDyckExpr {word : Vec<u64>, data : Vec<SExpr>}
+    enum DyckExprSubOutput {
+      SmallDyckExpr(SmallDyckExpr),
+      LargeDyckExpr(LargeDyckExpr),
+    }
+    #[cfg_attr(rustfmt, rustfmt::skip)]
+    fn subst_re_index((pat_structure, pat_data) : (&DyckStructureZipperU64, &[SExpr]), subs : &[(&DyckStructureZipperU64,&[SExpr])]) -> DyckExprSubOutput{
+      const MAX_LEAVES : usize = DyckStructureZipperU64::MAX_LEAVES;
+      
+      core::debug_assert!(pat_data.len() < MAX_LEAVES);
+      core::debug_assert!(subs.len() < MAX_LEAVES);
+      for each in subs {
+        core::debug_assert!(each.1.len() < MAX_LEAVES);
+      }
+
+      #[derive(Clone, Copy)]
+      struct LevelIndex(u8);      
+
+      type LevelIndicies = [LevelIndex; MAX_LEAVES];
+      const LEVEL_INDEX  : LevelIndicies = [LevelIndex(0); MAX_LEAVES];
+
+      type LookupStore = [u8;MAX_LEAVES];
+      const LOOKUP_INDEX : LookupStore = [0_u8; MAX_LEAVES];
+      
+      let mut pat_meta_index   = LEVEL_INDEX;
+      let mut pat_intro_lookup = LOOKUP_INDEX;
+      let mut pat_intros       = 0;
+
+      let mut subs_meta_index_matrix   = [LEVEL_INDEX; MAX_LEAVES];
+      let mut subs_intro_lookup_matrix = [LOOKUP_INDEX; MAX_LEAVES];
+      let mut subs_intros_list         = [0_u8; MAX_LEAVES];
+      
+      
+      struct IndexGenArg<'a> {structure : &'a DyckStructureZipperU64, data : &'a [SExpr], m_idx :&'a mut LevelIndicies, var_lookup : &'a mut LookupStore, intros : &'a mut u8}
+      fn generate_index(IndexGenArg { structure, data, m_idx, var_lookup , intros}: IndexGenArg<'_>) {
+        let range      = structure.current_leaf_store_index_range();
+        let data_slice = &data[range];
+
+        for (i, each) in data_slice.into_iter().enumerate() {
+          if let SExpr::Var(DebruijnLevel::Intro) = each {
+          m_idx[i] = LevelIndex(*intros);
+          var_lookup[*intros as usize] = i as u8;
+          *intros +=1;
+        }
+        }
+      }
+      
+      generate_index(IndexGenArg {structure : pat_structure, data : pat_data, m_idx : &mut pat_meta_index, var_lookup : &mut pat_intro_lookup, intros : &mut pat_intros});
+      
+      // this could be done lazily, but then we would have to constantly do checks
+      for (i,&(structure, data)) in subs.into_iter().enumerate() {
+        generate_index(IndexGenArg {structure, data, m_idx: &mut subs_meta_index_matrix[i] , var_lookup: &mut subs_intro_lookup_matrix[i] , intros : &mut subs_intros_list[i]});
+        if i > 1 {
+          subs_intros_list[i]+=subs_intros_list[i-1]; // running totals
+        } 
+      }
+      
+      let mut dyck_words     = [0_u64; MAX_LEAVES];
+      // stores the the number of consecutive 0 bits 
+      let mut trailing_pairs = [0_u8; MAX_LEAVES]; 
+      
+      let mut pat_structure_word = pat_structure.current_substructure();
+      // add terminal 1 bit before shifting fully , avoids counting too many pairs
+      pat_structure_word = ((pat_structure_word << 1) | 1 ) << pat_structure_word.leading_zeros()-1;
+      
+      let pat_data_slice = &pat_data[pat_structure.current_leaf_store_index_range()];
+
+      let mut output_data = [SExpr::<Void>::Atom(Sym::EMPTY); MAX_LEAVES*MAX_LEAVES];
+      let mut output_len  = 0;
+
+      for each in 0..pat_data_slice.len() {
+        let mut substitute = |intro_idx : usize, is_from_ref : bool| {
+
+          let idx          = pat_meta_index[intro_idx].0 as usize;
+          let depth_offset = if idx == 0 { 0 } else { subs_intros_list[idx-1] };
+
+          let (sub_struct, sub_data) = subs[idx as usize];
+          let sub_data_slice         = &sub_data[sub_struct.current_leaf_store_index_range()];
+          
+          // refs need to know how many intros they passed
+          let mut intros_count = 0;
+          
+          for slice_idx in 0..sub_data_slice.len(){
+            output_data[output_len] = match sub_data_slice[slice_idx] {
+              SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe {
+                // Safety : the negative value will only become more negative
+                SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get()-depth_offset as isize)))
+              },
+              SExpr::Var(DebruijnLevel::Intro) if is_from_ref => {
+                let val = !(intros_count + depth_offset);
+                intros_count+=1;
+                // Safety : values > 0 that are negagted are always non-zero
+                SExpr::Var(DebruijnLevel::Ref(unsafe {NonZeroIsize::new_unchecked(val as isize) }))
+              }
+              val => val,
+            };
+          
+            output_len += 1;
+          }
+          dyck_words[each] = sub_struct.current_substructure();
+        };
+
+        match pat_data_slice[each] {
+          SExpr::Var(DebruijnLevel::Intro) => {
+            substitute(each,false);
+          },
+          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => {
+              let rel_ref   = (!r.get()) as usize;
+              let intro_idx = pat_intro_lookup[rel_ref] as usize;
+              substitute(intro_idx,true);
+          },
+          val  => {
+            output_data[output_len] = val;
+            dyck_words[each] = 1;
+            output_len +=1;
+          }
+        }
+        // shift off a leaf
+        pat_structure_word <<= 1;
+        let pairs = pat_structure_word.leading_zeros();
+        trailing_pairs[each] = pairs as u8;
+        // shift off consecutive pairs
+        pat_structure_word <<= pairs;
+      }
+      // the output Vec is now ready for allocating
+
+      // Build the Large Dyck Word
+      let mut output_word_len = 0;
+      let [mut cur, mut next] = [0_u64;2];
+      let mut finished        = Vec::new();
+      let mut last_div        = 0;
+
+      for each in (0..output_len).rev() {
+        output_word_len += trailing_pairs[each] as usize;
+        let (cur_div, cur_mod) = (output_word_len/64, output_word_len%64);
+
+        // check if we need to advance the "cursor"
+        if last_div < cur_div {
+          if finished.len() == 0 {
+            finished = Vec::with_capacity(MAX_LEAVES);
+          }
+          finished.push(cur);
+          (cur,next) = (next, 0);
+        }
+
+        let cur_word = dyck_words[each];
+
+        [cur,next] = [cur | cur_word << cur_mod, next | cur_word >> u64::BITS as usize - cur_mod];
+        output_word_len += (u64::BITS-cur_word.leading_zeros()) as usize;
+        last_div = cur_div;
+      }
+
+      let data = Vec::from(&output_data[0..output_len]);
+
+      if next == 0 && finished.len() == 0 {
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: cur, data })
+      } else {
+     
+        finished.push(cur);
+        if next != 0 || cur.leading_zeros() == 0 { finished.push(next);}
+        finished.reverse();
+
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: finished, data })
+      }
+    }
+
+
+
+
+    // I'm confident that  I can do this with just numbers and it would be much much faster.
+
+    // fn anonymize(mut d : ParserOutput)->(DyckStructureZipperU64,Vec<Sexpr>) {
+    //   for each in &mut d.1 {
+    //     match each {
+    //         SExpr::Var((_,s)) => *s = Sym::EMPTY,
+    //         _ => {},
+    //     }
+    //   }
+    //   (d.0,d.1)
+    // }
+
+    fn level_sym(d : DebruijnLevel)->Sym {
+      let n = match d {
+        DebruijnLevel::Intro => return Sym::new("$0"),
+        DebruijnLevel::Ref(r) => r.get(),
+      };
+      let mut arr = *b"$-0x0000000000000000";
+      
+      let mut n = n.abs() as usize;
+      let l = isize::BITS - n.leading_zeros();
+      let max_idx =  l/4 + l%4 + 3;
+      let mut idx = max_idx;
+      while n != 0 {
+        const BOT_MASK : usize = (1 << 4)-1;
+        let bot = (n&BOT_MASK) as u8;
+        arr[idx as usize] = match bot {
+          0..=9   => { bot + b'0' }
+          10..=15 => { bot + b'a' - 10 }
+          _=>{ core::unreachable!() }
+        };
+        (idx, n) = (idx - 1, n>>4);
+      }
+      Sym::new(unsafe{core::str::from_utf8_unchecked(&arr[0..=max_idx as usize])})
+    }
+
+    let r1 = parse("(f $x $x)");
+    // let r1 = parse("
+    //   ( f
+    //     $a $b $c $d $e $f $g $h $i $j $k $l $m $n $o $p $q $r $s $t $u $v $w $x $y $z
+    //     $m $a $z
+    //   )
+    // ");
+    std::println!("{:?}", r1);
+    let r1_anon = 
+    // anonymize(r1) 
+      r1
+    ;
+    std::println!("{:?}", r1_anon);
+
+    // let mut vars = Variables::new();
+    // let mut idx = 0;
+    // for each in &r1_anon.1 {
+    //   vars.aquire_de_bruin(match each {
+    //     SExpr::Var((DebruijnLevel::Intro,_)) => {
+    //       let s = level_sym(DebruijnLevel::Ref(unsafe {NonZeroIsize::new_unchecked(!idx)})); idx+=1; 
+    //       s
+    //     },
+    //     SExpr::Var((d,_)) => level_sym(*d),
+    //       _=>continue
+    //   });
+    // }
+    // std::println!("{vars:?}")
+
+    
+  }
 
   // shared/src/test/scala/ExprTest.scala
   // ```scala

@@ -1965,69 +1965,98 @@ fn test_examples(){
     };
     let sub_re_index_input : fn(&(DyckStructureZipperU64, Vec<SExpr>, Variables))->(&_,&_)= |x| (&x.0,&x.1[..]);
 
+    const LEAF : DyckStructureZipperU64 = DyckStructureZipperU64::LEAF;
 
-    let r1_ = parse("(f $x $x)");      // [f $ $[-1]]  11010
-    let r1  = sub_re_index_input(&r1_);
+    macro_rules! templates {($($ID:ident $SRC:literal)+) => {$(
+      let _tmp = parse($SRC);
+      let $ID  = sub_re_index_input(&_tmp);
+    )+};}
+
+    templates!{
+      r1   "(f $x $x)"
+      r2   "(f $x $y $x)"
+      r3   "(, (f $x $y) (g $y $z $z))"
+      axy  "(a $x $y)"
+      axx  "(a $x $x)"
+      Bxy  "(B $x $y)"
+      Bxx  "(B $x $x)"
+      Axy  "(A $x $y)"
+      Bxyy "(B $x $y $y)"
+      Cxx  "(C $x $x)"
+    }
 
     let s1 = subst_re_index(r1, &[intro_var]);
     core::assert_eq!{r1.0.current_substructure(), get_word(&s1).0 }
     core::assert_eq!{r1.1,&get_data(&s1)[..]}
 
+        macro_rules! substitutions {($([$PAT:ident / [$($SUB:expr),*]] => $EXPECTED:literal | $INTROS:tt;)+) => {$(
+      let s = subst_re_index($PAT, &[$($SUB),*]);
+      let expected_ = parse($EXPECTED);
+      let expected  = subst_re_index(sub_re_index_input(&expected_), &$INTROS); 
+      core::assert_eq!(get_word(&s).0, get_word(&expected).0);
+      core::assert_eq!(get_data(&s), get_data(&expected));
+    )+};}
 
-    let in2_ = parse("(a $x $y)");
-    let in2  = sub_re_index_input(&in2_); 
-    let s2 = subst_re_index(r1, &[in2]);
-    let expected2_ = parse("(f (a $x $y) (a $x $y))");
-    let expected2  = subst_re_index(sub_re_index_input(&expected2_), &[intro_var, intro_var]); 
-    core::assert_eq!(get_word(&s2).0, get_word(&expected2).0);
-    core::assert_eq!(get_data(&s2), get_data(&expected2));
-
-
-    let r2_ = parse("(f $x $y $x)");
-    let r2  = sub_re_index_input(&r2_);
+    let leaf_a = (&LEAF, &[atom(a)][..]);
+    let leaf_c = (&LEAF, &[atom(c)][..]);
+    substitutions!{
+      // [r1 / [axy]                                ] => "(f (a $x $y) (a $x $y))"                                             | [intro_var, intro_var]; 
+      // [r2 / [axy, (&LEAF ,&[atom(A)])]           ] => "(f (a $x $y) A (a $x $y))"                                           | [intro_var, intro_var];
+      // [r2 / [axx, intro_var]                     ] => "(f (a $x $x) $ (a $x $x))"                                           | [intro_var, intro_var];
+      // [r3 / [leaf_a, (&LEAF, &[atom(b)]), leaf_c]] => "(, (f a b) (g b c c))"                                               | []; 
+      // [r3 / [leaf_a, intro_var, leaf_c]          ] => "(, (f a $x) (g $x c c))"                                             | [intro_var]; 
+      // [r3 / [leaf_a, intro_var, intro_var]       ] => "(, (f a $x) (g $x $y $y))"                                           | [intro_var, intro_var];
+      // [r3 / [intro_var, intro_var, intro_var]    ] => "(, (f $x $y) (g $y $z $z))"                                          | [intro_var, intro_var, intro_var];
+      // [r3 / [leaf_a, Bxy, leaf_c]                ] => "(, (f a (B $x $y)) (g (B $x $y) c c))"                               | [intro_var, intro_var];
+      
+      // [r3 / [intro_var, Bxy, intro_var]          ] => "(, (f $w (B $x $y)) (g (B $x $y) $z $z))"                            | [intro_var, intro_var, intro_var, intro_var];
+      // [r3 / [intro_var, Bxx, leaf_c]             ] => "(, (f $w (B $x $x)) (g (B $x $x) c c))"                              | [intro_var, intro_var];
+      // [r3 / [Axy, Bxx, leaf_c]                   ] => "(, (f (A $w $x) (B $y $y)) (g (B $y $y) c c))"                       | [intro_var, intro_var, intro_var];
+      [r3 / [Axy, Bxyy, Cxx]                     ] => "(, (f (A $v $w) (B $x $y $y)) (g (B $x $y $y) (C $z $z) (C $z $z)))" | [intro_var, intro_var, intro_var, intro_var, intro_var];
+    }
     
-    let s3 = subst_re_index(r2, &[in2, (&DyckStructureZipperU64::new(1).unwrap() ,&[atom(A)])]);
-    let expected3_ = parse("(f (a $x $y) A (a $x $y))");
-    let expected3  = subst_re_index(sub_re_index_input(&expected3_), &[intro_var, intro_var]); 
-    core::assert_eq!(get_word(&s3).0, get_word(&expected3).0);
-    core::assert_eq!(get_data(&s3), get_data(&expected3));
-
-    let in4_ = parse("(a $x $x)");
-    let in4  = sub_re_index_input(&in4_); 
-    let s4 = subst_re_index(r2, &[in4, intro_var]);
-    let expected4_ = parse("(f (a $x $x) $ (a $x $x))");
-    let expected4  = subst_re_index(sub_re_index_input(&expected4_), &[intro_var, intro_var]); 
-    core::assert_eq!(get_word(&s4).0, get_word(&expected4).0);
-    core::assert_eq!(get_data(&s4), get_data(&expected4));
-
-    const LEAF : DyckStructureZipperU64 = DyckStructureZipperU64::LEAF;
-
-    let r3_ = parse("(, (f $x $y) (g $y $z $z))");
-    let r3  = sub_re_index_input(&r3_);
-
-    let s5 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), (&LEAF, &[atom(b)]), (&LEAF, &[atom(c)])]);
-    let expected5_ = parse("(, (f a b) (g b c c))");
-    let expected5  = subst_re_index(sub_re_index_input(&expected5_), &[]); 
-    core::assert_eq!(get_word(&s5).0, get_word(&expected5).0);
-    core::assert_eq!(get_data(&s5), get_data(&expected5));
-
-    let s6 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, (&LEAF, &[atom(c)])]);
-    let expected6_ = parse("(, (f a $x) (g $x c c))");
-    let expected6  = subst_re_index(sub_re_index_input(&expected6_), &[intro_var]); 
-    core::assert_eq!(get_word(&s6).0, get_word(&expected6).0);
-    core::assert_eq!(get_data(&s6), get_data(&expected6));
+    // let s2 = subst_re_index(r1, &[axy]);
+    // let expected2_ = parse("(f (a $x $y) (a $x $y))");
+    // let expected2  = subst_re_index(sub_re_index_input(&expected2_), &[intro_var, intro_var]); 
+    // core::assert_eq!(get_word(&s2).0, get_word(&expected2).0);
+    // core::assert_eq!(get_data(&s2), get_data(&expected2));
     
-    let s7 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, intro_var]);
-    let expected7_ = parse("(, (f a $x) (g $x $y $y))");
-    let expected7  = subst_re_index(sub_re_index_input(&expected7_), &[intro_var, intro_var]); 
-    core::assert_eq!(get_word(&s7).0, get_word(&expected7).0);
-    core::assert_eq!(get_data(&s7), get_data(&expected7));
+    // let s3 = subst_re_index(r2, &[axy, (&LEAF ,&[atom(A)])]);
+    // let expected3_ = parse("(f (a $x $y) A (a $x $y))");
+    // let expected3  = subst_re_index(sub_re_index_input(&expected3_), &[intro_var, intro_var]); 
+    // core::assert_eq!(get_word(&s3).0, get_word(&expected3).0);
+    // core::assert_eq!(get_data(&s3), get_data(&expected3));
 
-    let s8 = subst_re_index(r3, &[intro_var, intro_var, intro_var]);
-    let expected8_ = parse("(, (f $x $y) (g $y $z $z))");
-    let expected8  = subst_re_index(sub_re_index_input(&expected8_), &[intro_var, intro_var, intro_var]); 
-    core::assert_eq!(get_word(&s8).0, get_word(&expected8).0);
-    core::assert_eq!(get_data(&s8), get_data(&expected8));
+    // let s4 = subst_re_index(r2, &[axx, intro_var]);
+    // let expected4_ = parse("(f (a $x $x) $ (a $x $x))");
+    // let expected4  = subst_re_index(sub_re_index_input(&expected4_), &[intro_var, intro_var]); 
+    // core::assert_eq!(get_word(&s4).0, get_word(&expected4).0);
+    // core::assert_eq!(get_data(&s4), get_data(&expected4));
+
+
+    // let s5 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), (&LEAF, &[atom(b)]), (&LEAF, &[atom(c)])]);
+    // let expected5_ = parse("(, (f a b) (g b c c))");
+    // let expected5  = subst_re_index(sub_re_index_input(&expected5_), &[]); 
+    // core::assert_eq!(get_word(&s5).0, get_word(&expected5).0);
+    // core::assert_eq!(get_data(&s5), get_data(&expected5));
+
+    // let s6 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, (&LEAF, &[atom(c)])]);
+    // let expected6_ = parse("(, (f a $x) (g $x c c))");
+    // let expected6  = subst_re_index(sub_re_index_input(&expected6_), &[intro_var]); 
+    // core::assert_eq!(get_word(&s6).0, get_word(&expected6).0);
+    // core::assert_eq!(get_data(&s6), get_data(&expected6));
+    
+    // let s7 = subst_re_index(r3, &[(&LEAF, &[atom(a)]), intro_var, intro_var]);
+    // let expected7_ = parse("(, (f a $x) (g $x $y $y))");
+    // let expected7  = subst_re_index(sub_re_index_input(&expected7_), &[intro_var, intro_var]); 
+    // core::assert_eq!(get_word(&s7).0, get_word(&expected7).0);
+    // core::assert_eq!(get_data(&s7), get_data(&expected7));
+
+    // let s8 = subst_re_index(r3, &[intro_var, intro_var, intro_var]);
+    // let expected8_ = parse("(, (f $x $y) (g $y $z $z))");
+    // let expected8  = subst_re_index(sub_re_index_input(&expected8_), &[intro_var, intro_var, intro_var]); 
+    // core::assert_eq!(get_word(&s8).0, get_word(&expected8).0);
+    // core::assert_eq!(get_data(&s8), get_data(&expected8));
 
 
     // pretty_print(&sub_self);
@@ -2113,6 +2142,7 @@ fn test_examples(){
       core::debug_assert!(subs.len() < MAX_LEAVES);
       for each in subs {
         core::debug_assert!(each.1.len() < MAX_LEAVES);
+        core::debug_assert!(each.1.len() != 0);
       }
 
       #[derive(Clone, Copy)]

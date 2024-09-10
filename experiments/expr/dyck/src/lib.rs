@@ -20,6 +20,7 @@ use core::{
   ops::FnMut,
   option::Option,
   result::Result,
+  str,
 };
 use num_bigint::BigUint;
 use std::{
@@ -1852,57 +1853,83 @@ fn test_examples() {
     // }
     // ```
 
-    // `toAbsolute` variables are "classical", Introductions are removed, an offset is added
-    // `toRelative` variables use Debruijn Levels, Introductions are given a different value
+    // changing the variables is structure independant, we need only change the underlying slice
 
-    // the current form is making use of the fact that it remembers what symbols were used to generated the expr,
-    // !TODO consider creating an anonymization technique of the variables
+    fn to_absolute_mut(data: &mut [SExpr], offset: usize) {
+      if offset == 0 {
+        return;
+      }
+      let mut intros = 0;
+      for each in data {
+        *each = match *each {
+          SExpr::Var(DebruijnLevel::Intro) => unsafe {
+            // Safety : offset is !=0 because of if guard
+            let tmp = SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(-(intros + offset as isize))));
+            intros += 1;
+            tmp
+          },
+          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe { SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get()+1 - offset as isize))) },
+          a => a,
+        }
+      }
+    }
+    fn to_absolute(data: &[SExpr], offset: usize) -> Vec<SExpr> {
+      let mut out = Vec::from(data);
+      to_absolute_mut(&mut out, offset);
+      out
+    }
 
-    //   let to_absolute = |p : &ParserOutput, offset : usize| {
-    //     let mut p1 = p.clone();
-    //     let (_,p_data,p_vars) = &mut p1;
-    //     p_vars.to_absolute(offset);
-    //     for each in p_data.iter_mut() { if let SExpr::Var((_, s)) = each { *each=SExpr::Var((p_vars.lookup(*s),*s)) };}
-    //     p1
-    //   };
-    //   let to_relative = |p : &ParserOutput| {
-    //     let mut p1 = p.clone();
-    //     let (_,p_data,p_vars) = &mut p1;
-    //     p_vars.clear();
-    //     p_vars.to_relative();
-    //     for each in p_data.iter_mut() { if let SExpr::Var((_,s)) = each { *each = SExpr::Var((p_vars.aquire_de_bruin(*s),*s)); }; }
-    //     p1
-    //   };
+    fn to_relative_mut(data: &mut [SExpr]) {
+      let mut offset = Option::None;
+      let mut intros = 0;
+      for each in data {
+        *each = match *each {
+          SExpr::Var(DebruijnLevel::Intro) => core::panic!("was not absolute"),
+          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => match offset {
+            Option::None => {
+              offset = Option::Some(!r.get());
+              intros += 1;
+              SExpr::Var(DebruijnLevel::Intro)
+            }
+            Option::Some(offset_) => {
+              let diff = !r.get() - offset_;
+              core::debug_assert!(diff <= 0);
+              if intros == diff {
+                intros += 1;
+                SExpr::Var(DebruijnLevel::Intro)
+              } else {
+                // Safety : diff is nonnegative, `!nonnegative` < 0
+                SExpr::Var(DebruijnLevel::Ref(unsafe { NonZeroIsize::new_unchecked(!(diff)) }))
+              }
+            }
+          },
+          a => a,
+        }
+      }
+    }
 
-    //   let abs_var = |val : usize, offset :usize, s : &'static str| SExpr::Var((DebruijnLevel::Ref(unsafe{NonZeroIsize::new_unchecked(!(val+offset) as isize)}), sym(s)));
+    fn to_relative(data: &[SExpr]) -> Vec<SExpr> {
+      let mut out = Vec::from(data);
+      to_relative_mut(&mut out);
+      out
+    }
 
-    //   let mut e1a = e1.clone();
-    //   e1a.2.to_absolute(100);
-    //   let x = abs_var(0,100, "$x");
-    //   e1a.1= alloc::vec![atom(f), x, atom(a)];
+    let var = |v| SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new(v).unwrap()));
+    let e1a = [atom(f), var(-100), atom(a)];
+    let e2a = [atom(f), var(-100), var(-101), var(-101), var(-100)];
+    let e3a = [atom(f), var(-100), atom(g), var(-100), var(-101)];
 
-    //   let mut e2a = e2.clone();
-    //   e2a.2.to_absolute(100);
-    //   let x = abs_var(0,100, "$x");
-    //   let y = abs_var(0,101, "$y");
-    //   e2a.1= alloc::vec![atom(f), x, y, y, x];
+    core::assert_eq! {&to_absolute(&e1.1, 100), &e1a}
+    core::assert_eq! {&to_absolute(&e2.1, 100), &e2a}
+    core::assert_eq! {&to_absolute(&e3.1, 100), &e3a}
 
-    //   let mut e3a = e3.clone();
-    //   e3a.2.to_absolute(100);
-    //   let y = abs_var(0,100, "$y");
-    //   let x = abs_var(0,101, "$x");
-    //   e3a.1= alloc::vec![atom(f), y, atom(g), y, x];
 
-    //   core::assert_eq!(to_absolute(&e1, 100), e1a);
-    //   core::assert_eq!(to_absolute(&e2, 100), e2a);
-    //   core::assert_eq!(to_absolute(&e3, 100), e3a);
+    core::assert_eq! {&to_relative(&e1a), &e1.1}
+    core::assert_eq! {&to_relative(&e2a), &e2.1}
+    core::assert_eq! {&to_relative(&e3a), &e3.1}
 
-    //   core::assert_eq!(e1, to_relative(&e1a));
-    //   core::assert_eq!(e2, to_relative(&e2a));
-    //   core::assert_eq!(e3, to_relative(&e3a));
-
-    //   core::assert_eq!(to_relative(&to_absolute(&r1,100)), r1);
-    //   core::assert_eq!(to_absolute(&to_relative(&to_absolute(&r1,100)),200), to_absolute(&r1, 200));
+    core::assert_eq! { &to_relative(&to_absolute(&r1.1, 100)), &r1.1 }
+    core::assert_eq! { &to_absolute(&to_relative(&to_absolute(&r1.1, 200)), 100), &to_absolute(&r1.1, 100) }
   }
 
   '_substReIndex: {
@@ -1933,7 +1960,7 @@ fn test_examples() {
       std::println!("DyckExperSubOutput(");
       let data = match d {
         DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, data }) => {
-          std::println!("\tword : {word:?}");
+          std::println!("\tword : {:?}\n\t// {:?}", word, word.dyck_word_app_sexpr_viewer());
           data
         }
         DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word, data }) => {
@@ -1996,7 +2023,7 @@ fn test_examples() {
       let expected  = subst_re_index(sub_re_index_input(&expected_), &$INTROS);
       core::assert_eq!(get_word(&s).0, get_word(&expected).0);
       core::assert_eq!(get_data(&s), get_data(&expected));
-      pretty_print(&s);
+      // pretty_print(&s);
     )+};}
 
     let leaf_a = (&LEAF, &[atom(a)][..]);
@@ -2016,301 +2043,268 @@ fn test_examples() {
       [r3 / [Axy, Bxx, leaf_c]                   ] => "(, (f (A $w $x) (B $y $y)) (g (B $y $y) c c))"                       | [intro_var, intro_var, intro_var];
       [r3 / [Axy, Bxyy, Cxx]                     ] => "(, (f (A $v $w) (B $x $y $y)) (g (B $x $y $y) (C $z $z) (C $z $z)))" | [intro_var, intro_var, intro_var, intro_var, intro_var];
     }
+  }
 
-    // pretty_print(&sub_self);
-    // std::println!("{sub_self:?}");
-    return;
-
-    // (f $ $ _1)   \  { (a $ $) , A }
-    // (f (a $ $) A (a _1 _2))
-
-    /*
-    N (f $ $ _1)   1101010
-
-    [(0 L f), (1 $ 0), (2 $ 1), (3 V 0)]
-    [(0 1), (1 2)]
-
-    N (a $ $)  11010
-
-    [(0 L a), (1 $ 0), (2 $ 1)]
-    [(0 1), (1 2)]
-
-    L A     1
-
-     1  (11010)0  10 (11010)0    # 111010010110100
-    (f  (a $ $)   A  (a _1 _2) )
-
-    [f a $ $ A a _1 _2]
-
-
-
-
-    (, (f $ $) (g _2 $ _3))  \ { (A $ $), (B $ $ _2), (C $ _1) }
-
-    (, (f $ $) (g _2 $ _3))  1(11010)0(1101010)0
-    [(0 L ,) (1 L f) (2 $ 0) (3 $ 1) (4 L g) (5 V _2) (6 $ 2) (7 V _3)]
-    [(0 2) (1 3) (2 6)]
-
-    (A $ $)  11010
-    [(0 L A), (1 $ 0), (2 $ 1)]
-    [(0 1), (1 2)]
-
-    (B $ $ _2) 1101010
-    [(0 L B), (1 $ 0), (2 $ 1) (3 V _2)]
-    [(0 1), (1 2)]
-
-    (C $ _1) 11010
-    [(0 L C), (1 $ 0), (2 V _1)]
-    [(0 1)]
-
-
-
-    [, f (A $ $) (B $ $ _2) g ]
-
-
-    */
-
-    #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    struct Bits(pub u64);
-    impl core::fmt::Debug for Bits {
-      fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::write!(f, "{:#066b}", self.0)
+  #[repr(transparent)]
+  #[derive(Clone, Copy)]
+  struct Bits(pub u64);
+  impl core::fmt::Debug for Bits {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+      core::write!(f, "{:#066b}", self.0)
+    }
+  }
+  #[derive(Debug)]
+  enum SexprViewerError {
+    Empty,
+    TopBitNonZero,
+    TooManyPairs,
+    TooFewPairs,
+  }
+  impl Bits {
+    fn dyck_word_app_sexpr_viewer(self) -> Result<alloc::string::String, (SexprViewerError, Bits)> {
+      use alloc::collections::VecDeque;
+      use core::convert::From;
+      use SexprViewerError as SVE;
+      let mut stack = Vec::new();
+      let word = self.0;
+      if self.0 == 0 {
+        return Result::Err((SVE::Empty, Bits(0)));
       }
-    }
-    #[derive(Debug)]
-    struct SmallDyckExpr {
-      word: Bits,
-      data: Vec<SExpr>,
-    }
-    #[derive(Debug)]
-    struct LargeDyckExpr {
-      word: Vec<Bits>,
-      data: Vec<SExpr>,
-    }
-    #[derive(Debug)]
-    enum DyckExprSubOutput {
-      SmallDyckExpr(SmallDyckExpr),
-      LargeDyckExpr(LargeDyckExpr),
-    }
-
-    // #[cfg_attr(rustfmt, rustfmt::skip)]
-    fn subst_re_index((pat_structure, pat_data): (&DyckStructureZipperU64, &[SExpr]), subs: &[(&DyckStructureZipperU64, &[SExpr])]) -> DyckExprSubOutput {
-      const MAX_LEAVES: usize = DyckStructureZipperU64::MAX_LEAVES;
-
-      core::debug_assert_eq!(pat_data.into_iter().filter(|x| core::matches!(x, SExpr::Var(DebruijnLevel::Intro))).count(), subs.len());
-
-      core::debug_assert!(pat_data.len() < MAX_LEAVES);
-      core::debug_assert!(subs.len() < MAX_LEAVES);
-      for each in subs {
-        core::debug_assert!(each.1.len() < MAX_LEAVES);
-        core::debug_assert!(each.1.len() != 0);
+      if (self.0 & (1 << u64::BITS - 1)) != 0 {
+        return Result::Err((SVE::TopBitNonZero, Bits(1 << u64::BITS - 1)));
+      }
+      enum S {
+        One,
+        Nested(VecDeque<u8>),
       }
 
-      const INDEX: [u8;MAX_LEAVES+1] = [0; MAX_LEAVES+1];
+      let mut cursor = 1 << u64::BITS - word.leading_zeros() - 1;
 
-      let mut pat_intro_index = INDEX;
-      let mut pat_intro_lookup = INDEX;
-      let mut out_depth = INDEX;
+      while cursor != 0 {
+        let bit = cursor & word;
+        cursor >>= 1;
 
-      let mut pat_intros = 0;
-      
-      let mut dyck_words = [0_u64; MAX_LEAVES];
-      // stores the the number of consecutive 0 bits
-      let mut trailing_pairs = INDEX;
-      
-      let mut pat_structure_word = pat_structure.current_substructure();
-      // add terminal 1 bit before shifting fully , avoids counting too many pairs
-      pat_structure_word = ((pat_structure_word << 1) | 1) << pat_structure_word.leading_zeros() - 1;
-      
-      let mut output_data = [SExpr::<Void>::Atom(Sym::EMPTY); MAX_LEAVES * MAX_LEAVES];
-      let mut output_len = 0;
+        if bit != 0 {
+          stack.push(S::One);
+          continue;
+        }
+        let Option::Some(r) = stack.pop() else {
+          return Result::Err((SVE::TooManyPairs, Bits(cursor)));
+        };
+        let Option::Some(l) = stack.pop() else {
+          return Result::Err((SVE::TooManyPairs, Bits(cursor)));
+        };
 
-      let pat_data_slice = &pat_data[pat_structure.current_leaf_store_index_range()];
-      
-      for each in 0..pat_data_slice.len() {
-        
-        match pat_data_slice[each] {
-          SExpr::Var(DebruijnLevel::Intro) => {
-                        
-            let (sub_struct, sub_data) = subs[(pat_intros) as usize];
-            let depth_offset = out_depth[each];
-
-            let sub_slice =  &sub_data[sub_struct.current_leaf_store_index_range()] ;
-            for &sub_val in sub_slice{
-              output_data[output_len] = match sub_val {
-                SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe {
-                  // Safety : the negative value will only become more negative
-                  SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
-                },
-                val @ SExpr::Var(DebruijnLevel::Intro) => {
-                  out_depth[each+1] += 1;
-                  val
-                }
-                val => val,
-              };
-              output_len +=1;
+        stack.push(match (l, r) {
+          (S::One, S::One) => S::Nested(VecDeque::from(Vec::from(b"1 1"))),
+          (S::One, S::Nested(mut n)) => {
+            n.push_back(b')');
+            for &each in b"1 (".into_iter().rev() {
+              n.push_front(each)
             }
-            dyck_words[each] = sub_struct.current_substructure();
-            
-            pat_intro_index[each] = pat_intros;
-            pat_intro_lookup[pat_intros as usize] = each as u8;
-            pat_intros += 1;
+            S::Nested(n)
           }
-
-
-
-          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => {
-            let rel_ref = (!r.get()) as usize;
-
-            let idx = pat_intro_lookup[rel_ref] as usize;
-            let (sub_struct, sub_data) = subs[pat_intro_index[idx] as usize];
-            let depth_offset = out_depth[idx];
-
-            // refs need to know how many intros they passed
-            let mut intros_count = 0;
-
-            let sub_slice =  &sub_data[sub_struct.current_leaf_store_index_range()] ;
-            for &sub_val in sub_slice{
-              output_data[output_len] = match sub_val {
-                SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe {
-                  // Safety : the negative value will only become more negative
-                  SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
-                },
-                SExpr::Var(DebruijnLevel::Intro) => {
-                  let val = !((intros_count + depth_offset) as isize);
-                  intros_count += 1;
-                  // Safety : values > 0 that are negagted are always non-zero
-                  SExpr::Var(DebruijnLevel::Ref(unsafe { NonZeroIsize::new_unchecked(val as isize) }))
-                }
-                val => val,
-              };
-              output_len +=1;
-            }
-            dyck_words[each] = sub_struct.current_substructure();
+          (S::Nested(mut n), S::One) => {
+            n.push_back(b' ');
+            n.push_back(b'1');
+            S::Nested(n)
           }
-          val => {
-            output_data[output_len] = val;
-            dyck_words[each] = 1;
+          (S::Nested(mut n1), S::Nested(mut n2)) => {
+            n2.push_front(b'(');
+            n2.push_back(b')');
+
+            n1.push_back(b' ');
+            n1.extend(n2);
+            S::Nested(n1)
+          }
+        })
+      }
+      if stack.len() != 1 {
+        return Result::Err((SVE::TooFewPairs, Bits(0)));
+      }
+      let top = stack.pop().unwrap();
+      Result::Ok(match top {
+        S::One => alloc::string::String::from("1"),
+        S::Nested(mut n) => {
+          n.push_front(b'(');
+          n.push_back(b')');
+          // Safety: only contains ascii values b'1', b' ', b'(', and b')'
+          alloc::string::String::from(unsafe { str::from_utf8_unchecked(n.make_contiguous()) })
+        }
+      })
+    }
+  }
+  #[derive(Debug)]
+  struct SmallDyckExpr {
+    word: Bits,
+    data: Vec<SExpr>,
+  }
+  #[derive(Debug)]
+  struct LargeDyckExpr {
+    word: Vec<Bits>,
+    data: Vec<SExpr>,
+  }
+  #[derive(Debug)]
+  enum DyckExprSubOutput {
+    SmallDyckExpr(SmallDyckExpr),
+    LargeDyckExpr(LargeDyckExpr),
+  }
+
+  fn subst_re_index((pat_structure, pat_data): (&DyckStructureZipperU64, &[SExpr]), subs: &[(&DyckStructureZipperU64, &[SExpr])]) -> DyckExprSubOutput {
+    const MAX_LEAVES: usize = DyckStructureZipperU64::MAX_LEAVES;
+    core::debug_assert_eq!(pat_data.into_iter().filter(|x| core::matches!(x, SExpr::Var(DebruijnLevel::Intro))).count(), subs.len());
+    core::debug_assert!(pat_data.len() < MAX_LEAVES);
+    core::debug_assert!(subs.len() < MAX_LEAVES);
+    for each in subs {
+      core::debug_assert!(each.1.len() < MAX_LEAVES);
+      core::debug_assert!(each.1.len() != 0);
+    }
+
+    const INDEX: [u8; MAX_LEAVES + 1] = [0; MAX_LEAVES + 1];
+
+    let mut pat_intro_index = INDEX;
+    let mut pat_intro_lookup = INDEX;
+    let mut pat_intros = 0;
+    let mut dyck_words = [0_u64; MAX_LEAVES];
+    // stores the the number of consecutive 0 bits
+    let mut trailing_pairs = INDEX;
+
+    let mut output_data = [SExpr::<Void>::Atom(Sym::EMPTY); MAX_LEAVES * MAX_LEAVES];
+    let mut out_depth = INDEX;
+    let mut output_len = 0;
+
+    let mut pat_structure_word = pat_structure.current_substructure();
+    // add terminal 1 bit before shifting fully , avoids counting too many pairs
+    pat_structure_word = ((pat_structure_word << 1) | 1) << pat_structure_word.leading_zeros() - 1;
+
+    let pat_data_slice = &pat_data[pat_structure.current_leaf_store_index_range()];
+
+    for each in 0..pat_data_slice.len() {
+      match pat_data_slice[each] {
+        SExpr::Var(DebruijnLevel::Intro) => {
+          let (sub_struct, sub_data) = subs[(pat_intros) as usize];
+          let depth_offset = out_depth[each];
+
+          let sub_slice = &sub_data[sub_struct.current_leaf_store_index_range()];
+          for &sub_val in sub_slice {
+            output_data[output_len] = match sub_val {
+              SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe {
+                // Safety : the negative value will only become more negative
+                SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
+              },
+              val @ SExpr::Var(DebruijnLevel::Intro) => {
+                out_depth[each + 1] += 1;
+                val
+              }
+              val => val,
+            };
             output_len += 1;
           }
+          dyck_words[each] = sub_struct.current_substructure();
+
+          pat_intro_index[each] = pat_intros;
+          pat_intro_lookup[pat_intros as usize] = each as u8;
+          pat_intros += 1;
         }
-        out_depth[each+1] += out_depth[each];
-        // shift off a leaf
-        pat_structure_word <<= 1;
-        let pairs = pat_structure_word.leading_zeros();
-        trailing_pairs[each] = pairs as u8;
-        // shift off consecutive pairs
-        pat_structure_word <<= pairs;
-      }
-      // the output Vec is now ready for allocating
 
-      // Build the Large Dyck Word
-      let mut output_word_len = 0;
-      let [mut cur, mut next] = [0_u64; 2];
-      let mut finished = Vec::new();
-      let mut last_div = 0;
+        SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => {
+          let rel_ref = (!r.get()) as usize;
 
-      for each in (0..pat_data.len()).rev() {
-        output_word_len += trailing_pairs[each] as usize;
-        let (cur_div, cur_mod) = (output_word_len / 64, output_word_len % 64);
+          let idx = pat_intro_lookup[rel_ref] as usize;
+          let (sub_struct, sub_data) = subs[pat_intro_index[idx] as usize];
+          let depth_offset = out_depth[idx];
 
-        // check if we need to advance the "cursor"
-        if last_div < cur_div {
-          if finished.len() == 0 {
-            finished = Vec::with_capacity(MAX_LEAVES);
+          // refs need to know how many intros they passed
+          let mut intros_count = 0;
+
+          let sub_slice = &sub_data[sub_struct.current_leaf_store_index_range()];
+          for &sub_val in sub_slice {
+            output_data[output_len] = match sub_val {
+              SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe {
+                // Safety : the negative value will only become more negative
+                SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
+              },
+              SExpr::Var(DebruijnLevel::Intro) => {
+                let val = !((intros_count + depth_offset) as isize);
+                intros_count += 1;
+                // Safety : `!positive` is always non-zero
+                SExpr::Var(DebruijnLevel::Ref(unsafe { NonZeroIsize::new_unchecked(val as isize) }))
+              }
+              val => val,
+            };
+            output_len += 1;
           }
-          finished.push(cur);
-          (cur, next) = (next, 0);
+          dyck_words[each] = sub_struct.current_substructure();
         }
-
-        let cur_word = dyck_words[each];
-
-        [cur, next] = [cur | cur_word << cur_mod, if cur_mod == 0 { 0 } else { next | cur_word >> u64::BITS - cur_mod as u32 }];
-        output_word_len += (u64::BITS - cur_word.leading_zeros()) as usize;
-        last_div = cur_div;
+        val => {
+          output_data[output_len] = val;
+          dyck_words[each] = 1;
+          output_len += 1;
+        }
       }
+      out_depth[each + 1] += out_depth[each];
+      // shift off a leaf
+      pat_structure_word <<= 1;
+      let pairs = pat_structure_word.leading_zeros();
+      trailing_pairs[each] = pairs as u8;
+      // shift off consecutive pairs
+      pat_structure_word <<= pairs;
+    }
+    // the output Vec is now ready for allocating
 
-      let data = Vec::from(&output_data[0..output_len]);
+    // Build the Large Dyck Word
+    let mut output_word_len = 0;
+    let [mut cur, mut next] = [0_u64; 2];
+    let mut finished = Vec::new();
+    let mut last_div = 0;
 
-      if next == 0 && finished.len() == 0 {
-        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: Bits(cur), data })
-      } else {
+    for each in (0..pat_data.len()).rev() {
+      output_word_len += trailing_pairs[each] as usize;
+      let (cur_div, cur_mod) = (output_word_len / 64, output_word_len % 64);
+
+      // check if we need to advance the "cursor"
+      if last_div < cur_div {
+        if finished.len() == 0 {
+          finished = Vec::with_capacity(MAX_LEAVES);
+        }
         finished.push(cur);
-        if next != 0 || cur.leading_zeros() == 0 {
-          finished.push(next);
-        }
-        finished.reverse();
-
-        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: unsafe { core::mem::transmute(finished) }, data })
+        (cur, next) = (next, 0);
       }
+
+      let cur_word = dyck_words[each];
+
+      [cur, next] = [cur | cur_word << cur_mod, if cur_mod == 0 { 0 } else { next | cur_word >> u64::BITS - cur_mod as u32 }];
+      output_word_len += (u64::BITS - cur_word.leading_zeros()) as usize;
+      last_div = cur_div;
     }
 
-    // I'm confident that  I can do this with just numbers and it would be much much faster.
+    let data = Vec::from(&output_data[0..output_len]);
 
-    // fn anonymize(mut d : ParserOutput)->(DyckStructureZipperU64,Vec<Sexpr>) {
-    //   for each in &mut d.1 {
-    //     match each {
-    //         SExpr::Var((_,s)) => *s = Sym::EMPTY,
-    //         _ => {},
-    //     }
-    //   }
-    //   (d.0,d.1)
-    // }
-
-    fn level_sym(d: DebruijnLevel) -> Sym {
-      let n = match d {
-        DebruijnLevel::Intro => return Sym::new("$0"),
-        DebruijnLevel::Ref(r) => r.get(),
-      };
-      let mut arr = *b"$-0x0000000000000000";
-
-      let mut n = n.abs() as usize;
-      let l = isize::BITS - n.leading_zeros();
-      let max_idx = l / 4 + l % 4 + 3;
-      let mut idx = max_idx;
-      while n != 0 {
-        const BOT_MASK: usize = (1 << 4) - 1;
-        let bot = (n & BOT_MASK) as u8;
-        arr[idx as usize] = match bot {
-          0..=9 => bot + b'0',
-          10..=15 => bot + b'a' - 10,
-          _ => {
-            core::unreachable!()
-          }
-        };
-        (idx, n) = (idx - 1, n >> 4);
+    if next == 0 && finished.len() == 0 {
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: Bits(cur), data })
+    } else {
+      finished.push(cur);
+      if next != 0 || cur.leading_zeros() == 0 {
+        finished.push(next);
       }
-      Sym::new(unsafe { core::str::from_utf8_unchecked(&arr[0..=max_idx as usize]) })
+      finished.reverse();
+
+      DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: unsafe { core::mem::transmute(finished) }, data })
     }
+  }
 
-    let r1 = parse("(f $x $x)");
-    // let r1 = parse("
-    //   ( f
-    //     $a $b $c $d $e $f $g $h $i $j $k $l $m $n $o $p $q $r $s $t $u $v $w $x $y $z
-    //     $m $a $z
-    //   )
-    // ");
-    std::println!("{:?}", r1);
-    let r1_anon = 
-    // anonymize(r1) 
-      r1
-    ;
-    std::println!("{:?}", r1_anon);
-
-    // let mut vars = Variables::new();
-    // let mut idx = 0;
-    // for each in &r1_anon.1 {
-    //   vars.aquire_de_bruin(match each {
-    //     SExpr::Var((DebruijnLevel::Intro,_)) => {
-    //       let s = level_sym(DebruijnLevel::Ref(unsafe {NonZeroIsize::new_unchecked(!idx)})); idx+=1;
-    //       s
-    //     },
-    //     SExpr::Var((d,_)) => level_sym(*d),
-    //       _=>continue
-    //   });
-    // }
-    // std::println!("{vars:?}")
+  // this can be optimized by inlining the large version and specializing, but given that it would incur more checks, it might not be worth it. on the happy path, the performance is the same
+  fn subst_re_index_small((pat_structure, pat_data): (&DyckStructureZipperU64, &[SExpr]), subs: &[(&DyckStructureZipperU64, &[SExpr])]) -> Result<(DyckStructureZipperU64, Vec<SExpr>), ()> {
+    match subst_re_index((pat_structure, pat_data), subs) {
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: Bits(b), data }) => Result::Ok((
+        unsafe {
+          /* Safety: subst_re_index guaratees a valid Dyck word */
+          DyckStructureZipperU64::new(b).unwrap_unchecked()
+        },
+        data,
+      )),
+      DyckExprSubOutput::LargeDyckExpr(_) => Result::Err(()),
+    }
   }
 
   // shared/src/test/scala/ExprTest.scala

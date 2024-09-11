@@ -1786,7 +1786,7 @@ fn test_examples() {
 
   let parse = |src| DyckParser::new(src).next().unwrap().unwrap();
   type ParserOutput = (DyckStructureZipperU64, Vec<SExpr>, Variables);
-  let [e1, e2, e3, r1] = ["(f $x a)", "(f $x $y $y $x)", "(f $y (g $y $x))", "(= (nTimes (, $x (S (S $n)))) (Plus (, $x (S Z)) (, $x (S $n))))"].map(parse);
+  let [e1, e2, e3, r1] = ["(f $x a)", "(f $x $y $y $x)", "(f $y (g $y $x))", "(= (f (, $x (g (g $y)))) (h (, $x (g a)) (, $x (g $y))))"].map(parse);
 
   fn atom(a: Sym) -> SExpr {
     SExpr::Atom(a)
@@ -1831,8 +1831,6 @@ fn test_examples() {
     core::assert_eq!(size(&e3), 9);
     core::assert_eq!(&fvars(&e3), &atoms([f, g]));
 
-    core::assert_eq!(size(&r1), 31);
-    core::assert_eq!(&fvars(&r1), &atoms([eq, sym("nTimes"), comma, S, S, sym("Plus"), comma, S, sym("Z"), comma, S]));
   }
 
   '_toAbsolute_toRelative: {
@@ -2557,15 +2555,38 @@ fn test_examples() {
     }
   }
 
-  // shared/src/test/scala/ExprTest.scala
-  // ```scala
-  // test("large subst") {
-  //   import Expr.*
-  //   val `5` = Var(200)
-  //   val Z = Var(201)
-  //   assert(r1.substRel(Seq(`5`, App(g,App(g,Z)))) == App(App(`=`,App(f,App(App(`,`,`5`),App(g,App(g,App(g,App(g,Z))))))),App(App(h,App(App(`,`,`5`),App(g,a))),App(App(`,`,`5`),App(g,App(g,App(g,Z)))))))
-  // }
-  // ```
+  '_large_subst: {
+    // shared/src/test/scala/ExprTest.scala
+    // ```scala
+    // test("large subst") {
+    //   import Expr.*
+    //   val `5` = Var(200)
+    //   val Z = Var(201)
+    //   assert(r1.substRel(Seq(`5`, App(g,App(g,Z)))) == App(App(`=`,App(f,App(App(`,`,`5`),App(g,App(g,App(g,App(g,Z))))))),App(App(h,App(App(`,`,`5`),App(g,a))),App(App(`,`,`5`),App(g,App(g,App(g,Z)))))))
+    // }
+    // ```
+
+
+    /* 
+          [`=`,f,`,`,`5`,g,g,g,g,Z, h,`,`,`5`,g,a,`,`,`5`,g,g,g,Z] 11_110_111_110_000000___1_110_110_00_110_11_110_0000___0
+    */
+
+    let _5 : SExpr = SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new(200).unwrap()));
+    let Z : SExpr = SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new(201).unwrap()));
+
+    let g = atom(g);
+    let h = atom(h);
+    let a = atom(a);
+    let f = atom(f);
+    core::assert_eq!(
+      subst_rel_small((&r1.0,&r1.1), 
+      &[(&DyckStructureZipperU64::new(1).unwrap(), &[_5]),
+       (&DyckStructureZipperU64::new(0b_11100).unwrap(), &[g, g, Z]), 
+      ]).unwrap(),
+      (DyckStructureZipperU64::new(0b___11_110_111_110_000000___1_110_110_00_110_11_110_0000___0).unwrap(), 
+        Vec::from([atom(sym("=")),f, atom(sym(",")),_5,g,g,g,g,Z, h,atom(sym(",")),_5,g,a,atom(sym(",")),_5,g,g,g,Z]))
+    );
+  }
 
   // shared/src/test/scala/ExprTest.scala
   // ```scala

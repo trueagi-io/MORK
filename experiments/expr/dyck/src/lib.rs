@@ -1868,7 +1868,7 @@ fn test_examples() {
             intros += 1;
             tmp
           },
-          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe { SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get()+1 - offset as isize))) },
+          SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => unsafe { SExpr::Var(DebruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() + 1 - offset as isize))) },
           a => a,
         }
       }
@@ -1922,7 +1922,6 @@ fn test_examples() {
     core::assert_eq! {&to_absolute(&e1.1, 100), &e1a}
     core::assert_eq! {&to_absolute(&e2.1, 100), &e2a}
     core::assert_eq! {&to_absolute(&e3.1, 100), &e3a}
-
 
     core::assert_eq! {&to_relative(&e1a), &e1.1}
     core::assert_eq! {&to_relative(&e2a), &e2.1}
@@ -2252,20 +2251,29 @@ fn test_examples() {
     }
     // the output Vec is now ready for allocating
 
-    // Build the Large Dyck Word
+    build_dyck_expr_from_subst(pat_data.len(), output_len, &output_data, &trailing_pairs, &dyck_words)
+  }
+
+  fn build_dyck_expr_from_subst(
+    input_len: usize,
+    output_len: usize,
+    output_data: &[SExpr; DyckStructureZipperU64::MAX_LEAVES * DyckStructureZipperU64::MAX_LEAVES],
+    trailing_pairs: &[u8; DyckStructureZipperU64::MAX_LEAVES + 1],
+    dyck_words: &[u64; DyckStructureZipperU64::MAX_LEAVES],
+  ) -> DyckExprSubOutput {
     let mut output_word_len = 0;
     let [mut cur, mut next] = [0_u64; 2];
     let mut finished = Vec::new();
     let mut last_div = 0;
 
-    for each in (0..pat_data.len()).rev() {
+    for each in (0..input_len).rev() {
       output_word_len += trailing_pairs[each] as usize;
       let (cur_div, cur_mod) = (output_word_len / 64, output_word_len % 64);
 
       // check if we need to advance the "cursor"
       if last_div < cur_div {
         if finished.len() == 0 {
-          finished = Vec::with_capacity(MAX_LEAVES);
+          finished = Vec::with_capacity(DyckStructureZipperU64::MAX_LEAVES);
         }
         finished.push(cur);
         (cur, next) = (next, 0);
@@ -2443,14 +2451,111 @@ fn test_examples() {
   // }
   // ```
 
-  // shared/src/test/scala/ExprTest.scala
-  // ```scala
-  // test("subst") {
-  //   assert(e1.substRel(Seq(b)) == Expr(f, b, a))
-  //   assert(e2.substRel(Seq(a, b)) == Expr(f, a, b, b, a))
-  //   assert(e3.substRel(Seq(a, b)) == Expr(f, a, Expr(g, a, b)))
-  // }
-  // ```
+  '_subst: {
+    // shared/src/test/scala/ExprTest.scala
+    // ```scala
+    // test("subst") {
+    //   assert(e1.substRel(Seq(b)) == Expr(f, b, a))
+    //   assert(e2.substRel(Seq(a, b)) == Expr(f, a, b, b, a))
+    //   assert(e3.substRel(Seq(a, b)) == Expr(f, a, Expr(g, a, b)))
+    // }
+    // ```
+
+    type DSZU64 = DyckStructureZipperU64;
+    let s1 = subst_rel_small((&e1.0, &e1.1), &[(&DSZU64::new(1).unwrap(), &[atom(b)][..])][..]);
+    let s2 = subst_rel_small((&e2.0, &e2.1), &[(&DSZU64::new(1).unwrap(), &[atom(a)][..]), (&DSZU64::new(1).unwrap(), &[atom(b)][..])][..]);
+    let s3 = subst_rel_small((&e3.0, &e3.1), &[(&DSZU64::new(1).unwrap(), &[atom(a)][..]), (&DSZU64::new(1).unwrap(), &[atom(b)][..])][..]);
+    let expected1 = parse("(f b a)");
+    let expected2 = parse("(f a b b a)");
+    let expected3 = parse("(f a (g a b))");
+    core::assert_eq! {s1.unwrap(), (expected1.0, expected1.1)}
+    core::assert_eq! {s2.unwrap(), (expected2.0, expected2.1)}
+    core::assert_eq! {s3.unwrap(), (expected3.0, expected3.1)}
+  }
+
+
+  fn subst_rel((pat_structure, pat_data): (&DyckStructureZipperU64, &[SExpr]), subs: &[(&DyckStructureZipperU64, &[SExpr])]) -> DyckExprSubOutput {
+    const MAX_LEAVES: usize = DyckStructureZipperU64::MAX_LEAVES;
+    core::debug_assert_eq!(pat_data.into_iter().filter(|x| core::matches!(x, SExpr::Var(DebruijnLevel::Intro))).count(), subs.len());
+    core::debug_assert!(pat_data.len() < MAX_LEAVES);
+    core::debug_assert!(subs.len() < MAX_LEAVES);
+    for each in subs {
+      core::debug_assert!(each.1.len() < MAX_LEAVES);
+      core::debug_assert!(each.1.len() != 0);
+    }
+
+    const INDEX: [u8; MAX_LEAVES + 1] = [0; MAX_LEAVES + 1];
+
+    let mut pat_intros = 0;
+    let mut dyck_words = [0_u64; MAX_LEAVES];
+    // stores the the number of consecutive 0 bits
+    let mut trailing_pairs = INDEX;
+
+    let mut output_data = [SExpr::<Void>::Atom(Sym::EMPTY); MAX_LEAVES * MAX_LEAVES];
+    let mut output_len = 0;
+
+    let mut pat_structure_word = pat_structure.current_substructure();
+    // add terminal 1 bit before shifting fully , avoids counting too many pairs
+    pat_structure_word = ((pat_structure_word << 1) | 1) << pat_structure_word.leading_zeros() - 1;
+
+    let pat_data_slice = &pat_data[pat_structure.current_leaf_store_index_range()];
+
+    for each in 0..pat_data_slice.len() {
+      match pat_data_slice[each] {
+        SExpr::Var(DebruijnLevel::Intro) => {
+          let (sub_struct, sub_data) = subs[(pat_intros) as usize];
+
+          let sub_slice = &sub_data[sub_struct.current_leaf_store_index_range()];
+          for &sub_val in sub_slice {
+            output_data[output_len] = sub_val;
+            output_len += 1;
+          }
+          dyck_words[each] = sub_struct.current_substructure();
+
+          pat_intros += 1;
+        }
+
+        SExpr::Var(DebruijnLevel::Ref(r)) if r.is_negative() => {
+          let (sub_struct, sub_data) = subs[(!r.get()) as usize];
+
+          let sub_slice = &sub_data[sub_struct.current_leaf_store_index_range()];
+          for &sub_val in sub_slice {
+            output_data[output_len] = sub_val;
+            output_len += 1;
+          }
+          dyck_words[each] = sub_struct.current_substructure();
+        }
+        val => {
+          output_data[output_len] = val;
+          dyck_words[each] = 1;
+          output_len += 1;
+        }
+      }
+      // shift off a leaf
+      pat_structure_word <<= 1;
+      let pairs = pat_structure_word.leading_zeros();
+      trailing_pairs[each] = pairs as u8;
+      // shift off consecutive pairs
+      pat_structure_word <<= pairs;
+    }
+    // the output Vec is now ready for allocating
+
+    build_dyck_expr_from_subst(pat_data.len(), output_len, &output_data, &trailing_pairs, &dyck_words)
+  }
+
+  // this can be optimized by inlining the large version and specializing, but given that it would incur more checks, it might not be worth it. on the happy path, the performance is the same
+  fn subst_rel_small((pat_structure, pat_data): (&DyckStructureZipperU64, &[SExpr]), subs: &[(&DyckStructureZipperU64, &[SExpr])]) -> Result<(DyckStructureZipperU64, Vec<SExpr>), ()> {
+    match subst_rel((pat_structure, pat_data), subs) {
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: Bits(b), data }) => Result::Ok((
+        unsafe {
+          /* Safety: subst_re_index guaratees a valid Dyck word */
+          DyckStructureZipperU64::new(b).unwrap_unchecked()
+        },
+        data,
+      )),
+      DyckExprSubOutput::LargeDyckExpr(_) => Result::Err(()),
+    }
+  }
 
   // shared/src/test/scala/ExprTest.scala
   // ```scala

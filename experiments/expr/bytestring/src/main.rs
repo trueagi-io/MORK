@@ -38,6 +38,7 @@ fn traverse(ez: &mut ExprZipper) {
 // }
 
 
+#[test]
 fn subexpr() {
     // (foo $ (200 201))
     let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::NewVar),
@@ -52,6 +53,7 @@ fn subexpr() {
     println!("{:?}", sez.root);
 }
 
+#[test]
 fn children() {
     {
         // (= (func $) (add`0 (123456789 _1)))
@@ -128,6 +130,7 @@ fn children() {
 
 }
 
+#[test]
 fn substitute() {
     // only used when there's just data substituted in, no variables
     // (F foo); (Bar $ $)
@@ -152,6 +155,7 @@ fn substitute() {
     println!("result: {:?}", Expr { ptr: buffer.as_mut_ptr() });
 }
 
+#[test]
 fn de_bruijn() {
     let mut r1v = vec![
         item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
@@ -588,6 +592,7 @@ fn de_bruijn() {
     }
 }
 
+#[test]
 fn data_matching() {
     {
         // (a $ $) extract_data (a foo bar) == [foo, bar]
@@ -641,7 +646,7 @@ fn data_matching() {
             Err(e) => { panic!("{:?}", e); }
         }
     }
-    println!("(a $ b (cux $ $ z) c) extract_data (a (foo (bar baz)) b (cux x y z) c) == [(foo (bar baz)), x, y]");
+    // println!("(a $ b (cux $ $ z) c) extract_data (a (foo (bar baz)) b (cux x y z) c) == [(foo (bar baz)), x, y]");
     {
         // (a $ b (cux $ $ z) c) extract_data (a (foo (bar baz)) b (cux x y z) c) == [(foo (bar baz)), x, y]
         let mut pv = vec![
@@ -692,6 +697,7 @@ fn data_matching() {
     }
 }
 
+#[test]
 fn counts() {
     // (= (func $) (add`0 (123456789 _1)))
     let mut ev = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
@@ -702,6 +708,7 @@ fn counts() {
     assert!(e.size() == 10 && e.symbols() == 4 && e.leaves() == 6 && e.newvars() == 1);
 }
 
+#[test]
 fn unbound() {
     {
         let mut ev = vec![item_byte(Tag::Arity(3)),
@@ -729,6 +736,7 @@ fn unbound() {
     }
 }
 
+#[test]
 fn unification() {
     {
         //     [2][2] $ a [2] _1  a  unification
@@ -777,35 +785,20 @@ fn unification() {
     }
 }
 
-fn main() {
-    // (100 $ (200 201))
-    // let mut e = vec![Item::Arity(3), Item::Symbol(100), Item::NewVar, Item::Arity(2), Item::Symbol(200), Item::Symbol(201)];
+#[test]
+fn to_string() {
     // (= (func $) (add`0 (123456789 _1)))
     let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                                item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                                item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                                    item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
-    println!("{:?}", e);
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+    // note the \0 is missing
     let mut ez = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
-    // ez.traverse(0); println!();
-    println!("{:?}", ez.root);
+    let s = "(= (func $) (add\x00 (\\x7\\x5b\\xcd\\x15 _1)))";
 
-    println!("---");
-    subexpr();
+    assert_eq!(format!("{:?}", ez.root), s);
+}
 
-    println!("---");
-    children();
+fn main() {
 
-    println!("---");
-    substitute();
-
-    de_bruijn();
-
-    // data_matching();
-
-    counts();
-
-    unbound();
-
-    unification();
 }

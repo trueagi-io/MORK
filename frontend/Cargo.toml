@@ -10,8 +10,8 @@ regex = "1.10.4"
 [build]
 rustflags = "-C opt-level=3 -C target-cpu=native"
 
-[dependencies.ringmap]
-path = "../../RingMap"
+[dependencies.pathmap]
+path = "../../PathMap"
 #features = ["all_dense_nodes"]
 
 [dependencies.mork-bytestring]

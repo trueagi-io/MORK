@@ -1,8 +1,8 @@
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use ringmap::trie_map::BytesTrieMap;
-use ringmap::zipper::{Zipper, ReadZipper, WriteZipper};
+use pathmap::trie_map::BytesTrieMap;
+use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
 use num::{BigInt, zero};
 
 

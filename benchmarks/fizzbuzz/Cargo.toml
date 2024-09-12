@@ -7,8 +7,8 @@ edition = "2021"
 rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"
 
 
-[dependencies.ringmap]
-path = "../../../RingMap"
+[dependencies.pathmap]
+path = "../../../PathMap"
 features = ["all_dense_nodes"]
 
 [dependencies.mork-frontend]

@@ -1,7 +1,7 @@
 use std::time::Instant;
 use mork_bytestring::*;
-use ringmap::trie_map::BytesTrieMap;
-use ringmap::zipper::Zipper;
+use pathmap::trie_map::BytesTrieMap;
+use pathmap::zipper::Zipper;
 
 
 fn main() {

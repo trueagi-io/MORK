@@ -186,7 +186,7 @@ use std::time::Instant;
 
 use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
-use ringmap::trie_map::BytesTrieMap;
+use pathmap::trie_map::BytesTrieMap;
 
 struct DataParser {
     count: u64,

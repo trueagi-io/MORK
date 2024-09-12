@@ -7,9 +7,9 @@ use std::ptr::slice_from_raw_parts;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
-use ringmap::trie_map::BytesTrieMap;
-use ringmap::zipper::{ReadZipper, WriteZipper, Zipper};
-use ringmap::ring::{Lattice, PartialDistributiveLattice};
+use pathmap::trie_map::BytesTrieMap;
+use pathmap::zipper::{ReadZipper, WriteZipper, Zipper};
+use pathmap::ring::{Lattice, PartialDistributiveLattice};
 
 struct DataParser {
     count: u64,
@@ -53,7 +53,7 @@ impl Parser for DataParser {
 }
 
 
-static mut ARITIES: [u64; 4] = [0u64; 4];
+static mut SIZES: [u64; 4] = [0u64; 4];
 
 struct CfIter<'a> {
     i: u8,
@@ -96,7 +96,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
 }
 
 fn drop_symbol_head_2(loc: &mut WriteZipper<()>) {
-    let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+    let m = mask_and(loc.child_mask(), unsafe { SIZES });
     let mut it = CfIter::new(&m);
 
     let p = loc.path().to_vec();
@@ -118,7 +118,7 @@ fn drop_symbol_head_2(loc: &mut WriteZipper<()>) {
 fn main() {
     for size in 1..64 {
         let k = item_byte(Tag::SymbolSize(size));
-        unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
+        unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
 
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
@@ -262,7 +262,7 @@ fn main() {
     let mut child_rzipper = child_zipper.fork_zipper();
     female_zipper.reset();
 
-    // use ringmap::counters;
+    // use pathmap::counters;
     // let C1 = counters::Counters::count_ocupancy(&output);
     // println!("previous tn count {}", C1.total_child_items() as f64/C1.total_nodes() as f64);
     // C1.print_histogram_by_depth();
@@ -360,6 +360,25 @@ fn main() {
     println!("getting all aunts took {} microseconds", t6.elapsed().as_micros());
     // println!("j {}", j);
     println!("total out now {}", output.val_count());
+
+    /*
+built 11809
+parsing and loading took 26447 microseconds
+total now 11809
+creating extra index took (child) 4216 microseconds
+total now 14619
+creating extra index took (person) 88 microseconds
+total now 17616
+getting all parents took 298 microseconds
+total out now 2788
+getting all mothers took 2220 microseconds
+total out now 4155
+getting all sisters took 7655 microseconds
+total out now 7167
+getting all aunts took 8615 microseconds
+total out now 10140
+
+     */
 
     // let mut cs = output.read_zipper();
     // loop {

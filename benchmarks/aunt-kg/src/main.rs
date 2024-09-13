@@ -151,20 +151,26 @@ fn main() {
     let t1 = Instant::now();
 
     // family |= family.subst((parent $x $y), (child $y $x))
-    // let parent_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(6)), b'p', b'a', b'r', b'e', b'n', b't'];
     let mut parent_path = vec![item_byte(Tag::Arity(3))];
     let parent_symbol = parser.tokenizer("parent".to_string());
     parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
     parent_path.extend(parent_symbol.as_bytes());
-    // println!("parent prefix {:?}", parent_path);
     let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
-    // let child_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'h', b'i', b'l', b'd'];
     let mut child_path = vec![item_byte(Tag::Arity(3))];
     let child_symbol = parser.tokenizer("child".to_string());
     child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
     child_path.extend(child_symbol.as_bytes());
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
     let mut child_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
+
+    let mut patternv = vec![item_byte(Tag::Arity(3))];
+    patternv.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
+    patternv.extend(parent_symbol.as_bytes()); patternv.push(item_byte(Tag::NewVar)); patternv.push(item_byte(Tag::NewVar));
+    let pattern = Expr{ ptr: patternv.as_mut_ptr() };
+    let mut templatev = vec![item_byte(Tag::Arity(3))];
+    templatev.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
+    templatev.extend(child_symbol.as_bytes()); templatev.push(item_byte(Tag::VarRef(1))); templatev.push(item_byte(Tag::VarRef(0)));
+    let template = Expr{ ptr: templatev.as_mut_ptr() };
 
     let mut j = 0;
     loop {
@@ -174,21 +180,14 @@ fn main() {
                 j += 1;
                 debug_assert!(family.contains(parent_zipper.origin_path().unwrap()));
 
-                // should be an Expr read zipper
-                let mut lhsz = ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(parent_zipper.origin_path().unwrap().as_ptr()) } });
-                let mut rhsz = ExprZipper::new(Expr{ ptr: full_child_path.as_mut_ptr() });
+                let lhs = Expr{ ptr: parent_zipper.origin_path().unwrap().as_ptr().cast_mut() };
+                let mut rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
+                let mut rhsz = ExprZipper::new(rhs);
 
-                lhsz.next_child(); // parent
-                lhsz.next_child(); let _1 = lhsz.subexpr(); let _1_span = unsafe { _1.span().as_ref().unwrap() }; // _1_span can actually be constructed from _2 without re-traversing
-                lhsz.next_child(); let _2 = lhsz.subexpr(); let _2_span = unsafe { _2.span().as_ref().unwrap() };
+                // (parent $ $) => (child _2 _1)
+                lhs.transformData(pattern, template, &mut rhsz).unwrap();
 
-                rhsz.next_child();
-                rhsz.next_child();
-                rhsz.write_move(_2_span);
-                rhsz.write_move(_1_span);
-
-                // assumes rhsz is at the rhs of the expression
-                let slice = unsafe { ptr::slice_from_raw_parts(rhsz.root.ptr.byte_offset(child_path.len() as isize), unsafe{&*Expr{ ptr: full_child_path.as_mut_ptr() }.span()}.len() - child_path.len()).as_ref().unwrap() };
+                let slice = &rhsz.span()[child_path.len()..];
 
                 child_zipper.descend_to(slice);
                 child_zipper.set_value(());
@@ -199,16 +198,7 @@ fn main() {
 
     println!("creating extra index took (child) {} microseconds", t1.elapsed().as_micros());
     println!("total now {}", family.val_count());
-    // let mut cs = family.cursor();
-    // loop {
-    //     match cs.next() {
-    //         None => { break }
-    //         Some((k, v)) => {
-    //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
-    //             println!("cursor {:?}", k)
-    //         }
-    //     }
-    // }
+
     let t2 = Instant::now();
 
     let mut female_path = vec![item_byte(Tag::Arity(2))];

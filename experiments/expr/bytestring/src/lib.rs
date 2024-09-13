@@ -571,7 +571,7 @@ pub struct ExprZipper {
 }
 
 impl ExprZipper {
-    pub fn new(e: Expr) -> Self {
+    #[inline] pub fn new(e: Expr) -> Self {
         match unsafe { byte_item(*e.ptr) } {
             Tag::NewVar => { Self { root: e, loc: 0, trace: vec![] } }
             Tag::VarRef(r) => { Self { root: e, loc: 0, trace: vec![] } }
@@ -587,13 +587,14 @@ impl ExprZipper {
         }
     }
 
-    pub fn tag(&self) -> Tag { unsafe { byte_item(*self.root.ptr.byte_add(self.loc)) } }
-    pub fn item(&self) -> Result<Tag, &[u8]> {
+    #[inline] pub fn tag(&self) -> Tag { unsafe { byte_item(*self.root.ptr.byte_add(self.loc)) } }
+    #[inline] pub fn item(&self) -> Result<Tag, &[u8]> {
         let tag = self.tag();
         if let Tag::SymbolSize(n) = tag { return unsafe { Err(&*slice_from_raw_parts(self.root.ptr.byte_add(self.loc + 1), n as usize)) } }
         else { return Ok(tag) }
     }
-    pub fn subexpr(&self) -> Expr { unsafe { Expr { ptr: self.root.ptr.byte_add(self.loc) } } }
+    #[inline] pub fn subexpr(&self) -> Expr { unsafe { Expr { ptr: self.root.ptr.byte_add(self.loc) } } }
+    #[inline] pub fn span(&self) -> &[u8] { unsafe { &*slice_from_raw_parts(self.root.ptr, self.loc) } }
 
     pub fn write_arity(&mut self, arity: u8) -> bool {
         unsafe {

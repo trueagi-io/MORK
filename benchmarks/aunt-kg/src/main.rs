@@ -35,17 +35,14 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> String {
-        return s;
+        // return s;
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
             self.count += 1;
             let mut buf: [u8; 8] = [0; 8];
-            // let slice = gen_key(self.count, buf.as_mut_ptr());
-            let slice = self.count.to_ne_bytes();
-            let mut c = 8;
-            while (c > 1) { if slice[c - 1] == 0 { c -= 1; } else { break; } }
-            let string = String::from_utf8_lossy(&slice[0..c]).to_string();
+            let slice = gen_key(self.count, buf.as_mut_ptr());
+            let string = unsafe { String::from_utf8_unchecked(slice.to_vec()) };
             self.symbols.insert(s.as_bytes(), string.clone());
             string
         }

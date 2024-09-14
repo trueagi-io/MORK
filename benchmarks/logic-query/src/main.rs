@@ -89,16 +89,16 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
 //     }
 // }
 
-const ITER_AT_DEPTH: u32 = 0;
-const ITER_SYMBOL_SIZE: u32 = 1;
-const ITER_SYMBOLS: u32 = 2;
-const ITER_VARIABLES: u32 = 3;
-const ITER_ARITIES: u32 = 4;
-const ITER_EXPR: u32 = 5;
-const ITER_NESTED: u32 = 6;
-const ACTION: u32 = 10;
+const ITER_AT_DEPTH: u8 = 0;
+const ITER_SYMBOL_SIZE: u8 = 1;
+const ITER_SYMBOLS: u8 = 2;
+const ITER_VARIABLES: u8 = 3;
+const ITER_ARITIES: u8 = 4;
+const ITER_EXPR: u8 = 5;
+const ITER_NESTED: u8 = 6;
+const ACTION: u8 = 10;
 
-fn label(l: u32) -> String {
+fn label(l: u8) -> String {
     match l {
         ITER_AT_DEPTH => { "ITER_AT_DEPTH" }
         ITER_SYMBOL_SIZE => {"ITER_SYMBOL_SIZE"}
@@ -107,40 +107,34 @@ fn label(l: u32) -> String {
         ITER_ARITIES => { "ITER_ARITIES" }
         ITER_EXPR => { "ITER_EXPR" }
         ITER_NESTED => {"ITER_NESTED"}
-        ACTION => {"action"}
+        ACTION => {"ACTION"}
         _ => { return l.to_string() }
     }.to_string()
 }
 
-fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut ReadZipper<()>, f: &mut F) {
+fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipper<()>, f: &mut F) {
     // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("label {}", label(*stack.last().unwrap()));
-    match *stack.last().unwrap() {
+    let last = stack.pop().unwrap();
+    match last {
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
-            let l = stack.len();
-            let size = stack[l - 2];
+            let size = stack.pop().unwrap();
             if loc.descend_first_k_path(size as usize) {
-                let mut new_stack = stack.clone();
-                new_stack.pop().unwrap();
-                new_stack.pop().unwrap();
-                transition(new_stack, loc, f);
+                transition(stack, loc, f);
                 while loc.to_next_k_path(size as usize) {
-                    let mut new_stack = stack.clone();
-                    new_stack.pop().unwrap();
-                    new_stack.pop().unwrap();
-                    transition(new_stack, loc, f);
+                    transition(stack, loc, f);
                 }
             }
+            stack.push(size);
         }
         ITER_NESTED => {
+            let arity = stack.pop().unwrap();
             let l = stack.len();
-            let arity = stack[l - 2];
-            let mut new_stack = stack.clone();
-            new_stack.pop().unwrap();
-            new_stack.pop().unwrap();
-            for _ in 0..arity { new_stack.push(ITER_EXPR); }
-            transition(new_stack, loc, f);
+            for _ in 0..arity { stack.push(ITER_EXPR); }
+            transition(stack, loc, f);
+            stack.truncate(l);
+            stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
             let m = mask_and(loc.child_mask(), unsafe { SIZES });
@@ -150,11 +144,13 @@ fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut Re
                 if let Tag::SymbolSize(s) = byte_item(b) {
                     let buf = [b];
                     if loc.descend_to(buf) {
-                        let mut new_stack = stack.clone();
-                        let l = stack.len();
-                        new_stack[l - 1] = new_stack[l - 2];
-                        new_stack[l - 2] = s as u32;
-                        transition(new_stack, loc, f);
+                        let last = stack.pop().unwrap();
+                        stack.push(s);
+                        stack.push(last);
+                        transition(stack, loc, f);
+                        stack.pop();
+                        stack.pop();
+                        stack.push(last);
                     }
                     loc.ascend(1);
                 } else {
@@ -163,10 +159,11 @@ fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut Re
             }
         }
         ITER_SYMBOLS => {
-            let mut new_stack = stack.clone();
-            *new_stack.last_mut().unwrap() = ITER_AT_DEPTH;
-            new_stack.push(ITER_SYMBOL_SIZE);
-            transition(new_stack, loc, f);
+            stack.push(ITER_AT_DEPTH);
+            stack.push(ITER_SYMBOL_SIZE);
+            transition(stack, loc, f);
+            stack.pop();
+            stack.pop();
         }
         ITER_VARIABLES => {
             let m = mask_and(loc.child_mask(), unsafe { VARS });
@@ -175,9 +172,7 @@ fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut Re
             while let Some(b) = it.next() {
                 let buf = [b];
                 if loc.descend_to(buf) {
-                    let mut new_stack = stack.clone();
-                    new_stack.pop().unwrap();
-                    transition(new_stack, loc, f);
+                    transition(stack, loc, f);
                 }
                 loc.ascend(1);
             }
@@ -190,11 +185,13 @@ fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut Re
                 if let Tag::Arity(a) = byte_item(b) {
                     let buf = [b];
                     if loc.descend_to(buf) {
-                        let mut new_stack = stack.clone();
-                        let l = stack.len();
-                        new_stack[l - 1] = new_stack[l - 2];
-                        new_stack[l - 2] = a as u32;
-                        transition(new_stack, loc, f);
+                        let last = stack.pop().unwrap();
+                        stack.push(a);
+                        stack.push(last);
+                        transition(stack, loc, f);
+                        stack.pop();
+                        stack.pop();
+                        stack.push(last);
                     }
                     loc.ascend(1);
                 } else {
@@ -203,19 +200,23 @@ fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: Vec<u32>, loc: &mut Re
             }
         }
         ITER_EXPR => {
-            let mut new_stack = stack.clone();
-            *new_stack.last_mut().unwrap() = ITER_VARIABLES;
-            transition(new_stack, loc, f);
-            let mut new_stack = stack.clone();
-            *new_stack.last_mut().unwrap() = ITER_SYMBOLS;
-            transition(new_stack, loc, f);
-            let mut new_stack = stack.clone();
-            *new_stack.last_mut().unwrap() = ITER_NESTED;
-            new_stack.push(ITER_ARITIES);
-            transition(new_stack, loc, f);
+            stack.push(ITER_VARIABLES);
+            transition(stack, loc, f);
+            stack.pop();
+
+            stack.push(ITER_SYMBOLS);
+            transition(stack, loc, f);
+            stack.pop();
+
+            stack.push(ITER_NESTED);
+            stack.push(ITER_ARITIES);
+            transition(stack, loc, f);
+            stack.pop();
+            stack.pop();
         }
         _ => { unreachable!() }
     }
+    stack.push(last);
 }
 
 
@@ -435,7 +436,8 @@ fn main() {
     }
 
 
-    let mut file = std::fs::File::open("resources/test.metta")
+    // let mut file = std::fs::File::open("resources/test.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
@@ -455,28 +457,30 @@ fn main() {
                 stack.set_len(ez.loc);
                 space.insert(&stack[..], ());
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
-                ExprZipper::new(ez.root).traverse(0); println!();
+                // ExprZipper::new(ez.root).traverse(0); println!();
             } else { break }
             i += 1;
             vs.set_len(0);
         }
     }
-    println!("built {}", i);
-    println!("took {} ms", t0.elapsed().as_millis());
-    println!("map contains: {}", space.val_count());
+    // println!("built {}", i);
+    // println!("took {} ms", t0.elapsed().as_millis());
+    // println!("map contains: {}", space.val_count());
 
 
     let t0 = Instant::now();
+    let REPEAT = 100;
+    for _ in 0..REPEAT {
     let mut z = space.read_zipper();
 
-
-    transition(vec![ACTION, ITER_EXPR], &mut z, &mut |loc| {
+    let mut buffer = vec![ACTION, ITER_EXPR];
+    transition(&mut buffer, &mut z, &mut |loc| {
         // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
-        let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+        // let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
         // println!("{:?}", e);
-        black_box(e);
+        black_box(loc.origin_path());
     });
-
-    println!("iterating all took {} microseconds", t0.elapsed().as_micros());
+    }
+    println!("iterating all took {} microseconds", (t0.elapsed().as_micros() as f64 / REPEAT as f64) as u64);
 
 }

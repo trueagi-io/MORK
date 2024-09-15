@@ -504,12 +504,11 @@ impl Expr {
         traversal.string
     }
 
-    // #[inline(never)]
-    // pub fn serialize<Target : Write>(&self, t: Target) -> () {
-    //     let mut traversal = DebugTraversal{ string: String::new(), transient: false };
-    //     execute(&mut traversal, *self, 0);
-    //     traversal.string
-    // }
+    #[inline(never)]
+    pub fn serialize<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a String>(&self, t: &mut Target, map_symbol: F) -> () {
+        let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
+        execute(&mut traversal, *self, 0);
+    }
 }
 
 trait Traversal<A, R> {
@@ -561,6 +560,17 @@ impl Debug for Expr {
         f.write_str(&self.string());
         Ok(())
     }
+}
+
+struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b String> { out: &'a mut Target, map_symbol: F, transient: bool }
+
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b String> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
 }
 
 #[derive(Clone)]

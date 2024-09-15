@@ -185,12 +185,12 @@ use std::time::Instant;
 // }
 
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
+use mork_frontend::bytestring_parser::{Parser, BufferedIterator, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<String>,
+    symbols: BytesTrieMap<Vec<u8>>,
 }
 
 impl DataParser {
@@ -211,16 +211,16 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 }
 
 impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> String {
+    fn tokenizer(&mut self, s: String) -> Vec<u8> {
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
             self.count += 1;
             let mut buf: [u8; 8] = [0; 8];
             let slice = gen_key(self.count, buf.as_mut_ptr());
-            let string = String::from_utf8_lossy(slice).to_string();
-            self.symbols.insert(s.as_bytes(), string.clone());
-            string
+            let vec = slice.to_vec();
+            self.symbols.insert(s.as_bytes(), vec.clone());
+            vec
         }
     }
 }
@@ -229,7 +229,7 @@ fn main() {
     // let mut file = std::fs::File::open("resources/edges5000.metta")
     let mut file = std::fs::File::open("resources/edges67458171.metta")
         .expect("Should have been able to read the file");
-    let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
+    let mut it = BufferedIterator::new(file);
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
@@ -240,14 +240,18 @@ fn main() {
     loop {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
-                // stack.set_len(ez.loc);
-                // btm.insert(&stack[..], i);
-                // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
-                // println!("{:?}", stack);
-                // ExprZipper::new(ez.root).traverse(0); println!();
-                black_box(ez.root);
-            } else { break }
+            match parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+                Ok(()) => {
+                    // stack.set_len(ez.loc);
+                    // btm.insert(&stack[..], i);
+                    // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
+                    // println!("{:?}", stack);
+                    // ExprZipper::new(ez.root).traverse(0); println!();
+                    black_box(ez.root);
+                }
+                Err(ParserError::InputFinished()) => { break }
+                Err(other) => { panic!("{:?}", other) }
+            }
             i += 1;
             vs.set_len(0);
         }

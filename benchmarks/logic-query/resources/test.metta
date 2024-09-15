@@ -4,3 +4,4 @@ test
 (foo bar)
 (foo bar baz)
 (foo (bar baz))
+($ 2nd)

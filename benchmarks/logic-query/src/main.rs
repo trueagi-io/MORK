@@ -430,7 +430,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for DataParser {
     fn tokenizer(&mut self, s: String) -> Vec<u8> {
-        return s.as_bytes().to_vec();
+        // return s.as_bytes().to_vec();
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
@@ -463,8 +463,8 @@ fn main() {
     }
 
 
-    let mut file = std::fs::File::open("resources/test.metta")
-    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    // let mut file = std::fs::File::open("resources/test.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
         .expect("Should have been able to read the file");
     let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
     let mut parser = DataParser::new();
@@ -475,7 +475,7 @@ fn main() {
 
     let t0 = Instant::now();
     let mut i = 0;
-    let mut stack = [0u8; 512];
+    let mut stack = [0u8; 2048];
     let mut vs = Vec::with_capacity(100);
     loop {
         unsafe {
@@ -495,42 +495,56 @@ fn main() {
     // println!("took {} ms", t0.elapsed().as_millis());
     println!("map contains: {}", space.val_count());
 
-    let mut q = vec![item_byte(Tag::Arity(2))];
-    let foo_symbol = parser.tokenizer("foo".to_string());
-    q.push(item_byte(Tag::SymbolSize(foo_symbol.len() as u8)));
-    q.extend(&foo_symbol[..]);
-    q.push(item_byte(Tag::NewVar));
+    let mut q = if true { // get all properties of a specific relation
+        let mut q = vec![item_byte(Tag::Arity(3))];
+        let relations_symbol = parser.tokenizer("Relations".to_string());
+        q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
+        q.extend(&relations_symbol[..]);
+        let interest_symbol = parser.tokenizer("1350".to_string());
+        q.push(item_byte(Tag::SymbolSize(interest_symbol.len() as u8)));
+        q.extend(&interest_symbol[..]);
+        q.push(item_byte(Tag::NewVar));
+        q
+    } else { // get all individuals their fullname
+        let mut q = vec![item_byte(Tag::Arity(3))];
+        let relations_symbol = parser.tokenizer("Individuals".to_string());
+        q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
+        q.extend(&relations_symbol[..]);
+        q.push(item_byte(Tag::NewVar));
+        q.push(item_byte(Tag::Arity(2)));
+        let fullname_symbol = parser.tokenizer("Fullname".to_string());
+        q.push(item_byte(Tag::SymbolSize(fullname_symbol.len() as u8)));
+        q.extend(&fullname_symbol[..]);
+        q.push(item_byte(Tag::NewVar));
+        q
+    };
 
     let t0 = Instant::now();
-    let REPEAT = 1;
-    for _ in 0..REPEAT {
     let mut z = space.read_zipper();
 
     let mut buffer = vec![ACTION, ITER_EXPR];
     transition(&mut buffer, &mut z, &mut |loc| {
         // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
-        let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-        println!("{:?}", e);
+        // let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+        // println!("{:?}", e);
         black_box(loc.origin_path());
     });
-    }
-    println!("iterating all took {} microseconds", (t0.elapsed().as_micros() as f64 / REPEAT as f64) as u64);
-
+    println!("iterating all took {} microseconds", t0.elapsed().as_micros());
 
     let t0 = Instant::now();
-    let REPEAT = 1;
-    for _ in 0..REPEAT {
-        let mut z = space.read_zipper();
+    let mut z = space.read_zipper();
 
-        let mut buffer = vec![ACTION];
-        buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(Expr{ ptr: q.as_mut_ptr() })));
-        println!("buffer {:?}", buffer);
-        transition(&mut buffer, &mut z, &mut |loc| {
-            // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
-            let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            println!("e {:?}", e);
-            black_box(loc.origin_path());
-        });
-    }
-    println!("iterating {:?} took {} microseconds", q, (t0.elapsed().as_micros() as f64 / REPEAT as f64) as u64);
+    let mut visited = 0;
+    let mut buffer = vec![ACTION];
+    buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(Expr{ ptr: q.as_mut_ptr() })));
+    // println!("buffer {:?}", buffer);
+    transition(&mut buffer, &mut z, &mut |loc| {
+        // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
+        // let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+        // println!("e {:?}", e);
+        black_box(loc.origin_path());
+        visited += 1;
+    });
+
+    println!("iterating {:?} ({}) took {} microseconds", q, visited, t0.elapsed().as_micros());
 }

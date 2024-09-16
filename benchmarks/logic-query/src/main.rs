@@ -3,7 +3,7 @@ use std::ptr;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_bytestring::Tag::{Arity, SymbolSize};
-use mork_frontend::bytestring_parser::{BufferedIterator, Parser};
+use mork_frontend::bytestring_parser::{BufferedIterator, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
 
@@ -408,7 +408,7 @@ fn variable_or_size_mask(a: u8) -> [u64; 4] {
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<String>,
+    symbols: BytesTrieMap<Vec<u8>>,
 }
 
 impl DataParser {
@@ -429,17 +429,17 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 }
 
 impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> String {
-        return s;
+    fn tokenizer(&mut self, s: String) -> Vec<u8> {
+        return s.as_bytes().to_vec();
         if let Some(r) = self.symbols.get(s.as_bytes()) {
             r.clone()
         } else {
             self.count += 1;
             let mut buf: [u8; 8] = [0; 8];
             let slice = gen_key(self.count, buf.as_mut_ptr());
-            let string = String::from_utf8_lossy(slice).to_string();
-            self.symbols.insert(s.as_bytes(), string.clone());
-            string
+            let internal = slice.to_vec();
+            self.symbols.insert(s.as_bytes(), internal.clone());
+            internal
         }
     }
 }
@@ -475,17 +475,18 @@ fn main() {
 
     let t0 = Instant::now();
     let mut i = 0;
-    let mut stack = Vec::with_capacity(100);
+    let mut stack = [0u8; 512];
     let mut vs = Vec::with_capacity(100);
     loop {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
-                stack.set_len(ez.loc);
-                space.insert(&stack[..], ());
-                // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
-                ExprZipper::new(ez.root).traverse(0); println!();
-            } else { break }
+            match parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+                Ok(()) => {
+                    space.insert(&stack[..ez.loc], ());
+                }
+                Err(ParserError::InputFinished()) => { break }
+                Err(other) => { return panic!("{:?}", other) }
+            }
             i += 1;
             vs.set_len(0);
         }
@@ -496,8 +497,8 @@ fn main() {
 
     let mut q = vec![item_byte(Tag::Arity(2))];
     let foo_symbol = parser.tokenizer("foo".to_string());
-    q.push(item_byte(Tag::SymbolSize(foo_symbol.as_bytes().len() as u8)));
-    q.extend(foo_symbol.as_bytes());
+    q.push(item_byte(Tag::SymbolSize(foo_symbol.len() as u8)));
+    q.extend(&foo_symbol[..]);
     q.push(item_byte(Tag::NewVar));
 
     let t0 = Instant::now();

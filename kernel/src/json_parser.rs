@@ -2,7 +2,7 @@ use std::{str, slice};
 use std::char::decode_utf16;
 use std::convert::TryFrom;
 use std::{ char, error, fmt };
-
+use std::io::Write;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -58,6 +58,73 @@ impl error::Error for Error {
     }
 }
 
+trait Transcriber {
+    fn descend_index(&mut self, i: usize, first: bool) -> ();
+    fn ascend_index(&mut self, i: usize, last: bool) -> ();
+    fn write_empty_array(&mut self) -> ();
+
+    fn descend_key(&mut self, k: &str, first: bool) -> ();
+    fn ascend_key(&mut self, k: &str, last: bool) -> ();
+    fn write_empty_object(&mut self) -> ();
+
+    fn write_string(&mut self, s: &str) -> ();
+    fn write_positive(&mut self, s: u64) -> ();
+    fn write_negative(&mut self, s: u64) -> ();
+    fn write_true(&mut self) -> ();
+    fn write_false(&mut self) -> ();
+    fn write_null(&mut self) -> ();
+
+    fn begin(&mut self) -> ();
+    fn end(&mut self) -> ();
+}
+
+
+pub struct DebugTranscriber;
+impl Transcriber for DebugTranscriber {
+    fn begin(&mut self) -> () { println!("begin") }
+    fn descend_index(&mut self, i: usize, first: bool) -> () { if first { println!("descend array") }; println!("descend index {}", i) }
+    fn ascend_index(&mut self, i: usize, last: bool) -> () { println!("ascend index {}", i); if last { println!("ascend array") }; }
+    fn write_empty_array(&mut self) -> () { println!("write empty array") }
+    fn descend_key(&mut self, k: &str, first: bool) -> () { if first { println!("descend object") }; println!("descend key {}", k) }
+    fn ascend_key(&mut self, k: &str, last: bool) -> () { println!("ascend key {}", k); if last { println!("ascend object") }; }
+    fn write_empty_object(&mut self) -> () { println!("write empty object") }
+    fn write_string(&mut self, s: &str) -> () { println!("write string \"{}\"", s) }
+    fn write_positive(&mut self, s: u64) -> () { println!("write {}", s) }
+    fn write_negative(&mut self, s: u64) -> () { println!("write -{}", s) }
+    fn write_true(&mut self) -> () { println!("write true") }
+    fn write_false(&mut self) -> () { println!("write false") }
+    fn write_null(&mut self) -> () { println!("write null") }
+    fn end(&mut self) -> () { println!("end") }
+}
+
+pub struct WriteTranscriber<W : Write>{ pub w: W }
+impl <W : Write> Transcriber for WriteTranscriber<W> {
+    fn begin(&mut self) -> () { }
+    fn descend_index(&mut self, i: usize, first: bool) -> () { if first { self.w.write("[".as_bytes()).unwrap(); }; }
+    fn ascend_index(&mut self, i: usize, last: bool) -> () { if last { self.w.write("]".as_bytes()).unwrap(); } else { self.w.write(", ".as_bytes()).unwrap(); }; }
+    fn write_empty_array(&mut self) -> () { self.w.write("[]".as_bytes()).unwrap(); }
+    fn descend_key(&mut self, k: &str, first: bool) -> () { if first { self.w.write("{".as_bytes()).unwrap(); }; self.w.write("\"".as_bytes()).unwrap(); self.w.write(k.as_bytes()).unwrap(); self.w.write("\": ".as_bytes()).unwrap(); }
+    fn ascend_key(&mut self, k: &str, last: bool) -> () { if last { self.w.write("}".as_bytes()).unwrap(); } else { self.w.write(", ".as_bytes()).unwrap(); }; }
+    fn write_empty_object(&mut self) -> () { self.w.write("{}".as_bytes()).unwrap(); }
+    fn write_string(&mut self, s: &str) -> () { self.w.write("\"".as_bytes()).unwrap(); self.w.write(s.as_bytes()).unwrap(); self.w.write("\"".as_bytes()).unwrap(); }
+    fn write_positive(&mut self, s: u64) -> () { self.w.write(s.to_string().as_bytes()).unwrap(); }
+    fn write_negative(&mut self, s: u64) -> () { self.w.write("-".as_bytes()).unwrap(); self.w.write(s.to_string().as_bytes()).unwrap(); }
+    fn write_true(&mut self) -> () { self.w.write("true".as_bytes()).unwrap(); }
+    fn write_false(&mut self) -> () { self.w.write("false".as_bytes()).unwrap(); }
+    fn write_null(&mut self) -> () { self.w.write("null".as_bytes()).unwrap(); }
+    fn end(&mut self) -> () { }
+}
+
+// struct SpaceJSONTranscriber<'a> {
+//     wz: &'a mut WriteZipper<'a, 'a, ()>,
+//     sm: &'a mut SymbolMapping
+// }
+//
+// impl Transcriber for SpaceJSONTranscriber {
+//
+// }
+
+
 #[derive(Debug, Clone)]
 pub enum JsonValue {
     Null,
@@ -98,6 +165,14 @@ pub (crate) struct Parser<'a> {
     length: usize,
 }
 
+macro_rules! insert_symbol {
+    ($z:ident, $sm:ident, $s:expr) => ({
+        let mut token = vec![Tag::SymbolSize(token.len() as u8)];
+        token.extend($sm.tokenizer($s));
+        $z.descend_to(&token[..]); $z.set_value(());
+        $z.ascend(token.len());
+    })
+}
 
 // Read a byte from the source.
 // Will return an error if there are no more bytes.
@@ -304,7 +379,7 @@ macro_rules! expect_number {
         }
 
         // result
-        num as i64
+        num
     })
 }
 
@@ -673,9 +748,10 @@ impl<'a> Parser<'a> {
     // }
 
     // Parse away!
-    pub (crate) fn parse(&mut self) -> Result<JsonValue> {
+    pub (crate) fn parse<T : Transcriber>(&mut self, t: &mut T) -> Result<JsonValue> {
         let mut stack = Vec::with_capacity(3);
         let mut ch = expect_byte_ignore_whitespace!(self);
+        t.begin();
 
         'parsing: loop {
             let mut value = match ch {
@@ -686,10 +762,12 @@ impl<'a> Parser<'a> {
                         if stack.len() == DEPTH_LIMIT {
                             return Err(Error::ExceededDepthLimit);
                         }
-
+                        t.descend_index(0, true);
                         stack.push(StackBlock(JsonValue::Array(Vec::with_capacity(2)), "".to_string()));
                         continue 'parsing;
                     }
+
+                    t.write_empty_array();
 
                     JsonValue::Array(Vec::new())
                 },
@@ -709,6 +787,8 @@ impl<'a> Parser<'a> {
 
                         let k = expect_string!(self).to_string();
                         object.insert(k.clone(), JsonValue::Null);
+                        t.descend_key(k.as_str(), true);
+
                         expect!(self, b':');
 
                         stack.push(StackBlock(JsonValue::Object(object), k));
@@ -718,31 +798,45 @@ impl<'a> Parser<'a> {
                         continue 'parsing;
                     }
 
+                    t.write_empty_object();
+
                     JsonValue::Object(std::collections::HashMap::new())
                 },
-                b'"' => JsonValue::String(expect_string!(self).to_string()),
+                b'"' => {
+                    let s = expect_string!(self).to_string();
+                    t.write_string(s.as_str());
+                    // insert_symbol!(z, sm, s.to_string());
+                    JsonValue::String(s)
+                },
                 b'0' => panic!("number extension not allowed") /*JsonValue::Number(allow_number_extensions!(self))*/,
                 b'1' ..= b'9' => {
-                    JsonValue::Number(expect_number!(self, ch))
+                    let n = expect_number!(self, ch);
+                    t.write_positive(n);
+                    JsonValue::Number(n as i64)
                 },
                 b'-' => {
                     let ch = expect_byte!(self);
-                    JsonValue::Number(- match ch {
+                    let n = match ch {
                         b'0' => panic!("number extension not allowed") /*allow_number_extensions!(self)*/,
                         b'1' ..= b'9' => expect_number!(self, ch),
                         _    => return self.unexpected_character()
-                    })
+                    };
+                    t.write_negative(n);
+                    JsonValue::Number(-(n as i64))
                 }
                 b't' => {
                     expect_sequence!(self, b'r', b'u', b'e');
+                    t.write_true();
                     JsonValue::Boolean(true)
                 },
                 b'f' => {
                     expect_sequence!(self, b'a', b'l', b's', b'e');
+                    t.write_false();
                     JsonValue::Boolean(false)
                 },
                 b'n' => {
                     expect_sequence!(self, b'u', b'l', b'l');
+                    t.write_null();
                     JsonValue::Null
                 },
                 _    => return self.unexpected_character()
@@ -752,11 +846,12 @@ impl<'a> Parser<'a> {
                 match stack.last_mut() {
                     None => {
                         expect_eof!(self);
-
+                        t.end();
                         return Ok(value);
                     },
 
                     Some(&mut StackBlock(JsonValue::Array(ref mut array), _)) => {
+                        let i = array.len();
                         array.push(value);
 
                         ch = expect_byte_ignore_whitespace!(self);
@@ -764,10 +859,11 @@ impl<'a> Parser<'a> {
                         match ch {
                             b',' => {
                                 ch = expect_byte_ignore_whitespace!(self);
-
+                                t.ascend_index(i, false);
+                                t.descend_index(i + 1, false);
                                 continue 'parsing;
                             },
-                            b']' => {},
+                            b']' => { t.ascend_index(i, true); },
                             _    => return self.unexpected_character()
                         }
                     },
@@ -783,13 +879,15 @@ impl<'a> Parser<'a> {
                                 let k = expect_string!(self).to_string();
                                 object.insert(k.clone(), JsonValue::Null);
                                 *index = k;
+                                t.ascend_key(index.as_str(), false);
+                                t.descend_key(index.as_str(), false);
                                 expect!(self, b':');
 
                                 ch = expect_byte_ignore_whitespace!(self);
 
                                 continue 'parsing;
                             },
-                            b'}' => {},
+                            b'}' => { t.ascend_key(index.as_str(), true); },
                             _    => return self.unexpected_character()
                         }
                     },

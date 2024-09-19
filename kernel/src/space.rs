@@ -11,7 +11,7 @@ use pathmap::zipper::{ReadZipper, WriteZipper, Zipper};
 
 
 #[repr(transparent)]
-pub struct Space { btm: BytesTrieMap<()> }
+pub struct Space { pub(crate) btm: BytesTrieMap<()> }
 
 static mut SIZES: [u64; 4] = [0u64; 4];
 static mut ARITIES: [u64; 4] = [0u64; 4];

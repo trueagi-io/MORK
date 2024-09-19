@@ -1,6 +1,6 @@
 use std::fmt::format;
 use std::hint::black_box;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::ptr;
 use std::time::Instant;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
@@ -332,12 +332,44 @@ impl Space {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
 
+    pub fn load_csv<R : Read>(&mut self, mut r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
+        let mut i = 0;
+        let mut buf = vec![];
+        let mut stack = [0u8; 2048];
+
+        match r.read_to_end(&mut buf) {
+            Ok(read) => {
+                for sv in buf.split(|&x| x == b'\n') {
+                    if sv.len() == 0 { continue }
+                    let mut a = 0;
+                    let e = Expr{ ptr: stack.as_mut_ptr() };
+                    let mut ez = ExprZipper::new(e);
+                    ez.loc += 1;
+                    for symbol in sv.split(|&x| x == b',') {
+                        let internal = sm.tokenizer(unsafe { String::from_utf8_unchecked(symbol.to_vec()) });
+                        ez.write_symbol(&internal[..]);
+                        ez.loc += internal.len() + 1;
+                        a += 1;
+                    }
+                    let total = ez.loc;
+                    ez.reset();
+                    ez.write_arity(a);
+                    self.btm.insert(&stack[..total], ());
+                    i += 1;
+                }
+            }
+            Err(e) => { return Err(format!("{:?}", e)) }
+        }
+
+        Ok(i)
+    }
+
     pub fn load<R : Read>(&mut self, r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
         let mut it = BufferedIterator::new(r);
 
         let t0 = Instant::now();
         let mut i = 0;
-        let mut stack = [0u8; 512];
+        let mut stack = [0u8; 2048];
         let mut vs = Vec::with_capacity(64);
         loop {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});

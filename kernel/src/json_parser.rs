@@ -58,7 +58,7 @@ impl error::Error for Error {
     }
 }
 
-trait Transcriber {
+pub (crate) trait Transcriber {
     fn descend_index(&mut self, i: usize, first: bool) -> ();
     fn ascend_index(&mut self, i: usize, last: bool) -> ();
     fn write_empty_array(&mut self) -> ();
@@ -79,7 +79,7 @@ trait Transcriber {
 }
 
 
-pub struct DebugTranscriber;
+pub(crate) struct DebugTranscriber;
 impl Transcriber for DebugTranscriber {
     fn begin(&mut self) -> () { println!("begin") }
     fn descend_index(&mut self, i: usize, first: bool) -> () { if first { println!("descend array") }; println!("descend index {}", i) }
@@ -97,7 +97,7 @@ impl Transcriber for DebugTranscriber {
     fn end(&mut self) -> () { println!("end") }
 }
 
-pub struct WriteTranscriber<W : Write>{ pub w: W }
+pub(crate) struct WriteTranscriber<W : Write>{ pub w: W }
 impl <W : Write> Transcriber for WriteTranscriber<W> {
     fn begin(&mut self) -> () { }
     fn descend_index(&mut self, i: usize, first: bool) -> () { if first { self.w.write("[".as_bytes()).unwrap(); }; }
@@ -114,16 +114,6 @@ impl <W : Write> Transcriber for WriteTranscriber<W> {
     fn write_null(&mut self) -> () { self.w.write("null".as_bytes()).unwrap(); }
     fn end(&mut self) -> () { }
 }
-
-// struct SpaceJSONTranscriber<'a> {
-//     wz: &'a mut WriteZipper<'a, 'a, ()>,
-//     sm: &'a mut SymbolMapping
-// }
-//
-// impl Transcriber for SpaceJSONTranscriber {
-//
-// }
-
 
 #[derive(Debug, Clone)]
 pub enum JsonValue {
@@ -163,15 +153,6 @@ pub (crate) struct Parser<'a> {
 
     // Length of the source
     length: usize,
-}
-
-macro_rules! insert_symbol {
-    ($z:ident, $sm:ident, $s:expr) => ({
-        let mut token = vec![Tag::SymbolSize(token.len() as u8)];
-        token.extend($sm.tokenizer($s));
-        $z.descend_to(&token[..]); $z.set_value(());
-        $z.ascend(token.len());
-    })
 }
 
 // Read a byte from the source.
@@ -875,12 +856,12 @@ impl<'a> Parser<'a> {
 
                         match ch {
                             b',' => {
+                                t.ascend_key(index.as_str(), false);
                                 expect!(self, b'"');
                                 let k = expect_string!(self).to_string();
+                                t.descend_key(k.as_str(), false);
                                 object.insert(k.clone(), JsonValue::Null);
                                 *index = k;
-                                t.ascend_key(index.as_str(), false);
-                                t.descend_key(index.as_str(), false);
                                 expect!(self, b':');
 
                                 ch = expect_byte_ignore_whitespace!(self);

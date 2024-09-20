@@ -328,7 +328,10 @@ impl Space {
         Self { btm: BytesTrieMap::new() }
     }
 
-    fn write_zipper_unchecked(&self) -> WriteZipper<()> {
+    // fn write_zipper_unchecked<'w>(&'w self) -> WriteZipper<'w, 'w, ()> where Self : 'w  {
+    //     unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
+    // }
+    fn write_zipper_unchecked<'a>(&'a self) -> WriteZipper<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
 
@@ -362,6 +365,66 @@ impl Space {
         }
 
         Ok(i)
+    }
+
+    pub fn load_json<R : Read>(&mut self, mut r: R, sm: &'static mut SymbolMapping) -> Result<usize, String> {
+    // pub fn load_json<'s, R : Read>(&'s mut self, mut r: R, sm: &'static mut SymbolMapping) -> Result<usize, String> where Self : 's {
+        pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipper<'a, 'b, ()>, sm: &'static mut SymbolMapping }
+        impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
+            #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
+                let s = s.into();
+                let token = self.sm.tokenizer(s.clone());
+                let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
+                path.extend(token);
+                self.wz.descend_to(&path[..]);
+                self.wz.set_value(());
+                self.count += 1;
+                self.wz.ascend(path.len());
+            }
+        }
+        impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
+            #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+                if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+                let token = self.sm.tokenizer(i.to_string());
+                self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.descend_to(token);
+            }
+            #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+                self.wz.ascend(self.sm.tokenizer(i.to_string()).len() + 1);
+                if last { self.wz.ascend(1); }
+            }
+            #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); }
+            #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+                if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+                let token = self.sm.tokenizer(k.to_string());
+                self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.descend_to(token);
+            }
+            #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+                self.wz.ascend(self.sm.tokenizer(k.to_string()).len() + 1);
+                if last { self.wz.ascend(1); }
+            }
+            #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); }
+            #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); }
+            #[inline(always)] fn write_positive(&mut self, s: u64) -> () { self.write(s.to_string()); }
+            #[inline(always)] fn write_negative(&mut self, s: u64) -> () { let mut s = s.to_string(); s.insert(0, '-'); self.write(s); }
+            #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); }
+            #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); }
+            #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); }
+            #[inline(always)] fn begin(&mut self) -> () {}
+            #[inline(always)] fn end(&mut self) -> () {}
+        }
+
+        let mut wz = self.write_zipper_unchecked();
+        let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, sm: sm };
+        let mut buf = vec![];
+        match r.read_to_end(&mut buf) {
+            Ok(_) => {},
+            Err(e) => { return Err(format!("{:?}", e)) }
+        }
+        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(&buf[..]) });
+        p.parse(&mut st).unwrap();
+        Ok(st.count)
     }
 
     pub fn load<R : Read>(&mut self, r: R, sm: &mut SymbolMapping) -> Result<usize, String> {

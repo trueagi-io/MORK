@@ -39,4 +39,49 @@ mod tests {
         p.parse(&mut wt).unwrap();
         assert_eq!(json_input, String::from_utf8(wt.w).unwrap());
     }
+
+    #[test]
+    fn parse_json() {
+        let json_input = r#"{
+"first_name": "John",
+"last_name": "Smith",
+"is_alive": true,
+"age": 27,
+"address": {
+  "street_address": "21 2nd Street",
+  "city": "New York",
+  "state": "NY",
+  "postal_code": "10021-3100"},
+"phone_numbers": [
+  {"type": "home", "number": "212 555-1234"},
+  {"type": "office", "number": "646 555-4567"}],
+"children": ["Catherine", "Thomas", "Trevor"],
+"spouse": null}"#;
+        let reconstruction = r#"(first_name John)
+(last_name Smith)
+(is_alive true)
+(age 27)
+(address (street_address 21 2nd Street))
+(address (city New York))
+(address (state NY))
+(address (postal_code 10021-3100))
+(phone_numbers (0 (type home)))
+(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (1 (type office)))
+(phone_numbers (1 (number 646 555-4567)))
+(children (0 Catherine))
+(children (1 Thomas))
+(children (2 Trevor))
+(spouse null)
+"#;
+
+        let mut s = Space::new();
+        let mut sm = SymbolMapping::new();
+
+        assert_eq!(16, s.load_json(json_input.as_bytes(), unsafe { mem::transmute::<&mut SymbolMapping, &'static mut SymbolMapping>(&mut sm) }).unwrap());
+
+        let mut res = Vec::<u8>::new();
+        s.dump(&mut res, unsafe { mem::transmute::<&SymbolMapping, &'static SymbolMapping>(&sm) });
+        assert_eq!(reconstruction, String::from_utf8(res).unwrap());
+    }
 }

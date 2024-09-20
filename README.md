@@ -34,17 +34,17 @@ Load data from json and querying using (a subset of) [JSONPath](https://datatrac
 
 - [ ] Derivation of a triemap over a range of algebraic data structures, (excluding dependent typing).  See [Multiplate](https://wiki.haskell.org/Multiplate)
 
-- [ ] Fast and memory-efficient S-expression triemap to support MeTTa atoms
+- [x] Fast and memory-efficient S-expression triemap to support MeTTa atoms
 
 - [ ] Union, intersection, and subtract ops for S-expression triemap (and other derived triemap types) implemented with algorithms that have optimal scaling properties (based on current SOTA)
 
-- [ ] Fast primitive triemap implementing the space-wide ops (union, intersection, and subtract), based on ([Ring of Sets](https://en.wikipedia.org/wiki/Ring_of_sets))
+- [x] Fast primitive triemap implementing the space-wide ops (union, intersection, and subtract), based on ([Ring of Sets](https://en.wikipedia.org/wiki/Ring_of_sets))
 
-- [ ] Automatic translation of slow declarative "shape matching" queries into more classical database queries, to support bidirectional pattern matching and unification
+- [x] Automatic translation of slow declarative "shape matching" queries into more classical database queries, to support bidirectional pattern matching and unification
 
-- [ ] Streaming JSON parser, and JSONPath query engine
+- [ ] Streaming JSON parser (completed), and JSONPath query engine
 
-- [ ] Take first place (or at least crack the top 3) in the [One Billion Row Challenge](https://github.com/gunnarmorling/1brc)
+- [ ] ~~Take first place (or at least crack the top 3) in the [One Billion Row Challenge](https://github.com/gunnarmorling/1brc)~~ The datastructure is not the bottleneck in this situation.
 
 ### Deliverable 2 - Multi-threaded zipper machine
 
@@ -64,7 +64,7 @@ Fearless concurrency based on isolation guarantees to allow scaling without hitt
 
 #### Tasks:
 
-- [ ] Define (mathematically) the model of computation and the specification of the ZAM behavior
+- [x] Define (mathematically) the model of computation and the specification of the ZAM behavior
 
 - [ ] Implement the ZAM in Rust leveraging an existing framework
 

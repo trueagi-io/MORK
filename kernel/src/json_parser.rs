@@ -68,8 +68,7 @@ pub (crate) trait Transcriber {
     fn write_empty_object(&mut self) -> ();
 
     fn write_string(&mut self, s: &str) -> ();
-    fn write_positive(&mut self, s: u64) -> ();
-    fn write_negative(&mut self, s: u64) -> ();
+    fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> ();
     fn write_true(&mut self) -> ();
     fn write_false(&mut self) -> ();
     fn write_null(&mut self) -> ();
@@ -89,8 +88,10 @@ impl Transcriber for DebugTranscriber {
     fn ascend_key(&mut self, k: &str, last: bool) -> () { println!("ascend key {}", k); if last { println!("ascend object") }; }
     fn write_empty_object(&mut self) -> () { println!("write empty object") }
     fn write_string(&mut self, s: &str) -> () { println!("write string \"{}\"", s) }
-    fn write_positive(&mut self, s: u64) -> () { println!("write {}", s) }
-    fn write_negative(&mut self, s: u64) -> () { println!("write -{}", s) }
+    fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
+        if negative { if exponent != 0 { println!("write {}e{}", mantissa, exponent) } else { println!("write {}", mantissa) } }
+        else { if exponent != 0 { println!("write -{}e{}", mantissa, exponent) } else { println!("write -{}", mantissa) } }
+    }
     fn write_true(&mut self) -> () { println!("write true") }
     fn write_false(&mut self) -> () { println!("write false") }
     fn write_null(&mut self) -> () { println!("write null") }
@@ -107,22 +108,15 @@ impl <W : Write> Transcriber for WriteTranscriber<W> {
     fn ascend_key(&mut self, k: &str, last: bool) -> () { if last { self.w.write("}".as_bytes()).unwrap(); } else { self.w.write(", ".as_bytes()).unwrap(); }; }
     fn write_empty_object(&mut self) -> () { self.w.write("{}".as_bytes()).unwrap(); }
     fn write_string(&mut self, s: &str) -> () { self.w.write("\"".as_bytes()).unwrap(); self.w.write(s.as_bytes()).unwrap(); self.w.write("\"".as_bytes()).unwrap(); }
-    fn write_positive(&mut self, s: u64) -> () { self.w.write(s.to_string().as_bytes()).unwrap(); }
-    fn write_negative(&mut self, s: u64) -> () { self.w.write("-".as_bytes()).unwrap(); self.w.write(s.to_string().as_bytes()).unwrap(); }
+    fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
+        if negative { self.w.write("-".as_bytes()).unwrap(); }
+        self.w.write(mantissa.to_string().as_bytes()).unwrap();
+        if exponent != 0 { self.w.write("e".as_bytes()).unwrap(); self.w.write(exponent.to_string().as_bytes()).unwrap(); }
+    }
     fn write_true(&mut self) -> () { self.w.write("true".as_bytes()).unwrap(); }
     fn write_false(&mut self) -> () { self.w.write("false".as_bytes()).unwrap(); }
     fn write_null(&mut self) -> () { self.w.write("null".as_bytes()).unwrap(); }
     fn end(&mut self) -> () { }
-}
-
-#[derive(Debug, Clone)]
-pub enum JsonValue {
-    Null,
-    String(String),
-    Number(i64),
-    Boolean(bool),
-    Object(std::collections::HashMap<String, JsonValue>),
-    Array(Vec<JsonValue>),
 }
 
 // This is not actual max precision, but a threshold at which number parsing
@@ -321,25 +315,21 @@ macro_rules! expect_string {
     })
 }
 
-
 // Expect a number. Of some kind.
 macro_rules! expect_number {
-    ($parser:ident, $first:ident) => ({
-        let mut num = ($first - b'0') as u64;
-
-        // let result: Number;
+    ($parser:ident, $mantissa:ident, $exponent:ident, $first:ident) => ({
+        $mantissa = ($first - b'0') as u64;
 
         // Cap on how many iterations we do while reading to u64
         // in order to avoid an overflow.
         loop {
-            if num >= MAX_PRECISION {
+            if $mantissa >= MAX_PRECISION {
                 panic!("max precision exceeded");
                 // result = $parser.read_big_number(num)?;
                 break;
             }
 
             if $parser.is_eof() {
-                // result = num.into();
                 break;
             }
 
@@ -348,19 +338,14 @@ macro_rules! expect_number {
             match ch {
                 b'0' ..= b'9' => {
                     $parser.bump();
-                    num = num * 10 + (ch - b'0') as u64;
+                    $mantissa = $mantissa * 10 + (ch - b'0') as u64;
                 },
-                _             => {
-                    let mut e = 0;
-                    num = allow_number_extensions!($parser, num, e, ch);
-                    // result = allow_number_extensions!($parser, num, e, ch);
+                _ => {
+                    allow_number_extensions!($parser, $mantissa, $exponent, ch);
                     break;
                 }
             }
         }
-
-        // result
-        num
     })
 }
 
@@ -368,106 +353,84 @@ macro_rules! expect_number {
 // Invoked after parsing an integer, this will account for fractions and/or
 // `e` notation.
 macro_rules! allow_number_extensions {
-    ($parser:ident, $num:ident, $e:ident, $ch:ident) => ({
+    ($parser:ident, $mantissa:ident, $exponent:ident, $ch:ident) => ({
         match $ch {
             b'.'        => {
-                panic!("fractions unimplemented");
-                // $parser.bump();
-                // expect_fraction!($parser, $num, $e)
+                $parser.bump();
+                expect_fraction!($parser, $mantissa, $exponent)
             },
             b'e' | b'E' => {
-                panic!("exponents unimplemented");
-                // $parser.bump();
-                // $parser.expect_exponent($num, $e)?
+                $parser.bump();
+                $parser.expect_exponent(&mut $exponent)?
             },
-            _  => $num.into()
+            _  => {}
         }
     });
-
-    // Alternative variant that defaults everything to 0. This is actually
-    // quite handy as the only number that can begin with zero, has to have
-    // a zero mantissa. Leading zeroes are illegal in JSON!
-    ($parser:ident) => ({
-        if $parser.is_eof() {
-            0.into()
-        } else {
-            let mut num = 0;
-            let mut e = 0;
-            let ch = $parser.read_byte();
-            allow_number_extensions!($parser, num, e, ch)
-        }
-    })
 }
 
 
 // If a dot `b"."` byte has been read, start reading the decimal fraction
 // of the number.
-// macro_rules! expect_fraction {
-//     ($parser:ident, $num:ident, $e:ident) => ({
-//         let result: Number;
-//
-//         let ch = expect_byte!($parser);
-//
-//         match ch {
-//             b'0' ..= b'9' => {
-//                 if $num < MAX_PRECISION {
-//                     $num = $num * 10 + (ch - b'0') as u64;
-//                     $e -= 1;
-//                 } else {
-//                     match $num.checked_mul(10).and_then(|num| {
-//                         num.checked_add((ch - b'0') as u64)
-//                     }) {
-//                         Some(result) => {
-//                             $num = result;
-//                             $e -= 1;
-//                         },
-//                         None => {}
-//                     }
-//                 }
-//             },
-//             _ => return $parser.unexpected_character()
-//         }
-//
-//         loop {
-//             if $parser.is_eof() {
-//                 result = unsafe { Number::from_parts_unchecked(true, $num, $e) };
-//                 break;
-//             }
-//             let ch = $parser.read_byte();
-//
-//             match ch {
-//                 b'0' ..= b'9' => {
-//                     $parser.bump();
-//                     if $num < MAX_PRECISION {
-//                         $num = $num * 10 + (ch - b'0') as u64;
-//                         $e -= 1;
-//                     } else {
-//                         match $num.checked_mul(10).and_then(|num| {
-//                             num.checked_add((ch - b'0') as u64)
-//                         }) {
-//                             Some(result) => {
-//                                 $num = result;
-//                                 $e -= 1;
-//                             },
-//                             None => {}
-//                         }
-//                     }
-//                 },
-//                 b'e' | b'E' => {
-//                     $parser.bump();
-//                     result = $parser.expect_exponent($num, $e)?;
-//                     break;
-//                 }
-//                 _ => {
-//                     result = unsafe { Number::from_parts_unchecked(true, $num, $e) };
-//                     break;
-//                 }
-//             }
-//         }
-//
-//         result
-//     })
-// }
+macro_rules! expect_fraction {
+    ($parser:ident, $mantissa:ident, $exponent:ident) => ({
+        let ch = expect_byte!($parser);
+
+        match ch {
+            b'0' ..= b'9' => {
+                if $mantissa < MAX_PRECISION {
+                    $mantissa = $mantissa * 10 + (ch - b'0') as u64;
+                    $exponent -= 1;
+                } else {
+                    match $mantissa.checked_mul(10).and_then(|num| {
+                        num.checked_add((ch - b'0') as u64)
+                    }) {
+                        Some(r) => {
+                            $mantissa = r;
+                            $exponent -= 1;
+                        },
+                        None => {}
+                    }
+                }
+            },
+            _ => return $parser.unexpected_character()
+        }
+
+        loop {
+            if $parser.is_eof() {
+                break;
+            }
+            let ch = $parser.read_byte();
+
+            match ch {
+                b'0' ..= b'9' => {
+                    $parser.bump();
+                    if $mantissa < MAX_PRECISION {
+                        $mantissa = $mantissa * 10 + (ch - b'0') as u64;
+                        $exponent -= 1;
+                    } else {
+                        match $mantissa.checked_mul(10).and_then(|num| {
+                            num.checked_add((ch - b'0') as u64)
+                        }) {
+                            Some(result) => {
+                                $mantissa = result;
+                                $exponent -= 1;
+                            },
+                            None => {}
+                        }
+                    }
+                },
+                b'e' | b'E' => {
+                    $parser.bump();
+                    $parser.expect_exponent(&mut $exponent)?;
+                    break;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+    })
+}
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Self {
@@ -692,50 +655,51 @@ impl<'a> Parser<'a> {
 
     // Called in the rare case that a number with `e` notation has been
     // encountered. This is pretty straight forward, I guess.
-    // fn expect_exponent(&mut self, num: u64, big_e: i16) -> Result<Number> {
-    //     let mut ch = expect_byte!(self);
-    //     let sign = match ch {
-    //         b'-' => {
-    //             ch = expect_byte!(self);
-    //             -1
-    //         },
-    //         b'+' => {
-    //             ch = expect_byte!(self);
-    //             1
-    //         },
-    //         _    => 1
-    //     };
-    //
-    //     let mut e = match ch {
-    //         b'0' ..= b'9' => (ch - b'0') as i16,
-    //         _ => return self.unexpected_character(),
-    //     };
-    //
-    //     loop {
-    //         if self.is_eof() {
-    //             break;
-    //         }
-    //         let ch = self.read_byte();
-    //         match ch {
-    //             b'0' ..= b'9' => {
-    //                 self.bump();
-    //                 e = e.saturating_mul(10).saturating_add((ch - b'0') as i16);
-    //             },
-    //             _  => break
-    //         }
-    //     }
-    //
-    //     Ok(unsafe { Number::from_parts_unchecked(true, num, big_e.saturating_add(e * sign)) })
-    // }
+    fn expect_exponent(&mut self, exponent: &mut i16) -> Result<()> {
+        let mut ch = expect_byte!(self);
+        let sign = match ch {
+            b'-' => {
+                ch = expect_byte!(self);
+                -1
+            },
+            b'+' => {
+                ch = expect_byte!(self);
+                1
+            },
+            _    => 1
+        };
+
+        let mut e = match ch {
+            b'0' ..= b'9' => (ch - b'0') as i16,
+            _ => return self.unexpected_character(),
+        };
+
+        loop {
+            if self.is_eof() {
+                break;
+            }
+            let ch = self.read_byte();
+            match ch {
+                b'0' ..= b'9' => {
+                    self.bump();
+                    e = e.saturating_mul(10).saturating_add((ch - b'0') as i16);
+                },
+                _  => break
+            }
+        }
+
+        *exponent = exponent.saturating_add(e * sign);
+        Ok(())
+    }
 
     // Parse away!
-    pub (crate) fn parse<T : Transcriber>(&mut self, t: &mut T) -> Result<JsonValue> {
+    pub (crate) fn parse<T : Transcriber>(&mut self, t: &mut T) -> Result<()> {
         let mut stack = Vec::with_capacity(3);
         let mut ch = expect_byte_ignore_whitespace!(self);
         t.begin();
 
         'parsing: loop {
-            let mut value = match ch {
+            match ch {
                 b'[' => {
                     ch = expect_byte_ignore_whitespace!(self);
 
@@ -744,13 +708,11 @@ impl<'a> Parser<'a> {
                             return Err(Error::ExceededDepthLimit);
                         }
                         t.descend_index(0, true);
-                        stack.push(StackBlock(JsonValue::Array(Vec::with_capacity(2)), "".to_string()));
+                        stack.push(StackBlock::Index(0));
                         continue 'parsing;
                     }
 
                     t.write_empty_array();
-
-                    JsonValue::Array(Vec::new())
                 },
                 b'{' => {
                     ch = expect_byte_ignore_whitespace!(self);
@@ -760,19 +722,16 @@ impl<'a> Parser<'a> {
                             return Err(Error::ExceededDepthLimit);
                         }
 
-                        let mut object = std::collections::HashMap::with_capacity(3);
-
                         if ch != b'"' {
                             return self.unexpected_character()
                         }
 
-                        let k = expect_string!(self).to_string();
-                        object.insert(k.clone(), JsonValue::Null);
-                        t.descend_key(k.as_str(), true);
+                        let k = expect_string!(self);
+                        t.descend_key(k, true);
 
                         expect!(self, b':');
 
-                        stack.push(StackBlock(JsonValue::Object(object), k));
+                        stack.push(StackBlock::Key(k));
 
                         ch = expect_byte_ignore_whitespace!(self);
 
@@ -780,45 +739,54 @@ impl<'a> Parser<'a> {
                     }
 
                     t.write_empty_object();
-
-                    JsonValue::Object(std::collections::HashMap::new())
                 },
                 b'"' => {
-                    let s = expect_string!(self).to_string();
-                    t.write_string(s.as_str());
-                    // insert_symbol!(z, sm, s.to_string());
-                    JsonValue::String(s)
+                    let s = expect_string!(self);
+                    t.write_string(s);
                 },
-                b'0' => panic!("number extension not allowed") /*JsonValue::Number(allow_number_extensions!(self))*/,
+                b'0' => {
+                    let mut mantissa = 0; let mut exponent = 0;
+                    if !self.is_eof() {
+                        let ch = self.read_byte();
+                        allow_number_extensions!(self, mantissa, exponent, ch);
+                    }
+                    t.write_number(false, mantissa, exponent);
+                },
                 b'1' ..= b'9' => {
-                    let n = expect_number!(self, ch);
-                    t.write_positive(n);
-                    JsonValue::Number(n as i64)
+                    let mut mantissa = 0; let mut exponent = 0;
+                    expect_number!(self, mantissa, exponent, ch);
+                    t.write_number(false, mantissa, exponent);
                 },
                 b'-' => {
                     let ch = expect_byte!(self);
-                    let n = match ch {
-                        b'0' => panic!("number extension not allowed") /*allow_number_extensions!(self)*/,
-                        b'1' ..= b'9' => expect_number!(self, ch),
+                    match ch {
+                        b'0' => {
+                            let mut mantissa = 0; let mut exponent = 0;
+                            if !self.is_eof() {
+                                let ch = self.read_byte();
+                                allow_number_extensions!(self, mantissa, exponent, ch);
+                            }
+                            t.write_number(true, mantissa, exponent);
+                        },
+                        b'1' ..= b'9' => {
+                            let mut mantissa = 0; let mut exponent = 0;
+                            expect_number!(self, mantissa, exponent, ch);
+                            t.write_number(true, mantissa, exponent);
+                        },
                         _    => return self.unexpected_character()
                     };
-                    t.write_negative(n);
-                    JsonValue::Number(-(n as i64))
                 }
                 b't' => {
                     expect_sequence!(self, b'r', b'u', b'e');
                     t.write_true();
-                    JsonValue::Boolean(true)
                 },
                 b'f' => {
                     expect_sequence!(self, b'a', b'l', b's', b'e');
                     t.write_false();
-                    JsonValue::Boolean(false)
                 },
                 b'n' => {
                     expect_sequence!(self, b'u', b'l', b'l');
                     t.write_null();
-                    JsonValue::Null
                 },
                 _    => return self.unexpected_character()
             };
@@ -828,61 +796,57 @@ impl<'a> Parser<'a> {
                     None => {
                         expect_eof!(self);
                         t.end();
-                        return Ok(value);
+                        return Ok(());
                     },
 
-                    Some(&mut StackBlock(JsonValue::Array(ref mut array), _)) => {
-                        let i = array.len();
-                        array.push(value);
-
+                    Some(&mut StackBlock::Index(ref mut cnt)) => {
                         ch = expect_byte_ignore_whitespace!(self);
 
                         match ch {
                             b',' => {
                                 ch = expect_byte_ignore_whitespace!(self);
-                                t.ascend_index(i, false);
-                                t.descend_index(i + 1, false);
+                                t.ascend_index(*cnt, false);
+                                *cnt += 1;
+                                t.descend_index(*cnt, false);
                                 continue 'parsing;
                             },
-                            b']' => { t.ascend_index(i, true); },
+                            b']' => { t.ascend_index(*cnt, true); },
                             _    => return self.unexpected_character()
                         }
                     },
 
-                    Some(&mut StackBlock(JsonValue::Object(ref mut object), ref mut index )) => {
-                        object.insert(index.clone(), value);
-
+                    Some(&mut StackBlock::Key(ref mut key)) => {
                         ch = expect_byte_ignore_whitespace!(self);
 
                         match ch {
                             b',' => {
-                                t.ascend_key(index.as_str(), false);
+                                t.ascend_key(key, false);
                                 expect!(self, b'"');
-                                let k = expect_string!(self).to_string();
-                                t.descend_key(k.as_str(), false);
-                                object.insert(k.clone(), JsonValue::Null);
-                                *index = k;
+                                let k = expect_string!(self);
+                                t.descend_key(k, false);
+                                *key = k;
                                 expect!(self, b':');
 
                                 ch = expect_byte_ignore_whitespace!(self);
 
                                 continue 'parsing;
                             },
-                            b'}' => { t.ascend_key(index.as_str(), true); },
+                            b'}' => { t.ascend_key(key, true); },
                             _    => return self.unexpected_character()
                         }
-                    },
-
-                    _ => unreachable!(),
+                    }
                 }
 
-                value = match stack.pop() {
-                    Some(StackBlock(value, _)) => value,
-                    None                       => break 'popping
+                match stack.pop() {
+                    Some(_) => {},
+                    None => break 'popping
                 }
             }
         }
     }
 }
 
-struct StackBlock(JsonValue, String);
+enum StackBlock<'a> {
+    Index(usize),
+    Key(&'a str)
+}

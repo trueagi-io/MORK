@@ -1,7 +1,7 @@
 use std::fmt::format;
 use std::hint::black_box;
 use std::io::{BufRead, Read, Write};
-use std::ptr;
+use std::{mem, process, ptr};
 use std::time::Instant;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
 use mork_bytestring::Tag::{Arity, SymbolSize};
@@ -289,6 +289,15 @@ impl SymbolMapping {
             strings: BytesTrieMap::new(),
         }
     }
+
+    // temporary workaround for the inability of making BytesTrieMaps static
+    pub fn as_static_mut(&mut self) -> &'static mut SymbolMapping {
+        unsafe { mem::transmute::<&mut SymbolMapping, &'static mut SymbolMapping>(self) }
+    }
+
+    pub fn as_static(&self) -> &'static SymbolMapping {
+        unsafe { mem::transmute::<&SymbolMapping, &'static SymbolMapping>(&self) }
+    }
 }
 
 fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
@@ -301,16 +310,19 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 
 impl Parser for SymbolMapping {
     fn tokenizer(&mut self, s: String) -> Vec<u8> {
+        if s.len() == 0 { return vec![] }
         // return s.as_bytes().to_vec();
-        if let Some(r) = self.symbols.get(s.as_bytes()) {
+        let mut z = self.symbols.write_zipper_at_path(s.as_bytes());
+        if let Some(r) = z.get_value() {
             r.clone()
         } else {
             self.count += 1;
             let mut buf: [u8; 8] = [0; 8];
             let slice = gen_key(self.count, buf.as_mut_ptr());
             let internal = slice.to_vec();
-            self.symbols.insert(s.as_bytes(), internal.clone());
-            self.strings.insert(slice, s.clone());
+            z.set_value(internal.clone());
+            drop(z);
+            self.strings.insert(slice, s);
             internal
         }
     }
@@ -328,9 +340,6 @@ impl Space {
         Self { btm: BytesTrieMap::new() }
     }
 
-    // fn write_zipper_unchecked<'w>(&'w self) -> WriteZipper<'w, 'w, ()> where Self : 'w  {
-    //     unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
-    // }
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipper<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
@@ -368,17 +377,14 @@ impl Space {
     }
 
     pub fn load_json<R : Read>(&mut self, mut r: R, sm: &'static mut SymbolMapping) -> Result<usize, String> {
-    // pub fn load_json<'s, R : Read>(&'s mut self, mut r: R, sm: &'static mut SymbolMapping) -> Result<usize, String> where Self : 's {
         pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipper<'a, 'b, ()>, sm: &'static mut SymbolMapping }
         impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
             #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
-                let s = s.into();
-                let token = self.sm.tokenizer(s.clone());
+                let token = self.sm.tokenizer(s.into());
                 let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
                 path.extend(token);
                 self.wz.descend_to(&path[..]);
                 self.wz.set_value(());
-                self.count += 1;
                 self.wz.ascend(path.len());
             }
         }
@@ -393,24 +399,33 @@ impl Space {
                 self.wz.ascend(self.sm.tokenizer(i.to_string()).len() + 1);
                 if last { self.wz.ascend(1); }
             }
-            #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); }
+            #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
             #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
                 if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
                 let token = self.sm.tokenizer(k.to_string());
+                // let token = k.to_string();
                 self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
                 self.wz.descend_to(token);
             }
             #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
-                self.wz.ascend(self.sm.tokenizer(k.to_string()).len() + 1);
+                let token = self.sm.tokenizer(k.to_string());
+                // let token = k.to_string();
+                self.wz.ascend(token.len() + 1);
                 if last { self.wz.ascend(1); }
             }
-            #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); }
-            #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); }
-            #[inline(always)] fn write_positive(&mut self, s: u64) -> () { self.write(s.to_string()); }
-            #[inline(always)] fn write_negative(&mut self, s: u64) -> () { let mut s = s.to_string(); s.insert(0, '-'); self.write(s); }
-            #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); }
-            #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); }
-            #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); }
+            #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
+            #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
+            #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
+                let mut s = String::new();
+                if negative { s.push('-'); }
+                s.push_str(mantissa.to_string().as_str());
+                if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
+                self.write(s);
+                self.count += 1;
+            }
+            #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
+            #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
+            #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
             #[inline(always)] fn begin(&mut self) -> () {}
             #[inline(always)] fn end(&mut self) -> () {}
         }
@@ -520,5 +535,23 @@ impl Space {
                 _ => {}
             }
         });
+    }
+
+    pub fn done(&mut self, symbol_mapping: SymbolMapping) -> ! {
+        let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
+        counters.print_histogram_by_depth();
+        counters.print_run_length_histogram();
+        counters.print_list_node_stats();
+        println!("### symbols");
+        let counters = pathmap::counters::Counters::count_ocupancy(&symbol_mapping.symbols);
+        counters.print_histogram_by_depth();
+        counters.print_run_length_histogram();
+        counters.print_list_node_stats();
+        println!("### strings");
+        let counters = pathmap::counters::Counters::count_ocupancy(&symbol_mapping.strings);
+        counters.print_histogram_by_depth();
+        counters.print_run_length_histogram();
+        counters.print_list_node_stats();
+        process::exit(0);
     }
 }

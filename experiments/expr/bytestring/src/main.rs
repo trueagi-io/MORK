@@ -799,6 +799,25 @@ fn to_string() {
     assert_eq!(format!("{:?}", ez.root), s);
 }
 
+#[test]
+fn parsing() {
+    let data = parse!("[3] $ [3] $ foo _1 _2");
+    assert_eq!(data, [item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::VarRef(0)), item_byte(Tag::VarRef(1))]);
+}
+
+#[test]
+fn serializing() {
+    let data = serialize(&[item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::VarRef(0)), item_byte(Tag::VarRef(1))]);
+    assert_eq!(data, "[3] $ [3] $ foo _1 _2");
+
+    let e = serialize(vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
+                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))].as_slice());
+    assert_eq!(e, "[3] = [2] func $ [2] add\\x00 [2] \\x07[\\xCD\\x15 _1");
+}
+
+
 fn main() {
 
 }

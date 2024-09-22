@@ -19,7 +19,7 @@ pub enum Tag {
     Arity(u8),
 }
 
-pub fn item_byte(b: Tag) -> u8 {
+pub const fn item_byte(b: Tag) -> u8 {
     match b {
         Tag::NewVar => { 0b1100_0000 | 0 }
         Tag::SymbolSize(s) => { debug_assert!(s > 0 && s < 64); 0b1100_0000 | s }
@@ -36,7 +36,7 @@ pub fn byte_item(b: u8) -> Tag {
     else { panic!("reserved {}", b) }
 }
 
-pub fn maybe_byte_item(b: u8) -> Result<Tag, u8> {
+pub const fn maybe_byte_item(b: u8) -> Result<Tag, u8> {
     if b == 0b1100_0000 { return Ok(Tag::NewVar); }
     else if (b & 0b1100_0000) == 0b1100_0000 { return Ok(Tag::SymbolSize(b & 0b0011_1111)) }
     else if (b & 0b1100_0000) == 0b1000_0000 { return Ok(Tag::VarRef(b & 0b0011_1111)) }
@@ -788,4 +788,218 @@ impl ExprZipper {
         };
         return slice_from_raw_parts(self.root.ptr, size)
     }
+}
+
+const fn to_bytes<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut array = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        array[i] = bytes[i];
+        i += 1;
+    }
+    array
+}
+
+const fn is_digit(b: u8) -> bool {
+    b >= b'0' && b <= b'9'
+}
+
+const fn digit_value(b: u8) -> u8 {
+    b - b'0'
+}
+
+
+#[macro_export]
+macro_rules! parse {
+    ($s:literal) => {{
+        const N: usize = compute_length($s);
+        const ARR: [u8; N] = parse::<N>($s);
+        ARR
+    }};
+}
+
+pub const fn compute_length(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut n = 0;
+
+    while i < len {
+        // Skip spaces
+        while i < len && bytes[i] == b' ' {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let b = bytes[i];
+
+        if b == b'[' {
+            // Parse [number]
+            i += 1;
+            while i < len && bytes[i] != b']' {
+                i += 1;
+            }
+            i += 1; // Skip ']'
+            n += 1; // item_byte(Tag::Arity(number))
+        } else if b == b'$' {
+            i += 1;
+            n += 1; // item_byte(Tag::NewVar)
+        } else if b == b'_' {
+            // Parse _number
+            i += 1;
+            while i < len && is_digit(bytes[i]) {
+                i += 1;
+            }
+            n += 1; // item_byte(Tag::VarRef(number - 1))
+        } else {
+            // Parse symbol (word)
+            let mut word_len = 0;
+            while i < len && bytes[i] != b' ' {
+                word_len += 1;
+                i += 1;
+            }
+            n += 1 + word_len; // item_byte + word bytes
+        }
+    }
+
+    n
+}
+
+pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut arr = [0u8; N];
+    let mut i = 0;
+    let mut pos = 0;
+
+    while i < len {
+        // Skip spaces
+        while i < len && bytes[i] == b' ' {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let b = bytes[i];
+
+        if b == b'[' {
+            // Parse [number]
+            i += 1; // Skip '['
+            let mut num = 0u8;
+            while i < len && is_digit(bytes[i]) {
+                num = num * 10 + digit_value(bytes[i]);
+                i += 1;
+            }
+            if i < len && bytes[i] == b']' {
+                i += 1; // Skip ']'
+                arr[pos] = item_byte(Tag::Arity(num));
+                pos += 1;
+            } else {
+                // Handle error: expected ']'
+                i += 1;
+            }
+        } else if b == b'$' {
+            i += 1; // Skip '$'
+            arr[pos] = item_byte(Tag::NewVar);
+            pos += 1;
+        } else if b == b'_' {
+            // Parse _number
+            i += 1; // Skip '_'
+            let mut num = 0u8;
+            while i < len && is_digit(bytes[i]) {
+                num = num * 10 + digit_value(bytes[i]);
+                i += 1;
+            }
+            if num > 0 {
+                arr[pos] = item_byte(Tag::VarRef(num - 1));
+            } else {
+                arr[pos] = item_byte(Tag::VarRef(0));
+            }
+            pos += 1;
+        } else {
+            // Parse symbol (word)
+            let word_start = i;
+            let mut word_len = 0;
+            while i < len && bytes[i] != b' ' {
+                word_len += 1;
+                i += 1;
+            }
+            // Insert item_byte(Tag::SymbolSize(word_len))
+            arr[pos] = item_byte(Tag::SymbolSize(word_len));
+            pos += 1;
+            // Copy the word bytes
+            let mut j = 0;
+            while j < word_len {
+                arr[pos] = bytes[word_start + (j as usize)];
+                pos += 1;
+                j += 1;
+            }
+        }
+    }
+
+    arr
+}
+
+
+pub fn serialize(bytes: &[u8]) -> String {
+    let mut result = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match maybe_byte_item(b) {
+            Ok(tag) => {
+                match tag {
+                    Tag::NewVar => {
+                        result.push('$');
+                        i += 1;
+                    },
+                    Tag::VarRef(idx) => {
+                        result.push('_');
+                        result.push_str(&format!("{}", idx + 1)); // idx is 0-based
+                        i += 1;
+                    },
+                    Tag::Arity(a) => {
+                        result.push('[');
+                        result.push_str(&format!("{}", a));
+                        result.push(']');
+                        i += 1;
+                    },
+                    Tag::SymbolSize(s) => {
+                        i += 1;
+                        if i + (s as usize) > bytes.len() {
+                            // Error: Not enough bytes for symbol
+                            result.push_str("<Error: Not enough bytes for symbol>");
+                            break;
+                        } else {
+                            // Read the next s bytes as symbol bytes
+                            for j in 0..s {
+                                let symbol_byte = bytes[i + j as usize];
+                                // Check if symbol_byte is printable ASCII
+                                if (symbol_byte.is_ascii_graphic() || symbol_byte == b' ') && symbol_byte != b'\\' {
+                                    result.push(symbol_byte as char);
+                                } else {
+                                    result.push_str(&format!("\\x{:02X}", symbol_byte));
+                                }
+                            }
+                            i += s as usize;
+                        }
+                    }
+                }
+            },
+            Err(b) => {
+                // Unknown byte
+                result.push_str(&format!("\\x{:02X}", b));
+                i += 1;
+            }
+        }
+        // Add space between tokens if needed
+        if i < bytes.len() {
+            result.push(' ');
+        }
+    }
+    result
 }

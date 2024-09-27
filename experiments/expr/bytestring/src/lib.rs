@@ -1,7 +1,7 @@
 use std::fmt::{Debug, format, Formatter, Write};
 use std::{mem, ops};
 use std::ops::ControlFlow;
-use std::os::unix::raw::off_t;
+use smallvec::SmallVec;
 use std::ptr::slice_from_raw_parts;
 
 #[derive(Copy, Clone, Debug)]
@@ -126,7 +126,7 @@ macro_rules! traverse {
             #[inline(always)] fn finalize(&mut self, offset: usize, acc: $t1) -> $t2 { ($finalize)(offset, acc) }
         }
 
-        execute(&mut AnonTraversal{}, $x, 0).1
+        execute_loop(&mut AnonTraversal{}, $x, 0).1
     }};
 }
 
@@ -143,7 +143,7 @@ macro_rules! traverseh {
         }
 
         let mut traversal = AnonTraversal{ v: $v0 };
-        let result = execute(&mut traversal, $x, 0).1;
+        let result = execute_loop(&mut traversal, $x, 0).1;
         (traversal.v, result)
     }};
 }
@@ -201,16 +201,14 @@ impl Expr {
             |c: &mut u8, _| { *c += 1; false }, |c: &mut u8, _, r| r >= *c, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
     }
 
-    // pub fn indiscriminate_bidirectional_matching(self) -> bool {
-    //     traverse!((), (), self,
-    //         |_, _| identity,
-    //         |_, _, _| identity,
-    //         |_, _, s| variable_or_symbol(s),
-    //         |_, _, a| variable_or_arity(a),
-    //         |_, _, x, r| collect(indiscriminate_bidirectional_matching(r)),
-    //         |_, _, x| execute)
-    //     // when at the leave nodes in this traversal, we should immediately execute the unification to avoid re-traversing
-    // }
+    pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
+        use ControlFlow::*;
+        match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
+            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a) {
+            Break(offset) => { Ok(slice_from_raw_parts(self.ptr, offset)) } // proper prefix
+            Continue(offset) => { Err(slice_from_raw_parts(self.ptr, offset)) } // full expr
+        }
+    }
     
     pub fn substitute(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
@@ -500,14 +498,14 @@ impl Expr {
     #[inline(never)]
     pub fn string(&self) -> String {
         let mut traversal = DebugTraversal{ string: String::new(), transient: false };
-        execute(&mut traversal, *self, 0);
+        execute_loop(&mut traversal, *self, 0);
         traversal.string
     }
 
     #[inline(never)]
-    pub fn serialize<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a String>(&self, t: &mut Target, map_symbol: F) -> () {
+    pub fn serialize<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str>(&self, t: &mut Target, map_symbol: F) -> () {
         let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
-        execute(&mut traversal, *self, 0);
+        execute_loop(&mut traversal, *self, 0);
     }
 }
 
@@ -541,6 +539,58 @@ fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R
     }
 }
 
+fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
+    // example run with e = [3] a [2] x y [2] p q
+    // 3 zero()
+    // value = symbol(a); 2 add(zero(), symbol(a))
+    // 2 add(zero(), symbol(a)), 2 zero()
+    // value = symbol(x); 2 add(zero(), symbol(a)), 1 add(zero(), symbol(x))
+    // value = symbol(y); 2 add(zero(), symbol(a)); value = finalize(add(add(zero(), symbol(x)), symbol(y))); 1 add(add(zero(), symbol(a)), finalize(add(add(zero(), symbol(x)), symbol(y))))
+    // 1 add(add(zero(), symbol(a)), finalize(add(add(zero(), symbol(x)), symbol(y)))), 2 zero()
+    // value = symbol(p); 1 add(add(zero(), symbol(a)), finalize(add(add(zero(), symbol(x)), symbol(y)))), 1 add(zero(), symbol(p))
+    // value = symbol(q); 1 add(add(zero(), symbol(a)), finalize(add(add(zero(), symbol(x)), symbol(y)))); value = finalize(add(add(zero(), symbol(p)), symbol(q))); value = finalize(add(..., ...)); return
+    struct State<X> { iter: u8, payload: X }
+    let mut stack: SmallVec<[State<A>; 8]> = SmallVec::new();
+    // let mut stack = vec![];
+    let mut j = i;
+    'putting: loop {
+        let mut value = match unsafe { byte_item(*e.ptr.byte_add(j)) } {
+            Tag::NewVar => { j += 1; t.new_var(j - 1) }
+            Tag::VarRef(r) => { j += 1; t.var_ref(j - 1, r) }
+            Tag::SymbolSize(s) => {
+                let slice = unsafe { &*slice_from_raw_parts(e.ptr.byte_add(j + 1), s as usize) };
+                let v = t.symbol(j, slice);
+                j += s as usize + 1;
+                v
+            }
+            Tag::Arity(a) => {
+                j += 1;
+                let mut acc = t.zero(j, a);
+                stack.push(State{ iter: a, payload: acc });
+                continue 'putting;
+            }
+        };
+
+        'popping: loop {
+            match stack.last_mut() {
+                None => { return (j, value) }
+                Some(&mut State{ iter: ref mut k, payload: ref mut acc }) => {
+                    unsafe {
+                        std::ptr::write(k, std::ptr::read(k).wrapping_sub(1));
+                        std::ptr::write(acc, t.add(j, std::ptr::read(acc), value));
+                        if std::ptr::read(k) != 0 { continue 'putting }
+                    }
+                }
+            }
+
+            value = match stack.pop() {
+                Some(State{ iter: _, payload: acc }) => t.finalize(j, acc),
+                None => break 'popping
+            }
+        }
+    }
+}
+
 struct DebugTraversal { string: String, transient: bool }
 
 impl Traversal<(), ()> for DebugTraversal {
@@ -562,9 +612,9 @@ impl Debug for Expr {
     }
 }
 
-struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b String> { out: &'a mut Target, map_symbol: F, transient: bool }
+struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
 
-impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b String> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }

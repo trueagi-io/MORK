@@ -3,5 +3,8 @@ name = "mork-bytestring"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+smallvec = "1.13.2"
+
 [build]
 rustflags = "-C opt-level=3 -C target-cpu=native"

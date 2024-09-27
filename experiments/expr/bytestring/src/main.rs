@@ -817,6 +817,18 @@ fn serializing() {
     assert_eq!(e, "[3] = [2] func $ [2] add\\x00 [2] \\x07[\\xCD\\x15 _1");
 }
 
+#[test]
+fn prefix() {
+    let mut ev = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
+                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
+                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
+                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+    let e = Expr { ptr: ev.as_mut_ptr() };
+
+    let Ok(proper) = e.prefix() else { panic!() };
+    let s = serialize(unsafe { &*proper });
+    assert_eq!(s, "[3] = [2] func")
+}
 
 fn main() {
 

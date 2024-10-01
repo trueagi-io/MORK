@@ -1,194 +1,159 @@
-use std::fs::File;
-use std::io::Read;
-use std::{io, ptr};
-
-use std::fmt::format;
-use std::ptr::slice_from_raw_parts;
-use std::str::Utf8Error;
-
 use mork_bytestring::{Expr, ExprZipper, Tag, item_byte, byte_item};
 
 
-fn indexOf<A : Eq>(s: &Vec<A>, e: &A) -> i64 {
-  let mut i = 0;
-  for e_ in s {
-    if e.eq(e_) { return i }
-    else { i += 1 }
-  }
-  return -1
+fn isWhitespace(c: u8) -> bool {
+  c == b' ' || c == b'\t' || c == b'\n'
 }
 
-fn isWhitespace(c: char) -> bool {
-  c == ' ' || c == '\t' || c == '\n'
-}
-
-fn isDigit(c: char) -> bool {
-  c == '0' || c == '1' || c == '2' || c == '3' || c == '4' ||
-  c == '5' || c == '6' || c == '7' || c == '8' || c == '9'
-}
-
-pub struct BufferedIterator<R : Read> {
-  pub file: R,
-  pub buffer: [u8; 4096],
-  pub cursor: usize,
-  pub max: usize
-}
-
-impl <R : Read> BufferedIterator<R> {
-  pub fn new(r: R) -> Self {
-    BufferedIterator{ file: r, buffer: [0; 4096], cursor: 4096, max: 4096 }
-  }
-
-  fn peek(&mut self) -> std::io::Result<u8> {
-    if self.cursor == self.max {
-      self.max = self.file.read(&mut self.buffer)?;
-      self.cursor = 0;
-      Ok(self.buffer[0])
-    } else {
-      Ok(self.buffer[self.cursor])
-    }
-  }
-
-  fn next(&mut self) -> std::io::Result<u8> {
-    if self.cursor == self.max {
-      self.max = self.file.read(&mut self.buffer)?;
-      self.cursor = 0;
-      Ok(self.buffer[0])
-    } else {
-      let r = self.buffer[self.cursor];
-      self.cursor += 1;
-      Ok(r)
-    }
-  }
-
-  fn hasNext(&mut self) -> std::io::Result<bool> {
-    if self.cursor != self.max {
-      return Ok(true)
-    } else {
-      self.max = self.file.read(&mut self.buffer)?;
-      self.cursor = 0;
-      Ok(self.max > 0)
-    }
-  }
+fn isDigit(c: u8) -> bool {
+  c == b'0' || c == b'1' || c == b'2' || c == b'3' || c == b'4' ||
+  c == b'5' || c == b'6' || c == b'7' || c == b'8' || c == b'9'
 }
 
 #[derive(Debug)]
 pub enum ParserError {
-  ReadError(std::io::Error),
-  InputFinished(),
-  NotArity(),
-  UnexpectedRightBracket(),
-  UnfinishedEscapeSequence()
+  TooManyVars,
+  UnexpectedEOF,
+  InputFinished,
+  NotArity,
+  UnexpectedRightBracket,
+  UnfinishedEscapeSequence
 }
 
+pub struct Context<'a> {
+  pub src: &'a [u8],
+  pub loc: usize,
+  pub variables: Vec<&'a [u8]>
+}
+
+impl <'a> Context<'a> {
+  pub fn new(r: &'a [u8]) -> Context<'a> {
+    Context{ src: r, loc: 0, variables: vec![] }
+  }
+
+  #[inline(always)]
+  fn peek(&mut self) -> Result<u8, ParserError> {
+    if self.loc == self.src.len() {
+      Err(ParserError::UnexpectedEOF)
+    } else {
+      Ok(unsafe { *self.src.get_unchecked(self.loc) })
+    }
+  }
+
+  #[inline(always)]
+  fn next(&mut self) -> Result<u8, ParserError> {
+    if self.loc == self.src.len() {
+      Err(ParserError::UnexpectedEOF)
+    } else {
+      let r = unsafe { *self.src.get_unchecked(self.loc) };
+      self.loc += 1;
+      Ok(r)
+    }
+  }
+
+  #[inline(always)]
+  fn has_next(&mut self) -> bool {
+    self.loc < self.src.len()
+  }
+
+  #[inline]
+  fn get_or_put(&mut self, var: &'a [u8]) -> Result<Option<u8>, ParserError> {
+    let mut i = 0;
+    for &v in self.variables.iter() {
+      if var == v { return Ok(Some(i as u8)) }
+      else { i += 1 }
+    }
+
+    if self.variables.len() < 64 {
+      // we can only have 64 variables, we don't need a vec here, perhaps uninit array?
+      self.variables.push(var);
+      Ok(None)
+    } else {
+      Err(ParserError::TooManyVars)
+    }
+  }
+}
 
 pub trait Parser {
-  fn tokenizer(&mut self, s: String) -> Vec<u8> { return s.as_bytes().to_vec() }
+  fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8];
 
-  fn sexprUnsafe<R : Read>(&mut self, it: &mut BufferedIterator<R>, variables: &mut Vec<String>, target: &mut ExprZipper) -> Result<(), ParserError> {
+  fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
     use ParserError::*;
-    while it.hasNext().map_err(ReadError)? {
-      match it.peek().map_err(ReadError)? as char {
-        ';' => { while it.next().map_err(ReadError)? != '\n' as u8 {} }
-        c if isWhitespace(c) => { it.next().map_err(ReadError)?; }
-        '$' => {
+    while it.has_next() {
+      match it.peek()? {
+        b';' => { while it.next()? != b'\n' {} }
+        c if isWhitespace(c) => { it.next()?; }
+        b'$' => {
           let id = {
-            let mut sb = "".to_string();
-            let mut cont = true;
-            while it.hasNext().map_err(ReadError)? && cont {
-              match it.peek().map_err(ReadError)? as char {
-                '(' | ')' => { cont = false }
-                c if isWhitespace(c) => { cont = false }
-                c => {
-                  sb.push(c);
-                  it.next().map_err(ReadError)?;
-                }
+            let start = it.loc;
+            while it.has_next() {
+              match it.peek()? {
+                b'(' | b')' => { break }
+                c if isWhitespace(c) => { break }
+                _ => { it.next()?; }
               }
             }
-            sb
+            unsafe { &it.src.get_unchecked(start..it.loc) }
           };
-          let ind = indexOf(variables, &id);
-          if ind == -1 {
-            variables.push(id);
-            target.write_new_var();
-            target.loc += 1;
-            return Ok(());
-          } else {
-            target.write_var_ref(ind as u8);
-            target.loc += 1;
-            return Ok(());
+          match it.get_or_put(id)? {
+            None => { target.write_new_var(); target.loc += 1; }
+            Some(ind) => { target.write_var_ref(ind); target.loc += 1; }
           }
+          return Ok(());
         }
-        '(' => { return {
+        b'(' => {
           let arity_loc = target.loc;
           target.write_arity(0);
           target.loc += 1;
-          it.next().map_err(ReadError)?;
-          while it.peek().map_err(ReadError)? != ')' as u8 {
-            match it.peek().map_err(ReadError)? as char {
-              c if isWhitespace(c) => { it.next().map_err(ReadError)?; }
+          it.next()?;
+          while it.peek()? != b')' {
+            match it.peek()? {
+              c if isWhitespace(c) => { it.next()?; }
               _ => {
-                self.sexprUnsafe(it, variables, target);
+                self.sexpr::<'a>(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
-                  if let Tag::Arity(a) = byte_item(*p) {
-                    *p = item_byte(Tag::Arity(a + 1));
-                  } else { return Err(NotArity()) }
+                  if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }
+                  else { return Err(NotArity) }
                 }
               }
             }
           }
-          it.next();
-          Ok(())
-        } }
-        ')' => { return Err(UnexpectedRightBracket()) }
+          it.next()?;
+          return Ok(())
+        }
+        b')' => { return Err(UnexpectedRightBracket) }
         _ => {
-          let e = self.tokenizer({
-            if it.hasNext().map_err(ReadError)? && it.peek().map_err(ReadError)? == '"' as u8 {
-              {
-                let mut sb = "".to_string();
-                let mut cont = true;
-                it.next().map_err(ReadError)?;
-                sb.push('"');
-                while it.hasNext().map_err(ReadError)? && cont {
-                  match it.next().map_err(ReadError)? as char {
-                    '"' => {
-                      sb.push('"');
-                      cont = false
-                    }
-                    '\\' => {
-                      if it.hasNext().map_err(ReadError)? { sb.push(it.next().map_err(ReadError)? as char) }
-                      else { return Err(UnfinishedEscapeSequence()) }
-                    }
-                    c => { sb.push(c) }
-                  }
+          let start = it.loc;
+          if it.has_next() && it.peek()? == b'"' {
+            it.next()?;
+            while it.has_next() {
+              match it.next()? {
+                b'"' => { break }
+                b'\\' => {
+                  if it.has_next() { it.next()?; }
+                  else { return Err(UnfinishedEscapeSequence) }
                 }
-                sb
-              }
-            } else {
-              {
-                let mut sb = "".to_string();
-                let mut cont = true;
-                while it.hasNext().map_err(ReadError)? && cont {
-                  match it.peek().map_err(ReadError)? as char {
-                    '(' | ')' => { cont = false }
-                    c if isWhitespace(c) => { cont = false }
-                    c => {
-                      sb.push(c);
-                      it.next().map_err(ReadError)?;
-                    }
-                  }
-                }
-                sb
+                _ => {}
               }
             }
-          });
-          target.write_symbol(&e[..]);
+          } else {
+            while it.has_next() {
+              match it.peek()? {
+                b'(' | b')' => { break }
+                c if isWhitespace(c) => { break }
+                _ => { it.next()?; }
+              }
+            }
+          }
+
+          let e = self.tokenizer(unsafe { &it.src.get_unchecked(start..it.loc) });
+          target.write_symbol(e);
           target.loc += 1 + e.len();
           return Ok(());
         }
       }
     }
-    Err(InputFinished())
+    Err(InputFinished)
   }
 }

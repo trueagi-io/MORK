@@ -1,18 +1,18 @@
 use std::collections::HashMap;
-use std::{fs, ptr};
+use std::{fs, mem, ptr};
 use std::hint::black_box;
 use std::io::{BufReader, Read};
 use std::time::Instant;
 
 
 // use typed_arena::Arena;
-// use mork::rosetta_parser::{Error, ParseContext, SExp, SEXP_STRING_IN, SEXP_STRUCT, Token, Tokens};
+// use mork_frontend::rosetta_parser::{Error, ParseContext, SExp, SEXP_STRING_IN, SEXP_STRUCT, Token, Tokens};
 //
 // fn main() {
 //     // println!("{:?}", SEXP_STRUCT.buffer_encode());
 //     let mut ctx = ParseContext::new(SEXP_STRING_IN);
 //     ctx.arena = Some(Arena::new());
-//     let contents = fs::read_to_string("resources/edges67458171.metta")
+//     let contents = fs::read_to_string("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3-002/results/nodes.metta")
 //         .expect("Should have been able to read the file");
 //     let mut tokens = Tokens::new(contents.as_str());
 //     let ctx_ptr = &mut ctx as *mut ParseContext;
@@ -24,7 +24,7 @@ use std::time::Instant;
 //         unsafe {
 //             let e = SExp::parse_multiple(&mut *ctx_ptr, &mut *tokens_ptr);
 //             match e {
-//                 Ok(e) => {  }
+//                 Ok(e) => { }
 //                 Err(Error::ExpectedEOF) => { break }
 //                 Err(e) => { println!("{:?}", e); break }
 //             }
@@ -185,12 +185,12 @@ use std::time::Instant;
 // }
 
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, BufferedIterator, ParserError};
+use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use pathmap::trie_map::BytesTrieMap;
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<Vec<u8>>,
+    symbols: BytesTrieMap<u64>,
 }
 
 impl DataParser {
@@ -200,6 +200,8 @@ impl DataParser {
             symbols: BytesTrieMap::new(),
         }
     }
+
+    const EMPTY: &'static [u8] = &[];
 }
 
 fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
@@ -211,52 +213,56 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
 }
 
 impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> Vec<u8> {
-        if let Some(r) = self.symbols.get(s.as_bytes()) {
-            r.clone()
-        } else {
+    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
+        return unsafe { std::mem::transmute(s) };
+        if s.len() == 0 { return Self::EMPTY }
+        let mut z = self.symbols.write_zipper_at_path(s);
+        let r = z.get_value_or_insert_with(|| {
             self.count += 1;
-            let mut buf: [u8; 8] = [0; 8];
-            let slice = gen_key(self.count, buf.as_mut_ptr());
-            let vec = slice.to_vec();
-            self.symbols.insert(s.as_bytes(), vec.clone());
-            vec
-        }
+            u64::from_be(self.count)
+        });
+        let bs = (8 - r.trailing_zeros()/8) as usize;
+        let l = bs.max(1);
+        unsafe { std::slice::from_raw_parts_mut((r as *mut u64 as *mut u8).byte_offset((8 - l) as isize), l) }
     }
 }
 
 fn main() {
-    // let mut file = std::fs::File::open("resources/edges5000.metta")
-    let mut file = std::fs::File::open("resources/edges67458171.metta")
+    let mut file = std::fs::File::open("resources/edges5000.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
+    // let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3-002/results/nodes.metta")
+    // let file = std::fs::File::open("resources/edges67458171.metta")
         .expect("Should have been able to read the file");
-    let mut it = BufferedIterator::new(file);
+    // let slice = unsafe { memmap2::Mmap::map(&file).unwrap() };
+    let mut v = vec![];
+    file.read_to_end(&mut v);
+    let slice = &v[..];
+    let mut it = Context::new(&slice);
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
     // let mut btm = BytesTrieMap::new();
     let mut i = 0;
-    let mut stack = Vec::with_capacity(100);
-    let mut vs = Vec::with_capacity(100);
+    let mut stack = [0; 2 << 19];
     loop {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+            match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
-                    // stack.set_len(ez.loc);
-                    // btm.insert(&stack[..], i);
+                    // btm.insert(&stack[..ez.loc], ());
                     // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
                     // println!("{:?}", stack);
-                    // ExprZipper::new(ez.root).traverse(0); println!();
+                    ExprZipper::new(ez.root).traverse(0); println!();
                     black_box(ez.root);
                 }
-                Err(ParserError::InputFinished()) => { break }
+                Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
             }
             i += 1;
-            vs.set_len(0);
+            it.variables.clear();
         }
     }
     println!("built {}", i);
-    println!("took {} ms", t0.elapsed().as_millis()); // 11GB, 44 seconds
-    // println!("map contains: {}", btm.len());
+    println!("took {} ms", t0.elapsed().as_millis()); // 4GB, 6 seconds
+    // println!("map contains: {}", btm.val_count());
 }

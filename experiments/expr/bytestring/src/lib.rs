@@ -13,11 +13,23 @@ pub struct Breadcrumb {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Tag {
-    NewVar,
-    VarRef(u8),
-    SymbolSize(u8),
-    Arity(u8),
+    NewVar, // $
+    VarRef(u8), // _1 .. _63
+    SymbolSize(u8), // "" "." ".." .. "... x63"
+    //                < 64 bytes
+    Arity(u8), // [0] ... [63]
 }
+
+// [2] 64bytes [2] 64bytes [2] ... [2] 64bytes 64bytes
+// [63] 64bytes 64bytes 62x.. 64bytes [63] 64bytes 62x.. 64bytes [63] ... [63] ...
+
+// Discrimination <-> Compression
+// High discrimination +speed -memory
+// - classify "be unique" as soon as possible
+// - bring discriminating information to the front (tags)
+// High compression -speed +memory
+// - stay shared as long as possible
+// - bring shared information to the front (bulk)
 
 pub const fn item_byte(b: Tag) -> u8 {
     match b {
@@ -670,6 +682,8 @@ impl ExprZipper {
             true
         }
     }
+
+    #[inline(always)]
     pub fn write_symbol(&mut self, value: &[u8]) -> bool {
         unsafe {
             let l = value.len();

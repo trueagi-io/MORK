@@ -1,19 +1,15 @@
 use std::hint::black_box;
 use std::io::Read;
-use std::ops::Deref;
-use std::process::exit;
-use std::ptr;
-use std::ptr::slice_from_raw_parts;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{Parser, BufferedIterator};
+use mork_frontend::bytestring_parser::{Parser, Context, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ReadZipper, WriteZipper, Zipper};
 use pathmap::ring::{Lattice, PartialDistributiveLattice};
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<String>,
+    symbols: BytesTrieMap<u64>,
 }
 
 impl DataParser {
@@ -23,29 +19,22 @@ impl DataParser {
             symbols: BytesTrieMap::new(),
         }
     }
-}
 
-fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
-    let ir = u64::from_be(i);
-    unsafe { ptr::write_unaligned(buffer as *mut u64, ir) };
-    let bs = (8 - ir.trailing_zeros()/8) as usize;
-    let l = bs.max(1);
-    unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
+    const EMPTY: &'static [u8] = &[];
 }
 
 impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> String {
-        // return s;
-        if let Some(r) = self.symbols.get(s.as_bytes()) {
-            r.clone()
-        } else {
+    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
+        // return unsafe { std::mem::transmute(s) };
+        if s.len() == 0 { return Self::EMPTY }
+        let mut z = self.symbols.write_zipper_at_path(s);
+        let r = z.get_value_or_insert_with(|| {
             self.count += 1;
-            let mut buf: [u8; 8] = [0; 8];
-            let slice = gen_key(self.count, buf.as_mut_ptr());
-            let string = unsafe { String::from_utf8_unchecked(slice.to_vec()) };
-            self.symbols.insert(s.as_bytes(), string.clone());
-            string
-        }
+            u64::from_be(self.count)
+        });
+        let bs = (8 - r.trailing_zeros()/8) as usize;
+        let l = bs.max(1);
+        unsafe { std::slice::from_raw_parts_mut((r as *mut u64 as *mut u8).byte_offset((8 - l) as isize), l) }
     }
 }
 
@@ -121,28 +110,29 @@ fn main() {
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
     let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
         .expect("Should have been able to read the file");
-    let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
+    let mut buf = vec![];
+    file.read_to_end(&mut buf);
+    let mut it = Context::new(&buf[..]);
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
     let mut family = BytesTrieMap::new();
     let mut output = BytesTrieMap::new();
     let mut i = 0u64;
-    let mut stack = Vec::with_capacity(100);
-    let mut vs = Vec::with_capacity(100);
+    let mut stack = [0u8; 1 << 19];
     loop {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            if parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
-                stack.set_len(ez.loc);
-                family.insert(&stack[..], ());
-                // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
-                // println!("{:?}", stack);
-                // ExprZipper::new(ez.root).traverse(0); println!();
-                // black_box(ez.root);
-            } else { break }
+            match parser.sexpr(&mut it, &mut ez) {
+                Ok(()) => {
+                    family.insert(&stack[..ez.loc], ());
+                }
+                Err(ParserError::InputFinished) => { break }
+                Err(other) => { panic!("{:?}", other) }
+            }
+
             i += 1;
-            vs.set_len(0);
+            it.variables.clear();
         }
     }
     println!("built {}", i);
@@ -152,24 +142,24 @@ fn main() {
 
     // family |= family.subst((parent $x $y), (child $y $x))
     let mut parent_path = vec![item_byte(Tag::Arity(3))];
-    let parent_symbol = parser.tokenizer("parent".to_string());
+    let parent_symbol = parser.tokenizer(b"parent");
     parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
-    parent_path.extend(parent_symbol.as_bytes());
+    parent_path.extend(parent_symbol);
     let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
     let mut child_path = vec![item_byte(Tag::Arity(3))];
-    let child_symbol = parser.tokenizer("child".to_string());
+    let child_symbol = parser.tokenizer(b"child");
     child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
-    child_path.extend(child_symbol.as_bytes());
+    child_path.extend(child_symbol);
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
     let mut child_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
 
     let mut patternv = vec![item_byte(Tag::Arity(3))];
     patternv.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
-    patternv.extend(parent_symbol.as_bytes()); patternv.push(item_byte(Tag::NewVar)); patternv.push(item_byte(Tag::NewVar));
+    patternv.extend(parent_symbol); patternv.push(item_byte(Tag::NewVar)); patternv.push(item_byte(Tag::NewVar));
     let pattern = Expr{ ptr: patternv.as_mut_ptr() };
     let mut templatev = vec![item_byte(Tag::Arity(3))];
     templatev.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
-    templatev.extend(child_symbol.as_bytes()); templatev.push(item_byte(Tag::VarRef(1))); templatev.push(item_byte(Tag::VarRef(0)));
+    templatev.extend(child_symbol); templatev.push(item_byte(Tag::VarRef(1))); templatev.push(item_byte(Tag::VarRef(0)));
     let template = Expr{ ptr: templatev.as_mut_ptr() };
 
     let mut j = 0;
@@ -202,22 +192,22 @@ fn main() {
     let t2 = Instant::now();
 
     let mut female_path = vec![item_byte(Tag::Arity(2))];
-    let female_symbol = parser.tokenizer("female".to_string());
+    let female_symbol = parser.tokenizer(b"female");
     female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
-    female_path.extend(female_symbol.as_bytes());
+    female_path.extend(female_symbol);
     let mut female_zipper = family.read_zipper_at_path(&female_path[..]);
 
     let mut male_path = vec![item_byte(Tag::Arity(2))];
-    let male_symbol = parser.tokenizer("male".to_string());
+    let male_symbol = parser.tokenizer(b"male");
     male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
-    male_path.extend(male_symbol.as_bytes());
+    male_path.extend(male_symbol);
 
     let male_zipper = family.read_zipper_at_path(&male_path[..]);
 
     let mut person_path = vec![item_byte(Tag::Arity(2))];
-    let person_symbol = parser.tokenizer("person".to_string());
+    let person_symbol = parser.tokenizer(b"person");
     person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
-    person_path.extend(person_symbol.as_bytes());
+    person_path.extend(person_symbol);
 
     let mut person_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
 

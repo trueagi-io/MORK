@@ -827,7 +827,12 @@ fn prefix() {
 
     let Ok(proper) = e.prefix() else { panic!() };
     let s = serialize(unsafe { &*proper });
-    assert_eq!(s, "[3] = [2] func")
+    assert_eq!(s, "[3] = [2] func");
+
+    let mut ev = vec![item_byte(Tag::NewVar)];
+    let e = Expr { ptr: ev.as_mut_ptr() };
+    let Ok(proper) = e.prefix() else { panic!() };
+    assert!(unsafe { &*proper }.is_empty());
 }
 
 fn main() {

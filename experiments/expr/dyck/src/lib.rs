@@ -24,7 +24,7 @@ use core::{
 };
 use num_bigint::BigUint;
 use std::{
-  ascii, env::var, fmt::{Debug, Display}, num::{NonZeroIsize, NonZeroUsize}, ops::Neg, process::Output, usize
+  ascii, env::var, fmt::{Debug, Display}, marker::PhantomData, num::{NonZeroIsize, NonZeroUsize}, ops::Neg, process::Output, usize
 };
 
 /// It should be noted that the terminal is _NEVER_ equal to the head.
@@ -57,32 +57,15 @@ impl SubtreeSlice {
     left_branch_impl::u64::left_branch(slice) << self.head
   }
 }
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct DyckWord {
   word: u64,
 }
 impl DyckWord {
   const fn new_debug_checked(word: u64) -> Self {
-    #[cfg(debug_assertions)]
-    '_validate_structure: {
-      let trailing = word.leading_zeros();
-      core::debug_assert!(trailing != 0);
-
-      let mut cursor = 1 << u64::BITS - trailing - 1;
-      let mut sum: i32 = 0;
-
-      // a valid structure must have enough children to pair up before constructing a branch
-      loop {
-        core::debug_assert!(!sum.is_negative());
-        if cursor == 0 {
-          core::debug_assert!(1 == sum);
-          break;
-        }
-
-        sum += if (cursor & word) == 0 { -1 } else { 1 };
-        cursor >>= 1;
-      }
-    }
+    core::debug_assert!{DyckWord::valid_non_empty(word)}
     DyckWord { word }
   }
   const fn zipper(self) -> DyckStructureZipperU64 {
@@ -90,6 +73,22 @@ impl DyckWord {
     stack[0].terminal = (u64::BITS).wrapping_sub(self.word.leading_zeros()) as u8;
 
     DyckStructureZipperU64 { structure: self.word, current_depth: 0, stack }
+  }
+  const fn valid_non_empty(word: u64)->bool {
+    let leading = word.leading_zeros();
+    if leading == 0 {return false;}
+    
+    let mut cursor = 1 << u64::BITS - leading - 1;
+    let mut sum: i32 = 0;
+    
+    // a valid structure must have enough children to pair up before constructing a branch
+    loop {
+      if sum.is_negative() { return false; }
+      if cursor == 0       { return sum == 1 }
+    
+      sum += if (cursor & word) == 0 { -1 } else { 1 };
+      cursor >>= 1;
+    }
   }
 }
 
@@ -175,43 +174,6 @@ impl DyckStructureZipperU64 {
       false
     }
   }
-
-  /// Switch from a left branch to the sibling right branch. Invariants are enfored in debug builds.
-  pub unsafe fn left_to_right_unchecked(&mut self) {
-    let Self { structure, current_depth, stack } = self;
-    core::debug_assert!(!core::matches!(*structure, 0 | 1));
-    core::debug_assert_ne!(*current_depth, 0);
-
-    let prev = unsafe { *stack.get_unchecked(*current_depth as usize - 1) };
-    let cur = unsafe { stack.get_unchecked_mut(*current_depth as usize) };
-
-    // is left
-    core::debug_assert_eq!(prev.terminal, cur.terminal);
-    // not right
-    core::debug_assert_ne!(prev.head, cur.head - 1);
-
-    *cur = SubtreeSlice { terminal: cur.head, head: prev.head + 1 };
-  }
-  /// Switch from a left branch to the sibling right branch.
-  pub fn left_to_right(&mut self) -> bool {
-    let Self { structure, current_depth, stack } = self;
-    if *structure <= 1 || 0 == *current_depth {
-      return false;
-    }
-
-    // Safety: The current depth is > 0
-    let prev = unsafe { stack.get_unchecked(*current_depth as usize - 1) };
-    let cur = unsafe { stack.get_unchecked(*current_depth as usize) };
-
-    // avoid double right
-    if prev.head == cur.head - 1 {
-      return false;
-    }
-
-    unsafe { self.left_to_right_unchecked() }
-
-    true
-  }
   /// check if the current branch is a left branch. The root is never a left branch.
   pub fn current_is_left_branch(&self) -> bool {
     let Self { current_depth, stack, .. } = self;
@@ -225,8 +187,9 @@ impl DyckStructureZipperU64 {
     prev.terminal == cur.terminal && prev.head != cur.head - 1
   }
 
-  /// Switch from a right branch to the sibling left branch. Invariants are enfored in debug builds.
-  pub unsafe fn right_to_left_unchecked(&mut self) {
+  unsafe fn side_to_side_unchecked<const LEFT_TO_RIGHT : bool>(&mut self) {
+    #![inline(always)]
+
     let Self { structure, current_depth, stack } = self;
     core::debug_assert!(!core::matches!(*structure, 0 | 1));
     core::debug_assert_ne!(*current_depth, 0);
@@ -234,15 +197,24 @@ impl DyckStructureZipperU64 {
     let prev = unsafe { *stack.get_unchecked(*current_depth as usize - 1) };
     let cur = unsafe { stack.get_unchecked_mut(*current_depth as usize) };
 
-    // not left
-    core::debug_assert_ne!(prev.terminal, cur.terminal);
-    // is right
-    core::debug_assert_eq!(prev.head, cur.head - 1);
-
-    *cur = SubtreeSlice { terminal: prev.terminal, head: cur.terminal };
+    *cur = if LEFT_TO_RIGHT {
+      // is left
+      core::debug_assert_eq!(prev.terminal, cur.terminal);
+      // not right
+      core::debug_assert_ne!(prev.head, cur.head - 1);
+      
+      SubtreeSlice { terminal: cur.head, head: prev.head + 1 }
+    } else {
+      // not left
+      core::debug_assert_ne!(prev.terminal, cur.terminal);
+      // is right
+      core::debug_assert_eq!(prev.head, cur.head - 1);
+  
+      SubtreeSlice { terminal: prev.terminal, head: cur.terminal }
+    }
   }
-  /// Switch from a right branch to the sibling left branch.
-  pub fn right_to_left(&mut self) -> bool {
+
+  fn side_to_side<const LEFT_TO_RIGHT : bool>(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
       return false;
@@ -252,14 +224,39 @@ impl DyckStructureZipperU64 {
     let prev = unsafe { stack.get_unchecked(*current_depth as usize - 1) };
     let cur = unsafe { stack.get_unchecked(*current_depth as usize) };
 
-    // avoid double left
-    if prev.terminal == cur.terminal {
-      return false;
+    if LEFT_TO_RIGHT {
+      // avoid double right
+      if prev.head == cur.head - 1 {
+        return false;
+      }
+    } else {
+      // avoid double left
+      if prev.terminal == cur.terminal {
+        return false;
+      }
     }
 
-    unsafe { self.right_to_left_unchecked() };
-
+    unsafe {self.side_to_side_unchecked::<LEFT_TO_RIGHT>()}
     true
+  }
+
+  /// Switch from a left branch to the sibling right branch. Invariants are enfored in debug builds.
+  pub unsafe fn left_to_right_unchecked(&mut self) {
+    self.side_to_side_unchecked::<true>();
+  }
+
+  /// Switch from a left branch to the sibling right branch.
+  pub fn left_to_right(&mut self) -> bool {
+    self.side_to_side::<true>()
+  }
+
+  /// Switch from a right branch to the sibling left branch. Invariants are enfored in debug builds.
+  pub unsafe fn right_to_left_unchecked(&mut self) {
+    self.side_to_side_unchecked::<false>();
+  }
+  /// Switch from a right branch to the sibling left branch.
+  pub fn right_to_left(&mut self) -> bool {
+    self.side_to_side::<false>()
   }
 
   /// Finds the index of the leaf that is at the bit offset `tree_offset`.
@@ -924,104 +921,106 @@ fn test_for_u512() {
 
 #[test]
 fn test_zipper_basics() {
+  #![cfg_attr(rustfmt, rustfmt::skip)]
+
   type DSZ = DyckStructureZipperU64;
 
   ///////
   // 0b_0
   ///////
-  std::println!("\n# 0b_0\nNone");
+  // std::println!("\n# 0b_0\nNone");
   core::assert!(core::matches!(DSZ::new(0b_0), Option::None));
 
   '_0b_1: {
-    std::println!("\n# 0b_1\n");
+    // std::println!("\n# 0b_1\n");
     let mut tree_0b_1 = DSZ::new(0b_1).unwrap();
     let count = tree_0b_1.structure.count_ones() as usize;
-    std::println!("{:#?}", tree_0b_1);
+    // std::println!("{:#?}", tree_0b_1);
     // no parent
-    core::assert!(!tree_0b_1.accend());
-    // no children
-    core::assert!(!tree_0b_1.decend_left());
-    core::assert!(!tree_0b_1.decend_right());
-    // no branching
-    core::assert!(!tree_0b_1.right_to_left());
-    core::assert!(!tree_0b_1.left_to_right());
+    core::assert!(   !tree_0b_1.accend());
+    // no children   
+    core::assert!(   !tree_0b_1.decend_left());
+    core::assert!(   !tree_0b_1.decend_right());
+    // no branching  
+    core::assert!(   !tree_0b_1.right_to_left());
+    core::assert!(   !tree_0b_1.left_to_right());
     // single element
-    core::assert_eq!(tree_0b_1.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_1.current_leaf_store_index_range(), 0..count);
+    core::assert_eq!( tree_0b_1.current_first_leaf_store_index(), 0);
+    core::assert_eq!( tree_0b_1.current_leaf_store_index_range(), 0..count);
   }
 
   '_0b_110: {
-    std::println!("\n# 0b_110\n");
+    // std::println!("\n# 0b_110\n");
     let mut tree_0b_110 = DSZ::new(0b_110).unwrap();
     let count = tree_0b_110.structure.count_ones() as usize;
-    std::println!("{:#?}", tree_0b_110);
+    // std::println!("{:#?}", tree_0b_110);
 
     // at root
-    core::assert!(!tree_0b_110.right_to_left());
-    core::assert!(!tree_0b_110.left_to_right());
-    core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..count);
-    core::assert!(!tree_0b_110.accend());
+    core::assert!(    !tree_0b_110.right_to_left());
+    core::assert!(    !tree_0b_110.left_to_right());
+    core::assert_eq!(  tree_0b_110.current_first_leaf_store_index(), 0);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 0..count);
+    core::assert!(    !tree_0b_110.accend());
 
     // cycle counterclockwise
-    core::assert!(tree_0b_110.decend_left());
-    core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..1);
-    core::assert!(tree_0b_110.left_to_right());
-    core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 1);
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 1..count);
-    core::assert!(tree_0b_110.accend());
+    core::assert!(     tree_0b_110.decend_left());
+    core::assert_eq!(  tree_0b_110.current_first_leaf_store_index(), 0);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 0..1);
+    core::assert!(     tree_0b_110.left_to_right());
+    core::assert_eq!(  tree_0b_110.current_first_leaf_store_index(), 1);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 1..count);
+    core::assert!(     tree_0b_110.accend());
 
     // back to root
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..count);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 0..count);
 
     // cycle clockwise
-    core::assert!(tree_0b_110.decend_right());
-    core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 1);
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 1..count);
-    core::assert!(tree_0b_110.right_to_left());
-    core::assert_eq!(tree_0b_110.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_110.current_leaf_store_index_range(), 0..1);
-    core::assert!(tree_0b_110.accend());
+    core::assert!(     tree_0b_110.decend_right());
+    core::assert_eq!(  tree_0b_110.current_first_leaf_store_index(), 1);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 1..count);
+    core::assert!(     tree_0b_110.right_to_left());
+    core::assert_eq!(  tree_0b_110.current_first_leaf_store_index(), 0);
+    core::assert_eq!(  tree_0b_110.current_leaf_store_index_range(), 0..1);
+    core::assert!(     tree_0b_110.accend());
   }
 
   '_0b_11010: {
     std::println!("\n# 0b_11010\n");
     let mut tree_0b_11010 = DSZ::new(0b_11010).unwrap();
     let count = tree_0b_11010.structure.count_ones() as usize;
-    std::println!("{:#?}", tree_0b_11010);
+    // std::println!("{:#?}", tree_0b_11010);
 
     // at root
-    core::assert!(!tree_0b_11010.right_to_left());
-    core::assert!(!tree_0b_11010.left_to_right());
-    core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 0..count);
-    core::assert!(!tree_0b_11010.accend());
+    core::assert!(    !tree_0b_11010.right_to_left());
+    core::assert!(    !tree_0b_11010.left_to_right());
+    core::assert_eq!(  tree_0b_11010.current_first_leaf_store_index(), 0);
+    core::assert_eq!(  tree_0b_11010.current_leaf_store_index_range(), 0..count);
+    core::assert!(    !tree_0b_11010.accend());
 
     // visit each, right to left
-    core::assert!(tree_0b_11010.decend_right());
-    std::println!("{:#?}", tree_0b_11010);
-    core::assert!(!tree_0b_11010.decend_left());
-    core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 2);
-    core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 2..count);
-    core::assert!(!tree_0b_11010.decend_right());
+    core::assert!(     tree_0b_11010.decend_right());
+    // std::println!("{:#?}", tree_0b_11010);
+    core::assert!(    !tree_0b_11010.decend_left());
+    core::assert_eq!(  tree_0b_11010.current_first_leaf_store_index(), 2);
+    core::assert_eq!(  tree_0b_11010.current_leaf_store_index_range(), 2..count);
+    core::assert!(    !tree_0b_11010.decend_right());
 
-    core::assert!(tree_0b_11010.right_to_left());
-    std::println!("{:#?}", tree_0b_11010);
+    core::assert!(     tree_0b_11010.right_to_left());
+    // std::println!("{:#?}", tree_0b_11010);
 
-    core::assert!(tree_0b_11010.decend_right());
-    std::println!("{:#?}", tree_0b_11010);
-    core::assert!(!tree_0b_11010.decend_left());
-    core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 1);
-    core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 1..2);
-    core::assert!(!tree_0b_11010.decend_right());
+    core::assert!(     tree_0b_11010.decend_right());
+    // std::println!("{:#?}", tree_0b_11010);
+    core::assert!(    !tree_0b_11010.decend_left());
+    core::assert_eq!(  tree_0b_11010.current_first_leaf_store_index(), 1);
+    core::assert_eq!(  tree_0b_11010.current_leaf_store_index_range(), 1..2);
+    core::assert!(    !tree_0b_11010.decend_right());
 
-    core::assert!(tree_0b_11010.right_to_left());
-    std::println!("{:#?}", tree_0b_11010);
-    core::assert!(!tree_0b_11010.decend_left());
+    core::assert!(     tree_0b_11010.right_to_left());
+    // std::println!("{:#?}", tree_0b_11010);
+    core::assert!(    !tree_0b_11010.decend_left());
 
-    core::assert_eq!(tree_0b_11010.current_first_leaf_store_index(), 0);
-    core::assert_eq!(tree_0b_11010.current_leaf_store_index_range(), 0..1);
+    core::assert_eq!(  tree_0b_11010.current_first_leaf_store_index(), 0);
+    core::assert_eq!(  tree_0b_11010.current_leaf_store_index_range(), 0..1);
   }
 }
 
@@ -1204,23 +1203,16 @@ impl DeBruijnLevel {
 pub struct Variables {
   /// de bruin levels, but the indexing for the first variable starts at 1 instead of 0, 0 represents the introduction of a variable
   store: Vec<(usize, Sym)>,
-  // absolute: Option<usize>,
 }
 impl Variables {
   fn new() -> Variables {
-    Variables { store: Vec::new(), 
-      // absolute: Option::None 
-    }
+    Variables { store: Vec::new() }
   }
   fn aquire_de_bruin(&mut self, pos: usize, sym: Sym) -> DeBruijnLevel {
     if let level @ DeBruijnLevel::Ref(_) = self.lookup(sym) {
       return level;
     }
     self.store.push((pos, sym));
-    // if let Option::Some(v) = self.absolute {
-    //   //Safety: We just pushed to the vec, so len > 0
-    //   return DeBruijnLevel::Ref(unsafe { core::num::NonZeroIsize::new_unchecked(!((self.store.len() + v) as isize - 1)) });
-    // }
     DeBruijnLevel::Intro
   }
 
@@ -1230,7 +1222,6 @@ impl Variables {
 
   /// returns DebruijnLevel::Intro if the value is not yet in the table
   fn lookup(&self, sym: Sym) -> DeBruijnLevel {
-    // let offset = self.absolute.unwrap_or(0);
     let offset = 0;
     let mut idx = self.store.len();
     while idx != 0 {
@@ -1242,13 +1233,6 @@ impl Variables {
     }
     DeBruijnLevel::Intro
   }
-
-  // fn to_relative(&mut self) {
-  //   self.absolute = Option::None
-  // }
-  // fn to_absolute(&mut self, offset: usize) {
-  //   self.absolute = Option::Some(offset)
-  // }
 }
 
 // if string interning is slow, it could be split into buckets, and use a ReadWrite lock, perhaps even Semaphores. but for testing this should be enough
@@ -1277,98 +1261,23 @@ impl core::cmp::PartialEq for Sym {
   }
 }
 
-/// An empty enum to make recursive cases not constructable
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Void {}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SExpr<A = Void> {
+pub enum SExpr {
   Var(DeBruijnLevel),
   Atom(Sym),
-  App(App<A>),
 }
 
-// enum TestExpr {}
-// #[cfg_attr(rustfmt, rustfmt::skip)]
-// impl MatchElement for TestExpr {
-//   type Element = Sexpr;
-//   type Atom    = Sym;
-//   type Var     = (DebruijnLevel, Sym);
-//   type VarTable = Variables;
-
-//   fn element_type(e: &Self::Element) -> ElementType<Self::Atom, Self::Var> {
-//     match e {
-//       SExpr::<Void>::Atom(a) => ElementType::Atom(a),
-//       SExpr::<Void>::Var(v) => ElementType::Var(v),
-//       SExpr::<Void>::App(_)=> core::unreachable!(),
-//     }
-//   }
-
-//   fn atom_eq(left: &Self::Atom, right: &Self::Atom) -> bool { left == right }
-
-//   fn var_de_bruin_level(table: &Variables,var: &Self::Var) -> DebruijnLevel {
-//     let DebruijnLevel::Ref(_) =  var.0 else {return table.lookup(var.1) };
-//     var.0.clone()
-//   }
-// }
-
-struct DbgSexpr<'a, A>(&'a SExpr<A>);
-impl<'a, A: Debug> core::fmt::Debug for DbgSexpr<'a, A> {
+struct DbgSexpr(SExpr);
+impl core::fmt::Debug for DbgSexpr {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     #[cfg_attr(rustfmt, rustfmt::skip)]
       match &self.0 {
         SExpr::Var(DeBruijnLevel::Intro)  => core::write!(f,"$"),
         SExpr::Var(DeBruijnLevel::Ref(i)) => core::write!(f,"$[{i}]"),
-        SExpr::Atom(Sym(sym))            => core::write!(f,"{sym}"),
-        SExpr::App(App(l,r))             => core::write!(f,"({l:?} {r:?})"),
+        SExpr::Atom(Sym(sym))             => core::write!(f,"{sym}"),
       }
   }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct App<A>(A, A);
-
-trait Functor {
-  type F<T>;
-  fn fmap<A, B>(f: Self::F<A>, func: impl FnMut(A) -> B) -> Self::F<B>;
-}
-trait Indirect {
-  type I<T>;
-
-  fn fold<A>(i: Self::I<A>) -> A;
-  fn unfold<A>(v: A) -> Self::I<A>;
-}
-struct FixPoint<Rec: Functor, Ind: Indirect>(Rec::F<Ind::I<Self>>);
-
-enum SExpresion {}
-enum Boxed {}
-impl Functor for SExpresion {
-  type F<T> = SExpr<T>;
-  fn fmap<A, B>(f: Self::F<A>, mut func: impl FnMut(A) -> B) -> Self::F<B> {
-    match f {
-      SExpr::Var(idx) => SExpr::Var(idx),
-      SExpr::Atom(atom) => SExpr::Atom(atom),
-      SExpr::App(App(l, r)) => {
-        let l = func(l);
-        let r = func(r);
-        SExpr::App(App(l, r))
-      }
-    }
-  }
-}
-
-impl Indirect for Boxed {
-  type I<T> = Box<T>;
-
-  fn fold<A>(i: Self::I<A>) -> A {
-    *i
-  }
-  fn unfold<A>(v: A) -> Self::I<A> {
-    Box::new(v)
-  }
-}
-
-type SExprFix = FixPoint<SExpresion, Boxed>;
 
 #[derive(Debug)]
 pub enum ParseErr {
@@ -1400,7 +1309,7 @@ pub enum TokenType {
   Atom(Sym),
 }
 
-/// The Dyck Parser can either make applicative or list Sexprs into Zippers. The difference is very slight, so the implementation of each looks similar, but they are marked with !!! to show th differences
+/// The Dyck Parser can either make applicative or list Sexprs into Zippers.
 pub struct DyckParser<'a> {
   tokenizer: Tokenizer<'a>,
   /** Tokenizer has the src too, but this keeps lifetimes simpler */
@@ -1530,6 +1439,20 @@ impl<'a> DyckParser<'a> {
   /// the applicative representation
   #[cfg_attr(rustfmt, rustfmt::skip)]
   pub fn parse_first_sexrs_to_dyck_app_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
+    self.parse_first_sexrs_to_dyck_select::<true>()
+  }
+
+  /// the list representation
+  #[cfg_attr(rustfmt, rustfmt::skip)]
+  pub fn parse_first_sexrs_to_dyck_list_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
+    self.parse_first_sexrs_to_dyck_select::<false>()
+  }
+
+  fn parse_first_sexrs_to_dyck_select<const APP_REPR : bool>(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
+    #![cfg_attr(rustfmt, rustfmt::skip)]
+    #[allow(non_snake_case)]
+    let LIST_REPR : bool = !APP_REPR;
+
     let err = |e| Option::Some(Result::Err(e));
 
     let mut state = match DyckParserIterState::init(self) {
@@ -1547,62 +1470,26 @@ impl<'a> DyckParser<'a> {
                                          0 => state.make_empty(),
                                          1 => {
                                            state.make_singleton();
-                                           // !!!
-                                           state.dyck_word<<=1;
+
+                                           if APP_REPR { state.dyck_word<<=1; }
                                          }
                                          _ => {}
                                        }
+
+                                       if LIST_REPR {
+                                         for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
+                                       }
+
                                        if !state.pop() { break 'build_sexpr; }
-                                       // !!!
-                                       if state.list_length > 1 { state.dyck_word<<=1 }
+                                       
+                                       if APP_REPR && state.list_length > 1 { state.dyck_word<<=1 }
                                      },
             TokenType::Var(sym)  => { if let Result::Err(e) = state.make_var(sym)  { return err(e) }
-                                      // !!!
-                                      if state.list_length > 1 { state.dyck_word<<=1 }
+                                      if APP_REPR && state.list_length > 1 { state.dyck_word<<=1 }
                                     }
             TokenType::Atom(sym) => { if let Result::Err(e) = state.make_atom(sym) { return err(e) }
-                                      // !!!
-                                      if state.list_length > 1 { state.dyck_word<<=1 }
+                                      if APP_REPR && state.list_length > 1 { state.dyck_word<<=1 }
                                     },
-          },
-      }
-    }
-    let zipper = DyckStructureZipperU64::new(state.dyck_word).unwrap();
-    let s_expr_vec = state.s_expr_vec;
-    let variables = state.variables;
-    if let Option::Some(v) =  &mut self.threaded_variables { *v = variables.clone() };
-
-    Option::Some(Result::Ok((zipper, s_expr_vec, variables)))
-  }
-
-  /// the list representation
-  #[cfg_attr(rustfmt, rustfmt::skip)]
-  pub fn parse_first_sexrs_to_dyck_list_repr(&mut self) -> Option<Result<(DyckStructureZipperU64, Vec<SExpr>, Variables), ParseErr>> {
-    let err = |e| Option::Some(Result::Err(e));
-
-    let mut state = match DyckParserIterState::init(self) {
-        Result::Ok(s) => s?,
-        Result::Err(e) => return err(e),
-    };
-
-    'build_sexpr : while let Option::Some(result) = state.next_token() {
-      match result {
-        Result::Err(e)                  => return err(e),
-        Result::Ok(Token { r#type,.. }) =>
-          match r#type {
-            TokenType::LPar      => if let Result::Err(e) = state.push() { return err(e); },
-            TokenType::RPar      => { match state.list_length {
-                                        0 => state.make_empty(),
-                                        1 => state.make_singleton(),
-                                        _ => {}
-                                      }
-                                      // !!!
-                                      for _ in 0..state.list_length-1 { state.dyck_word<<=1 }
-
-                                      if !state.pop() { break 'build_sexpr; }
-                                    },
-            TokenType::Var(sym)  => if let Result::Err(e) = state.make_var(sym)  { return err(e) },
-            TokenType::Atom(sym) => if let Result::Err(e) = state.make_atom(sym) { return err(e) },
           },
       }
     }
@@ -1762,12 +1649,13 @@ fn test_dyck_parser() {
   for _ in 0..1000 {
     for _each in DyckParser::new(&s) {
       count += 1;
-      // continue;
+      // comment `continue` for printing 
+      continue; 
       #[allow(unreachable_code)]
       match _each {
         Result::Ok((zip, store, vars)) => {
           std::print!("\n{zip:?}store: [  ");
-          for leaf in store.iter().map(DbgSexpr) {
+          for leaf in store.iter().copied().map(DbgSexpr) {
             std::print!("{leaf:?}  ")
           }
           std::print!("]\nvars  : [");
@@ -1964,25 +1852,27 @@ fn test_examples() {
     // ```
 
     
-    let intro_var = (DyckWord::new_debug_checked(1), &[SExpr::Var::<Void>(DeBruijnLevel::Intro)][..]);
+    let intro_var = (DyckWord::new_debug_checked(1), &[SExpr::Var(DeBruijnLevel::Intro)][..]);
     let get_word = |expr: &DyckExprSubOutput| match expr {
       DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, .. }) => *word,
       DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word, .. }) => core::panic!(),
     };
     let get_data: fn(&_) -> &_ = |expr: &DyckExprSubOutput| match expr {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { data, .. }) | DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data, .. }) => data,
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { data, len, .. }) => &data[0..*len],
+      | DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data, .. }) => data,
     };
     let get_data_mut: fn(&mut _) -> &mut _ = |expr: &mut DyckExprSubOutput| match expr {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { data, .. }) | DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data, .. }) => data,
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { data, len,.. }) => &mut data[0..*len],
+      | DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data, .. }) => data,
     };
-    let sub_re_index_input: fn(&(DyckStructureZipperU64, Vec<SExpr>, Variables)) -> (_, &_) = |x| (x.0.current_substructure(), &x.1[..]);
+    let sub_re_index_input: fn(&(DyckStructureZipperU64, Vec<SExpr>, Variables), usize) -> (_, &_, _) = |x, offset| (x.0.current_substructure(), &x.1[..], offset);
     
     const LEAF: DyckWord = DyckWord { word: 1 };
     
     macro_rules! templates {($($ID:ident $SRC:literal)+) => {$(
       let _tmp = parse($SRC);
       #[allow(non_snake_case)]
-      let $ID  = sub_re_index_input(&_tmp);
+      let $ID  = sub_re_index_input(&_tmp,0);
     )+};}
 
     templates! {
@@ -2008,14 +1898,15 @@ fn test_examples() {
     let mut tmp_ = i3_r2.0.zipper(); tmp_.decend_right(); let d3_r2 = (tmp_.current_substructure() ,&i3_r2.1[3..]);
     let mut tmp_ = i3_r3.0.zipper(); tmp_.decend_right(); let d3_r3 = (tmp_.current_substructure() ,&i3_r3.1[3..]);
 
-    let s1 = subst_re_index(r1, 0, &[intro_var]);
+    let s1 = subst_re_index((r1.0,r1.1, 0), &[intro_var]);
     core::assert_eq! {r1.0, get_word(&s1) }
     core::assert_eq! {r1.1,&get_data(&s1)[..]}
 
     macro_rules! substitutions {($($OFFSET:literal [$PAT:ident / [$($SUB:expr),*]] => $EXPECTED:literal | $INTROS:tt;)+) => {$(
-      let s = subst_re_index($PAT, $OFFSET, &[$($SUB),*]);
+      let s = subst_re_index(($PAT.0,$PAT.1, $OFFSET), &[$(($SUB.0,$SUB.1)),*]);
       let expected_ = parse($EXPECTED);
-      let mut expected  = subst_re_index(sub_re_index_input(&expected_),0, &$INTROS);
+      let tmp = sub_re_index_input(&expected_,0);
+      let mut expected  = subst_re_index(tmp, &$INTROS);
       if $OFFSET > 0{
       for each in get_data_mut(&mut expected).iter_mut() {
         if let SExpr::Var(DeBruijnLevel::Ref(r)) = each {
@@ -2072,13 +1963,13 @@ fn test_examples() {
   fn pretty_print(d: &DyckExprSubOutput) {
     std::println!("DyckExperSubOutput(");
     let data = match d {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, data }) => {
+      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, len, data }) => {
         std::println!("\tword : {:?}\n\t// {:?}", word, Bits(word.word).dyck_word_app_sexpr_viewer());
-        data
+        &data[0..*len]
       }
       DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word, data }) => {
         std::println!("\tword : {word:#?}");
-        data
+        &data[..]
       }
     };
     std::println!("\tdata : [");
@@ -2088,7 +1979,6 @@ fn test_examples() {
         SExpr::Var(DeBruijnLevel::Intro) => ("Var ", "$".to_string()),
         SExpr::Var(DeBruijnLevel::Ref(r)) => ("Var ", alloc::format!("$[{}]", r.get())),
         SExpr::Atom(a) => ("Atom", a.0.to_string()),
-        _ => core::unreachable!(),
       };
       std::println!("\t\t{tag} {val}")
     }
@@ -2186,10 +2076,14 @@ fn test_examples() {
       })
     }
   }
+  /// This has a fixed capacity of DyckStructureZipperU64::MAX_LEAVES
+  ///
+  /// any thing after the `len` should be considered junk, this is safe so long as SExpr::<Void> is Copy
   #[derive(Debug)]
   struct SmallDyckExpr {
     word: DyckWord,
-    data: Vec<SExpr>,
+    len : usize,
+    data : [SExpr; DyckStructureZipperU64::MAX_LEAVES],
   }
   #[derive(Debug)]
   struct LargeDyckExpr {
@@ -2202,73 +2096,26 @@ fn test_examples() {
     LargeDyckExpr(LargeDyckExpr),
   }
 
-  fn build_dyck_expr_from_subst(
-    input_len: usize,
-    output_len: usize,
-    output_data: &[SExpr; DyckStructureZipperU64::MAX_LEAVES * DyckStructureZipperU64::MAX_LEAVES],
-    trailing_pairs: &[u8; DyckStructureZipperU64::MAX_LEAVES + 1],
-    dyck_words: &[u64; DyckStructureZipperU64::MAX_LEAVES],
-  ) -> DyckExprSubOutput {
-    let mut output_word_len = 0;
-    let [mut cur, mut next] = [0_u64; 2];
-    let mut finished = Vec::new();
-    let mut last_div = 0;
 
-    for each in (0..input_len).rev() {
-      output_word_len += trailing_pairs[each] as usize;
-      let (cur_div, cur_mod) = (output_word_len / 64, output_word_len % 64);
-
-      // check if we need to advance the "cursor"
-      if last_div < cur_div {
-        if finished.len() == 0 {
-          finished = Vec::with_capacity(DyckStructureZipperU64::MAX_LEAVES);
-        }
-        finished.push(cur);
-        (cur, next) = (next, 0);
-      }
-
-      let cur_word = dyck_words[each];
-
-      [cur, next] = [cur | cur_word << cur_mod, if cur_mod == 0 { 0 } else { next | cur_word >> u64::BITS - cur_mod as u32 }];
-      output_word_len += (u64::BITS - cur_word.leading_zeros()) as usize;
-      last_div = cur_div;
-    }
-
-    let data = Vec::from(&output_data[0..output_len]);
-
-    if next == 0 && finished.len() == 0 {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: DyckWord::new_debug_checked(cur), data })
-    } else {
-      finished.push(cur);
-      if next != 0 || cur.leading_zeros() == 0 {
-        finished.push(next);
-      }
-      finished.reverse();
-
-      DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: unsafe { core::mem::transmute(finished) }, data })
-    }
-  }
-
-
-
-
-
-
-  fn subst_re_index((pat_structure, pat_data): (DyckWord, &[SExpr]), offset : usize, subs: &[(DyckWord, &[SExpr])]) -> DyckExprSubOutput {
-    subst_select_re_index::<true>((pat_structure, pat_data), offset, subs)
+  fn subst_re_index(pat: (DyckWord, &[SExpr], usize), subs: &[(DyckWord, &[SExpr])]) -> DyckExprSubOutput {
+    subst_select_re_index::<true,false>(pat, (subs, 0))
   }
 
   // this can be optimized by inlining the large version and specializing, but given that it would incur more checks, it might not be worth it. on the happy path, the performance is the same
-  fn subst_re_index_small((pat_structure, pat_data): (DyckWord, &[SExpr]), offset : usize, subs: &[(DyckWord, &[SExpr])]) -> Result<(DyckWord, Vec<SExpr>), ()> {
-    match subst_re_index((pat_structure, pat_data), offset, subs) {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: b, data }) => Result::Ok((b, data)),
+  fn subst_re_index_small(pat: (DyckWord, &[SExpr], usize), subs: &[(DyckWord, &[SExpr])]) -> Result<SmallDyckExpr, ()> {
+    match subst_re_index(pat, subs) {
+      DyckExprSubOutput::SmallDyckExpr(s) => Result::Ok(s),
       DyckExprSubOutput::LargeDyckExpr(_) => Result::Err(()),
     }
   }
 
+  fn subst_select_re_index<const WITH_RE_INDEX:bool, const SUBS_OFFSET : bool>(
+    (pat_structure, pat_data, pat_offset): (DyckWord, &[SExpr], usize), 
+    // the assumption is that all subs come from a match so the offsets would all be the same
+    (subs, mut subs_offset): (&[(DyckWord, &[SExpr])], usize)
+  ) -> DyckExprSubOutput {
+    #![cfg_attr(rustfmt, rustfmt::skip)]
 
-
-  fn subst_select_re_index<const WITH_RE_INDEX:bool>((pat_structure, pat_data): (DyckWord, &[SExpr]), offset : usize, subs: &[(DyckWord, &[SExpr])]) -> DyckExprSubOutput {
     const MAX_LEAVES: usize = DyckStructureZipperU64::MAX_LEAVES;
     core::debug_assert!(pat_data.len() < MAX_LEAVES);
     core::debug_assert!(subs.len() < MAX_LEAVES);
@@ -2277,96 +2124,53 @@ fn test_examples() {
       core::debug_assert!(each.1.len() != 0);
     }
 
-    const INDEX: [u8; MAX_LEAVES + 1] = [0; MAX_LEAVES + 1];
+    if SUBS_OFFSET {
+      core::debug_assert_eq!(subs_offset,0);
+      subs_offset = 0
+    }
 
-    let mut pat_intro_index = INDEX;
+    type Index = [u8; MAX_LEAVES + 1];
+    const INDEX_LEN : usize = MAX_LEAVES + 1;
+    const INDEX: Index = [0; INDEX_LEN];
+
+    let mut pat_intro_index  = INDEX;
     let mut pat_intro_lookup = INDEX;
+    let mut pat_intros       = 0;
 
-    let mut pat_intros = 0;
     let mut dyck_words = [0_u64; MAX_LEAVES];
     // stores the the number of consecutive 0 bits
     let mut trailing_pairs = INDEX;
 
-    let mut output_data = [SExpr::<Void>::Atom(Sym::EMPTY); MAX_LEAVES * MAX_LEAVES];
-    let mut output_len = 0;
-    
+    let mut output_data = [SExpr::Atom(Sym::EMPTY); MAX_LEAVES * MAX_LEAVES];
+    let mut output_len  = 0;
+
     let mut out_depth = INDEX;
-    if WITH_RE_INDEX{ out_depth[0] = offset as u8;}
-    
+    if WITH_RE_INDEX{ out_depth[0] = pat_offset as u8;}
+
 
     let mut pat_structure_word = pat_structure.word;
     // add terminal 1 bit before shifting fully , avoids counting too many pairs
     pat_structure_word = ((pat_structure_word << 1) | 1) << pat_structure_word.leading_zeros() - 1;
 
     for each in 0..pat_data.len() {
+
+      let pat = PatternData { 
+        pat_offset, 
+        pat_intro_index  : &mut pat_intro_index, 
+        pat_intros       : &mut pat_intros, 
+        pat_intro_lookup : &mut pat_intro_lookup 
+      };
+      let sub = SubsData { subs, subs_offset };
+      let out = OutData { 
+        dyck_words  : &mut dyck_words, 
+        out_depth   : &mut out_depth, 
+        output_len  : &mut output_len, 
+        output_data : &mut output_data,
+      };
+
       match pat_data[each] {
-        SExpr::Var(DeBruijnLevel::Intro) => {
-          let (sub_struct, sub_data) = subs[(pat_intros) as usize];
-          let depth_offset = if WITH_RE_INDEX { out_depth[each]} else {0};
-
-          for &sub_val in sub_data {
-            output_data[output_len] = if WITH_RE_INDEX { 
-              match sub_val {
-                SExpr::Var(DeBruijnLevel::Ref(r)) if r.is_negative() => unsafe {
-                  // Safety : the negative value will only become more negative
-                  SExpr::Var(DeBruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
-                },
-                val @ SExpr::Var(DeBruijnLevel::Intro) => {
-                  out_depth[each + 1] += 1;
-                  val
-                }
-                val => val,
-              }
-            } else {
-              sub_val
-            };
-            output_len += 1;
-          }
-          dyck_words[each] = sub_struct.word;
-
-          if WITH_RE_INDEX {
-            pat_intro_index[each] = pat_intros;
-            pat_intro_lookup[pat_intros as usize] = each as u8;
-          }
-          pat_intros += 1;
-        }
-
-        SExpr::Var(DeBruijnLevel::Ref(r)) if r.is_negative() && (!r.get()) as usize >= offset => {
-          let (subs_idx, depth_offset) = if WITH_RE_INDEX {
-            let idx = pat_intro_lookup[(!r.get()) as usize - offset] as usize;
-            (pat_intro_index[idx] as usize ,out_depth[idx])
-          } else {
-            ((!r.get()) as usize - offset, 0 /* ignore */)
-          };           
-
-          let (sub_struct, sub_data) = subs[subs_idx];
-
-          // refs need to know how many intros they passed
-          let mut intros_count = 0;
-
-          for &sub_val in sub_data {
-            output_data[output_len] = if WITH_RE_INDEX {
-              match sub_val {
-                SExpr::Var(DeBruijnLevel::Ref(r)) if r.is_negative() => unsafe {
-                  // Safety : the negative value will only become more negative
-                  SExpr::Var(DeBruijnLevel::Ref(NonZeroIsize::new_unchecked(r.get() - depth_offset as isize)))
-                },
-                SExpr::Var(DeBruijnLevel::Intro) => {
-                  let val = !(intros_count + depth_offset as isize);
-                  intros_count += 1;
-                  // Safety : `!positive` is always non-zero
-                  SExpr::Var(DeBruijnLevel::Ref(unsafe { NonZeroIsize::new_unchecked(val as isize) }))
-                }
-                val => val,
-              }
-            } else {
-              sub_val
-            }
-            ;
-            output_len += 1;
-          }
-          dyck_words[each] = sub_struct.word;
-        }
+        SExpr::Var(DeBruijnLevel::Intro)                                                          => for_all_subs::<WITH_RE_INDEX, SUBS_OFFSET, false>(pat, sub, out, NonZeroIsize::MAX /* unused */, each),
+        SExpr::Var(DeBruijnLevel::Ref(r)) if r.is_negative() && (!r.get()) as usize >= pat_offset => for_all_subs::<WITH_RE_INDEX, SUBS_OFFSET, true >(pat, sub, out, r                             , each),
         val => {
           output_data[output_len] = val;
           dyck_words[each] = 1;
@@ -2382,13 +2186,159 @@ fn test_examples() {
       // shift off consecutive pairs
       pat_structure_word <<= pairs;
     }
-    // the output Vec is now ready for allocating
 
-    build_dyck_expr_from_subst(pat_data.len(), output_len, &output_data, &trailing_pairs, &dyck_words)
+    return build_dyck_expr_from_subst(pat_data.len(), output_len, &output_data, &trailing_pairs, &dyck_words);
+
+
+    // Where ...
+
+    struct PatternData<'a> {
+      pat_offset       : usize, 
+      pat_intro_index  : &'a mut Index, 
+      pat_intros       : &'a mut u8,
+      pat_intro_lookup : &'a mut Index,
+    }
+    struct SubsData<'a> {
+      subs        : &'a [(DyckWord, &'a[SExpr])], 
+      subs_offset : usize
+    }
+    struct OutData<'a> {
+      dyck_words : &'a mut [u64; MAX_LEAVES], 
+      out_depth  : &'a mut Index, 
+      output_len : &'a mut usize, 
+      output_data: &'a mut [SExpr; 1024]
+    }
+
+    fn for_all_subs<const WITH_RE_INDEX :bool, const SUBS_OFFSET : bool, const REF_BRANCH : bool>(
+      PatternData { pat_offset, pat_intro_index, pat_intros, pat_intro_lookup } : PatternData,
+      SubsData { subs, subs_offset } : SubsData,
+      OutData { dyck_words, out_depth, output_len, output_data } :OutData,
+      
+      // Ignored if !REF_BRANCH
+      ref_value : NonZeroIsize,
+      // pattern position/loop iteration
+      each : usize
+    ) {
+      #![inline(always)]
+
+      let (subs_idx, depth_offset) = 
+      match [REF_BRANCH, WITH_RE_INDEX] {
+        // REF
+        [true, true] => {
+          let idx = pat_intro_lookup[(!ref_value.get()) as usize - pat_offset] as usize;
+          (pat_intro_index[idx] as usize ,out_depth[idx])
+        }
+        [true, false] => ((!ref_value.get()) as usize - pat_offset, 0 /* ignored value */),
+        
+        // INTRO
+        [false, true] => (*pat_intros as usize ,out_depth[each]),
+        [false,false] => (*pat_intros as usize, 0 /* used value */)
+      };
+
+      let (sub_struct, sub_data) = subs[subs_idx];
+      
+      // refs need to know how many intros they passed
+      let mut intros_count = 0;
+      
+      for &sub_val in sub_data {
+        output_data[*output_len] = if WITH_RE_INDEX {
+          match sub_val {
+            SExpr::Var(DeBruijnLevel::Ref(r)) if r.is_negative() => {
+            let mut r_calc = r.get();
+            r_calc += if SUBS_OFFSET {subs_offset as isize} else {0};
+            core::debug_assert!{ !SUBS_OFFSET || r_calc <= 0 } // consider having this function return an Error
+      
+            // Safety : the negative value will only become more negative
+            SExpr::Var(DeBruijnLevel::Ref(unsafe {NonZeroIsize::new_unchecked(r_calc - depth_offset as isize)}))
+          },
+            SExpr::Var(DeBruijnLevel::Intro) => {
+              if REF_BRANCH {
+                let val = !(intros_count + depth_offset as isize);
+                intros_count += 1;
+                // Safety : `!positive` is always non-zero
+                SExpr::Var(DeBruijnLevel::Ref(unsafe { NonZeroIsize::new_unchecked(val as isize) }))
+              } else {
+                out_depth[each + 1] += 1;
+                sub_val
+              }
+            }
+            _ => sub_val,
+          }
+        } else {
+          // !WITH_RE_INDEX
+          sub_val
+        };
+        *output_len += 1;
+      }
+      dyck_words[each] = sub_struct.word;
+      
+      if !REF_BRANCH {
+        if WITH_RE_INDEX {
+          pat_intro_index[each] = *pat_intros;
+          pat_intro_lookup[*pat_intros as usize] = each as u8;
+        }
+        *pat_intros += 1;
+      }
+    }
+
+    fn build_dyck_expr_from_subst(
+      input_len: usize,
+      output_len: usize,
+      output_data: &[SExpr; MAX_LEAVES * MAX_LEAVES],
+      trailing_pairs: &[u8; INDEX_LEN],
+      dyck_words: &[u64; MAX_LEAVES],
+    ) -> DyckExprSubOutput {
+      #![inline(always)]
+    
+      let mut output_word_len = 0;
+      let [mut cur, mut next] = [0_u64; 2];
+      let mut finished = Vec::new();
+      let mut last_div = 0;
+    
+      for each in (0..input_len).rev() {
+        output_word_len += trailing_pairs[each] as usize;
+        let (cur_div, cur_mod) = (output_word_len / 64, output_word_len % 64);
+      
+        // check if we need to advance the "cursor"
+        if last_div < cur_div {
+          core::debug_assert!(output_len > DyckStructureZipperU64::MAX_LEAVES);
+          if finished.len() == 0 {
+            finished = Vec::with_capacity(DyckStructureZipperU64::MAX_LEAVES);
+          }
+          finished.push(cur);
+          (cur, next) = (next, 0);
+        }
+      
+        let cur_word = dyck_words[each];
+      
+        [cur, next] = [cur | cur_word << cur_mod, if cur_mod == 0 { 0 } else { next | cur_word >> u64::BITS - cur_mod as u32 }];
+        output_word_len += (u64::BITS - cur_word.leading_zeros()) as usize;
+        last_div = cur_div;
+      }
+    
+      let data = Vec::from(&output_data[0..output_len]);
+    
+      if next == 0 && finished.len() == 0 {
+        let mut data = [SExpr::Var(DeBruijnLevel::Intro); 32];
+        for each in 0..output_len {
+          data[each] = output_data[each];
+        }
+      
+        DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: DyckWord::new_debug_checked(cur), data , len : output_len})
+      } else {
+        let data = Vec::from(&output_data[0..output_len]);
+      
+        finished.push(cur);
+        if next != 0 || cur.leading_zeros() == 0 {
+          finished.push(next);
+        }
+        finished.reverse();
+      
+        DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { word: unsafe { core::mem::transmute(finished) }, data })
+      }
+    }
+    // end of subst_select_re_index
   }
-
-
-
 
 
 
@@ -2428,7 +2378,7 @@ fn test_examples() {
     let a_ = (DyckWord::new_debug_checked(1), &[atom(a)][..]);
     let b_ = (DyckWord::new_debug_checked(1), &[atom(b)][..]);
     let c_ = (DyckWord::new_debug_checked(1), &[atom(c)][..]);
-    let intro = SExpr::<Void>::Var(DeBruijnLevel::Intro);
+    let intro = SExpr::Var(DeBruijnLevel::Intro);
     let intro_ = (DyckWord::new_debug_checked(1), &[intro][..]);
     let ab_ = (DyckWord::new_debug_checked(0b_110), &[atom(a), atom(b)][..]);
     let ac_ = (DyckWord::new_debug_checked(0b_110), &[atom(a), atom(c)][..]);
@@ -2475,6 +2425,7 @@ fn test_examples() {
 
   /// this will return the substitutions when they match, but the offsets are still "baked" into the result.
   fn expr_matches_select<'a, const WITH_OFFSET : bool>((lhs_structure, lhs_data, mut lhs_offset): (DyckWord, &'a [SExpr], usize), (rhs_structure, rhs_data, mut rhs_offset): (DyckWord, &'a [SExpr], usize)) -> Option<(Vec<(DyckWord, &'a [SExpr])>, Vec<(DyckWord, &'a [SExpr])>)> {
+    #![cfg_attr(rustfmt, rustfmt::skip)]
     const MAX_LEAVES: usize = DyckStructureZipperU64::MAX_LEAVES;
 
     if !WITH_OFFSET {
@@ -2504,7 +2455,6 @@ fn test_examples() {
         (l_struct.current_is_leaf(), lhs_data[l_struct.current_first_leaf_store_index()]),
         (r_struct.current_is_leaf(), rhs_data[r_struct.current_first_leaf_store_index()]),
       ] {
-        [(_, App(_)), _] | [_, (_, App(_))] => core::unreachable!(),
         // /////////
         // Intros //
         // /////////
@@ -2741,15 +2691,15 @@ fn test_examples() {
     // ```
 
     type DSZU64 = DyckStructureZipperU64;
-    let s1 = subst_rel_small((e1.0.current_substructure(), &e1.1), 0, &[(DyckWord::new_debug_checked(1), &[atom(b)][..])][..]);
-    let s2 = subst_rel_small((e2.0.current_substructure(), &e2.1), 0, &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],);
-    let s3 = subst_rel_small((e3.0.current_substructure(), &e3.1), 0, &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],);
+    let s1 = subst_rel_small((e1.0.current_substructure(), &e1.1, 0), &[(DyckWord::new_debug_checked(1), &[atom(b)][..])                                                  ][..],).unwrap();
+    let s2 = subst_rel_small((e2.0.current_substructure(), &e2.1, 0), &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],).unwrap();
+    let s3 = subst_rel_small((e3.0.current_substructure(), &e3.1, 0), &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],).unwrap();
     let expected1 = parse("(f b a)");
     let expected2 = parse("(f a b b a)");
     let expected3 = parse("(f a (g a b))");
-    core::assert_eq! {s1.unwrap(), (expected1.0.current_substructure(), expected1.1)}
-    core::assert_eq! {s2.unwrap(), (expected2.0.current_substructure(), expected2.1)}
-    core::assert_eq! {s3.unwrap(), (expected3.0.current_substructure(), expected3.1)}
+    core::assert_eq! {(s1.word, &s1.data[0..s1.len]), (expected1.0.current_substructure(), &expected1.1[..])}
+    core::assert_eq! {(s2.word, &s2.data[0..s2.len]), (expected2.0.current_substructure(), &expected2.1[..])}
+    core::assert_eq! {(s3.word, &s3.data[0..s3.len]), (expected3.0.current_substructure(), &expected3.1[..])}
 
 
     // with offset
@@ -2766,27 +2716,27 @@ fn test_examples() {
       d3_fxgy "($a $b $c   (f $x g $y))" 3;
     }
 
-    let s4 = subst_rel_small(d3_fx,   3, &[(DyckWord::new_debug_checked(1), &[atom(a)][..])][..]);
-    let s5 = subst_rel_small(d3_fxgx, 3, &[(DyckWord::new_debug_checked(1), &[atom(a)][..])][..],);
-    let s6 = subst_rel_small(d3_fxgy, 3, &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],);
+    let s4 = subst_rel_small((d3_fx.0  , d3_fx.1  , 3), &[(DyckWord::new_debug_checked(1), &[atom(a)][..])                                                  ][..],).unwrap();
+    let s5 = subst_rel_small((d3_fxgx.0, d3_fxgx.1, 3), &[(DyckWord::new_debug_checked(1), &[atom(a)][..])                                                  ][..],).unwrap();
+    let s6 = subst_rel_small((d3_fxgy.0, d3_fxgy.1, 3), &[(DyckWord::new_debug_checked(1), &[atom(a)][..]), (DyckWord::new_debug_checked(1), &[atom(b)][..])][..],).unwrap();
     
     let expected4 = parse("(f a)");
     let expected5 = parse("(f a g a)");
     let expected6 = parse("(f a g b)");
 
-    core::assert_eq! {s4.unwrap(), (expected4.0.current_substructure(), expected4.1)}
-    core::assert_eq! {s5.unwrap(), (expected5.0.current_substructure(), expected5.1)}
-    core::assert_eq! {s6.unwrap(), (expected6.0.current_substructure(), expected6.1)}
+    core::assert_eq! { (s4.word, &s4.data[0..s4.len]), (expected4.0.current_substructure(), &expected4.1[..])}
+    core::assert_eq! { (s5.word, &s5.data[0..s5.len]), (expected5.0.current_substructure(), &expected5.1[..])}
+    core::assert_eq! { (s6.word, &s6.data[0..s6.len]), (expected6.0.current_substructure(), &expected6.1[..])}
   }
 
-  fn subst_rel((pat_structure, pat_data): (DyckWord, &[SExpr]), offset : usize, subs: &[(DyckWord, &[SExpr])]) -> DyckExprSubOutput {
-    subst_select_re_index::<false>((pat_structure, pat_data), offset, subs)
+  fn subst_rel(pat: (DyckWord, &[SExpr], usize), subs: &[(DyckWord, &[SExpr])]) -> DyckExprSubOutput {
+    subst_select_re_index::<false, false>(pat, (subs, 0))
   }
 
   // this can be optimized by inlining the large version and specializing, but given that it would incur more checks, it might not be worth it. on the happy path, the performance is the same
-  fn subst_rel_small((pat_structure, pat_data): (DyckWord, &[SExpr]), offset : usize, subs: &[(DyckWord, &[SExpr])]) -> Result<(DyckWord, Vec<SExpr>), ()> {
-    match subst_rel((pat_structure, pat_data), offset, subs) {
-      DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word: b, data }) => Result::Ok((b, data)),
+  fn subst_rel_small(pat: (DyckWord, &[SExpr], usize), subs: &[(DyckWord, &[SExpr])]) -> Result<SmallDyckExpr, ()> {
+    match subst_rel(pat, subs) {
+      DyckExprSubOutput::SmallDyckExpr(s) => Result::Ok(s),
       DyckExprSubOutput::LargeDyckExpr(_) => Result::Err(()),
     }
   }
@@ -2817,11 +2767,13 @@ fn test_examples() {
     let h = atom(h);
     let a = atom(a);
     let f = atom(f);
+
+    let s = subst_rel_small((r1.0.current_substructure(), &r1.1, 0), &[(DyckWord::new_debug_checked(1), &[_5]), (DyckWord::new_debug_checked(0b_11100), &[g, g, Z]),]).unwrap();
     core::assert_eq!(
-      subst_rel_small((r1.0.current_substructure(), &r1.1), 0, &[(DyckWord::new_debug_checked(1), &[_5]), (DyckWord::new_debug_checked(0b_11100), &[g, g, Z]),]).unwrap(),
+      (s.word, &s.data[0..s.len]),
       (
         DyckWord::new_debug_checked(0b___11_110_111_110_000000___1_110_110_00_110_11_110_0000___0),
-        Vec::from([atom(sym("=")), f, atom(sym(",")), _5, g, g, g, g, Z, h, atom(sym(",")), _5, g, a, atom(sym(",")), _5, g, g, g, Z])
+        &[atom(sym("=")), f, atom(sym(",")), _5, g, g, g, g, Z, h, atom(sym(",")), _5, g, a, atom(sym(",")), _5, g, g, g, Z][..]
       )
     );
   }  

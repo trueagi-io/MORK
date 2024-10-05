@@ -2800,7 +2800,7 @@ fn test_examples() {
     output_offset : u8,
   )-> Option<DyckExprSubOutput>{
     let subs = expr_matches_select::<SUBS_OFFSET>(args, pat)?;
-    Option::Some(subst_select::<WITH_RE_INDEX, SUBS_OFFSET, false>(template, (&subs.1, pat.2), output_offset))
+    Option::Some(subst_select::<WITH_RE_INDEX, SUBS_OFFSET, OUTPUT_OFFSET>(template, (&subs.1, pat.2), output_offset))
   }
 
   '_subst: {

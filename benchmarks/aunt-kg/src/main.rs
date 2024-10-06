@@ -339,86 +339,125 @@ fn main() {
     println!("total out now {}", output.val_count());
 
     /*
+    iter-optimization (interning, all-dense-nodes)
+    built 11809
+    parsing and loading took 12764 microseconds
+    total now 11809
+    creating extra index took (child) 1319 microseconds
+    total now 14619
+    creating extra index took (person) 32 microseconds
+    total now 17616
+    getting all parents took 21 microseconds
+    total out now 2788
+    getting all mothers took 877 microseconds
+    total out now 4155
+    getting all sisters took 3125 microseconds
+    total out now 7167
+    getting all aunts took 4177 microseconds
+    total out now 10140
+    real    0m0.028s
+    user    0m0.024s
+    sys     0m0.003s
+
     iter-optimization (interning)
     built 11809
-    parsing and loading took 12263 microseconds
+    parsing and loading took 4185 microseconds
     total now 11809
-    creating extra index took (child) 1280 microseconds
+    creating extra index took (child) 669 microseconds
     total now 14619
-    creating extra index took (person) 33 microseconds
+    creating extra index took (person) 29 microseconds
     total now 17616
-    getting all parents took 22 microseconds
+    getting all parents took 20 microseconds
     total out now 2788
-    getting all mothers took 859 microseconds
+    getting all mothers took 388 microseconds
     total out now 4155
-    getting all sisters took 3091 microseconds
+    getting all sisters took 3320 microseconds
     total out now 7167
-    getting all aunts took 4085 microseconds
+    getting all aunts took 5656 microseconds
     total out now 10140
-    real    0m0.027s
-    user    0m0.025s
-    sys     0m0.002s
+    real    0m0.017s
+    user    0m0.014s
+    sys     0m0.003s
 
     iter-optimization (no interning)
     built 11809
-    parsing and loading took 18770 microseconds
+    parsing and loading took 3323 microseconds
     total now 11809
-    creating extra index took (child) 3266 microseconds
+    creating extra index took (child) 933 microseconds
     total now 14619
-    creating extra index took (person) 60 microseconds
+    creating extra index took (person) 65 microseconds
     total now 17616
-    getting all parents took 215 microseconds
+    getting all parents took 89 microseconds
     total out now 2788
-    getting all mothers took 1934 microseconds
+    getting all mothers took 862 microseconds
     total out now 4155
-    getting all sisters took 6372 microseconds
+    getting all sisters took 4627 microseconds
     total out now 7167
-    getting all aunts took 8406 microseconds
+    getting all aunts took 6597 microseconds
     total out now 10140
-    real    0m0.063s
-    user    0m0.050s
-    sys     0m0.012s
+    real    0m0.021s
+    user    0m0.017s
+    sys     0m0.004s
 
-    master (interning)
+    master (interning, all-dense-nodes)
     built 11809
-    parsing and loading took 10757 microseconds
+    parsing and loading took 10048 microseconds
     total now 11809
-    creating extra index took (child) 1072 microseconds
+    creating extra index took (child) 1115 microseconds
     total now 14619
-    creating extra index took (person) 27 microseconds
+    creating extra index took (person) 29 microseconds
     total now 17616
-    getting all parents took 18 microseconds
+    getting all parents took 17 microseconds
     total out now 2788
-    getting all mothers took 748 microseconds
+    getting all mothers took 821 microseconds
     total out now 4155
-    getting all sisters took 2484 microseconds
+    getting all sisters took 2610 microseconds
     total out now 7167
-    getting all aunts took 3445 microseconds
+    getting all aunts took 3580 microseconds
     total out now 10140
     real    0m0.023s
     user    0m0.018s
     sys     0m0.005s
 
+    master (interning)
+    built 11809
+    parsing and loading took 5189 microseconds
+    total now 11809
+    creating extra index took (child) 1000 microseconds
+    total now 14619
+    creating extra index took (person) 32 microseconds
+    total now 17616
+    getting all parents took 25 microseconds
+    total out now 2788
+    getting all mothers took 514 microseconds
+    total out now 4155
+    getting all sisters took 4057 microseconds
+    total out now 7167
+    getting all aunts took 7099 microseconds
+    total out now 10140
+    real    0m0.021s
+    user    0m0.018s
+    sys     0m0.003s
+
     master (no interning)
     built 11809
-    parsing and loading took 18493 microseconds
+    parsing and loading took 3525 microseconds
     total now 11809
-    creating extra index took (child) 3239 microseconds
+    creating extra index took (child) 1277 microseconds
     total now 14619
-    creating extra index took (person) 69 microseconds
+    creating extra index took (person) 68 microseconds
     total now 17616
-    getting all parents took 222 microseconds
+    getting all parents took 89 microseconds
     total out now 2788
-    getting all mothers took 2130 microseconds
+    getting all mothers took 1147 microseconds
     total out now 4155
-    getting all sisters took 6694 microseconds
+    getting all sisters took 4921 microseconds
     total out now 7167
-    getting all aunts took 8730 microseconds
+    getting all aunts took 6915 microseconds
     total out now 10140
-    real    0m0.064s
-    user    0m0.050s
-    sys     0m0.013s
-
+    real    0m0.022s
+    user    0m0.018s
+    sys     0m0.004s
      */
 
     // drop(aunt_query_out_zipper);

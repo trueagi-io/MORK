@@ -339,24 +339,92 @@ fn main() {
     println!("total out now {}", output.val_count());
 
     /*
-built 11809
-parsing and loading took 26447 microseconds
-total now 11809
-creating extra index took (child) 4216 microseconds
-total now 14619
-creating extra index took (person) 88 microseconds
-total now 17616
-getting all parents took 298 microseconds
-total out now 2788
-getting all mothers took 2220 microseconds
-total out now 4155
-getting all sisters took 7655 microseconds
-total out now 7167
-getting all aunts took 8615 microseconds
-total out now 10140
+    iter-optimization (interning)
+    built 11809
+    parsing and loading took 12263 microseconds
+    total now 11809
+    creating extra index took (child) 1280 microseconds
+    total now 14619
+    creating extra index took (person) 33 microseconds
+    total now 17616
+    getting all parents took 22 microseconds
+    total out now 2788
+    getting all mothers took 859 microseconds
+    total out now 4155
+    getting all sisters took 3091 microseconds
+    total out now 7167
+    getting all aunts took 4085 microseconds
+    total out now 10140
+    real    0m0.027s
+    user    0m0.025s
+    sys     0m0.002s
+
+    iter-optimization (no interning)
+    built 11809
+    parsing and loading took 18770 microseconds
+    total now 11809
+    creating extra index took (child) 3266 microseconds
+    total now 14619
+    creating extra index took (person) 60 microseconds
+    total now 17616
+    getting all parents took 215 microseconds
+    total out now 2788
+    getting all mothers took 1934 microseconds
+    total out now 4155
+    getting all sisters took 6372 microseconds
+    total out now 7167
+    getting all aunts took 8406 microseconds
+    total out now 10140
+    real    0m0.063s
+    user    0m0.050s
+    sys     0m0.012s
+
+    master (interning)
+    built 11809
+    parsing and loading took 10757 microseconds
+    total now 11809
+    creating extra index took (child) 1072 microseconds
+    total now 14619
+    creating extra index took (person) 27 microseconds
+    total now 17616
+    getting all parents took 18 microseconds
+    total out now 2788
+    getting all mothers took 748 microseconds
+    total out now 4155
+    getting all sisters took 2484 microseconds
+    total out now 7167
+    getting all aunts took 3445 microseconds
+    total out now 10140
+    real    0m0.023s
+    user    0m0.018s
+    sys     0m0.005s
+
+    master (no interning)
+    built 11809
+    parsing and loading took 18493 microseconds
+    total now 11809
+    creating extra index took (child) 3239 microseconds
+    total now 14619
+    creating extra index took (person) 69 microseconds
+    total now 17616
+    getting all parents took 222 microseconds
+    total out now 2788
+    getting all mothers took 2130 microseconds
+    total out now 4155
+    getting all sisters took 6694 microseconds
+    total out now 7167
+    getting all aunts took 8730 microseconds
+    total out now 10140
+    real    0m0.064s
+    user    0m0.050s
+    sys     0m0.013s
 
      */
 
+    // drop(aunt_query_out_zipper);
+    // drop(sister_query_out_zipper);
+    // drop(parent_query_out_zipper);
+    // drop(mother_query_out_zipper);
     // let mut cs = output.read_zipper();
     // loop {
     //     match cs.to_next_val() {
@@ -365,7 +433,7 @@ total out now 10140
     //             let k = cs.path();
     //             println!("cursor {:?}", k);
     //             println!("cursor {:?}", unsafe { std::str::from_utf8_unchecked(k.as_ref()) });
-    //             // ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
+    //             ExprZipper::new(Expr{ ptr: unsafe { std::mem::transmute::<*const u8, *mut u8>(k.as_ptr()) } }).traverse(0); println!();
     //         }
     //     }
     // }

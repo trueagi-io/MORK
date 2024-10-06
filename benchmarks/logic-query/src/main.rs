@@ -1,9 +1,9 @@
 use std::hint::black_box;
-use std::ptr;
+use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_bytestring::Tag::{Arity, SymbolSize};
-use mork_frontend::bytestring_parser::{BufferedIterator, Parser, ParserError};
+use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
 
@@ -382,7 +382,7 @@ fn variable_or_arity_mask(a: u8) -> [u64; 4] {
 
 fn variable_or_arity(z: &mut WriteZipper<()>, a: u8) {
     let m = variable_or_arity_mask(a);
-    z.remove_masked_branches(m);
+    z.remove_unmasked_branches(m);
 }
 
 fn variable_or_size_mask(a: u8) -> [u64; 4] {
@@ -395,7 +395,7 @@ fn variable_or_size_mask(a: u8) -> [u64; 4] {
 // fn variable_or_symbol(z: &mut WriteZipper<()>, s: &[u8]) {
 //     // ALTERNATIVE: build variable + s map, restrict to it
 //     let m = variable_or_size_mask(s.len() as u8);
-//     z.remove_masked_branches(m);
+//     z.remove_unmasked_branches(m);
 //     z.descend_to(&[item_byte(Tag::SymbolSize(s.len() as u8))]);
 //     let mut zf = z.fork();
 //     zf.descend_to(s);
@@ -408,7 +408,7 @@ fn variable_or_size_mask(a: u8) -> [u64; 4] {
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<Vec<u8>>,
+    symbols: BytesTrieMap<u64>,
 }
 
 impl DataParser {
@@ -418,29 +418,22 @@ impl DataParser {
             symbols: BytesTrieMap::new(),
         }
     }
-}
 
-fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
-    let ir = u64::from_be(i);
-    unsafe { ptr::write_unaligned(buffer as *mut u64, ir) };
-    let bs = (8 - ir.trailing_zeros()/8) as usize;
-    let l = bs.max(1);
-    unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
+    const EMPTY: &'static [u8] = &[];
 }
 
 impl Parser for DataParser {
-    fn tokenizer(&mut self, s: String) -> Vec<u8> {
-        // return s.as_bytes().to_vec();
-        if let Some(r) = self.symbols.get(s.as_bytes()) {
-            r.clone()
-        } else {
+    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
+        // return unsafe { std::mem::transmute(s) };
+        if s.len() == 0 { return Self::EMPTY }
+        let mut z = self.symbols.write_zipper_at_path(s);
+        let r = z.get_value_or_insert_with(|| {
             self.count += 1;
-            let mut buf: [u8; 8] = [0; 8];
-            let slice = gen_key(self.count, buf.as_mut_ptr());
-            let internal = slice.to_vec();
-            self.symbols.insert(s.as_bytes(), internal.clone());
-            internal
-        }
+            u64::from_be(self.count)
+        });
+        let bs = (8 - r.trailing_zeros()/8) as usize;
+        let l = bs.max(1);
+        unsafe { std::slice::from_raw_parts_mut((r as *mut u64 as *mut u8).byte_offset((8 - l) as isize), l) }
     }
 }
 
@@ -466,7 +459,9 @@ fn main() {
     // let mut file = std::fs::File::open("resources/test.metta")
     let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
         .expect("Should have been able to read the file");
-    let mut it = BufferedIterator{ file: file, buffer: [0; 4096], cursor: 4096, max: 4096 };
+    let mut buf = vec![];
+    file.read_to_end(&mut buf);
+    let mut it = Context::new(&buf[..]);
     let mut parser = DataParser::new();
 
     let mut space = BytesTrieMap::<()>::new();
@@ -476,57 +471,29 @@ fn main() {
     let t0 = Instant::now();
     let mut i = 0;
     let mut stack = [0u8; 2048];
-    let mut vs = Vec::with_capacity(100);
     loop {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexprUnsafe(&mut it, &mut vs, &mut ez) {
+            match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
                     space.insert(&stack[..ez.loc], ());
                 }
-                Err(ParserError::InputFinished()) => { break }
+                Err(ParserError::InputFinished) => { break }
                 Err(other) => { return panic!("{:?}", other) }
             }
             i += 1;
-            vs.set_len(0);
+            it.variables.clear();
         }
     }
     // println!("built {}", i);
     // println!("took {} ms", t0.elapsed().as_millis());
     println!("map contains: {}", space.val_count());
 
-    let mut q = if true { // get all properties of a specific relation
-        let mut q = vec![item_byte(Tag::Arity(3))];
-        let relations_symbol = parser.tokenizer("Relations".to_string());
-        q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
-        q.extend(&relations_symbol[..]);
-        let interest_symbol = parser.tokenizer("1350".to_string());
-        q.push(item_byte(Tag::SymbolSize(interest_symbol.len() as u8)));
-        q.extend(&interest_symbol[..]);
-        q.push(item_byte(Tag::NewVar));
-        q
-    } else { // get all individuals their fullname
-        let mut q = vec![item_byte(Tag::Arity(3))];
-        let relations_symbol = parser.tokenizer("Individuals".to_string());
-        q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
-        q.extend(&relations_symbol[..]);
-        q.push(item_byte(Tag::NewVar));
-        q.push(item_byte(Tag::Arity(2)));
-        let fullname_symbol = parser.tokenizer("Fullname".to_string());
-        q.push(item_byte(Tag::SymbolSize(fullname_symbol.len() as u8)));
-        q.extend(&fullname_symbol[..]);
-        q.push(item_byte(Tag::NewVar));
-        q
-    };
-
     let t0 = Instant::now();
     let mut z = space.read_zipper();
 
     let mut buffer = vec![ACTION, ITER_EXPR];
     transition(&mut buffer, &mut z, &mut |loc| {
-        // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
-        // let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-        // println!("{:?}", e);
         black_box(loc.origin_path());
     });
     println!("iterating all took {} microseconds", t0.elapsed().as_micros());
@@ -536,15 +503,71 @@ fn main() {
 
     let mut visited = 0;
     let mut buffer = vec![ACTION];
+    let mut q = vec![item_byte(Tag::Arity(3))];
+    let relations_symbol = parser.tokenizer(b"Individuals");
+    q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
+    q.extend(&relations_symbol[..]);
+    q.push(item_byte(Tag::NewVar));
+    q.push(item_byte(Tag::Arity(2)));
+    let fullname_symbol = parser.tokenizer(b"Fullname");
+    q.push(item_byte(Tag::SymbolSize(fullname_symbol.len() as u8)));
+    q.extend(&fullname_symbol[..]);
+    q.push(item_byte(Tag::NewVar));
     buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(Expr{ ptr: q.as_mut_ptr() })));
-    // println!("buffer {:?}", buffer);
     transition(&mut buffer, &mut z, &mut |loc| {
-        // unsafe { println!("iter ({}) {}", loc.origin_path().unwrap().len(), std::str::from_utf8_unchecked(loc.origin_path().unwrap())); }
-        // let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-        // println!("e {:?}", e);
         black_box(loc.origin_path());
         visited += 1;
     });
 
     println!("iterating {:?} ({}) took {} microseconds", q, visited, t0.elapsed().as_micros());
+
+    let t0 = Instant::now();
+    let mut z = space.read_zipper();
+
+    let mut visited = 0;
+    let mut buffer = vec![ACTION];
+    let mut q = vec![item_byte(Tag::Arity(3))];
+    let relations_symbol = parser.tokenizer(b"Relations");
+    q.push(item_byte(Tag::SymbolSize(relations_symbol.len() as u8)));
+    q.extend(&relations_symbol[..]);
+    let interest_symbol = parser.tokenizer(b"1350");
+    q.push(item_byte(Tag::SymbolSize(interest_symbol.len() as u8)));
+    q.extend(&interest_symbol[..]);
+    q.push(item_byte(Tag::NewVar));
+    buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(Expr{ ptr: q.as_mut_ptr() })));
+    transition(&mut buffer, &mut z, &mut |loc| {
+        black_box(loc.origin_path());
+        visited += 1;
+    });
+
+    println!("iterating {:?} ({}) took {} microseconds", q, visited, t0.elapsed().as_micros());
+
+    /*
+    multithreading
+    map contains: 53442
+    iterating all took 9176 microseconds
+    iterating [3, 193, 58, 192, 2, 193, 60, 192] (3001) took 1187 microseconds
+    iterating [3, 193, 79, 194, 29, 251, 192] (3) took 3 microseconds
+    real    0m0.110s
+    user    0m0.085s
+    sys     0m0.024s
+
+    iter-optimization
+    map contains: 53442
+    iterating all took 9036 microseconds
+    iterating [3, 193, 58, 192, 2, 193, 60, 192] (3001) took 1259 microseconds
+    iterating [3, 193, 79, 194, 29, 251, 192] (3) took 3 microseconds
+    real    0m0.107s
+    user    0m0.084s
+    sys     0m0.023s
+
+    master
+    map contains: 53442
+    iterating all took 10908 microseconds
+    iterating [3, 193, 58, 192, 2, 193, 60, 192] (3001) took 1350 microseconds
+    iterating [3, 193, 79, 194, 29, 251, 192] (3) took 4 microseconds
+    real    0m0.107s
+    user    0m0.089s
+    sys     0m0.018s
+     */
 }

@@ -82,7 +82,7 @@ fn decode_seq(s: &[u8]) -> Vec<BigInt> {
 }
 
 fn main() {
-    let mut file = std::fs::File::open("/run/media/adam/14956caa-2539-4de7-bac9-d5d8416f5f11/OEIS/stripped")
+    let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
         .expect("Should have been able to read the file");
     let mut s = String::new();
     file.read_to_string(&mut s).unwrap();
@@ -139,16 +139,13 @@ fn main() {
     }
 
     const QSEQ: [u64; 6] = [1, 2, 3, 5, 8, 13];
-    let qseq = encode_seq(QSEQ.into_iter().map(BigInt::from));
+    let mut qseq = encode_seq(QSEQ.into_iter().map(BigInt::from));
+    qseq.insert(0, 0);
     let mut q = BytesTrieMap::new();
-    let mut qz = q.write_zipper();
     for i in 0..(MAX_OFFSET + 1) {
-        qz.descend_to(&[i]);
-        qz.descend_to(&qseq[..]);
-        qz.set_value(0usize);
-        qz.ascend(qseq.len() + 1);
+        qseq[0] = i;
+        q.insert(&qseq[..], 0usize);
     }
-    drop(qz);
 
     let t2 = Instant::now();
     let qresult = m.restrict(&q);
@@ -160,4 +157,65 @@ fn main() {
     //     println!("seq# {}", *v);
     //     println!("seq: {:?}", decode_seq(&k[1..]));
     // }
+    /*
+    iter-optimization
+    #sequences 375842
+    building took 286 ms
+    drophead 1 took 84 ms
+    drophead 2 took 108 ms
+    drophead 3 took 134 ms
+    drophead 4 took 158 ms
+    drophead 5 took 174 ms
+    drophead 6 took 172 ms
+    drophead 7 took 175 ms
+    drophead 8 took 180 ms
+    drophead 9 took 182 ms
+    drophead 10 took 183 ms
+    total seqs from 0 373311
+    total seqs from 1 372919
+    total seqs from 2 372375
+    total seqs from 3 371402
+    total seqs from 4 369349
+    total seqs from 5 366400
+    total seqs from 6 362984
+    total seqs from 7 359506
+    total seqs from 8 355119
+    total seqs from 9 350419
+    total seqs from 10 345056
+    query took 119 microseconds
+    222
+    real    0m6.776s
+    user    0m6.424s
+    sys     0m0.332s
+
+    master
+    #sequences 375842
+    building took 262 ms
+    drophead 1 took 78 ms
+    drophead 2 took 98 ms
+    drophead 3 took 124 ms
+    drophead 4 took 146 ms
+    drophead 5 took 159 ms
+    drophead 6 took 170 ms
+    drophead 7 took 177 ms
+    drophead 8 took 180 ms
+    drophead 9 took 184 ms
+    drophead 10 took 179 ms
+    total seqs from 0 373311
+    total seqs from 1 372919
+    total seqs from 2 372375
+    total seqs from 3 371402
+    total seqs from 4 369349
+    total seqs from 5 366400
+    total seqs from 6 362984
+    total seqs from 7 359506
+    total seqs from 8 355119
+    total seqs from 9 350419
+    total seqs from 10 345056
+    query took 118 microseconds
+    222
+    real    0m6.698s
+    user    0m6.350s
+    sys     0m0.331s
+     */
 }

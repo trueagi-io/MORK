@@ -5,7 +5,7 @@ use pathmap::zipper::Zipper;
 
 
 fn main() {
-    let n = 10000;
+    let n = 100000;
 
     let mut space = BytesTrieMap::<()>::new();
     // let space_ptr = &mut space as *mut BytesTrieMap<()>;
@@ -18,7 +18,7 @@ fn main() {
     m3_path.extend(m3_symbol);
     // let mut m3_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m3_path[..]);
     let mut m3_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m3_path[..]) };
-    println!("m3_zipper        @ {m3_path:?}");
+    // println!("m3_zipper        @ {m3_path:?}");
 
     m3_zipper.descend_to(&[item_byte(Tag::SymbolSize(4 as u8))]);
     m3_zipper.graft_map(BytesTrieMap::range::<true, u32>(3, n as u32, 3, ()));
@@ -30,7 +30,7 @@ fn main() {
     m5_path.extend(m5_symbol);
     // let mut m5_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m5_path[..]);
     let mut m5_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m5_path[..]) };
-    println!("m5_zipper        @ {m5_path:?}");
+    // println!("m5_zipper        @ {m5_path:?}");
 
     m5_zipper.descend_to(&[item_byte(Tag::SymbolSize(4 as u8))]);
     m5_zipper.graft_map(BytesTrieMap::range::<true, u32>(5, n as u32, 5, ()));
@@ -42,7 +42,7 @@ fn main() {
     r_path.extend(r_symbol);
     // let mut r_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&r_path[..]);
     let mut r_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&r_path[..]) };
-    println!("r_zipper         @ {r_path:?}");
+    // println!("r_zipper         @ {r_path:?}");
 
     r_zipper.descend_to(&[item_byte(Tag::SymbolSize(4 as u8))]);
     r_zipper.graft_map(BytesTrieMap::range::<true, u32>(1, n as u32, 1, ()));
@@ -54,7 +54,7 @@ fn main() {
     m35_path.extend(m35_symbol);
     // let mut m35_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m35_path[..]);
     let mut m35_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m35_path[..]) };
-    println!("m35_zipper       @ {m35_path:?}");
+    // println!("m35_zipper       @ {m35_path:?}");
 
     m35_zipper.meet_2(&m3_zipper, &m5_zipper);
 
@@ -64,7 +64,7 @@ fn main() {
     m3n5_path.extend(m3n5_symbol);
     // let mut m3n5_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m3n5_path[..]);
     let mut m3n5_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m3n5_path[..]) };
-    println!("m3n5_zipper      @ {m3n5_path:?}");
+    // println!("m3n5_zipper      @ {m3n5_path:?}");
 
     m3n5_zipper.graft(&m5_zipper);
     m3n5_zipper.subtract(&m3_zipper);
@@ -75,7 +75,7 @@ fn main() {
     m5n3_path.extend(m5n3_symbol);
     // let mut m5n3_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m5n3_path[..]);
     let mut m5n3_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m5n3_path[..]) };
-    println!("m5n3_zipper      @ {m5n3_path:?}");
+    // println!("m5n3_zipper      @ {m5n3_path:?}");
 
     m5n3_zipper.graft(&m3_zipper);
     m5n3_zipper.subtract(&m5_zipper);
@@ -86,7 +86,7 @@ fn main() {
     m3m5_path.extend(m3m5_symbol);
     // let mut m3m5_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&m3m5_path[..]);
     let mut m3m5_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&m3m5_path[..]) };
-    println!("m3m5_zipper      @ {m3m5_path:?}");
+    // println!("m3m5_zipper      @ {m3m5_path:?}");
 
     m3m5_zipper.graft(&m3_zipper);
     m3m5_zipper.join(&m5_zipper);
@@ -97,7 +97,7 @@ fn main() {
     n3n5_path.extend(n3n5_symbol);
     // let mut n3n5_zipper = unsafe{ &mut *space_ptr }.write_zipper_at_path(&n3n5_path[..]);
     let mut n3n5_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&n3n5_path[..]) };
-    println!("n3n5_zipper      @ {n3n5_path:?}");
+    // println!("n3n5_zipper      @ {n3n5_path:?}");
 
     n3n5_zipper.graft(&r_zipper);
     n3n5_zipper.subtract(&m3m5_zipper);
@@ -111,7 +111,7 @@ fn main() {
     FizzBuzz_path.push(item_byte(Tag::SymbolSize(FizzBuzz_symbol.len() as u8)));
     FizzBuzz_path.extend(FizzBuzz_symbol);
     let mut fizz_buzz_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&FizzBuzz_path[..]) };
-    println!("fizz_buzz_zipper @ {FizzBuzz_path:?}");
+    // println!("fizz_buzz_zipper @ {FizzBuzz_path:?}");
     fizz_buzz_zipper.graft(&m35_zipper);
 
     let mut Nothing_path = vec![item_byte(Tag::Arity(2))];
@@ -119,7 +119,7 @@ fn main() {
     Nothing_path.push(item_byte(Tag::SymbolSize(Nothing_symbol.len() as u8)));
     Nothing_path.extend(Nothing_symbol);
     let mut nothing_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&Nothing_path[..]) };
-    println!("nothing_zipper   @ {Nothing_path:?}");
+    // println!("nothing_zipper   @ {Nothing_path:?}");
     nothing_zipper.graft(&n3n5_zipper);
 
     let mut Fizz_path = vec![item_byte(Tag::Arity(2))];
@@ -127,7 +127,7 @@ fn main() {
     Fizz_path.push(item_byte(Tag::SymbolSize(Fizz_symbol.len() as u8)));
     Fizz_path.extend(Fizz_symbol);
     let mut fizz_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&Fizz_path[..]) };
-    println!("fizz_zipper      @ {Fizz_path:?}");
+    // println!("fizz_zipper      @ {Fizz_path:?}");
     fizz_zipper.graft(&m3n5_zipper);
 
     let mut Buzz_path = vec![item_byte(Tag::Arity(2))];
@@ -135,7 +135,7 @@ fn main() {
     Buzz_path.push(item_byte(Tag::SymbolSize(Buzz_symbol.len() as u8)));
     Buzz_path.extend(Buzz_symbol);
     let mut buzz_zipper = unsafe{ space.write_zipper_at_exclusive_path_unchecked(&Buzz_symbol[..]) };
-    println!("buzz_zipper      @ {Buzz_symbol:?}");
+    // println!("buzz_zipper      @ {Buzz_symbol:?}");
     buzz_zipper.graft(&m5n3_zipper);
 
     println!("fizzbuzz took {} microseconds", t0.elapsed().as_micros());
@@ -152,4 +152,19 @@ fn main() {
     //         }
     //     }
     // }
+    /*
+    iter-optimization 100_000
+    fizzbuzz took 11432 microseconds
+    space size 399995
+    real    0m0.013s
+    user    0m0.008s
+    sys     0m0.005s
+
+    master 100_000
+    fizzbuzz took 10979 microseconds
+    space size 399995
+    real    0m0.013s
+    user    0m0.011s
+    sys     0m0.002s
+     */
 }

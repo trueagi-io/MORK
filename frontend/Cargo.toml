@@ -14,7 +14,7 @@ rustflags = "-C opt-level=3 -C target-cpu=native"
 [dependencies.pathmap]
 path = "../../PathMap"
 #features = ["all_dense_nodes"]
-features = []
+# features = []
 
 [dependencies.mork-bytestring]
 path = "../experiments/expr/bytestring"

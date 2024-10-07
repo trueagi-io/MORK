@@ -7,14 +7,7 @@ edition = "2021"
 rustflags = "-C opt-level=3 -C target-cpu=native"
 
 [dependencies]
+pathmap = { workspace=true }
+mork-frontend = { workspace=true }
+mork-bytestring = { workspace=true }
 num = "0.4.3"
-
-[dependencies.pathmap]
-path = "../../../PathMap"
-features = []
-
-[dependencies.mork-frontend]
-path = "../../frontend"
-
-[dependencies.mork-bytestring]
-path = "../../experiments/expr/bytestring"

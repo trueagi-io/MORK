@@ -1,11 +1,9 @@
-use std::hint::black_box;
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, Context, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{ReadZipper, WriteZipper, Zipper};
-use pathmap::ring::{Lattice, PartialDistributiveLattice};
+use pathmap::zipper::*;
 
 struct DataParser {
     count: u64,
@@ -81,7 +79,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head_2(loc: &mut WriteZipper<()>) {
+fn drop_symbol_head_2<Z: WriteZipper<()>>(loc: &mut Z) {
     let m = mask_and(loc.child_mask(), unsafe { SIZES });
     let mut it = CfIter::new(&m);
 
@@ -108,10 +106,11 @@ fn main() {
     }
 
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
+    let mut file = std::fs::File::open("/Users/admin/Desktop/royal92_simple.metta")
         .expect("Should have been able to read the file");
     let mut buf = vec![];
-    file.read_to_end(&mut buf);
+    file.read_to_end(&mut buf).unwrap();
     let mut it = Context::new(&buf[..]);
     let mut parser = DataParser::new();
 
@@ -121,37 +120,38 @@ fn main() {
     let mut i = 0u64;
     let mut stack = [0u8; 1 << 19];
     loop {
-        unsafe {
-            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => {
-                    family.insert(&stack[..ez.loc], ());
-                }
-                Err(ParserError::InputFinished) => { break }
-                Err(other) => { panic!("{:?}", other) }
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => {
+                family.insert(&stack[..ez.loc], ());
             }
-
-            i += 1;
-            it.variables.clear();
+            Err(ParserError::InputFinished) => { break }
+            Err(other) => { panic!("{:?}", other) }
         }
+
+        i += 1;
+        it.variables.clear();
     }
     println!("built {}", i);
     println!("parsing and loading took {} microseconds", t0.elapsed().as_micros());
     println!("total now {}", family.val_count());
     let t1 = Instant::now();
 
+    let family_head = family.zipper_head();
+
     // family |= family.subst((parent $x $y), (child $y $x))
     let mut parent_path = vec![item_byte(Tag::Arity(3))];
     let parent_symbol = parser.tokenizer(b"parent");
     parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
     parent_path.extend(parent_symbol);
-    let mut parent_zipper = family.read_zipper_at_path(&parent_path[..]);
+    let mut parent_zipper = family_head.read_zipper_at_path(&parent_path[..]);
     let mut child_path = vec![item_byte(Tag::Arity(3))];
     let child_symbol = parser.tokenizer(b"child");
     child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
     child_path.extend(child_symbol);
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
-    let mut child_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
+
+    let mut child_zipper = unsafe{ family_head.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
 
     let mut patternv = vec![item_byte(Tag::Arity(3))];
     patternv.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
@@ -162,16 +162,15 @@ fn main() {
     templatev.extend(child_symbol); templatev.push(item_byte(Tag::VarRef(1))); templatev.push(item_byte(Tag::VarRef(0)));
     let template = Expr{ ptr: templatev.as_mut_ptr() };
 
-    let mut j = 0;
+    let mut _j = 0;
     loop {
         match parent_zipper.to_next_val() {
             None => { break }
-            Some(v) => {
-                j += 1;
-                debug_assert!(family.contains(parent_zipper.origin_path().unwrap()));
+            Some(_) => {
+                _j += 1;
 
                 let lhs = Expr{ ptr: parent_zipper.origin_path().unwrap().as_ptr().cast_mut() };
-                let mut rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
+                let rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
                 let mut rhsz = ExprZipper::new(rhs);
 
                 // (parent $ $) => (child _2 _1)
@@ -185,70 +184,77 @@ fn main() {
             }
         }
     }
+    drop(child_zipper);
 
     println!("creating extra index took (child) {} microseconds", t1.elapsed().as_micros());
-    println!("total now {}", family.val_count());
+    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).val_count());
 
     let t2 = Instant::now();
+
+    let child_zipper = unsafe{ family_head.read_zipper_at_borrowed_path_unchecked(&child_path[..]) };
 
     let mut female_path = vec![item_byte(Tag::Arity(2))];
     let female_symbol = parser.tokenizer(b"female");
     female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
     female_path.extend(female_symbol);
-    let mut female_zipper = family.read_zipper_at_path(&female_path[..]);
+    let mut female_zipper = family_head.read_zipper_at_path(&female_path[..]);
 
     let mut male_path = vec![item_byte(Tag::Arity(2))];
     let male_symbol = parser.tokenizer(b"male");
     male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
     male_path.extend(male_symbol);
 
-    let male_zipper = family.read_zipper_at_path(&male_path[..]);
+    let male_zipper = family_head.read_zipper_at_path(&male_path[..]);
 
     let mut person_path = vec![item_byte(Tag::Arity(2))];
     let person_symbol = parser.tokenizer(b"person");
     person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
     person_path.extend(person_symbol);
 
-    let mut person_zipper = unsafe{ family.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
+    let mut person_zipper = unsafe{ family_head.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
+    person_zipper.descend_to_byte(person_path[person_path.len()-1]);
 
     person_zipper.graft(&female_zipper);
     person_zipper.join(&male_zipper);
     drop(person_zipper);
 
     println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
-    println!("total now {}", family.val_count());
+    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).val_count());
 
     let t3 = Instant::now();
 
-    let mut parent_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
-    let mut parent_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&parent_query_out_path[..]) };
+    let parent_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
+    let output_head = output.zipper_head();
+    let mut parent_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&parent_query_out_path[..]) };
 
-    assert!(family.read_zipper_at_path(&person_path[..]).path_exists());
+    assert!(family_head.read_zipper_at_path(&person_path[..]).path_exists());
 
     parent_query_out_zipper.graft(&child_zipper);
     parent_query_out_zipper.reset();
-    assert!(parent_query_out_zipper.restrict(&family.read_zipper_at_path(&person_path[..])));
+    assert!(parent_query_out_zipper.restrict(&family_head.read_zipper_at_path(&person_path[..])));
+    drop(parent_query_out_zipper);
 
     println!("getting all parents took {} microseconds", t3.elapsed().as_micros());
-    println!("total out now {}", output.val_count());
-    let t4 = Instant::now();
-    let mut mother_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
-    let mut mother_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&mother_query_out_path[..]) };
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
 
-    let mut person_rzipper = family.read_zipper_at_path(&person_path[..]);
-    let mut child_rzipper = child_zipper.fork_zipper();
+    let t4 = Instant::now();
+    let mother_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
+    let mut mother_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&mother_query_out_path[..]) };
+
+    let mut person_rzipper = family_head.read_zipper_at_path(&person_path[..]);
+    let mut child_rzipper = child_zipper.fork_read_zipper();
     female_zipper.reset();
 
     // use pathmap::counters;
     // let C1 = counters::Counters::count_ocupancy(&output);
     // println!("previous tn count {}", C1.total_child_items() as f64/C1.total_nodes() as f64);
     // C1.print_histogram_by_depth();
-    let mut j = 0;
+    let mut _j = 0;
     loop {
         match person_rzipper.to_next_val() {
             None => { break }
-            Some(v) => {
-                j += 1;
+            Some(_) => {
+                _j += 1;
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
@@ -261,8 +267,8 @@ fn main() {
     }
 
     println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
-    // println!("j {}", j);
-    println!("total out now {}", output.val_count());
+    // println!("j {_j}");
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
     // let C2 = counters::Counters::count_ocupancy(&output);
     // println!("previous tn count {}", C2.total_child_items() as f64/C2.total_nodes() as f64);
     // C2.print_histogram_by_depth();
@@ -270,16 +276,16 @@ fn main() {
     // val r = ((family("parent") <| family(Concat("child", person))).tail /\ family("female")) \ Singleton(person)
     let t5 = Instant::now();
 
-    let mut sister_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
-    let mut sister_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&sister_query_out_path[..]) };
+    let sister_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
+    let mut sister_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&sister_query_out_path[..]) };
 
     person_rzipper.reset();
-    let mut j = 0;
+    let mut _j = 0;
     loop {
         match person_rzipper.to_next_val() {
             None => { break }
-            Some(v) => {
-                j += 1;
+            Some(_) => {
+                _j += 1;
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
@@ -297,8 +303,8 @@ fn main() {
     }
 
     println!("getting all sisters took {} microseconds", t5.elapsed().as_micros());
-    // println!("j {}", j);
-    println!("total out now {}", output.val_count());
+    // println!("j {_j}");
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
 
     //         val parents = family(Concat("child", person))
     //         val grandparents = (family("child") <| parents).tail
@@ -306,17 +312,17 @@ fn main() {
     //         val aunts = parent_siblings /\ family("female")
     let t6 = Instant::now();
 
-    let mut aunt_query_out_path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
-    let mut aunt_query_out_zipper = unsafe{ output.write_zipper_at_exclusive_path_unchecked(&aunt_query_out_path[..]) };
+    let aunt_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
+    let mut aunt_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&aunt_query_out_path[..]) };
 
     person_rzipper.reset();
     parent_zipper.reset();
-    let mut j = 0;
+    let mut _j = 0;
     loop {
         match person_rzipper.to_next_val() {
             None => { break }
-            Some(v) => {
-                j += 1;
+            Some(_) => {
+                _j += 1;
 
                 child_rzipper.reset();
                 if !child_rzipper.descend_to(person_rzipper.path()) { continue }
@@ -335,8 +341,8 @@ fn main() {
 
 
     println!("getting all aunts took {} microseconds", t6.elapsed().as_micros());
-    // println!("j {}", j);
-    println!("total out now {}", output.val_count());
+    // println!("j {_j}");
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
 
     /*
     iter-optimization (interning, all-dense-nodes)

@@ -1742,7 +1742,7 @@ fn test_examples() {
     // }
     // ```
 
-    
+
     let intro_var = (DyckWord::new_debug_checked(1), &[SExpr::Var(DeBruijnLevel::Intro)][..]);
     let get_word = |expr: &DyckExprSubOutput| match expr {
       DyckExprSubOutput::SmallDyckExpr(SmallDyckExpr { word, .. }) => *word,
@@ -1757,9 +1757,9 @@ fn test_examples() {
       | DyckExprSubOutput::LargeDyckExpr(LargeDyckExpr { data, .. }) => data,
     };
     let sub_re_index_input: fn(&(DyckStructureZipperU64, Vec<SExpr>, Variables), u8) -> (_, &_, _) = |x, offset| (x.0.current_substructure(), &x.1[..], offset);
-    
+
     const LEAF: DyckWord = DyckWord { word: 1 };
-    
+
     macro_rules! templates {($($ID:ident $SRC:literal)+) => {$(
       let _tmp = parse($SRC);
       #[allow(non_snake_case)]
@@ -1797,17 +1797,16 @@ fn test_examples() {
       let s = subst_re_index_with_pat_offset(($PAT.0,$PAT.1, $OFFSET), &[$(($SUB.0,$SUB.1)),*]);
       let expected_ = parse($EXPECTED);
       let tmp = sub_re_index_input(&expected_,0);
-      // std::println!("{:?}",tmp);
+
       let /* mut */ expected  = subst_re_index_with_pat_offset(tmp, &$INTROS);
-      
+
       // if $OFFSET > 0{
       // for each in get_data_mut(&mut expected).iter_mut() {
       //   if let SExpr::Var(DeBruijnLevel::Ref(r)) = each {
       //     *r = NonZeroIsize::new(r.get()-$OFFSET).unwrap()
       //   }
       // }}
-      
-      // std::println!("{:?}",expected);
+
       core::assert_eq!(get_word(&s), get_word(&expected));
       core::assert_eq!(get_data(&s), get_data(&expected));
       // pretty_print(&s);
@@ -1846,19 +1845,6 @@ fn test_examples() {
       3 [d3_r3 / [Axy, Bxyy, Cxx]                     ] => "(, (f (A $v $w) (B $x $y $y)) (g (B $x $y $y) (C $z $z) (C $z $z)))" | [intro_var, intro_var, intro_var, intro_var, intro_var];
     }
   }
-
-  // return;
-
-
-
-
-
-
-
-
-
-
-
 
 
   '_matches: {

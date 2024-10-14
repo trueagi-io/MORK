@@ -1,5 +1,43 @@
-use crate::*;
+extern crate core;
+extern crate alloc;
+use {
+  core::{option::Option, iter::Iterator, cmp::Ord, clone::Clone},
+  crate::DyckWord
+};
 
+
+/// It should be noted that the terminal is _NEVER_ equal to the head.
+/// In the case of a leaf, the head is at the leaf position, and the terminal is one after it.
+/// In other words, if t is the terminal, and h is the head, then
+/// for a tree `0...001` we have `0..0th` (_t_=1, _h_=0),
+///
+/// example
+/// - `0..0t____h` (_t_=5, _h_=0) tree `0..0011010`
+/// - `0..0t__h__` (_t_=5, _h_=2) the left sub tree
+/// - `0..0___th_` (_t_=2, _h_=1) the right sub tree (a leaf)
+#[derive(Clone, Copy, PartialEq)]
+pub struct SubtreeSlice {
+  /// the position right after the last leaf of a subtree.
+  pub(crate) terminal: u8,
+  /// the position of the subtree (the root is a subtree of itself)
+  pub(crate) head: u8,
+}
+/// this is used exclusively for initializing data.
+impl SubtreeSlice {
+  pub(crate) const fn zeroes() -> Self {
+    Self { terminal: 0, head: 0 }
+  }
+  fn is_leaf(&self) -> bool {
+    1 == self.terminal - self.head
+  }
+  fn left_subtree_head(self, structure: u64) -> u64 {
+    let slice = (structure & (0b_10_u64 << self.terminal - 1).wrapping_sub(1)) >> self.head;
+
+    crate::left_branch_impl::u64::left_branch(slice) << self.head
+  }
+}
+
+/// The heart of the Dyckword representation. this structure only describes the structure of the binary tree. it can represent a tree with at most [`Self::MAX_LEAVES`] elements
 #[derive(Clone, PartialEq)]
 pub struct DyckStructureZipperU64 {
   pub(crate) structure: u64,
@@ -8,14 +46,15 @@ pub struct DyckStructureZipperU64 {
 }
 
 impl core::fmt::Debug for DyckStructureZipperU64 {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     core::write!(
       f,
       "\
-            DyckStructureZipperU64 {{\
-            \n  structure     : {:b},\
-            \n  current_depth : {},\
-            \n  stack         : [ ",
+        DyckStructureZipperU64 {{\
+        \n  structure     : {:b},\
+        \n  current_depth : {},\
+        \n  stack         : [ \
+      ",
       self.structure,
       self.current_depth
     )?;
@@ -36,17 +75,18 @@ impl core::fmt::Debug for DyckStructureZipperU64 {
 }
 
 impl DyckStructureZipperU64 {
+
   pub const MAX_LEAVES: usize = u64::BITS as usize / 2;
   pub const LEAF: Self = {
     let mut stack = [SubtreeSlice::zeroes(); Self::MAX_LEAVES];
     stack[0].terminal = 1;
     Self { structure: 1, current_depth: 0, stack }
-      };
+  };
     
-      /// Creates a Zipper for the Dyck Path, if the tree is empty (Dyck path of all 0s), it will return [`Option::None`]; this avoids uneeded checks when traversing.
-      /// A valid Zipper is therefore always on a non-empty tree.
-      /// Validating the structure of a Zipper is costly, so it is only checked in debug builds (TODO: is there a fast algorithm for doing the check using bit shifts and masks?).
-      pub const fn new(structure: u64) -> Option<Self> {
+  /// Creates a Zipper for the Dyck Path, if the tree is empty (Dyck path of all 0s), it will return [`Option::None`]; this avoids uneeded checks when traversing.
+  /// A valid Zipper is therefore always on a non-empty tree.
+  /// Validating the structure of a Zipper is costly, so it is only checked in debug builds (TODO: is there a fast algorithm for doing the check using bit shifts and masks?).
+  pub const fn new(structure: u64) -> Option<Self> {
     if let 0 = structure {
       return Option::None;
     }
@@ -95,7 +135,8 @@ impl DyckStructureZipperU64 {
     prev.terminal == cur.terminal && prev.head != cur.head - 1
       }
     
-      unsafe fn side_to_side_unchecked<const LEFT_TO_RIGHT : bool>(&mut self) {
+    /// the root implementation of left_to_right and right_to_left functions and their variants.
+    unsafe fn side_to_side_unchecked<const LEFT_TO_RIGHT : bool>(&mut self) {
     #![inline(always)]
       
     let Self { structure, current_depth, stack } = self;
@@ -122,6 +163,7 @@ impl DyckStructureZipperU64 {
     }
   }
 
+  /// the implementation of left_to_right and right_to_left safe variants.
   fn side_to_side<const LEFT_TO_RIGHT : bool>(&mut self) -> bool {
     let Self { structure, current_depth, stack } = self;
     if *structure <= 1 || 0 == *current_depth {
@@ -227,13 +269,15 @@ impl DyckStructureZipperU64 {
   /// Produce an iterator that generates the indices of the leaves in depth first traversal order
   pub fn current_depth_first_indicies(&self) -> impl Iterator<Item = usize> + core::marker::Send + core::marker::Sync + 'static {
     self.current_leaf_store_index_range()
-      }
-      pub fn at_root(&self) -> bool {
+  }
+  pub fn at_root(&self) -> bool {
     self.current_depth == 0
-      }
-      // This moves in a cycle. so if you return to the root and make this call, it will start the iteration again
-      pub fn next_depth_first_left_to_right_action(&self) -> DFSLeftToRightAction {
-    // core::todo!("ADD TESTS");
+  }
+  /// This moves in a cycle. so if you return to the root and make this call, it will start the iteration again
+  #[cfg(debug_assertions)/* remove this once tests are made */]
+  #[allow(warnings)/* remove this once tests are made */]
+  pub fn next_depth_first_left_to_right_action(&self) -> DFSLeftToRightAction {
+    core::todo!("ADD TESTS");
       
     type Action = DFSLeftToRightAction;
     let is_left = self.current_is_left_branch();
@@ -254,9 +298,11 @@ impl DyckStructureZipperU64 {
     Action::AccendRight
   }
 
-  #[cfg_attr(rustfmt, rustfmt::skip)]
+  #[cfg(debug_assertions)/* remove this once tests are made */]
+  #[allow(warnings)/* remove this once tests are made */]
   pub fn advance_depth_first_left_to_right_action(&mut self) -> DFSLeftToRightAction {
-    // core::todo!("ADD TESTS");
+    #![cfg_attr(rustfmt, rustfmt::skip)]
+    core::todo!("ADD TESTS");
 
     let action = self.next_depth_first_left_to_right_action();
     match &action {
@@ -311,10 +357,12 @@ impl DyckStructureZipperU64 {
   }
 
   /// Produce an iterator that generates the traversal metadata in breadth first traversal order
+  #[cfg(debug_assertions)/* remove this once tests are made */]
+  #[allow(warnings)/* remove this once tests are made */]
   pub fn current_breadth_first_with_traversal_metadata(&self) -> impl Iterator<Item = (SubtreeSlice, TraversalPath)> + core::marker::Send + core::marker::Sync + 'static {
     const MAX_DEFERED: usize = DyckStructureZipperU64::MAX_LEAVES;
 
-    //  core::todo!("ADD TESTS");
+     core::todo!("ADD TESTS");
 
     let mut tmp = self.clone();
 
@@ -380,6 +428,7 @@ impl DyckStructureZipperU64 {
     DyckWord { word: ((1 << terminal) - 1 & self.structure) >> head }
   }
 }
+
 pub enum DFSLeftToRightAction {
   Root,
   DecendLeft,
@@ -388,12 +437,12 @@ pub enum DFSLeftToRightAction {
   AccendRight,
 }
 
-/// ```ignore
-/// // 0b0.......01 root            or []
-/// // 0b0......010 left  from root or [L]
-/// // 0b0......011 right from root or [R]
-/// // 0b0..0101100                    [L R R L L]
-/// // 0b1........1 rightmost element of a dyck word 0b01..(32 ones)..10..(31 zeroes)..0
+/// ```notrust
+/// 0b0.......01 root            or []
+/// 0b0......010 left  from root or [L]
+/// 0b0......011 right from root or [R]
+/// 0b0..0101100                    [L R R L L]
+/// 0b1........1 rightmost element of a dyck word 0b01..(32 ones)..10..(31 zeroes)..0
 /// ```
 #[derive(Clone, Copy)]
 pub struct TraversalPath(u32);

@@ -4,8 +4,9 @@ extern crate core;
 extern crate std;
 
 
+#[allow(unused_imports)] use crate::DbgVal;
 use {
-crate::{Val, Sym, DyckStructureZipperU64, DbgVal},
+crate::{Val, Sym, DyckStructureZipperU64},
 
   core::{result::Result, option::Option, iter::Iterator, clone::Clone},
   alloc::vec::Vec,
@@ -17,6 +18,7 @@ pub enum DeBruijnLevel {
   Ref(core::num::NonZeroIsize),
 }
 impl DeBruijnLevel {
+  #[allow(dead_code)]
   fn as_index(self) -> usize {
     match self {
       DeBruijnLevel::Intro => 0,
@@ -50,10 +52,6 @@ impl Variables {
     }
     self.store.push((pos, sym));
     DeBruijnLevel::Intro
-  }
-
-  fn clear(&mut self) {
-    self.store.clear();
   }
 
   /// returns DebruijnLevel::Intro if the value is not yet in the table
@@ -225,7 +223,9 @@ impl<'a> DyckParser<'a> {
   pub fn new(src: &'a str) -> Self {
     Self { tokenizer: Tokenizer::init(src), src, threaded_variables: Option::None }
   }
+  #[cfg(test)]
   pub(crate) fn clear_variables(&mut self) {self.threaded_variables = Option::None;}
+  #[allow(unused)]
   pub(crate) fn thread_variables(&mut self, mut vars: Option<Variables>) -> Option<Variables> {
     core::mem::swap(&mut vars, &mut self.threaded_variables);
     vars
@@ -444,26 +444,26 @@ fn test_dyck_parser() {
   let mut count = 0;
   let start = std::time::Instant::now();
   for _ in 0..1000 {
-for _each in DyckParser::new(&s) {
-  count += 1;
-  // comment `continue` for printing 
-  continue; 
-  #[allow(unreachable_code)]
-  match _each {
-    Result::Ok((zip, store, vars)) => {
-      std::print!("\n{zip:?}store: [  ");
-      for leaf in store.iter().copied().map(DbgVal) {
-        std::print!("{leaf:?}  ")
+    for _each in DyckParser::new(&s) {
+      count += 1;
+      // comment `continue` for printing 
+      continue; 
+      #[allow(unreachable_code)]
+      match _each {
+        Result::Ok((zip, store, vars)) => {
+          std::print!("\n{zip:?}store: [  ");
+          for leaf in store.iter().copied().map(DbgVal) {
+            std::print!("{leaf:?}  ")
+          }
+          std::print!("]\nvars  : [");
+          for leaf in vars.store.iter() {
+            std::print!("{leaf:?}  ")
+          }
+          std::println!("]")
+        }
+        Result::Err(e) => std::println!("{e:?}"),
       }
-      std::print!("]\nvars  : [");
-      for leaf in vars.store.iter() {
-        std::print!("{leaf:?}  ")
-      }
-      std::println!("]")
     }
-    Result::Err(e) => std::println!("{e:?}"),
-  }
-}
   }
   let end = start.elapsed().as_millis();
   std::println!("count : {count}\ntime : {end}")

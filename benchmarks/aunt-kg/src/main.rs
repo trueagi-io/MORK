@@ -265,6 +265,7 @@ fn main() {
             }
         }
     }
+    drop(mother_query_out_zipper);
 
     println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
     // println!("j {_j}");
@@ -301,6 +302,7 @@ fn main() {
             }
         }
     }
+    drop(sister_query_out_zipper);
 
     println!("getting all sisters took {} microseconds", t5.elapsed().as_micros());
     // println!("j {_j}");
@@ -338,7 +340,7 @@ fn main() {
             }
         }
     }
-
+    drop(aunt_query_out_zipper);
 
     println!("getting all aunts took {} microseconds", t6.elapsed().as_micros());
     // println!("j {_j}");

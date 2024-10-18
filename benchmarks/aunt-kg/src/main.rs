@@ -212,7 +212,6 @@ fn main() {
     person_path.extend(person_symbol);
 
     let mut person_zipper = unsafe{ family_head.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
-    person_zipper.descend_to_byte(person_path[person_path.len()-1]);
 
     person_zipper.graft(&female_zipper);
     person_zipper.join(&male_zipper);

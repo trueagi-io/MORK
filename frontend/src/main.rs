@@ -212,6 +212,7 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
 }
 
+use pathmap::zipper::WriteZipper;
 impl Parser for DataParser {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         return unsafe { std::mem::transmute(s) };

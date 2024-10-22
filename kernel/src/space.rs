@@ -1,14 +1,14 @@
-use std::fmt::format;
-use std::hint::black_box;
-use std::io::{BufRead, Read, Write};
-use std::{mem, process, ptr};
+use std::io::{Read, Write};
 use std::time::Instant;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
 use mork_bytestring::Tag::{Arity, SymbolSize};
-use mork_frontend::bytestring_parser::{Parser, ParserError, BufferedIterator};
+use mork_frontend::{bytestring_parser::{Parser, ParserError, /* BufferedIterator */}, cz3_parser::BufferedIterator};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ReadZipper, WriteZipper, Zipper};
 
+
+pub(crate) mod symbol_mapping;
+pub use symbol_mapping::SymbolMapping;
 
 #[repr(transparent)]
 pub struct Space { pub(crate) btm: BytesTrieMap<()> }
@@ -275,64 +275,6 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     }
 }
 
-pub struct SymbolMapping {
-    count: u64,
-    symbols: BytesTrieMap<Vec<u8>>,
-    strings: BytesTrieMap<String>,
-}
-
-impl SymbolMapping {
-    pub fn new() -> Self {
-        Self {
-            count: 3,
-            symbols: BytesTrieMap::new(),
-            strings: BytesTrieMap::new(),
-        }
-    }
-
-    // temporary workaround for the inability of making BytesTrieMaps static
-    pub fn as_static_mut(&mut self) -> &'static mut SymbolMapping {
-        unsafe { mem::transmute::<&mut SymbolMapping, &'static mut SymbolMapping>(self) }
-    }
-
-    pub fn as_static(&self) -> &'static SymbolMapping {
-        unsafe { mem::transmute::<&SymbolMapping, &'static SymbolMapping>(&self) }
-    }
-}
-
-fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
-    let ir = u64::from_be(i);
-    unsafe { ptr::write_unaligned(buffer as *mut u64, ir) };
-    let bs = (8 - ir.trailing_zeros()/8) as usize;
-    let l = bs.max(1);
-    unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
-}
-
-impl Parser for SymbolMapping {
-    fn tokenizer(&mut self, s: String) -> Vec<u8> {
-        if s.len() == 0 { return vec![] }
-        // return s.as_bytes().to_vec();
-        let mut z = self.symbols.write_zipper_at_path(s.as_bytes());
-        if let Some(r) = z.get_value() {
-            r.clone()
-        } else {
-            self.count += 1;
-            let mut buf: [u8; 8] = [0; 8];
-            let slice = gen_key(self.count, buf.as_mut_ptr());
-            let internal = slice.to_vec();
-            z.set_value(internal.clone());
-            drop(z);
-            self.strings.insert(slice, s);
-            internal
-        }
-    }
-}
-
-impl SymbolMapping {
-    pub fn token_lookup(&self, token: &[u8]) -> Option<&String> {
-        self.strings.get(token)
-    }
-}
 
 
 impl Space {
@@ -343,6 +285,7 @@ impl Space {
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipper<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
+
 
     pub fn load_csv<R : Read>(&mut self, mut r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
         let mut i = 0;
@@ -358,7 +301,7 @@ impl Space {
                     let mut ez = ExprZipper::new(e);
                     ez.loc += 1;
                     for symbol in sv.split(|&x| x == b',') {
-                        let internal = sm.tokenizer(unsafe { String::from_utf8_unchecked(symbol.to_vec()) });
+                        let internal = sm.tokenizer(symbol);
                         ez.write_symbol(&internal[..]);
                         ez.loc += internal.len() + 1;
                         a += 1;
@@ -376,11 +319,43 @@ impl Space {
         Ok(i)
     }
 
-    pub fn load_json<R : Read>(&mut self, mut r: R, sm: &'static mut SymbolMapping) -> Result<usize, String> {
-        pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipper<'a, 'b, ()>, sm: &'static mut SymbolMapping }
-        impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
+    // pub fn load_csv<R : Read>(&mut self, mut r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
+    //     let mut i = 0;
+    //     let mut buf = vec![];
+    //     let mut stack = [0u8; 2048];
+
+    //     match r.read_to_end(&mut buf) {
+    //         Ok(read) => {
+    //             for sv in buf.split(|&x| x == b'\n') {
+    //                 if sv.len() == 0 { continue }
+    //                 let mut a = 0;
+    //                 let e = Expr{ ptr: stack.as_mut_ptr() };
+    //                 let mut ez = ExprZipper::new(e);
+    //                 ez.loc += 1;
+    //                 for symbol in sv.split(|&x| x == b',') {
+    //                     let internal = sm.tokenizer(unsafe { String::from_utf8_unchecked(symbol.to_vec()) });
+    //                     ez.write_symbol(&internal[..]);
+    //                     ez.loc += internal.len() + 1;
+    //                     a += 1;
+    //                 }
+    //                 let total = ez.loc;
+    //                 ez.reset();
+    //                 ez.write_arity(a);
+    //                 self.btm.insert(&stack[..total], ());
+    //                 i += 1;
+    //             }
+    //         }
+    //         Err(e) => { return Err(format!("{:?}", e)) }
+    //     }
+
+    //     Ok(i)
+    // }
+    pub fn load_json<R : Read>(&mut self, mut r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
+        pub struct SpaceTranscriber<'a, 'b, 'c,'sm> { count: usize, wz: &'c mut WriteZipper<'a, 'b, ()>, sm: &'sm mut SymbolMapping }
+        impl <'a, 'b, 'c, 'sm> SpaceTranscriber<'a, 'b, 'c, 'sm> {
             #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
-                let token = self.sm.tokenizer(s.into());
+                let s_ : String = s.into();
+                let token = self.sm.tokenizer(s_.as_bytes());
                 let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
                 path.extend(token);
                 self.wz.descend_to(&path[..]);
@@ -388,27 +363,27 @@ impl Space {
                 self.wz.ascend(path.len());
             }
         }
-        impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
+        impl <'a, 'b, 'c, 'sm> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c, 'sm> {
             #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
                 if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
-                let token = self.sm.tokenizer(i.to_string());
+                let token = self.sm.tokenizer(i.to_string().as_bytes());
                 self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
                 self.wz.descend_to(token);
             }
             #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
-                self.wz.ascend(self.sm.tokenizer(i.to_string()).len() + 1);
+                self.wz.ascend(self.sm.tokenizer(i.to_string().as_bytes()).len() + 1);
                 if last { self.wz.ascend(1); }
             }
             #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
             #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
                 if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
-                let token = self.sm.tokenizer(k.to_string());
+                let token = self.sm.tokenizer(k.to_string().as_bytes());
                 // let token = k.to_string();
                 self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
                 self.wz.descend_to(token);
             }
             #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
-                let token = self.sm.tokenizer(k.to_string());
+                let token = self.sm.tokenizer(k.to_string().as_bytes());
                 // let token = k.to_string();
                 self.wz.ascend(token.len() + 1);
                 if last { self.wz.ascend(1); }
@@ -442,30 +417,35 @@ impl Space {
         Ok(st.count)
     }
 
-    pub fn load<R : Read>(&mut self, r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
-        let mut it = BufferedIterator::new(r);
 
-        let t0 = Instant::now();
-        let mut i = 0;
-        let mut stack = [0u8; 2048];
-        let mut vs = Vec::with_capacity(64);
-        loop {
-            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match sm.sexprUnsafe::<R>(&mut it, &mut vs, &mut ez) {
-                Ok(()) => {
-                    self.btm.insert(&stack[..ez.loc], ());
-                }
-                Err(ParserError::InputFinished()) => { break }
-                Err(other) => { return Err(format!("{:?}", other)) }
-            }
-            i += 1;
-            vs.clear();
-        }
-        println!("loading took {} ms", t0.elapsed().as_millis());
-        Ok(i)
+        // // TODO integrate with new code?
+    pub fn load<R : Read>(&mut self, r: R, sm: &mut SymbolMapping) -> Result<usize, String> {
+      #![allow(unused)]
+        core::todo!("Figure out what version of the parser this expects");
+        // let mut it = BufferedIterator::new(r);
+
+        // let t0 = Instant::now();
+        // let mut i = 0;
+        // let mut stack = [0u8; 2048];
+        // let mut vs = Vec::with_capacity(64);
+        // loop {
+        //     let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        //     match sm.sexprUnsafe::<R>(&mut it, &mut vs, &mut ez) {
+        //         Ok(()) => {
+        //             self.btm.insert(&stack[..ez.loc], ());
+        //         }
+        //         Err(ParserError::InputFinished) => { break }
+        //         Err(other) => { return Err(format!("{:?}", other)) }
+        //     }
+        //     i += 1;
+        //     vs.clear();
+        // }
+        // println!("loading took {} ms", t0.elapsed().as_millis());
+        // Ok(i)
     }
 
-    pub fn dump<W : Write>(&self, w: &mut W, sm: &'static SymbolMapping) -> Result<usize, String> {
+
+    pub fn dump<W : Write>(&self, w: &mut W, sm: &SymbolMapping) -> Result<usize, String> {
         let mut rz = self.btm.read_zipper();
 
         let t0 = Instant::now();
@@ -537,6 +517,7 @@ impl Space {
         });
     }
 
+    #[cfg(feature = "pathmap_counters")]
     pub fn done(&mut self, symbol_mapping: SymbolMapping) -> ! {
         let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         counters.print_histogram_by_depth();

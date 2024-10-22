@@ -7,7 +7,7 @@ members = [
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/",
     "frontend/",
-    #"kernel/" LP: Looks to be in a state of heavy experimentation
+    "kernel/" # LP: Looks to be in a state of heavy experimentation
 ]
 
 [workspace.package]
@@ -18,7 +18,7 @@ edition = "2021"
 # Internal to MORK
 mork-bytestring = {path = "./experiments/expr/bytestring"}
 mork-frontend = {path = "./frontend"}
-# mork = {path = "./kernel"} LP: Looks to be in a state of heavy experimentation
+mork = {path = "./kernel"} # LP: Looks to be in a state of heavy experimentation
 
 # External to MORK
 pathmap = {path = "../PathMap", features = ["all_dense_nodes"]}

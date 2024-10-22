@@ -75,7 +75,7 @@ impl <'a> Context<'a> {
 }
 
 pub trait Parser {
-  fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8];
+  fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] where Self : 'r;
 
   fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
     use ParserError::*;

@@ -5,7 +5,8 @@ use mork_bytestring::*;
 use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
+use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipper};
+use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 
 
 static mut SIZES: [u64; 4] = [0u64; 4];
@@ -84,7 +85,7 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
-fn transition<F: FnMut(&mut ReadZipper<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipper<()>, f: &mut F) {
+fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, f: &mut F) {
     // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("label {}", label(*stack.last().unwrap()));
     let last = stack.pop().unwrap();
@@ -380,7 +381,7 @@ fn variable_or_arity_mask(a: u8) -> [u64; 4] {
     m
 }
 
-fn variable_or_arity(z: &mut WriteZipper<()>, a: u8) {
+fn variable_or_arity<WZ: WriteZipper<()>>(z: &mut WZ, a: u8) {
     let m = variable_or_arity_mask(a);
     z.remove_unmasked_branches(m);
 }

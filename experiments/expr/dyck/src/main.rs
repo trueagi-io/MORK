@@ -1,5 +1,5 @@
 extern crate alloc;
-use dyck::DyckParser;
+use dyck::test_parser::DyckParser;
 use std::hint::black_box;
 
 fn main() {

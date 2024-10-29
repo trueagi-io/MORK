@@ -2,7 +2,7 @@ use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
+use pathmap::zipper::{Zipper, WriteZipper};
 use num::{BigInt, zero};
 
 
@@ -42,7 +42,7 @@ impl <'a> Iterator for CfIter<'a> {
     }
 }
 
-fn drop_symbol_head_byte(loc: &mut WriteZipper<usize>) {
+fn drop_symbol_head_byte<Z: WriteZipper<usize>>(loc: &mut Z) {
     let m = loc.child_mask();
     let mut it = CfIter::new(&m);
 
@@ -82,7 +82,8 @@ fn decode_seq(s: &[u8]) -> Vec<BigInt> {
 }
 
 fn main() {
-    let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
+    // let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
+    let mut file = std::fs::File::open("/Users/admin/Desktop/stripped")
         .expect("Should have been able to read the file");
     let mut s = String::new();
     file.read_to_string(&mut s).unwrap();
@@ -123,16 +124,18 @@ fn main() {
     println!("building took {} ms", t0.elapsed().as_millis());
 
     const MAX_OFFSET: u8 = 10;
+    let map_head = m.zipper_head();
     for i in 1..(MAX_OFFSET + 1) {
         let k = &[i];
         let t1 = Instant::now();
-        let mut z1 = unsafe{ m.write_zipper_at_exclusive_path_unchecked(k) };
+        let mut z1 = unsafe{ map_head.write_zipper_at_exclusive_path_unchecked(k) };
 
-        z1.graft(&m.read_zipper_at_path(&[i - 1]));
+        z1.graft(&map_head.read_zipper_at_path(&[i - 1]));
         drop_symbol_head_byte(&mut z1);
 
         println!("drophead {i} took {} ms", t1.elapsed().as_millis());
     }
+    drop(map_head);
 
     for i in 0..(MAX_OFFSET + 1) {
         println!("total seqs from {} {}", i, m.read_zipper_at_path(&[i]).val_count());

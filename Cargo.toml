@@ -5,8 +5,6 @@ members = [
     "benchmarks/fizzbuzz/",
     "benchmarks/logic-query/",
     "benchmarks/oeis/",
-    "benchmarks/parmap/",
-    "benchmarks/simple_partest/",
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
     "frontend/",

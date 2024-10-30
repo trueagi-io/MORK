@@ -6,6 +6,7 @@ use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipperUntracked, ZipperI
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::WriteZipper;
 
+const K: u64 = 1_000_000_000;
 
 fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &mut ReadZipperUntracked<()>, f: &mut F) {
     rz.descend_until();
@@ -47,13 +48,12 @@ fn setup() -> &'static mut ZipperHead<'static, 'static, ()> {
 }
 
 fn parallel_map() {
-    const k: u64 = 1_000_000_000;
     const TC: u32 = 12;
 
     let zh = setup();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, k, 1, ()));
+    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
 
@@ -158,7 +158,6 @@ fn parallel_map() {
 }
 
 fn task_parallel_map() {
-    const k: u64 = 1_000_000_000;
     const TC: u32 = 32;
     let pool = ThreadPoolBuilder::new().num_threads(TC as usize).build().unwrap();
     static mut counter: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -166,7 +165,7 @@ fn task_parallel_map() {
     let zh = setup();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, k, 1, ()));
+    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
 
@@ -223,13 +222,11 @@ fn task_parallel_map() {
 }
 
 fn sequential_map() {
-    // const k: u64 = 1000;
-    const k: u64 = 1_000_000_000;
 
     let zh = setup();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, k, 1, ()));
+    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
     let mut oz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[1]) };

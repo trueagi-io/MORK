@@ -48,7 +48,7 @@ fn setup() -> &'static mut ZipperHead<'static, 'static, ()> {
 
 fn parallel_map() {
     const k: u64 = 1_000_000_000;
-    const TC: u32 = 64;
+    const TC: u32 = 12;
 
     let zh = setup();
 
@@ -79,7 +79,7 @@ fn parallel_map() {
 
             units.push((work_input, work_output));
 
-            if run > cutoff {
+            if run >= cutoff {
                 // dispatch and clear
                 let mut thread_units = std::mem::take(&mut units);
                 run = 0;
@@ -115,31 +115,33 @@ fn parallel_map() {
         }
         z.ascend_byte();
     });
-    let mut thread_units = std::mem::take(&mut units);
-    run = 0;
-    dispatches += 1;
-    println!("dispatched {} up to {} ({})", dispatches, chunks, thread_units.len());
-    handles.push(std::thread::spawn(move || {
-        // work_output.set_value(());
-        for (work_input, work_output) in thread_units.iter_mut() {
-            // work_output.graft(work_input);
-            loop {
-                if work_input.to_next_val().is_none() { break }
-                // println!("tp {:?}", work_input.path());
-                let mut buffer = [0; 8];
-                for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
-                    *t = *s;
+    if run > 0 {
+        let mut thread_units = std::mem::take(&mut units);
+        run = 0;
+        dispatches += 1;
+        println!("dispatched {} up to {} ({})", dispatches, chunks, thread_units.len());
+        handles.push(std::thread::spawn(move || {
+            // work_output.set_value(());
+            for (work_input, work_output) in thread_units.iter_mut() {
+                // work_output.graft(work_input);
+                loop {
+                    if work_input.to_next_val().is_none() { break }
+                    // println!("tp {:?}", work_input.path());
+                    let mut buffer = [0; 8];
+                    for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
+                        *t = *s;
+                    }
+                    let v = u64::from_be_bytes(buffer);
+                    work_output.descend_to(work_input.path());
+                    let vr = (v as f64).sqrt() as u64;
+                    // println!("calculated f({v}) = {vr}");
+                    work_output.descend_to(&vr.to_be_bytes()[..]);
+                    work_output.set_value(());
+                    work_output.reset();
                 }
-                let v = u64::from_be_bytes(buffer);
-                work_output.descend_to(work_input.path());
-                let vr = (v as f64).sqrt() as u64;
-                // println!("calculated f({v}) = {vr}");
-                work_output.descend_to(&vr.to_be_bytes()[..]);
-                work_output.set_value(());
-                work_output.reset();
             }
-        }
-    }));
+        }));
+    }
     drop(dz);
     println!("delegating {chunks} chunks took {} micros", t0.elapsed().as_micros());
 

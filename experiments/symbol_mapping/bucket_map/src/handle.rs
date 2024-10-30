@@ -22,7 +22,7 @@ impl<'a> core::ops::Deref for WritePermit<'a> {
 }
 
 impl<'a> WritePermit<'a> {
-  pub fn get_or_insert(&self, bytes : &[u8]) -> Symbol {
+  pub fn get_sym_or_insert(&self, bytes : &[u8]) -> Symbol {
     // the ordering of most of the atomics here use Relaxed, when one would expect Release.
     // the reason is that these atomics are not under contention, once a thread has a permission it is the only one allowed to change those atomic fields.
     // the alternative is to mutate under an `UnsafeCell`, but atomics already do that.
@@ -46,13 +46,15 @@ impl<'a> WritePermit<'a> {
       unsafe {  
         if (*slab_ptr).slab_len-(*slab_ptr).write_pos >= bytes.len() + U64_BYTES {
           let recovery = (slab_ptr, *slab_ptr);
-          eager_and_recovery = Some(((&mut *slab_ptr).register_bytes(bytes) ,recovery));
+          eager_and_recovery = Some((Slab::register_bytes(slab_ptr,bytes) ,recovery));
         }
       }
     }
 
+    let hash = bounded_pearson_hash::<PEARSON_BOUND>(bytes);
+
     // as minimal as it might be, we want the critical section as small as posible, so we index first
-    let sym_table_lock = &self.to_symbol[bounded_pearson_hash::<PEARSON_BOUND>(bytes) as usize % MAX_THREADS].0;
+    let sym_table_lock = &self.to_symbol[hash as usize % MAX_WRITER_THREADS].0;
     let bytes_guard_lock = &self.to_bytes[MAPPING_THREAD_INDEX.get().unwrap() as usize].0;
 
     let sym = 'lock_scope_sym : {
@@ -75,17 +77,18 @@ impl<'a> WritePermit<'a> {
           slab_ptr = allocation;
         }
         unsafe {
-          (&mut *slab_ptr).register_bytes(bytes)
+          Slab::register_bytes(slab_ptr,bytes)
         }
       };
       let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed) as i64;
       
       let old_sym = sym_guard.insert(bytes, new_sym);
       core::debug_assert!(matches!(old_sym, Option::None));
-      
+
       let sym_bytes = new_sym.to_ne_bytes();
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
+
         let old_thin = bytes_guard.insert(sym_bytes.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
       }
@@ -94,9 +97,11 @@ impl<'a> WritePermit<'a> {
     };
 
     // similarly to entering the critical section, we do cleanup after, even though normally we would prefer to do it as locally as possible
-    let next = unsafe {(*slab_ptr).next};
-    if !next.is_null() {
-      thread_permission.symbol_table_last.store(next, atomic::Ordering::Release);
+    if !slab_ptr.is_null() {
+      let next = unsafe {(*slab_ptr).next};
+      if !next.is_null() {
+        thread_permission.symbol_table_last.store(next, atomic::Ordering::Release);
+      }
     }
 
     if let Some((_,(recovery_ptr, recovery_data))) = eager_and_recovery {
@@ -132,7 +137,7 @@ impl SharedMappingHandle {
       return Ok(WritePermit(self, PhantomData));
     }
 
-    for each in 0..MAX_THREADS {
+    for each in 0..MAX_WRITER_THREADS {
       let p = &self.permissions[each];
       if let Ok(_) = p.0.thread_id.compare_exchange(0, THREAD_ID.with(|x|*x)+1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed) {
         MAPPING_THREAD_INDEX.set(Some(each as u8));

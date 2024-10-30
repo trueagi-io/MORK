@@ -18,13 +18,13 @@ const U64_BYTES : usize = u64::BITS as usize / 8;
 type Symbol = i64;
 
 /// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
-const MAX_THREAD_INDEX : usize = i8::MAX as usize;
-const MAX_THREADS : usize = MAX_THREAD_INDEX+1;
+const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
+const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
 
 /// We don't want locks to implicitly cause chache misses because they are too close together.
 #[repr(align(64 /* bytes; cache line */))]
 struct AlignCache<T>(T);
-type AlignArray<T> = [AlignCache<T>; MAX_THREAD_INDEX+1];
+type AlignArray<T> = [AlignCache<T>; MAX_WRITER_THREAD_INDEX+1];
 
 
 #[repr(u64)]
@@ -51,25 +51,24 @@ impl SharedMapping {
   pub fn new()->SharedMappingHandle {
     unsafe {
       let ptr = alloc::alloc::alloc(alloc::alloc::Layout::new::<MaybeUninit<SharedMapping>>()) as *mut MaybeUninit<SharedMapping>;
-      SharedMapping::init(&mut *ptr, SharedMappingFlags::HeapAlocated as u64);
-      SharedMappingHandle(core::ptr::NonNull::new(ptr as *mut SharedMapping).unwrap())
+      SharedMapping::init(ptr, SharedMappingFlags::HeapAlocated as u64)
     }
   }
 
   /// This is unsafe because this could be done inside a stack frame, whick makes safety guarantees more difficult.
   /// This has been made public for use in initializing a static.
-  pub unsafe fn init(uninit : &mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
-    let inner = uninit.as_mut_ptr();
+  pub unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
+    let inner = (*uninit).as_mut_ptr();
     unsafe {
       (*inner).count = AtomicU64::new(1);
       (*inner).flags = AtomicU64::new(init_flags);
 
-      for each in 0..=MAX_THREAD_INDEX {
+      for each in 0..=MAX_WRITER_THREAD_INDEX {
         (&raw mut (*inner).permissions[each]).write(AlignCache(ThreadPermission::init(each as u8)));
         (&raw mut (*inner).to_symbol[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
         (&raw mut (*inner).to_bytes[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
       }
-      SharedMappingHandle( core::ptr::NonNull::new_unchecked(uninit.assume_init_mut() as *mut SharedMapping) )
+      SharedMappingHandle( core::ptr::NonNull::new_unchecked(inner) )
     }
   }
 
@@ -98,10 +97,12 @@ impl SharedMapping {
   pub fn get_sym(&self, bytes : &[u8]) -> Option<Symbol> {
 
     let hash = bounded_pearson_hash::<PEARSON_BOUND>(bytes);
-    let trie_lock = &self.to_symbol[hash as usize % MAX_THREAD_INDEX].0;
+
+    let trie_lock = &self.to_symbol[hash as usize % MAX_WRITER_THREADS].0;
 
     '_lock_scope:{
       let lock_guard = trie_lock.read().unwrap();
+
       lock_guard.get(bytes).copied()
     }    
   }

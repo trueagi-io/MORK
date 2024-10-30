@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipperUntracked, ZipperIteration, ZipperHead};
+use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipperUntracked, ZipperIteration, ZipperHead, ZipperAbsolutePath};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::WriteZipper;
 
@@ -71,10 +71,10 @@ fn parallel_map() {
             run += 1;
 
             // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-            let mut work_input = unsafe { zh.read_zipper_at_path_unchecked(z.path()) };
+            let mut work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
             let mut opath = vec![1];
             opath.extend_from_slice(z.path());
-            // println!("dispatched zpath={:?} ({}) opath={opath:?}", z.path(), z.val_count());
+            // println!("created zpath={:?} ({}) opath={opath:?} for {}", z.path(), z.val_count(), dispatches + 1);
             let mut work_output = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&opath[..]) };
 
             units.push((work_input, work_output));
@@ -86,9 +86,11 @@ fn parallel_map() {
                 dispatches += 1;
                 println!("dispatched {} up to {} ({})", dispatches, chunks, thread_units.len());
                 handles.push(std::thread::spawn(move || {
+                    // println!("thread {} working", dispatches);
                     // work_output.set_value(());
                     for (work_input, work_output) in thread_units.iter_mut() {
                         // work_output.graft(work_input);
+                        // println!("thread {} processing origin={:?} (queued: {})", dispatches, work_input.origin_path(), work_input.val_count());
                         loop {
                             if work_input.to_next_val().is_none() { break }
                             // println!("tp {:?}", work_input.path());
@@ -105,6 +107,7 @@ fn parallel_map() {
                             work_output.reset();
                         }
                     }
+                    // println!("thread {} done working", dispatches);
                 }));
             }
 
@@ -172,7 +175,7 @@ fn task_parallel_map() {
         loop {
             chunks += 1;
             // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-            let mut work_input = unsafe { zh.read_zipper_at_path_unchecked(z.path()) };
+            let mut work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
             let mut opath = vec![1];
             opath.extend_from_slice(&z.path()[..]);
             // println!("dispatched zpath={:?} ({}) opath={opath:?}", z.path(), z.val_count());

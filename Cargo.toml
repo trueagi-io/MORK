@@ -21,4 +21,7 @@ mork-frontend = {path = "./frontend"}
 # mork = {path = "./kernel"} LP: Looks to be in a state of heavy experimentation
 
 # External to MORK
-pathmap = {path = "../PathMap", features = ["all_dense_nodes"]}
+# pathmap = {path = "../PathMap" , features = ["all_dense_nodes"]}
+[workspace.dependencies.pathmap]
+path = "../PathMap" 
+# features = ["all_dense_nodes"]

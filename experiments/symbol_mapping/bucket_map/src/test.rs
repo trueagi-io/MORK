@@ -62,7 +62,9 @@ fn same_sym() {
 
 #[test]
 fn allocate_many() {
-  const LEN : usize = 4096*2;
+  // const LEN : usize = 3843;   // all dense nodes break point
+  const LEN : usize = 5449;      // breaking point with all dense nodes off
+  // const LEN : usize = 4096*2; // original test
   static ONES : [u8 ; LEN]= [1;LEN];
 
 
@@ -70,7 +72,9 @@ fn allocate_many() {
 
   let writer = handle.try_aquire_permission().unwrap();
 
-  for each in 0..LEN {
+  // for each in 3842..LEN {  // all dense nodes break point
+  for each in LEN-5441..LEN { // breaking point with all dense nodes off
+  // for each in 0..LEN {     // original test
     println!("LEN : {each}");
     writer.get_sym_or_insert(&ONES[0..each]);
   }

@@ -60,3 +60,18 @@ fn same_sym() {
   }
 }
 
+#[test]
+fn allocate_many() {
+  const LEN : usize = 4096*2;
+  static ONES : [u8 ; LEN]= [1;LEN];
+
+
+  let handle = SharedMapping::new();
+
+  let writer = handle.try_aquire_permission().unwrap();
+
+  for each in 0..LEN {
+    println!("LEN : {each}");
+    writer.get_sym_or_insert(&ONES[0..each]);
+  }
+}

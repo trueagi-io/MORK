@@ -11,7 +11,7 @@ pub(crate) struct Slab {
 
 impl Slab {
   pub(crate) unsafe fn allocate(bytes : u64)-> *mut Slab {
-    let slab_size = (bytes as usize).max(4096);
+    let slab_size = (bytes as usize + core::mem::size_of::<Slab>()).max(4096);
     let layout = alloc::alloc::Layout::array::<core::cell::UnsafeCell<u8>>(slab_size).unwrap().align_to(4096).expect("Cannot be aligned");
     let allocation = alloc::alloc::alloc(layout);
     
@@ -47,6 +47,8 @@ impl Slab {
         (*_self).next = next;
         _self = next;
         slab = *next;
+
+        println!("ALLOCATE")
       }
       let head = (*_self).slab_data.add(slab.write_pos);
 

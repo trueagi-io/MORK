@@ -29,6 +29,7 @@ struct InterleavedRanges {
     buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
 }
 
+#[repr(align(64))]
 struct Node {
     _val: usize,
     next: core::cell::UnsafeCell<Option<Box<Node>>>,

@@ -15,17 +15,28 @@ const N: usize = 100_000_000;
 // type Test = PathMapWriteZipperInsert;
 // type Test = AllocLinkedList;
 // type Test = ContiguousRanges;
-type Test = InterleavedRanges;
+// type Test = InterleavedRanges;
+type Test = ContiguousButScattered;
+
+// GOAT, do a "scattered but contiguous test", where blocks are assigned to threads contiguously, but
+// items are written to in a scattered order
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
 }
 
+/// Best case.  All items are written into a contiguous block by the thread
 struct ContiguousRanges {
     buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
 }
 
+/// Worst case.  All threads are interleaving writes to adjacent cache lines
 struct InterleavedRanges {
+    buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
+}
+
+/// Middle case.  Each thread has its own block, but the writes are to non-contiguous cache lines
+struct ContiguousButScattered {
     buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
 }
 
@@ -114,6 +125,42 @@ impl<'map, 'head> TestParams<'map, 'head> for InterleavedRanges {
                 next: core::cell::UnsafeCell::new(None),
                 _pad: [0u8; 48],
             }));
+        }
+    }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for ContiguousButScattered {
+    type HeadT = &'map Self where Self: 'map;
+    type InZipperT = &'head mut [core::cell::UnsafeCell<MaybeUninit<Node>>];
+    fn init(element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        let mut buf = Vec::with_capacity(element_cnt);
+        buf.resize_with(element_cnt, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+        Self {
+            buf: core::cell::UnsafeCell::new(buf)
+        }
+    }
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self
+    }
+    fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) -> Self::InZipperT {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let buf = unsafe{ &mut*head.buf.get() };
+        &mut buf[(thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread)]
+    }
+    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let base = elements_per_thread * thread_idx;
+        for i in 0..(elements_per_thread / 64) {
+            for j in 0..64 {
+                let idx = (j*64) + i;
+                slice[idx] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
+                    _val: base + idx,
+                    next: core::cell::UnsafeCell::new(None),
+                    _pad: [0u8; 48],
+                }));
+            }
         }
     }
     fn drop_head(_head: Self::HeadT) { }

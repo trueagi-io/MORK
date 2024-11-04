@@ -14,7 +14,8 @@ const N: usize = 100_000_000;
 // type Test = PathMapReadZipperGet;
 // type Test = PathMapWriteZipperInsert;
 // type Test = AllocLinkedList;
-type Test = ContiguousRanges;
+// type Test = ContiguousRanges;
+type Test = InterleavedRanges;
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
@@ -24,9 +25,9 @@ struct ContiguousRanges {
     buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
 }
 
-// struct InterleavedRanges<'head> {
-
-// }
+struct InterleavedRanges {
+    buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
+}
 
 struct Node {
     _val: usize,
@@ -77,6 +78,38 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
         for i in 0..elements_per_thread {
             slice[i] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
                 _val: base + i,
+                next: core::cell::UnsafeCell::new(None),
+                _pad: [0u8; 48],
+            }));
+        }
+    }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for InterleavedRanges {
+    type HeadT = &'map Self where Self: 'map;
+    type InZipperT = &'head mut [core::cell::UnsafeCell<MaybeUninit<Node>>];
+    fn init(element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        let mut buf = Vec::with_capacity(element_cnt);
+        buf.resize_with(element_cnt, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+        Self {
+            buf: core::cell::UnsafeCell::new(buf)
+        }
+    }
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self
+    }
+    fn dispatch_zipper(head: &'head Self::HeadT, _thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
+        let buf = unsafe{ &mut*head.buf.get() };
+        &mut buf[..] // This isn't going to pass muster with miri, but it's just an experiment
+    }
+    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        for i in 0..elements_per_thread {
+            let idx = (i*real_thread_cnt) + thread_idx;
+            slice[idx] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
+                _val: idx,
                 next: core::cell::UnsafeCell::new(None),
                 _pad: [0u8; 48],
             }));

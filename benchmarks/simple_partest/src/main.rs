@@ -1,3 +1,4 @@
+use std::mem::MaybeUninit;
 use std::thread;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -12,18 +13,26 @@ const THREAD_CNT: usize = 64;
 const N: usize = 100_000_000;
 // type Test = PathMapReadZipperGet;
 // type Test = PathMapWriteZipperInsert;
-type Test = AllocLinkedList;
+// type Test = AllocLinkedList;
+type Test = ContiguousRanges;
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
 }
+
+struct ContiguousRanges {
+    buf: core::cell::UnsafeCell<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>,
+}
+
+// struct InterleavedRanges<'head> {
+
+// }
 
 struct Node {
     _val: usize,
     next: core::cell::UnsafeCell<Option<Box<Node>>>,
     _pad: [u8; 48],
 }
-
 
 struct PathMapReadZipperGet {
     map: BytesTrieMap<usize>,
@@ -32,14 +41,6 @@ struct PathMapReadZipperGet {
 struct PathMapWriteZipperInsert  {
     map: BytesTrieMap<usize>,
 }
-
-// struct WriteToContiguousRanges<'head> {
-
-// }
-
-// struct WriteToInterleavedRanges<'head> {
-
-// }
 
 trait TestParams<'map, 'head> {
     type HeadT;
@@ -50,6 +51,39 @@ trait TestParams<'map, 'head> {
     fn thread_body(zipper: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize);
     fn drop_head(head: Self::HeadT);
     fn drop_self(self);
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
+    type HeadT = &'map Self where Self: 'map;
+    type InZipperT = &'head mut [core::cell::UnsafeCell<MaybeUninit<Node>>];
+    fn init(element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        let mut buf = Vec::with_capacity(element_cnt);
+        buf.resize_with(element_cnt, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+        Self {
+            buf: core::cell::UnsafeCell::new(buf)
+        }
+    }
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self
+    }
+    fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) -> Self::InZipperT {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let buf = unsafe{ &mut*head.buf.get() };
+        &mut buf[(thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread)]
+    }
+    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let base = thread_idx * elements_per_thread;
+        for i in 0..elements_per_thread {
+            slice[i] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
+                _val: base + i,
+                next: core::cell::UnsafeCell::new(None),
+                _pad: [0u8; 48],
+            }));
+        }
+    }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
 }
 
 impl<'map, 'head> TestParams<'map, 'head> for AllocLinkedList {

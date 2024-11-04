@@ -10,30 +10,85 @@ use pathmap::zipper::*;
 // ===================================================================================================
 const THREAD_CNT: usize = 64;
 const N: usize = 100_000_000;
-type Test<'a> = ReadZipperGet<'a>;
-// type Test<'a> = WriteZipperInsert<'a>;
+// type Test = PathMapReadZipperGet;
+// type Test = PathMapWriteZipperInsert;
+type Test = AllocLinkedList;
 
-
-struct ReadZipperGet<'a> {
-    phantom: core::marker::PhantomData<&'a ()>
+struct AllocLinkedList {
+    heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
 }
 
-struct WriteZipperInsert<'a> {
-    phantom: core::marker::PhantomData<&'a ()>
+struct Node {
+    _val: usize,
+    next: core::cell::UnsafeCell<Option<Box<Node>>>,
+    _pad: [u8; 48],
 }
 
-trait TestParams<'a> {
-    type V;
+
+struct PathMapReadZipperGet {
+    map: BytesTrieMap<usize>,
+}
+
+struct PathMapWriteZipperInsert  {
+    map: BytesTrieMap<usize>,
+}
+
+// struct WriteToContiguousRanges<'head> {
+
+// }
+
+// struct WriteToInterleavedRanges<'head> {
+
+// }
+
+trait TestParams<'map, 'head> {
+    type HeadT;
     type InZipperT;
-    fn init(element_cnt: usize, real_thread_cnt: usize) -> BytesTrieMap<Self::V>;
-    fn dispatch_zipper(zipper_head: &'a ZipperHead<'_, '_, Self::V>, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) -> Self::InZipperT;
+    fn init(element_cnt: usize, real_thread_cnt: usize) -> Self;
+    fn prepare(&'map mut self) -> Self::HeadT;
+    fn dispatch_zipper(state: &'head Self::HeadT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) -> Self::InZipperT;
     fn thread_body(zipper: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize);
+    fn drop_head(head: Self::HeadT);
+    fn drop_self(self);
 }
 
-impl<'a> TestParams<'a> for ReadZipperGet<'a> {
-    type V = usize;
-    type InZipperT = ReadZipperUntracked<'a, 'static, usize>;
-    fn init(element_cnt: usize, real_thread_cnt: usize) -> BytesTrieMap<Self::V> {
+impl<'map, 'head> TestParams<'map, 'head> for AllocLinkedList {
+    type HeadT = &'map Self where Self: 'map;
+    type InZipperT = &'head mut Option<Box<Node>>;
+    fn init(_element_cnt: usize, real_thread_cnt: usize) -> Self {
+        let heads = (0..real_thread_cnt).into_iter()
+            .map(|_| core::cell::UnsafeCell::new(None)).collect();
+        Self {
+            heads,
+        }
+    }
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self
+    }
+    fn dispatch_zipper(heads: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
+        unsafe{ &mut *heads.heads[thread_idx].get() }
+    }
+    fn thread_body(mut cur: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        for i in (thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread) {
+            *cur = Some(Box::new(Node{
+                _val: i,
+                next: core::cell::UnsafeCell::new(None),
+                _pad: [0u8; 48],
+            }));
+            cur = unsafe{ &mut *cur.as_mut().unwrap().next.get() };
+        }
+    }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) {
+        core::mem::forget(self)
+    }
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for PathMapReadZipperGet {
+    type HeadT = ZipperHead<'map, 'map, usize>;
+    type InZipperT = ReadZipperUntracked<'head, 'static, usize>;
+    fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
         let elements_per_thread = element_cnt / real_thread_cnt;
         let mut map = BytesTrieMap::<usize>::new();
         for n in 0..real_thread_cnt {
@@ -45,9 +100,14 @@ impl<'a> TestParams<'a> for ReadZipperGet<'a> {
                 zipper.reset();
             }
         }
-        map
+        Self {
+            map,
+        }
     }
-    fn dispatch_zipper(zipper_head: &'a ZipperHead<'_, '_, Self::V>, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self.map.zipper_head()
+    }
+    fn dispatch_zipper(zipper_head: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
         let path = [thread_idx as u8];
         unsafe{ zipper_head.read_zipper_at_path_unchecked(path) }
     }
@@ -59,15 +119,22 @@ impl<'a> TestParams<'a> for ReadZipperGet<'a> {
             zipper.reset();
         }
     }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
 }
 
-impl<'a> TestParams<'a> for WriteZipperInsert<'a> {
-    type V = usize;
-    type InZipperT = WriteZipperUntracked<'a, 'static, usize>;
-    fn init(_element_cnt: usize, _real_thread_cnt: usize) -> BytesTrieMap<Self::V> {
-        BytesTrieMap::<usize>::new()
+impl<'map, 'head>  TestParams<'map, 'head>  for PathMapWriteZipperInsert  {
+    type HeadT = ZipperHead<'map, 'map, usize>;
+    type InZipperT = WriteZipperUntracked<'head, 'static, usize>;
+    fn init(_element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        Self {
+            map: BytesTrieMap::<usize>::new(),
+        }
     }
-    fn dispatch_zipper(zipper_head: &'a ZipperHead<'_, '_, Self::V>, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self.map.zipper_head()
+    }
+    fn dispatch_zipper(zipper_head: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
         let path = [thread_idx as u8];
         unsafe{ zipper_head.write_zipper_at_exclusive_path_unchecked(path) }
     }
@@ -79,6 +146,8 @@ impl<'a> TestParams<'a> for WriteZipperInsert<'a> {
             zipper.reset();
         }
     }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
 }
 
 fn main() {
@@ -86,14 +155,13 @@ fn main() {
     let elements = N;
     let real_thread_cnt = thread_cnt.max(1);
 
-    println!("{}, N={N}\nThread_cnt={THREAD_CNT}", std::any::type_name::<Test>());
+    println!("{}\nN={N}, Thread_cnt={THREAD_CNT}", std::any::type_name::<Test>());
 
     let t_init = Instant::now();
     let mut map = Test::init(elements, real_thread_cnt);
+    let zipper_head = Test::prepare(&mut map);
+    let zipper_head_ref = &zipper_head; //So the thread scope closure doesn't capture the ZipperHead
     println!("Init took:                  {}µs", t_init.elapsed().as_micros());
-
-    let zipper_head_obj = map.zipper_head();
-    let zipper_head = &zipper_head_obj;
 
     let t_thread_scope = Instant::now();
     let mut d_spawn: u128 = 0;
@@ -108,7 +176,7 @@ fn main() {
         //Spawn all the threads
         let t_spawn = Instant::now();
         for n in 0..thread_cnt {
-            let (zipper_tx, zipper_rx) = mpsc::channel::<<Test<'_> as TestParams>::InZipperT>();
+            let (zipper_tx, zipper_rx) = mpsc::channel::<<Test as TestParams>::InZipperT>();
             zipper_senders.push(zipper_tx);
             let (signal_tx, signal_rx) = mpsc::channel::<bool>();
             signal_receivers.push(signal_rx);
@@ -141,7 +209,7 @@ fn main() {
             let t_dispatch = Instant::now();
             for n in 0..thread_cnt {
 
-                let zipper = Test::dispatch_zipper(&zipper_head, n, elements, real_thread_cnt);
+                let zipper = Test::dispatch_zipper(zipper_head_ref, n, elements, real_thread_cnt);
                 zipper_senders[n].send(zipper).unwrap();
             };
             d_dispatch = t_dispatch.elapsed().as_micros();
@@ -157,7 +225,7 @@ fn main() {
 
         } else {
             //No-thread case, to measure overhead of sync vs. 1-thread case
-            let zipper = Test::dispatch_zipper(&zipper_head, 0, elements, real_thread_cnt);
+            let zipper = Test::dispatch_zipper(zipper_head_ref, 0, elements, real_thread_cnt);
             Test::thread_body(zipper, 0, elements, real_thread_cnt);
         }
 
@@ -168,10 +236,9 @@ fn main() {
     println!("Unaccounted thread scope:   {}µs", t_thread_scope.elapsed().as_micros() - d_parallel - d_dispatch - d_spawn - d_terminate);
 
     let t_dropping = Instant::now();
-    drop(zipper_head_obj);
-    drop(map);
+    Test::drop_head(zipper_head);
+    Test::drop_self(map);
     println!("Dropping took:              {}µs", t_dropping.elapsed().as_micros() );
-
 }
 
 fn prefix_key(k: &u64) -> &[u8] {

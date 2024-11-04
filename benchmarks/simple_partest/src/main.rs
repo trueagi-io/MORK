@@ -18,6 +18,8 @@ const N: usize = 100_000_000;
 // type Test = InterleavedRanges;
 type Test = ContiguousButScattered;
 
+const SCATTER_STEP_SIZE: usize = 256;
+
 // GOAT, do a "scattered but contiguous test", where blocks are assigned to threads contiguously, but
 // items are written to in a scattered order
 
@@ -152,9 +154,9 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousButScattered {
     fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
         let elements_per_thread = element_cnt / real_thread_cnt;
         let base = elements_per_thread * thread_idx;
-        for i in 0..(elements_per_thread / 64) {
-            for j in 0..64 {
-                let idx = (j*64) + i;
+        for i in 0..(elements_per_thread / SCATTER_STEP_SIZE) {
+            for j in 0..SCATTER_STEP_SIZE {
+                let idx = (j*SCATTER_STEP_SIZE) + i;
                 slice[idx] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
                     _val: base + idx,
                     next: core::cell::UnsafeCell::new(None),

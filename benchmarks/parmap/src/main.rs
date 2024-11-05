@@ -267,3 +267,31 @@ fn main() {
     // task_parallel_map();
     parallel_map();
 }
+
+/*
+using K = 1_000_000_000
+
+> sequential_map
+processing took 98_984_927 micros
+
+> parallel_map
+jemalloc (8) 93% eff.
+delegating 60 chunks took 619 micros
+processing took 13_352_843 micros
+
+jemalloc (16) 83% eff.
+delegating 60 chunks took 1091 micros
+processing took 7_451_781 micros
+
+jemalloc (32) 73% eff.
+delegating 60 chunks took 1888 micros
+processing took 4_191_062 micros
+
+jemalloc (48) 69% eff.
+delegating 15259 chunks took 9439 micros
+processing took 2_952_002 micros
+
+jemalloc (64) 55% eff.
+delegating 15259 chunks took 10814 micros
+processing took 2_766_225 micros
+ */

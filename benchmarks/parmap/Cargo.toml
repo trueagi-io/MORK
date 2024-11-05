@@ -7,5 +7,6 @@ edition = "2021"
 rustflags = "-C opt-level=3 -C target-cpu=native"
 
 [dependencies]
-pathmap = { workspace=true }
+pathmap = { workspace=true, features = ["jemalloc"] }
 rayon = "1.10.0"
+tikv-jemallocator = "0.6.0"

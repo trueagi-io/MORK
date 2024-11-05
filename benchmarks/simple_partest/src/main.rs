@@ -6,6 +6,11 @@ use std::time::Instant;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
 
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 // ===================================================================================================
 // USAGE: set the THREAD_CNT, N, and change the `Test` alias to edit parameters
 // ===================================================================================================
@@ -13,12 +18,13 @@ const THREAD_CNT: usize = 64;
 const N: usize = 100_000_000;
 // type Test = PathMapReadZipperGet;
 // type Test = PathMapWriteZipperInsert;
-// type Test = AllocLinkedList;
+type Test = AllocLinkedList;
 // type Test = ContiguousRanges;
 // type Test = InterleavedRanges;
-type Test = ContiguousButScattered;
+// type Test = ContiguousButScattered;
 
-const SCATTER_STEP_SIZE: usize = 256;
+const BLOCK_PAD_SIZE: usize = 64 - 16;
+const SCATTER_STEP_SIZE: usize = 256; //Used with `ContiguousButScattered` test
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
@@ -43,7 +49,7 @@ struct ContiguousButScattered {
 struct Node {
     _val: usize,
     next: core::cell::UnsafeCell<Option<Box<Node>>>,
-    _pad: [u8; 48],
+    _pad: [u8; BLOCK_PAD_SIZE],
 }
 
 struct PathMapReadZipperGet {
@@ -90,7 +96,7 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
             slice[i] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
                 _val: base + i,
                 next: core::cell::UnsafeCell::new(None),
-                _pad: [0u8; 48],
+                _pad: [0u8; BLOCK_PAD_SIZE],
             }));
         }
     }
@@ -122,7 +128,7 @@ impl<'map, 'head> TestParams<'map, 'head> for InterleavedRanges {
             slice[idx] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
                 _val: idx,
                 next: core::cell::UnsafeCell::new(None),
-                _pad: [0u8; 48],
+                _pad: [0u8; BLOCK_PAD_SIZE],
             }));
         }
     }
@@ -157,7 +163,7 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousButScattered {
                 slice[idx] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
                     _val: base + idx,
                     next: core::cell::UnsafeCell::new(None),
-                    _pad: [0u8; 48],
+                    _pad: [0u8; BLOCK_PAD_SIZE],
                 }));
             }
         }
@@ -188,7 +194,7 @@ impl<'map, 'head> TestParams<'map, 'head> for AllocLinkedList {
             *cur = Some(Box::new(Node{
                 _val: i,
                 next: core::cell::UnsafeCell::new(None),
-                _pad: [0u8; 48],
+                _pad: [0u8; BLOCK_PAD_SIZE],
             }));
             cur = unsafe{ &mut *cur.as_mut().unwrap().next.get() };
         }

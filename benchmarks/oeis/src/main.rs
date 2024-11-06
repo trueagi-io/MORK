@@ -1,9 +1,8 @@
 use std::io::Read;
 use std::time::Instant;
-use mork_bytestring::*;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, WriteZipper};
-use num::{BigInt, zero};
+use num::BigInt;
 
 
 struct CfIter<'a> {
@@ -69,6 +68,7 @@ fn encode_seq<F : Iterator<Item=BigInt>>(iter: F) -> Vec<u8> {
     v
 }
 
+#[allow(unused)]
 fn decode_seq(s: &[u8]) -> Vec<BigInt> {
     let mut v = vec![];
     let mut i = 0;
@@ -115,7 +115,7 @@ fn main() {
         buildz.descend_to(&s[..]);
         match buildz.get_value() {
             None => { buildz.set_value(i); }
-            Some(v) => { /* keep the smallest integer sequence */ }
+            Some(_v) => { /* keep the smallest integer sequence */ }
         }
         buildz.ascend(s.len());
     }

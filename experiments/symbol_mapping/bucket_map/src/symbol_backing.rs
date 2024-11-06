@@ -47,8 +47,6 @@ impl Slab {
         (*_self).next = next;
         _self = next;
         slab = *next;
-
-        println!("ALLOCATE")
       }
       let head = (*_self).slab_data.add(slab.write_pos);
 

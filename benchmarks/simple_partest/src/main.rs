@@ -208,7 +208,13 @@ impl<'map, 'head> TestParams<'map, 'head> for AllocLinkedList {
     }
     fn drop_head(_head: Self::HeadT) { }
     fn drop_self(self) {
-        core::mem::forget(self)
+        for head in self.heads {
+            let cur = unsafe{ &mut *head.get() };
+            while let Some(node) = cur {
+                let next = unsafe{ &mut *node.next.get() };
+                *cur = core::mem::take(next);
+            }
+        }
     }
 }
 

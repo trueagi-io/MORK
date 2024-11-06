@@ -7,7 +7,7 @@ members = [
     "benchmarks/parmap/",
     "benchmarks/simple_partest/",
     "experiments/expr/bytestring/",
-    "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map",
+    "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
     "frontend/",
     #"kernel/" LP: Looks to be in a state of heavy experimentation
 ]
@@ -23,4 +23,7 @@ mork-frontend = {path = "./frontend"}
 # mork = {path = "./kernel"} LP: Looks to be in a state of heavy experimentation
 
 # External to MORK
-pathmap = {path = "../PathMap", features = ["jemalloc"]}
+[workspace.dependencies.pathmap]
+path = "../PathMap"
+features = ["jemalloc"]
+# features = ["all_dense_nodes"]

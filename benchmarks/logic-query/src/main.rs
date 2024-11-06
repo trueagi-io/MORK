@@ -67,6 +67,7 @@ const ITER_VAR_SYMBOL: u8 = 9;
 const ITER_VAR_ARITY: u8 = 10;
 const ACTION: u8 = 11;
 
+#[allow(unused)]
 fn label(l: u8) -> String {
     match l {
         ITER_AT_DEPTH => { "ITER_AT_DEPTH" }
@@ -373,25 +374,24 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     }
 }
 
+// fn variable_or_arity_mask(a: u8) -> [u64; 4] {
+//     let mut m = unsafe { VARS.clone() };
+//     let arity_byte = item_byte(Tag::Arity(a));
+//     m[((arity_byte & 0b11000000) >> 6) as usize] |= 1u64 << (arity_byte & 0b00111111);
+//     m
+// }
 
-fn variable_or_arity_mask(a: u8) -> [u64; 4] {
-    let mut m = unsafe { VARS.clone() };
-    let arity_byte = item_byte(Tag::Arity(a));
-    m[((arity_byte & 0b11000000) >> 6) as usize] |= 1u64 << (arity_byte & 0b00111111);
-    m
-}
+// fn variable_or_arity<WZ: WriteZipper<()>>(z: &mut WZ, a: u8) {
+//     let m = variable_or_arity_mask(a);
+//     z.remove_unmasked_branches(m);
+// }
 
-fn variable_or_arity<WZ: WriteZipper<()>>(z: &mut WZ, a: u8) {
-    let m = variable_or_arity_mask(a);
-    z.remove_unmasked_branches(m);
-}
-
-fn variable_or_size_mask(a: u8) -> [u64; 4] {
-    let mut m = unsafe { VARS.clone() };
-    let arity_byte = item_byte(Tag::SymbolSize(a));
-    m[((arity_byte & 0b11000000) >> 6) as usize] |= 1u64 << (arity_byte & 0b00111111);
-    m
-}
+// fn variable_or_size_mask(a: u8) -> [u64; 4] {
+//     let mut m = unsafe { VARS.clone() };
+//     let arity_byte = item_byte(Tag::SymbolSize(a));
+//     m[((arity_byte & 0b11000000) >> 6) as usize] |= 1u64 << (arity_byte & 0b00111111);
+//     m
+// }
 
 // fn variable_or_symbol(z: &mut WriteZipper<()>, s: &[u8]) {
 //     // ALTERNATIVE: build variable + s map, restrict to it
@@ -461,30 +461,29 @@ fn main() {
     let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
         .expect("Should have been able to read the file");
     let mut buf = vec![];
-    file.read_to_end(&mut buf);
+    file.read_to_end(&mut buf).unwrap();
     let mut it = Context::new(&buf[..]);
     let mut parser = DataParser::new();
 
     let mut space = BytesTrieMap::<()>::new();
     // let space_ptr = &mut space as *mut BytesTrieMap<()>;
 
-
+    #[allow(unused)]
     let t0 = Instant::now();
+    #[allow(unused)]
     let mut i = 0;
     let mut stack = [0u8; 2048];
     loop {
-        unsafe {
-            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => {
-                    space.insert(&stack[..ez.loc], ());
-                }
-                Err(ParserError::InputFinished) => { break }
-                Err(other) => { return panic!("{:?}", other) }
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => {
+                space.insert(&stack[..ez.loc], ());
             }
-            i += 1;
-            it.variables.clear();
+            Err(ParserError::InputFinished) => break,
+            Err(other) => panic!("{:?}", other)
         }
+        i += 1;
+        it.variables.clear();
     }
     // println!("built {}", i);
     // println!("took {} ms", t0.elapsed().as_millis());

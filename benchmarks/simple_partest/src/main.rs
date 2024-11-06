@@ -3,18 +3,13 @@ use std::thread;
 use std::sync::mpsc;
 use std::time::Instant;
 
+use clap::Parser;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
-
-use tikv_jemallocator::Jemalloc;
-
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
 
 // ===================================================================================================
 // USAGE: set the THREAD_CNT, N, and change the `Test` alias to edit parameters
 // ===================================================================================================
-const THREAD_CNT: usize = 64;
 const N: usize = 100_000_000;
 // type Test = PathMapReadZipperGet;
 // type Test = PathMapWriteZipperInsert;
@@ -25,6 +20,18 @@ type Test = AllocLinkedList;
 
 const BLOCK_PAD_SIZE: usize = 64 - 16;
 const SCATTER_STEP_SIZE: usize = 256; //Used with `ContiguousButScattered` test
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct CliArgs {
+    /// Sweep the thread count from 0..256
+    #[arg(long, default_value_t = false)]
+    sweep: bool,
+
+    /// The number of threads to run
+    #[arg(short, long, default_value_t = 64)]
+    threads: usize,
+}
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
@@ -270,95 +277,111 @@ impl<'map, 'head>  TestParams<'map, 'head>  for PathMapWriteZipperInsert  {
     fn drop_self(self) { }
 }
 
+const THREAD_CNT_TABLE: [usize; 16] = [0, 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 160, 192, 224, 256];
+
 fn main() {
-    let thread_cnt = THREAD_CNT;
-    let elements = N;
-    let real_thread_cnt = thread_cnt.max(1);
+    let args = CliArgs::parse();
 
-    println!("{}\nN={N}, Thread_cnt={THREAD_CNT}", std::any::type_name::<Test>());
+    let mut thread_cnt_table_idx = 0;
+    loop {
+        let thread_cnt = if args.sweep {
+            THREAD_CNT_TABLE[thread_cnt_table_idx]
+        } else {
+            args.threads
+        };
+        let elements = N;
+        let real_thread_cnt = thread_cnt.max(1);
 
-    let t_init = Instant::now();
-    let mut map = Test::init(elements, real_thread_cnt);
-    let zipper_head = Test::prepare(&mut map);
-    let zipper_head_ref = &zipper_head; //So the thread scope closure doesn't capture the ZipperHead
-    println!("Init took:                  {}µs", t_init.elapsed().as_micros());
+        println!("\n{}\nN={elements}, Thread_cnt={thread_cnt}", std::any::type_name::<Test>());
 
-    let t_thread_scope = Instant::now();
-    let mut d_spawn: u128 = 0;
-    let mut d_parallel: u128 = 0;
-    let mut d_dispatch: u128 = 0;
-    let mut t_terminate = Instant::now();
-    thread::scope(|scope| {
+        let t_init = Instant::now();
+        let mut map = Test::init(elements, real_thread_cnt);
+        let zipper_head = Test::prepare(&mut map);
+        let zipper_head_ref = &zipper_head; //So the thread scope closure doesn't capture the ZipperHead
+        println!("Init took:                  {}µs", t_init.elapsed().as_micros());
 
-        let mut zipper_senders = Vec::with_capacity(thread_cnt);
-        let mut signal_receivers = Vec::with_capacity(thread_cnt);
+        let t_thread_scope = Instant::now();
+        let mut d_spawn: u128 = 0;
+        let mut d_parallel: u128 = 0;
+        let mut d_dispatch: u128 = 0;
+        let mut t_terminate = Instant::now();
+        thread::scope(|scope| {
 
-        //Spawn all the threads
-        let t_spawn = Instant::now();
-        for n in 0..thread_cnt {
-            let (zipper_tx, zipper_rx) = mpsc::channel::<<Test as TestParams>::InZipperT>();
-            zipper_senders.push(zipper_tx);
-            let (signal_tx, signal_rx) = mpsc::channel::<bool>();
-            signal_receivers.push(signal_rx);
+            let mut zipper_senders = Vec::with_capacity(thread_cnt);
+            let mut signal_receivers = Vec::with_capacity(thread_cnt);
 
-            scope.spawn(move || {
-                loop {
-                    //The thread will block here waiting for the zipper to be sent
-                    match zipper_rx.recv() {
-                        Ok(zipper) => {
-                            //We got the zipper, do the stuff
-                            Test::thread_body(zipper, n, elements, real_thread_cnt);
+            //Spawn all the threads
+            let t_spawn = Instant::now();
+            for n in 0..thread_cnt {
+                let (zipper_tx, zipper_rx) = mpsc::channel::<<Test as TestParams>::InZipperT>();
+                zipper_senders.push(zipper_tx);
+                let (signal_tx, signal_rx) = mpsc::channel::<bool>();
+                signal_receivers.push(signal_rx);
 
-                            //Tell the main thread we're done
-                            signal_tx.send(true).unwrap();
-                        },
-                        Err(_) => {
-                            //The zipper_sender channel is closed, meaning it's time to shut down
-                            break;
+                scope.spawn(move || {
+                    loop {
+                        //The thread will block here waiting for the zipper to be sent
+                        match zipper_rx.recv() {
+                            Ok(zipper) => {
+                                //We got the zipper, do the stuff
+                                Test::thread_body(zipper, n, elements, real_thread_cnt);
+
+                                //Tell the main thread we're done
+                                signal_tx.send(true).unwrap();
+                            },
+                            Err(_) => {
+                                //The zipper_sender channel is closed, meaning it's time to shut down
+                                break;
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
+            d_spawn = t_spawn.elapsed().as_micros();
+            println!("Spawning took:              {}µs", d_spawn);
+
+            if thread_cnt > 0 {
+
+                //Dispatch a zipper to each thread
+                let t_dispatch = Instant::now();
+                for n in 0..thread_cnt {
+
+                    let zipper = Test::dispatch_zipper(zipper_head_ref, n, elements, real_thread_cnt);
+                    zipper_senders[n].send(zipper).unwrap();
+                };
+                d_dispatch = t_dispatch.elapsed().as_micros();
+                println!("Dispatch took:              {}µs", d_dispatch);
+
+                //Wait for the threads to all be done
+                let t_parallel = Instant::now();
+                for n in 0..thread_cnt {
+                    assert_eq!(signal_receivers[n].recv().unwrap(), true);
+                };
+                d_parallel = t_parallel.elapsed().as_micros();
+                println!("Parallel took:              {}µs", d_parallel);
+
+            } else {
+                //No-thread case, to measure overhead of sync vs. 1-thread case
+                let zipper = Test::dispatch_zipper(zipper_head_ref, 0, elements, real_thread_cnt);
+                Test::thread_body(zipper, 0, elements, real_thread_cnt);
+            }
+
+            t_terminate = Instant::now();
+        });
+        let d_terminate = t_terminate.elapsed().as_micros();
+        println!("Terminating threads took:   {}µs", d_terminate);
+        println!("Unaccounted thread scope:   {}µs", t_thread_scope.elapsed().as_micros() - d_parallel - d_dispatch - d_spawn - d_terminate);
+
+        let t_dropping = Instant::now();
+        Test::drop_head(zipper_head);
+        Test::drop_self(map);
+        println!("Dropping took:              {}µs", t_dropping.elapsed().as_micros() );
+
+        thread_cnt_table_idx += 1;
+        if thread_cnt_table_idx >= THREAD_CNT_TABLE.len() || !args.sweep {
+            break;
         }
-        d_spawn = t_spawn.elapsed().as_micros();
-        println!("Spawning took:              {}µs", d_spawn);
-
-        if thread_cnt > 0 {
-
-            //Dispatch a zipper to each thread
-            let t_dispatch = Instant::now();
-            for n in 0..thread_cnt {
-
-                let zipper = Test::dispatch_zipper(zipper_head_ref, n, elements, real_thread_cnt);
-                zipper_senders[n].send(zipper).unwrap();
-            };
-            d_dispatch = t_dispatch.elapsed().as_micros();
-            println!("Dispatch took:              {}µs", d_dispatch);
-
-            //Wait for the threads to all be done
-            let t_parallel = Instant::now();
-            for n in 0..thread_cnt {
-                assert_eq!(signal_receivers[n].recv().unwrap(), true);
-            };
-            d_parallel = t_parallel.elapsed().as_micros();
-            println!("Parallel took:              {}µs", d_parallel);
-
-        } else {
-            //No-thread case, to measure overhead of sync vs. 1-thread case
-            let zipper = Test::dispatch_zipper(zipper_head_ref, 0, elements, real_thread_cnt);
-            Test::thread_body(zipper, 0, elements, real_thread_cnt);
-        }
-
-        t_terminate = Instant::now();
-    });
-    let d_terminate = t_terminate.elapsed().as_micros();
-    println!("Terminating threads took:   {}µs", d_terminate);
-    println!("Unaccounted thread scope:   {}µs", t_thread_scope.elapsed().as_micros() - d_parallel - d_dispatch - d_spawn - d_terminate);
-
-    let t_dropping = Instant::now();
-    Test::drop_head(zipper_head);
-    Test::drop_self(map);
-    println!("Dropping took:              {}µs", t_dropping.elapsed().as_micros() );
+    }
 }
 
 fn prefix_key(k: &u64) -> &[u8] {

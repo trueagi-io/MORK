@@ -30,6 +30,9 @@ type Test = AllocLinkedList;
 //ContiguousButScattered not selectable with feature, but can be enabled here!
 // type Test = ContiguousButScattered;
 
+#[cfg(all(not(feature = "pathmap_read"), not(feature = "pathmap_write"), not(feature = "contiguous_test"), not(feature = "interleaved_test"), not(feature = "alloc_test")))]
+type Test = Dummy;
+
 const BLOCK_PAD_SIZE: usize = 64 - 16;
 const SCATTER_STEP_SIZE: usize = 256; //Used with `ContiguousButScattered` test
 
@@ -44,6 +47,8 @@ struct CliArgs {
     #[arg(short, long, default_value_t = 64)]
     threads: usize,
 }
+
+struct Dummy;
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
@@ -291,6 +296,19 @@ impl<'map, 'head>  TestParams<'map, 'head>  for PathMapWriteZipperInsert  {
             zipper.reset();
         }
     }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for Dummy {
+    type HeadT = ();
+    type InZipperT = ();
+    fn init(_element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        panic!("\nMust specify a test feature at build time.\n");
+    }
+    fn prepare(&'map mut self) -> Self::HeadT { }
+    fn dispatch_zipper(_head: &'head Self::HeadT, _thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT { }
+    fn thread_body(_zipper: Self::InZipperT, _thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) { }
     fn drop_head(_head: Self::HeadT) { }
     fn drop_self(self) { }
 }

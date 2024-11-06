@@ -6,3 +6,11 @@ edition = "2021"
 [dependencies]
 pathmap = { workspace=true }
 clap = { version= "4.5.20", features = ["derive"] }
+
+[features]
+default = []
+pathmap_read = []
+pathmap_write = []
+contiguous_test = []
+interleaved_test = []
+alloc_test = []

@@ -11,11 +11,23 @@ use pathmap::zipper::*;
 // USAGE: set the THREAD_CNT, N, and change the `Test` alias to edit parameters
 // ===================================================================================================
 const N: usize = 100_000_000;
-// type Test = PathMapReadZipperGet;
-// type Test = PathMapWriteZipperInsert;
+
+#[cfg(feature = "pathmap_read")]
+type Test = PathMapReadZipperGet;
+
+#[cfg(feature = "pathmap_write")]
+type Test = PathMapWriteZipperInsert;
+
+#[cfg(feature = "contiguous_test")]
+type Test = ContiguousRanges;
+
+#[cfg(feature = "interleaved_test")]
+type Test = InterleavedRanges;
+
+#[cfg(feature = "alloc_test")]
 type Test = AllocLinkedList;
-// type Test = ContiguousRanges;
-// type Test = InterleavedRanges;
+
+//ContiguousButScattered not selectable with feature, but can be enabled here!
 // type Test = ContiguousButScattered;
 
 const BLOCK_PAD_SIZE: usize = 64 - 16;

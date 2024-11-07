@@ -11,6 +11,7 @@ clap = { version= "4.5.20", features = ["derive"] }
 default = []
 pathmap_read = []
 pathmap_write = []
+unique_buf_test = []
 contiguous_test = []
 interleaved_test = []
 alloc_test = []

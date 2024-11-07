@@ -18,6 +18,9 @@ type Test = PathMapReadZipperGet;
 #[cfg(feature = "pathmap_write")]
 type Test = PathMapWriteZipperInsert;
 
+#[cfg(feature = "unique_buf_test")]
+type Test = UniqueBuffers;
+
 #[cfg(feature = "contiguous_test")]
 type Test = ContiguousRanges;
 
@@ -30,7 +33,7 @@ type Test = AllocLinkedList;
 //ContiguousButScattered not selectable with feature, but can be enabled here!
 // type Test = ContiguousButScattered;
 
-#[cfg(all(not(feature = "pathmap_read"), not(feature = "pathmap_write"), not(feature = "contiguous_test"), not(feature = "interleaved_test"), not(feature = "alloc_test")))]
+#[cfg(all(not(feature = "pathmap_read"), not(feature = "pathmap_write"), not(feature = "unique_buf_test"), not(feature = "contiguous_test"), not(feature = "interleaved_test"), not(feature = "alloc_test")))]
 type Test = Dummy;
 
 const BLOCK_PAD_SIZE: usize = 64 - 16;
@@ -52,6 +55,11 @@ struct Dummy;
 
 struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
+}
+
+/// Possibly the real best case.  A separate buffer to write to for each thread
+struct UniqueBuffers {
+    bufs: core::cell::UnsafeCell<Vec<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>>,
 }
 
 /// Best case.  All items are written into a contiguous block by the thread
@@ -112,6 +120,44 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
         let elements_per_thread = element_cnt / real_thread_cnt;
         let buf = unsafe{ &mut*head.buf.get() };
         &mut buf[(thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread)]
+    }
+    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let base = thread_idx * elements_per_thread;
+        for i in 0..elements_per_thread {
+            slice[i] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
+                _val: base + i,
+                next: core::cell::UnsafeCell::new(None),
+                _pad: [0u8; BLOCK_PAD_SIZE],
+            }));
+        }
+    }
+    fn drop_head(_head: Self::HeadT) { }
+    fn drop_self(self) { }
+}
+
+impl<'map, 'head> TestParams<'map, 'head> for UniqueBuffers {
+    type HeadT = &'map Self where Self: 'map;
+    type InZipperT = &'head mut [core::cell::UnsafeCell<MaybeUninit<Node>>];
+    fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
+        let elements_per_thread = element_cnt / real_thread_cnt;
+        let mut bufs = Vec::with_capacity(real_thread_cnt);
+        for _ in 0..real_thread_cnt {
+            let mut buf = Vec::with_capacity(elements_per_thread);
+            buf.resize_with(elements_per_thread, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
+            bufs.push(buf)
+        }
+        Self {
+            bufs: core::cell::UnsafeCell::new(bufs)
+        }
+    }
+    fn prepare(&'map mut self) -> Self::HeadT {
+        self
+    }
+    fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
+        let bufs = unsafe{ &mut*head.bufs.get() };
+        let buf = bufs.get_mut(thread_idx).unwrap();
+        &mut buf[..]
     }
     fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
         let elements_per_thread = element_cnt / real_thread_cnt;

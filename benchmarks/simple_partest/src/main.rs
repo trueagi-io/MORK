@@ -18,8 +18,8 @@ type Test = PathMapReadZipperGet;
 #[cfg(feature = "pathmap_write")]
 type Test = PathMapWriteZipperInsert;
 
-#[cfg(feature = "unique_buf_test")]
-type Test = UniqueBuffers;
+#[cfg(feature = "write_ints")]
+type Test = WriteInts;
 
 #[cfg(feature = "contiguous_test")]
 type Test = ContiguousRanges;
@@ -33,7 +33,7 @@ type Test = AllocLinkedList;
 //ContiguousButScattered not selectable with feature, but can be enabled here!
 // type Test = ContiguousButScattered;
 
-#[cfg(all(not(feature = "pathmap_read"), not(feature = "pathmap_write"), not(feature = "unique_buf_test"), not(feature = "contiguous_test"), not(feature = "interleaved_test"), not(feature = "alloc_test")))]
+#[cfg(all(not(feature = "pathmap_read"), not(feature = "pathmap_write"), not(feature = "write_ints"), not(feature = "contiguous_test"), not(feature = "interleaved_test"), not(feature = "alloc_test")))]
 type Test = Dummy;
 
 const BLOCK_PAD_SIZE: usize = 64 - 16;
@@ -57,9 +57,9 @@ struct AllocLinkedList {
     heads: Vec<core::cell::UnsafeCell<Option<Box<Node>>>>,
 }
 
-/// Possibly the real best case.  A separate buffer to write to for each thread, allocated on the thread
-struct UniqueBuffers {
-    bufs: core::cell::UnsafeCell<Vec<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>>,
+/// Maybe better Best case.  A simple stream of writes with no structure
+struct WriteInts {
+    buf: core::cell::UnsafeCell<Vec<MaybeUninit<usize>>>,
 }
 
 /// Best case.  All items are written into a contiguous block by the thread
@@ -136,44 +136,30 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
     fn drop_self(self) { }
 }
 
-impl<'map, 'head> TestParams<'map, 'head> for UniqueBuffers {
+impl<'map, 'head> TestParams<'map, 'head> for WriteInts {
     type HeadT = &'map Self where Self: 'map;
-    type InZipperT = &'head mut Vec<core::cell::UnsafeCell<MaybeUninit<Node>>>;
-    fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
-        // let elements_per_thread = element_cnt / real_thread_cnt;
-        let mut bufs = Vec::with_capacity(real_thread_cnt);
-        bufs.resize_with(real_thread_cnt, || vec![]);
-
-        // for _ in 0..real_thread_cnt {
-        //     let mut buf = Vec::with_capacity(elements_per_thread);
-        //     buf.resize_with(elements_per_thread, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
-        //     bufs.push(buf)
-        // }
+    type InZipperT = &'head mut [MaybeUninit<usize>];
+    fn init(element_cnt: usize, _real_thread_cnt: usize) -> Self {
+        let mut buf = Vec::with_capacity(element_cnt * 8);
+        buf.resize_with(element_cnt * 8, || MaybeUninit::uninit());
         Self {
-            bufs: core::cell::UnsafeCell::new(bufs)
+            buf: core::cell::UnsafeCell::new(buf)
         }
     }
     fn prepare(&'map mut self) -> Self::HeadT {
         self
     }
-    fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
-        let bufs = unsafe{ &mut*head.bufs.get() };
-        let buf = bufs.get_mut(thread_idx).unwrap();
-        buf
+    fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) -> Self::InZipperT {
+        let elements_per_thread = (element_cnt * 8) / real_thread_cnt;
+        let buf = unsafe{ &mut*head.buf.get() };
+        &mut buf[(thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread)]
     }
-    fn thread_body(vec_ref: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
-        let elements_per_thread = element_cnt / real_thread_cnt;
+    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+        let elements_per_thread = (element_cnt * 8) / real_thread_cnt;
         let base = thread_idx * elements_per_thread;
-        let mut buf = Vec::with_capacity(elements_per_thread);
-        buf.resize_with(elements_per_thread, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
         for i in 0..elements_per_thread {
-            buf[i] = core::cell::UnsafeCell::new(MaybeUninit::new(Node{
-                _val: base + i,
-                next: core::cell::UnsafeCell::new(None),
-                _pad: [0u8; BLOCK_PAD_SIZE],
-            }));
+            slice[i] = MaybeUninit::new(base+i);
         }
-        *vec_ref = buf;
     }
     fn drop_head(_head: Self::HeadT) { }
     fn drop_self(self) { }

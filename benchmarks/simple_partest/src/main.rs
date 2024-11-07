@@ -59,7 +59,7 @@ struct AllocLinkedList {
 
 /// Possibly the real best case.  A separate buffer to write to for each thread, allocated on the thread
 struct UniqueBuffers {
-    // bufs: core::cell::UnsafeCell<Vec<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>>,
+    bufs: core::cell::UnsafeCell<Vec<Vec<core::cell::UnsafeCell<core::mem::MaybeUninit<Node>>>>>,
 }
 
 /// Best case.  All items are written into a contiguous block by the thread
@@ -138,28 +138,30 @@ impl<'map, 'head> TestParams<'map, 'head> for ContiguousRanges {
 
 impl<'map, 'head> TestParams<'map, 'head> for UniqueBuffers {
     type HeadT = &'map Self where Self: 'map;
-    type InZipperT = ();//&'head mut [core::cell::UnsafeCell<MaybeUninit<Node>>];
+    type InZipperT = &'head mut Vec<core::cell::UnsafeCell<MaybeUninit<Node>>>;
     fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
         // let elements_per_thread = element_cnt / real_thread_cnt;
-        // let mut bufs = Vec::with_capacity(real_thread_cnt);
+        let mut bufs = Vec::with_capacity(real_thread_cnt);
+        bufs.resize_with(real_thread_cnt, || vec![]);
+
         // for _ in 0..real_thread_cnt {
         //     let mut buf = Vec::with_capacity(elements_per_thread);
         //     buf.resize_with(elements_per_thread, || core::cell::UnsafeCell::new(MaybeUninit::uninit()));
         //     bufs.push(buf)
         // }
         Self {
-            // bufs: core::cell::UnsafeCell::new(bufs)
+            bufs: core::cell::UnsafeCell::new(bufs)
         }
     }
     fn prepare(&'map mut self) -> Self::HeadT {
         self
     }
     fn dispatch_zipper(head: &'head Self::HeadT, thread_idx: usize, _element_cnt: usize, _real_thread_cnt: usize) -> Self::InZipperT {
-        // let bufs = unsafe{ &mut*head.bufs.get() };
-        // let buf = bufs.get_mut(thread_idx).unwrap();
-        // &mut buf[..]
+        let bufs = unsafe{ &mut*head.bufs.get() };
+        let buf = bufs.get_mut(thread_idx).unwrap();
+        buf
     }
-    fn thread_body(slice: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
+    fn thread_body(vec_ref: Self::InZipperT, thread_idx: usize, element_cnt: usize, real_thread_cnt: usize) {
         let elements_per_thread = element_cnt / real_thread_cnt;
         let base = thread_idx * elements_per_thread;
         let mut buf = Vec::with_capacity(elements_per_thread);
@@ -171,6 +173,7 @@ impl<'map, 'head> TestParams<'map, 'head> for UniqueBuffers {
                 _pad: [0u8; BLOCK_PAD_SIZE],
             }));
         }
+        *vec_ref = buf;
     }
     fn drop_head(_head: Self::HeadT) { }
     fn drop_self(self) { }

@@ -3,7 +3,7 @@ This file implements a multi-threaded programmed IO write benchmark.  It is inte
 to the `write_ints` test in the Rust benchmark
 
 You can build it with:
-    g++ memtest.cpp -march=native -fopenmp -O0 -DDO_MMAP -DTHREADS=64
+    g++ memtest.cpp -march=native -fopenmp -O0 -DTHREADS=64
 */
 
 #include <cstdio>
@@ -11,7 +11,7 @@ You can build it with:
 #include <chrono>
 #include "sys/mman.h"
 
-const unsigned long long K = 10000000000ull;
+const unsigned long long K = 100000000ull * 8;
 volatile unsigned long long * array;
 
 int main() {

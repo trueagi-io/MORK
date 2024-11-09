@@ -123,6 +123,7 @@ thread_local! {
 
 pub struct SharedMappingHandle(pub(crate) core::ptr::NonNull<SharedMapping>);
 unsafe impl Send for SharedMappingHandle {}
+unsafe impl Sync for SharedMappingHandle {}
 
 impl SharedMappingHandle {
 

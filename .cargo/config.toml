@@ -1,0 +1,4 @@
+
+[build]
+#rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat -C embed-bitcode=yes -Z dylib-lto"
+rustflags = "-C opt-level=3 -C target-cpu=native"

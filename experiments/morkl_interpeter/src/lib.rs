@@ -2,6 +2,9 @@ use std::{os::linux::raw::stat, ptr::read, sync::Arc};
 
 use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper}};
 
+mod cf_iter;
+use cf_iter::CfIter;
+
 // 0 ^ ExtractSpaceMention(family)(): space
 // 1 ^ ExtractSpaceMention(people)(): space
 // 2 ^.person NextPath(1): path
@@ -139,6 +142,9 @@ use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperUntracked, WriteZipper,
 
 
 
+
+
+
 enum Op {
   /// `() -> Space`
   Empty,
@@ -171,16 +177,18 @@ enum Op {
   Iteration,
   /// this is relative to the focus
   /// `(Space) -> Path`
+  //  change name to NextSymbol?
   NextPath,
   /// this is relative to the focus
   /// `(Space) -> Space`
+  //  change
   NextSubspace,
 
   // ?
   ExtractPathRef,
   ExtractSpaceMention,
 
-  // ?
+  // `<const LIT : Path>() -> `
   Constant,
   Concat,
   LeftResidual,
@@ -191,8 +199,7 @@ enum Op {
 ///
 /// the path_store and the space store can be made the same if the share a resource with an Arc<_>
 pub struct Routine<CH : ConstantHandles = DefaultRoutine> {
-  path_store     : <CH as ConstantHandles>::PathStore,
-  space_store    : <CH as ConstantHandles>::SpaceStore,
+  store     : <CH as ConstantHandles>::Store,
   instructions   : Vec<Instruction<CH>>,
 }
 struct DefaultRoutine;
@@ -202,13 +209,12 @@ mod sealed {
   use pathmap::trie_map::BytesTrieMap;
   use crate::{PathConstant, SpaceLiteral, PathLookupFailure, SpaceLookupFailure};
   pub trait ConstantHandles : Sized {
-    type PathStore;
+    type Store;
     type PathHandle: Copy;
-    type SpaceStore;
     type SpaceHandle : Copy;
     type ConstArg : Copy;
-    fn lookup_path(store : &Self::PathStore, handle : PathConstant<Self>)->Result<&[u8], PathLookupFailure>;
-    fn lookup_space(store : &Self::SpaceStore, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure>;
+    fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8], PathLookupFailure>;
+    fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure>;
     fn coerce_path_handle(arg : Self::ConstArg)->PathConstant<Self>;
     fn coerce_space_handle(arg : Self::ConstArg)->SpaceLiteral<Self>;
   }
@@ -227,22 +233,20 @@ struct PathRange{ start : usize, end : usize}
 struct SpaceRange{ byte_offset : usize, path_count : usize}
 
 impl ConstantHandles for DefaultRoutine {
-  type PathStore  = Arc<[u8]>;
+  type Store  = Arc<[u8]>;
   type PathHandle = PathRange;
 
-  // the default Routine assumes that the SpaceStore is represented with the same store type as PathStore.
-  type SpaceStore = Arc<[u8]>;
   type SpaceHandle = SpaceRange;
 
   type ConstArg = (usize,usize);
 
-  fn lookup_path(store : &Self::PathStore, handle : PathConstant<Self>)->Result<&[u8],PathLookupFailure> {
+  fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8],PathLookupFailure> {
     let PathConstant(PathRange { start, end }) = handle;
     if store.len() < end { return Err(PathLookupFailure); }
     Ok(&store[start..end])
   }
 
-  fn lookup_space(store : &Self::SpaceStore, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure> {
+  fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure> {
       let SpaceLiteral(SpaceRange { byte_offset, path_count }) = handle;
       
       const U64_BYTES : usize= (u64::BITS/8) as usize;
@@ -325,15 +329,14 @@ pub struct RoutineError {
 }
 
 impl<CH : ConstantHandles> Routine<CH> {
-  fn lookup_constant_path(&self, handle : PathConstant<CH>) -> Result<&[u8], PathLookupFailure> { <CH as ConstantHandles>::lookup_path(&self.path_store, handle) }
-  fn lookup_constant_space(&self, handle : SpaceLiteral<CH>) -> Result<BytesTrieMap<()>, SpaceLookupFailure> { <CH as ConstantHandles>::lookup_space(&self.space_store, handle) }
+  fn lookup_constant_path(&self, handle : PathConstant<CH>) -> Result<&[u8], PathLookupFailure> { <CH as ConstantHandles>::lookup_path(&self.store, handle) }
+  fn lookup_constant_space(&self, handle : SpaceLiteral<CH>) -> Result<BytesTrieMap<()>, SpaceLookupFailure> { <CH as ConstantHandles>::lookup_space(&self.store, handle) }
 
   /// in order for this to run efficiently, we require that the zippers are already at their zipper root ()
   pub fn run<'a1, 'a2, 'b1, 'b2>(
     &self,
     register_zipper : &mut pathmap::zipper::WriteZipperTracked<'a1, 'a2, ()>, 
     focus_zipper    : &mut pathmap::zipper::WriteZipperTracked<'b1, 'b2, ()>,
-    // mentions : ?
   ) -> Result<(), RoutineError> {
     #![cfg_attr(rustfmt, rustfmt::skip)]
 
@@ -500,23 +503,50 @@ impl<CH : ConstantHandles> Routine<CH> {
 
           }
 
-        Op::DropHead            => todo!(),
+        Op::DropHead => {
+            // TODO! this drop head is over specialized and should be replaced with one you can plugin.
+            let &[arg_0, .. ] = input_registers;
+            acquire_reg!(let space : Space = arg_0);
+            out.graft(space);
+            let mask = out.child_mask();
+
+            let mut it = CfIter::new(&mask);
+
+            while let Some(b) = it.next() {
+              if b == 0 {continue;}
+              assert!(out.descend_to(&[b]));
+              out.drop_head(b as usize);
+              assert!(out.ascend(1));
+            }
+            save_output_space!{}
+          }
 
         Op::Transformation      => todo!(),
 
         Op::Iteration           => todo!("implement `NextPath` and `NextSubspace`"),
-        
+
         Op::NextPath => {
-          // my understanding :
-          // decend if on "linked list"
+          // the name is apparently a misnomer...
           
+          // let &[arg_0, .. ] = input_registers;
+          // acquire_const_path!{let space : Space = arg_0}
+
+
+          // let path = space.
+          // registers[instruction as usize].path.reserve_exact(focus_path.len());
+          // registers[instruction as usize].path.extend_from_slice(focus_path);
+          // registers[instruction as usize].path.extend_from_slice(path);
+
+
+
           todo!{}
-          save_output_space!{}
         },
 
         Op::NextSubspace => {
-            todo!()
 
+            todo!{}
+
+            save_output_space!{}
           },
 
         Op::ExtractPathRef      => {

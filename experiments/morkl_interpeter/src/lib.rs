@@ -1,4 +1,4 @@
-use std::{os::linux::raw::stat, sync::Arc};
+use std::{os::linux::raw::stat, ptr::read, sync::Arc};
 
 use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper}};
 
@@ -140,24 +140,41 @@ use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperUntracked, WriteZipper,
 
 
 enum Op {
+  /// `() -> Space`
   Empty,
-  // is there no obvious indicator that somthing is a Call atm?
   Call,
-  /// are these optimized out?
   Mention,
+  /// `(Path) -> Space`
   Singleton,
-  /// what is the space value representation? a list of paths?
+  /// `<const LIT: Space>() -> Space`
   Literal,
+  /// `(Space, Space) -> Space`
   Union,
+  /// `(Space, Space) -> Space`
   Intersection,
+  /// `(Space, Space) -> Space`
   Subtraction,
+  /// `(minutend : Space, subtrahend Space) -> Space`
   Restriction,
+  /// `(src : Space, filter : Space) -> Space`
   Composition,
+  /// `(src : Space, path : Path) -> Space`
   Wrap,
+  /// `(src : Space, path : Path) -> Space`
   Unwrap,
+  /// `(Space) -> Space`
   DropHead,
+  /// `(src : Space, pattern : Path, template : Path) -> Space`
   Transformation,
+
+  #[deprecated = "Iteration itself is already converted in the code generator into `NextPath` and `NextSubspace`?"]
   Iteration,
+  /// this is relative to the focus
+  /// `(Space) -> Path`
+  NextPath,
+  /// this is relative to the focus
+  /// `(Space) -> Space`
+  NextSubspace,
 
   // ?
   ExtractPathRef,
@@ -186,7 +203,7 @@ mod sealed {
   use crate::{PathConstant, SpaceLiteral, PathLookupFailure, SpaceLookupFailure};
   pub trait ConstantHandles : Sized {
     type PathStore;
-    type PathHandle : Copy;
+    type PathHandle: Copy;
     type SpaceStore;
     type SpaceHandle : Copy;
     type ConstArg : Copy;
@@ -202,8 +219,6 @@ use sealed::ConstantHandles;
 struct PathLookupFailure;
 #[derive(Debug)]
 struct SpaceLookupFailure;
-
-
 
 
 #[derive(Clone,Copy)]
@@ -282,6 +297,7 @@ type Register = u32;
 struct SpaceLiteral<CH : ConstantHandles>(CH::SpaceHandle);
 impl<CH : ConstantHandles> Clone for SpaceLiteral<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
 impl<CH : ConstantHandles> Copy  for SpaceLiteral<CH> {}
+
 struct PathConstant<CH : ConstantHandles>(CH::PathHandle);
 impl<CH : ConstantHandles> Clone for PathConstant<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
 impl<CH : ConstantHandles> Copy  for PathConstant<CH> {}
@@ -317,6 +333,7 @@ impl<CH : ConstantHandles> Routine<CH> {
     &self,
     register_zipper : &mut pathmap::zipper::WriteZipperTracked<'a1, 'a2, ()>, 
     focus_zipper    : &mut pathmap::zipper::WriteZipperTracked<'b1, 'b2, ()>,
+    // mentions : ?
   ) -> Result<(), RoutineError> {
     #![cfg_attr(rustfmt, rustfmt::skip)]
 
@@ -398,9 +415,11 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.set_value(());
             save_output_space!()
           }
+
         Op::Call      => todo!("Ref to other routine"),
+
         Op::Mention   => {
-            todo!("I'm not sure what this is ... ")
+            todo!("I'm not sure what this is ... (as Argument!)")
           }
 
         Op::Singleton => {
@@ -428,6 +447,7 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.join(arg_1_z);
             save_output_space!{}
           }
+
         Op::Intersection => {
             let &[arg_0, arg_1, ..] = input_registers;
             acquire_reg!{let arg_0_z : Space = arg_0}
@@ -437,6 +457,7 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.meet(&*arg_1_z);
             save_output_space!{}
           }
+
         Op::Subtraction => {
             let &[arg_0, arg_1, ..] = input_registers;
             acquire_reg!{let arg_0_z : Space = arg_0}
@@ -446,6 +467,7 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.subtract(&*arg_1_z);
             save_output_space!{}
           }
+
         Op::Restriction => {
             let &[arg_0, arg_1, ..] = input_registers;
             acquire_reg!{let arg_0_z  : Space = arg_0}
@@ -455,7 +477,9 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.restrict(arg_1_z);
             save_output_space!{}
           }
+
         Op::Composition => todo!(),
+
         Op::Wrap => {
             let &[arg_0, arg_1, .. ] = input_registers;
             acquire_reg!{let space : Space = arg_0}
@@ -464,6 +488,7 @@ impl<CH : ConstantHandles> Routine<CH> {
             out.graft(&*space);
             save_output_space!{}
           }
+
         Op::Unwrap => {
             let &[arg_0, arg_1, .. ] = input_registers;
             acquire_reg!{let space : Space = arg_0}
@@ -474,29 +499,51 @@ impl<CH : ConstantHandles> Routine<CH> {
             save_output_space!{}
 
           }
+
         Op::DropHead            => todo!(),
+
         Op::Transformation      => todo!(),
-        Op::Iteration           => todo!(),
+
+        Op::Iteration           => todo!("implement `NextPath` and `NextSubspace`"),
+        
+        Op::NextPath => {
+          // my understanding :
+          // decend if on "linked list"
+          
+          todo!{}
+          save_output_space!{}
+        },
+
+        Op::NextSubspace => {
+            todo!()
+
+          },
+
         Op::ExtractPathRef      => {
             acquire_const_path!{let path : ConstArg = *const_arg}
-
-            let extracted = todo!("extract path ... {:?},", path);
-            registers[instruction as usize].path.reserve_exact(path.len());
-            registers[instruction as usize].path.extend_from_slice(extracted);
+            
+            let focus_path = focus_zipper.path();
+            registers[instruction as usize].path.reserve_exact(focus_path.len() + path.len());
+            registers[instruction as usize].path.extend_from_slice(focus_path);
+            registers[instruction as usize].path.extend_from_slice(path);
           }
+
         Op::ExtractSpaceMention => {
             acquire_const_path!{let path : ConstArg = *const_arg}
 
-            let extracted = todo!("extract space ... {:?}", path);
-            out.graft_map(extracted);
+            let mut reader = focus_zipper.fork_read_zipper();
+            reader.descend_to(path);
+            out.graft(&reader);
             save_output_space!{}
           }
+
         Op::Constant => {
             acquire_const_path!(let path : ConstArg = *const_arg);
 
             registers[instruction as usize].path.reserve_exact(path.len());
             registers[instruction as usize].path.extend_from_slice(path);
           }
+
         Op::Concat => {
             let &[arg_0, arg_1, ..] = input_registers;
             acquire_reg!{let left  : Path = arg_0}
@@ -509,6 +556,7 @@ impl<CH : ConstantHandles> Routine<CH> {
             registers[instruction as usize].path = out_path;
           }
         Op::LeftResidual        => todo!(),
+
         Op::RightResidual       => todo!(),
       }
     }

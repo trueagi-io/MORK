@@ -1,6 +1,7 @@
-use std::{os::linux::raw::stat, ptr::read, sync::Arc};
+#![cfg_attr(rustfmt, rustfmt::skip)]
+use std::sync::Arc;
 
-use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper}};
+use pathmap::{ring::{DistributiveLattice, Lattice}, trie_map::BytesTrieMap, zipper::{ReadOnlyZipper, ReadZipperTracked, ReadZipperUntracked, WriteZipper, WriteZipperTracked, WriteZipperUntracked, Zipper}};
 
 mod cf_iter;
 use cf_iter::CfIter;
@@ -144,16 +145,18 @@ use cf_iter::CfIter;
 
 
 
-
+#[derive(Debug,Clone, Copy)]
 enum Op {
   /// `() -> Space`
   Empty,
-  Call,
   Mention,
   /// `(Path) -> Space`
+  Call,
   Singleton,
-  /// `<const LIT: Space>() -> Space`
-  Literal,
+  
+  // /// `<const LIT: Space>() -> Space`
+  // Literal,
+
   /// `(Space, Space) -> Space`
   Union,
   /// `(Space, Space) -> Space`
@@ -173,7 +176,6 @@ enum Op {
   /// `(src : Space, pattern : Path, template : Path) -> Space`
   Transformation,
 
-  #[deprecated = "Iteration itself is already converted in the code generator into `NextPath` and `NextSubspace`?"]
   Iteration,
   /// this is relative to the focus
   /// `(Space) -> Path`
@@ -184,8 +186,9 @@ enum Op {
   //  change
   NextSubspace,
 
-  // ?
+  // ? should this only extract values that have alreay been memoed ?
   ExtractPathRef,
+  // ? should this only extract values that have alreay been memoed ?
   ExtractSpaceMention,
 
   // `<const LIT : Path>() -> `
@@ -193,452 +196,751 @@ enum Op {
   Concat,
   LeftResidual,
   RightResidual,
+
+  // Subroutine Ops
+  IterSubRoutine,
+  Exit,
+
 }
 
-/// a [`Routine`] is only a description, it should be passed around immutably (usually as an Arc<Routine>) once built.
-///
-/// the path_store and the space store can be made the same if the share a resource with an Arc<_>
-pub struct Routine<CH : ConstantHandles = DefaultRoutine> {
-  store     : <CH as ConstantHandles>::Store,
-  instructions   : Vec<Instruction<CH>>,
-}
-struct DefaultRoutine;
+// /// a [`Routine`] is only a description, it should be passed around immutably (usually as an Arc<Routine>) once built.
+// ///
+// /// the path_store and the space store can be made the same if the share a resource with an Arc<_>
+// pub struct Routine<CH : ConstantHandles = DefaultRoutine> {
+//   store     : <CH as ConstantHandles>::Store,
+//   instructions   : Vec<Instruction<CH>>,
+//   max_subroutine_depth : usize,
+// }
+// struct DefaultRoutine;
 
-mod sealed {
-  // I'm conservatively making this sealed
-  use pathmap::trie_map::BytesTrieMap;
-  use crate::{PathConstant, SpaceLiteral, PathLookupFailure, SpaceLookupFailure};
-  pub trait ConstantHandles : Sized {
-    type Store;
-    type PathHandle: Copy;
-    type SpaceHandle : Copy;
-    type ConstArg : Copy;
-    fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8], PathLookupFailure>;
-    fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure>;
-    fn coerce_path_handle(arg : Self::ConstArg)->PathConstant<Self>;
-    fn coerce_space_handle(arg : Self::ConstArg)->SpaceLiteral<Self>;
-  }
-}
-use sealed::ConstantHandles;
+// mod sealed {
+//   // I'm conservatively making this sealed
+//   use pathmap::trie_map::BytesTrieMap;
+//   use crate::{PathConstant, /* SpaceLiteral, */ PathLookupFailure, /* SpaceLookupFailure */};
+//   pub trait ConstantHandles : Sized {
+//     type Store;
+//     type PathHandle: Copy;
+//     // type SpaceHandle : Copy;
+//     type ConstArg : Copy;
+//     fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8], PathLookupFailure>;
+//     // fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure>;
+//     fn coerce_path_handle(arg : Self::ConstArg)->PathConstant<Self>;
+//     // fn coerce_space_handle(arg : Self::ConstArg)->SpaceLiteral<Self>;
+//   }
+// }
+// use sealed::ConstantHandles;
 
-#[derive(Debug)]
-struct PathLookupFailure;
-#[derive(Debug)]
-struct SpaceLookupFailure;
+// #[derive(Debug)]
+// struct PathLookupFailure;
+// // #[derive(Debug)]
+// // struct SpaceLookupFailure;
 
 
-#[derive(Clone,Copy)]
-struct PathRange{ start : usize, end : usize}
-#[derive(Clone,Copy)]
-struct SpaceRange{ byte_offset : usize, path_count : usize}
+// #[derive(Clone,Copy)]
+// struct PathRange{ start : usize, end : usize}
+// // #[derive(Clone,Copy)]
+// // struct SpaceRange{ byte_offset : usize, path_count : usize}
 
-impl ConstantHandles for DefaultRoutine {
-  type Store  = Arc<[u8]>;
-  type PathHandle = PathRange;
+// impl ConstantHandles for DefaultRoutine {
+//   type Store  = Arc<[u8]>;
+//   type PathHandle = PathRange;
 
-  type SpaceHandle = SpaceRange;
+//   // type SpaceHandle = SpaceRange;
 
-  type ConstArg = (usize,usize);
+//   type ConstArg = (usize,usize);
 
-  fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8],PathLookupFailure> {
-    let PathConstant(PathRange { start, end }) = handle;
-    if store.len() < end { return Err(PathLookupFailure); }
-    Ok(&store[start..end])
-  }
+//   fn lookup_path(store : &Self::Store, handle : PathConstant<Self>)->Result<&[u8],PathLookupFailure> {
+//     let PathConstant(PathRange { start, end }) = handle;
+//     if store.len() < end { return Err(PathLookupFailure); }
+//     Ok(&store[start..end])
+//   }
 
-  fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure> {
-      let SpaceLiteral(SpaceRange { byte_offset, path_count }) = handle;
+//   // fn lookup_space(store : &Self::Store, handle : SpaceLiteral<Self>)->Result<BytesTrieMap<()>, SpaceLookupFailure> {
+//   //     let SpaceLiteral(SpaceRange { byte_offset, path_count }) = handle;
       
-      const U64_BYTES : usize= (u64::BITS/8) as usize;
-      let bounds = byte_offset+(U64_BYTES * (path_count+1 /* ranges are described with sliding window, so we need one more value */));
+//   //     const U64_BYTES : usize= (u64::BITS/8) as usize;
+//   //     let bounds = byte_offset+(U64_BYTES * (path_count+1 /* ranges are described with sliding window, so we need one more value */));
 
-      // we can't do unsafe reads if out store is too small
-      if bounds > store.len() {return Err(SpaceLookupFailure);}
+//   //     // we can't do unsafe reads if out store is too small
+//   //     if bounds > store.len() {return Err(SpaceLookupFailure);}
 
-      let mut unaligned_header =  &raw const store[byte_offset] as *const u64;
+//   //     let mut unaligned_header =  &raw const store[byte_offset] as *const u64;
 
-      let mut space = BytesTrieMap::new();
-      for _ in 0..path_count {
-        // Safety: we checked to avoid going out of bounds
-        let handle = unsafe {
-          let start = u64::from_be((unaligned_header).read_unaligned()) as usize;
+//   //     let mut space = BytesTrieMap::new();
+//   //     for _ in 0..path_count {
+//   //       // Safety: we checked to avoid going out of bounds
+//   //       let handle = unsafe {
+//   //         let start = u64::from_be((unaligned_header).read_unaligned()) as usize;
 
-          unaligned_header = unaligned_header.add(1);
-          let end = u64::from_be((unaligned_header).read_unaligned()) as usize;
+//   //         unaligned_header = unaligned_header.add(1);
+//   //         let end = u64::from_be((unaligned_header).read_unaligned()) as usize;
           
-          PathConstant::<Self>(PathRange { start , end })
-        };
+//   //         PathConstant::<Self>(PathRange { start , end })
+//   //       };
         
-        let Ok(path) = Self::lookup_path(store, handle) else {return Err(SpaceLookupFailure);};
-        space.insert(path, ());
-      }
-      Ok(space)
-  }
-  fn coerce_path_handle(arg : Self::ConstArg)->PathConstant<Self> {
-      let (start, end) = arg;
-      PathConstant(PathRange { start, end })
-  }
-  fn coerce_space_handle(arg : Self::ConstArg)->SpaceLiteral<Self> {
-      let (byte_offset, path_count) = arg;
-      SpaceLiteral(SpaceRange { byte_offset, path_count })
-  }
-}
+//   //       let Ok(path) = Self::lookup_path(store, handle) else {return Err(SpaceLookupFailure);};
+//   //       space.insert(path, ());
+//   //     }
+//   //     Ok(space)
+//   // }
+//   fn coerce_path_handle(arg : Self::ConstArg)->PathConstant<Self> {
+//       let (start, end) = arg;
+//       PathConstant(PathRange { start, end })
+//   }
+//   // fn coerce_space_handle(arg : Self::ConstArg)->SpaceLiteral<Self> {
+//   //     let (byte_offset, path_count) = arg;
+//   //     SpaceLiteral(SpaceRange { byte_offset, path_count })
+//   // }
+// }
 
 
-// represents a zipper operation to change path
-#[derive(Clone, Copy)]
-enum PathDif<CH : ConstantHandles> {
-  Goto(PathConstant<CH>),
-  Root,
-  Relative(Relative<CH>),
-  Noop,
-}
+// // represents a zipper operation to change path
+// #[derive(Clone, Copy)]
+// enum PathDif<CH : ConstantHandles> {
+//   Goto(PathConstant<CH>),
+//   Root,
+//   Relative(Relative<CH>),
+//   Noop,
+// }
 
-#[derive(Clone,Copy)]
-struct Relative<CH : ConstantHandles> { accend : usize, decend : Option<PathConstant<CH>>}
+// #[derive(Clone,Copy)]
+// struct Relative<CH : ConstantHandles> { accend : usize, decend : Option<PathConstant<CH>>}
 
-type Register = u32;
-struct SpaceLiteral<CH : ConstantHandles>(CH::SpaceHandle);
-impl<CH : ConstantHandles> Clone for SpaceLiteral<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
-impl<CH : ConstantHandles> Copy  for SpaceLiteral<CH> {}
+// // struct SpaceLiteral<CH : ConstantHandles>(CH::SpaceHandle);
+// // impl<CH : ConstantHandles> Clone for SpaceLiteral<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
+// // impl<CH : ConstantHandles> Copy  for SpaceLiteral<CH> {}
 
-struct PathConstant<CH : ConstantHandles>(CH::PathHandle);
-impl<CH : ConstantHandles> Clone for PathConstant<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
-impl<CH : ConstantHandles> Copy  for PathConstant<CH> {}
+// struct PathConstant<CH : ConstantHandles>(CH::PathHandle);
+// impl<CH : ConstantHandles> Clone for PathConstant<CH> { fn clone(&self) -> Self {Self(self.0.clone())}}
+// impl<CH : ConstantHandles> Copy  for PathConstant<CH> {}
 
-struct Instruction<CH : ConstantHandles> {
-  focus_op        : PathDif<CH>,
+// struct Instruction<CH : ConstantHandles> {
+//   focus_op        : PathDif<CH>,
+//   op              : Op,
+//   const_arg       : CH::ConstArg,
+//   input_registers : [Register;4],
+// }
+
+// #[derive(Debug)]
+// pub enum RoutineErrorCode {
+//   PathDifAccendingAboveRoot,
+//   RegisterZipperNotAtRoot,
+//   FocusZipperNotAtRoot,
+//   ConstantPathNonExistant,
+//   RegisterExprectedSpace,
+//   SpaceLiteralNonExistant,
+// }
+// type IntructionLine = usize;
+// pub struct RoutineError {
+//   code : RoutineErrorCode,
+//   instruction : IntructionLine,
+// }
+
+// impl<CH : ConstantHandles> Routine<CH> {
+//   fn lookup_constant_path(&self, handle : PathConstant<CH>) -> Result<&[u8], PathLookupFailure> { <CH as ConstantHandles>::lookup_path(&self.store, handle) }
+//   // fn lookup_constant_space(&self, handle : SpaceLiteral<CH>) -> Result<BytesTrieMap<()>, SpaceLookupFailure> { <CH as ConstantHandles>::lookup_space(&self.store, handle) }
+
+//   /// in order for this to run efficiently, we require that the zippers are already at their zipper root ()
+//   pub fn run<'a1, 'a2, 'b1, 'b2>(
+//     &self,
+//     register_zipper : &mut pathmap::zipper::WriteZipperTracked<'a1, 'a2, ()>,
+//     focus_zipper    : &mut pathmap::zipper::WriteZipperTracked<'b1, 'b2, ()>,
+//   ) -> Result<(), RoutineError> {
+//     #![deprecated = "this will have issues dealing with 'iterative queries'."]
+//     #![cfg_attr(rustfmt, rustfmt::skip)]
+
+//     if !register_zipper.at_root() { return Err(RoutineError { code: RoutineErrorCode::RegisterZipperNotAtRoot, instruction: 0 }); }
+//     if !focus_zipper.at_root()    { return Err(RoutineError { code: RoutineErrorCode::FocusZipperNotAtRoot, instruction: 0 }); }
+
+//     let reg_zh = register_zipper.zipper_head();
+
+//     // registers assume that data has been assigned correctly
+//     struct RegisterSlot<'a,'b>{path : Vec<u8>, space : core::cell::RefCell<Option<WriteZipperUntracked<'a,'b, ()>>>}
+
+//     let mut registers = Vec::<RegisterSlot>::with_capacity(self.instructions.len());
+//     (0..self.instructions.len()).for_each(|_| registers.push(RegisterSlot{path:Vec::new(), space : core::cell::RefCell::new(None)}));
+
+//     for (instruction, Instruction {focus_op, op, const_arg, input_registers }) in (&self.instructions).iter().enumerate() {
+//       macro_rules! acquire_const_path { 
+//         (let $PATH:ident : ConstArg = $HANDLE:expr) => {
+//             acquire_const_path!{let $PATH : PathConstant = <CH as ConstantHandles>::coerce_path_handle($HANDLE)}
+//         };
+//         (let $PATH:ident : PathConstant = $HANDLE:expr) => {
+//             let Ok($PATH) = self.lookup_constant_path($HANDLE)  else { return Err(RoutineError { code: RoutineErrorCode::ConstantPathNonExistant, instruction }); };
+//         };
+//       }
+
+//       let tmp_ = (instruction as u32).to_ne_bytes(/* if we want to export register memoization, we should use another encoding like Big Endian */);
+//       let out_path = tmp_.as_slice();
+
+//       // ///////////////
+//       // Change Focus //
+//       // ///////////////
+
+//       match *focus_op {
+//         PathDif::Goto(handle) => {
+//             acquire_const_path!{let path : PathConstant = handle};
+//             focus_zipper.reset();
+//             focus_zipper.descend_to(path);
+//           }
+
+//         PathDif::Relative(Relative { accend, decend }) => {
+//             if !focus_zipper.ascend(accend) { return Err(RoutineError { code: RoutineErrorCode::PathDifAccendingAboveRoot, instruction }); }
+            
+//             let found  = decend
+//               .and_then(   |handle| self.lookup_constant_path(handle).ok())
+//               .map(|path|   {focus_zipper.descend_to(path) }).is_some();
+//             if !found {
+//               return Err(RoutineError { code: RoutineErrorCode::ConstantPathNonExistant, instruction })
+//             }
+//           }
+//         PathDif::Root => focus_zipper.reset(),
+//         PathDif::Noop => {}
+//       }
+
+//       // ////////
+//       // Do OP //
+//       // ////////
+//       let mut out = unsafe { reg_zh.write_zipper_at_exclusive_path_unchecked(out_path) };
+//       macro_rules! save_output_space {() => {
+//         #[allow(unreachable_code)]
+//         {
+//           out.reset();
+//           *registers[instruction].space.borrow_mut() = Some(out);
+//         }
+//       };}
+
+//       macro_rules! acquire_reg {
+//         (let $SPACE:ident : Space = $REG:expr) => {
+//               let mut __tmp = registers[$REG as usize].space.borrow();
+//               let Some($SPACE) = __tmp.as_ref() else {
+//                 return Err(RoutineError { code: RoutineErrorCode::RegisterExprectedSpace, instruction });
+//               };
+//             };
+//         (let $PATH:ident : Path = $REG:expr) => { 
+//             let $PATH = &registers[$REG as usize].path[..];
+//           };
+//       }
+
+//       match op {
+//         Op::Empty => {
+//             out.set_value(());
+//             save_output_space!()
+//           }
+
+//         Op::Call      => todo!("Ref to other routine"),
+
+//         Op::Mention   => {
+//             todo!("I'm not sure what this is ... (as Argument!)")
+//           }
+
+//         Op::Singleton => {
+//             let &[arg_0,..] = input_registers;
+//             acquire_reg!{let path : Path = arg_0}
+            
+//             out.descend_to(path);
+//             out.set_value(());
+//             save_output_space!{}
+//           }
+
+//         // Op::Literal => {
+//         //     let Ok(space) = self.lookup_constant_space(CH::coerce_space_handle(*const_arg)) else {return Err(RoutineError { code: RoutineErrorCode::SpaceLiteralNonExistant, instruction });};
+//         //     out.graft_map(space);
+
+//         //     save_output_space!{}
+//         //   }
+
+//         Op::Union => {
+//             let &[arg_0, arg_1, ..] = input_registers;
+//             acquire_reg!{let arg_0_z : Space = arg_0}
+//             acquire_reg!{let arg_1_z : Space = arg_1}
+
+//             out.graft(arg_0_z);
+//             out.join(arg_1_z);
+//             save_output_space!{}
+//           }
+
+//         Op::Intersection => {
+//             let &[arg_0, arg_1, ..] = input_registers;
+//             acquire_reg!{let arg_0_z : Space = arg_0}
+//             acquire_reg!{let arg_1_z : Space = arg_1}
+
+//             out.graft(&*arg_0_z);
+//             out.meet(&*arg_1_z);
+//             save_output_space!{}
+//           }
+
+//         Op::Subtraction => {
+//             let &[arg_0, arg_1, ..] = input_registers;
+//             acquire_reg!{let arg_0_z : Space = arg_0}
+//             acquire_reg!{let arg_1_z : Space = arg_1}
+
+//             out.graft(&*arg_0_z);
+//             out.subtract(&*arg_1_z);
+//             save_output_space!{}
+//           }
+
+//         Op::Restriction => {
+//             let &[arg_0, arg_1, ..] = input_registers;
+//             acquire_reg!{let arg_0_z  : Space = arg_0}
+//             acquire_reg!{let arg_1_z  : Space = arg_1}
+
+//             out.graft(arg_0_z);
+//             out.restrict(arg_1_z);
+//             save_output_space!{}
+//           }
+
+//         Op::Composition => todo!(),
+
+//         Op::Wrap => {
+//             let &[arg_0, arg_1, .. ] = input_registers;
+//             acquire_reg!{let space : Space = arg_0}
+//             acquire_reg!{let path  : Path  = arg_1}
+//             out.descend_to(path);
+//             out.graft(&*space);
+//             save_output_space!{}
+//           }
+
+//         Op::Unwrap => {
+//             let &[arg_0, arg_1, .. ] = input_registers;
+//             acquire_reg!{let space : Space = arg_0}
+//             acquire_reg!{let path  : Path  = arg_1}
+//             let mut z = space.fork_read_zipper();
+//             z.descend_to(path);
+//             out.graft(&z);
+//             save_output_space!{}
+
+//           }
+
+//         Op::DropHead => {
+//             // TODO! this drop head is over specialized and should be replaced with one you can plugin.
+//             let &[arg_0, .. ] = input_registers;
+//             acquire_reg!(let space : Space = arg_0);
+//             out.graft(space);
+//             let mask = out.child_mask();
+
+//             let mut it = CfIter::new(&mask);
+
+//             while let Some(b) = it.next() {
+//               if b == 0 {continue;}
+//               assert!(out.descend_to(&[b]));
+//               out.drop_head(b as usize);
+//               assert!(out.ascend(1));
+//             }
+//             save_output_space!{}
+//           }
+
+//         Op::Transformation      => todo!(),
+
+//         Op::Iteration           => todo!("implement `NextPath` and `NextSubspace`"),
+
+//         Op::NextPath => {
+//           // the name is apparently a misnomer...
+          
+//           // let &[arg_0, .. ] = input_registers;
+//           // acquire_const_path!{let space : Space = arg_0}
+
+
+//           // let path = space.
+//           // registers[instruction as usize].path.reserve_exact(focus_path.len());
+//           // registers[instruction as usize].path.extend_from_slice(focus_path);
+//           // registers[instruction as usize].path.extend_from_slice(path);
+
+
+
+//           todo!{}
+//         },
+
+//         Op::NextSubspace => {
+
+//             todo!{}
+
+//             save_output_space!{}
+//           },
+
+//         Op::ExtractPathRef      => {
+//             acquire_const_path!{let path : ConstArg = *const_arg}
+            
+//             let focus_path = focus_zipper.path();
+//             registers[instruction as usize].path.reserve_exact(focus_path.len() + path.len());
+//             registers[instruction as usize].path.extend_from_slice(focus_path);
+//             registers[instruction as usize].path.extend_from_slice(path);
+//           }
+
+//         Op::ExtractSpaceMention => {
+//             acquire_const_path!{let path : ConstArg = *const_arg}
+
+//             let mut reader = focus_zipper.fork_read_zipper();
+//             reader.descend_to(path);
+//             out.graft(&reader);
+//             save_output_space!{}
+//           }
+
+//         Op::Constant => {
+//             acquire_const_path!(let path : ConstArg = *const_arg);
+
+//             registers[instruction as usize].path.reserve_exact(path.len());
+//             registers[instruction as usize].path.extend_from_slice(path);
+//           }
+
+//         Op::Concat => {
+//             let &[arg_0, arg_1, ..] = input_registers;
+//             acquire_reg!{let left  : Path = arg_0}
+//             acquire_reg!{let right : Path = arg_1}
+
+//             let mut out_path = Vec::with_capacity(left.len() + right.len());
+//             out_path.extend_from_slice(left);
+//             out_path.extend_from_slice(right);
+            
+//             registers[instruction as usize].path = out_path;
+//           }
+//         Op::LeftResidual        => todo!(),
+
+//         Op::RightResidual       => todo!(),
+
+//         _ => todo!("Subroutine Ops"),
+//       }
+//     }
+
+//     drop(registers);
+//     drop(reg_zh);
+//     register_zipper.reset();
+//     focus_zipper.reset();
+
+//     Ok(())
+//   }
+// }
+
+
+
+
+
+
+
+type Register = u16;
+
+type SymbolTable = bucket_map::SharedMappingHandle;
+
+type PathOffset = usize;
+type PathLen    = usize;
+// type ConstPathReference = (PathOffset, PathLen);
+
+#[derive(Debug, Clone, Copy)]
+struct PathStoreReference { offset : PathOffset, len : PathLen}
+
+type UnparsedPath<'a> = &'a [u8];
+type PathStore<'a>    = &'a [u8];
+type PathRef<'a>      = &'a [u8];
+
+type Fuel = u64;
+
+#[derive(Debug,Clone)]
+struct Instruction_{
   op              : Op,
-  const_arg       : CH::ConstArg,
+  const_arg       : PathStoreReference,
   input_registers : [Register;4],
 }
 
-#[derive(Debug)]
-pub enum RoutineErrorCode {
-  PathDifAccendingAboveRoot,
-  RegisterZipperNotAtRoot,
-  FocusZipperNotAtRoot,
-  ConstantPathNonExistant,
-  RegisterExprectedSpace,
-  SpaceLiteralNonExistant,
-}
-type IntructionLine = usize;
-pub struct RoutineError {
-  code : RoutineErrorCode,
-  instruction : IntructionLine,
+#[derive(Clone)]
+struct Subroutine{ iter : CfIter, previous_program_counter : usize, previous_path_buffer_len : usize }
+
+#[derive(Clone)]
+struct RoutineActivationRecord {
+  arg_offsets      : ParsedRoutine,
+  routine_code     : Routine_,
+  program_counter  : ProgramCounter,
+  subroutine_stack : Vec<Subroutine>,
+  space_reg        : Vec<BytesTrieMap<()>>,
+  path_reg         : Vec<PathStoreReference /* into the path_buffer */ >,
+  path_buffer      : Vec<u8>,
 }
 
-impl<CH : ConstantHandles> Routine<CH> {
-  fn lookup_constant_path(&self, handle : PathConstant<CH>) -> Result<&[u8], PathLookupFailure> { <CH as ConstantHandles>::lookup_path(&self.store, handle) }
-  fn lookup_constant_space(&self, handle : SpaceLiteral<CH>) -> Result<BytesTrieMap<()>, SpaceLookupFailure> { <CH as ConstantHandles>::lookup_space(&self.store, handle) }
+pub struct CallStack {
+  data    : Vec<u8>,
+  offsets : Vec<usize>,
+}
 
-  /// in order for this to run efficiently, we require that the zippers are already at their zipper root ()
-  pub fn run<'a1, 'a2, 'b1, 'b2>(
-    &self,
-    register_zipper : &mut pathmap::zipper::WriteZipperTracked<'a1, 'a2, ()>, 
-    focus_zipper    : &mut pathmap::zipper::WriteZipperTracked<'b1, 'b2, ()>,
-  ) -> Result<(), RoutineError> {
+pub struct Interpreter {
+  symbol_table          : SymbolTable,
+  memo                  : BytesTrieMap<()>,
+  routines              : BytesTrieMap<Routine_>,
+  routine_continuations : BytesTrieMap<RoutineActivationRecord>,
+}
+
+struct RoutineActivationRecordEstimate {
+  instruction_count      : usize,
+  subroutine_stack_depth : usize,
+  path_buffer_size       : usize,
+}
+
+type ProgramCounter = usize;
+
+pub enum RoutineError_ { 
+  RoutineNotFound(CallStack),
+  RoutineMalformed((CallStack, ProgramCounter)),
+  ValueWasNotMemoed((CallStack, ProgramCounter)),
+}
+
+#[derive(Clone)]
+struct RoutineImpl {
+  const_paths_store      : Arc<[u8]>,
+  formal_parameter_count : usize,
+  max_subroutine_depth   : usize,
+  instructions           : Arc<[Instruction_]>,
+}
+type Routine_ = Arc<RoutineImpl>;
+
+
+impl RoutineImpl {
+  fn aquire_estimate_size(&self)->RoutineActivationRecordEstimate {
+    todo!()
+  }
+  fn routine_name(&self) -> &[u8] { todo!() }
+}
+
+
+#[derive(Debug,Clone)]
+struct ParsedRoutine {
+  routine_name_index : PathStoreReference,
+  // first_3 : [ConstPathReference ; 3] // maybe the first N arguments (maybe 3?) could be known statically avoiding a vector allocation on a common case
+  arg_idicies : Vec<PathStoreReference>
+}
+
+impl Interpreter {
+  fn parse_routine_with_args_paths(routine_with_arguments : UnparsedPath) -> ParsedRoutine {todo!()}
+  fn path_from_offset(store : PathStore, offset_ref : PathStoreReference) -> PathRef { &store[offset_ref.offset .. offset_ref.offset + offset_ref.len] }
+
+  pub fn run_routine<'a1, 'a2, 'b1, 'b2>(
+    &mut self,
+    routine_with_arguments    : UnparsedPath /* this is actually a path of paths RoutineNamespace.RoutineName.(argsAsPaths.,)* */,
+    fuel         : Fuel,
+  ) -> Result<BytesTrieMap<()>, RoutineError_> {
     #![cfg_attr(rustfmt, rustfmt::skip)]
 
-    if !register_zipper.at_root() { return Err(RoutineError { code: RoutineErrorCode::RegisterZipperNotAtRoot, instruction: 0 }); }
-    if !focus_zipper.at_root()    { return Err(RoutineError { code: RoutineErrorCode::FocusZipperNotAtRoot, instruction: 0 }); }
+    const SLICE_SIZE : usize = 2;
 
-    let reg_zh = register_zipper.zipper_head();
+    let initial_slice : [usize ; SLICE_SIZE] = [0,routine_with_arguments.len()];
+    let mut call_stack : CallStack = CallStack { data: Vec::from(routine_with_arguments), offsets : Vec::from(initial_slice) };
 
-    // registers assume that data has been assigned correctly
-    struct RegisterSlot<'a,'b>{path : Vec<u8>, space : core::cell::RefCell<Option<WriteZipperUntracked<'a,'b, ()>>>}
+    'routine : loop {
 
-    let mut registers = Vec::<RegisterSlot>::with_capacity(self.instructions.len());
-    (0..self.instructions.len()).for_each(|_| registers.push(RegisterSlot{path:Vec::new(), space : core::cell::RefCell::new(None)}));
+      core::debug_assert!(call_stack.offsets.len() >= SLICE_SIZE);
 
-    for (instruction, Instruction {focus_op, op, const_arg, input_registers }) in (&self.instructions).iter().enumerate() {
-      macro_rules! acquire_const_path { 
-        (let $PATH:ident : ConstArg = $HANDLE:expr) => {
-            acquire_const_path!{let $PATH : PathConstant = <CH as ConstantHandles>::coerce_path_handle($HANDLE)}
+      let popped_value : Option<BytesTrieMap<()>> = 'find_memo : {
+        
+        let len   = call_stack.offsets.len();
+        let start = call_stack.offsets[len-2];
+        let end   = call_stack.offsets[len-1];
+        let routine_path = &call_stack.data[start..end];
+        
+        let rz = self.memo.read_zipper_at_path(routine_path);
+        let Some(m) = rz.make_map() else { break 'find_memo None; };
+
+        if call_stack.offsets.len() == SLICE_SIZE { return Ok(m)};
+
+        // pop value
+        unsafe { call_stack.data.set_len(end) };
+        call_stack.offsets.pop();
+        Some(m)
+      };
+
+      // init activation record, check if one is partially evaluated already
+      let mut record = 
+      if let Some(record) = self.routine_continuations.remove(routine_with_arguments) {
+        record
+      } else {
+
+        let arg_offsets = Interpreter::parse_routine_with_args_paths(routine_with_arguments);
+
+        let routine_name = Interpreter::path_from_offset(routine_with_arguments, arg_offsets.routine_name_index);
+
+        let Some(routine_code) = self.routines.get(routine_name).cloned() else {return Err(RoutineError_::RoutineNotFound(call_stack));};
+
+        let RoutineActivationRecordEstimate { instruction_count, subroutine_stack_depth, path_buffer_size } = routine_code.aquire_estimate_size();
+
+        let mut new_record = RoutineActivationRecord{
+          arg_offsets,
+          routine_code,
+          program_counter  : 0,
+          subroutine_stack : Vec::with_capacity(subroutine_stack_depth),
+          space_reg        : vec![BytesTrieMap::new()                      ; instruction_count],
+          path_reg         : vec![PathStoreReference { offset: 0, len: 0 } ; instruction_count],
+          path_buffer      : Vec::with_capacity(path_buffer_size),
         };
-        (let $PATH:ident : PathConstant = $HANDLE:expr) => {
-            let Ok($PATH) = self.lookup_constant_path($HANDLE)  else { return Err(RoutineError { code: RoutineErrorCode::ConstantPathNonExistant, instruction }); };
-        };
+        new_record
+      };
+
+      let RoutineActivationRecord { arg_offsets, routine_code, program_counter, subroutine_stack, space_reg, path_reg, path_buffer } = &mut record;
+
+      if let Some(m) = popped_value {
+        // merge into the record
+        space_reg[*program_counter] = m;
+        *program_counter += 1;
+        continue;
       }
 
-      let tmp_ = (instruction as u32).to_ne_bytes(/* if we want to export register memoization, we should use another encoding like Big Endian */);
-      let out_path = tmp_.as_slice();
+      let RoutineImpl { const_paths_store, formal_parameter_count, max_subroutine_depth, instructions } = &**routine_code;
 
-      // ///////////////
-      // Change Focus //
-      // ///////////////
+      core::debug_assert_eq!(arg_offsets.arg_idicies.len(), *formal_parameter_count);
 
-      match *focus_op {
-        PathDif::Goto(handle) => {
-            acquire_const_path!{let path : PathConstant = handle};
-            focus_zipper.reset();
-            focus_zipper.descend_to(path);
-          }
+      'subroutine : loop {
+        core::debug_assert!(*max_subroutine_depth >= subroutine_stack.len());
 
-        PathDif::Relative(Relative { accend, decend }) => {
-            if !focus_zipper.ascend(accend) { return Err(RoutineError { code: RoutineErrorCode::PathDifAccendingAboveRoot, instruction }); }
-            
-            let found  = decend
-              .and_then(   |handle| self.lookup_constant_path(handle).ok())
-              .map(|path|   {focus_zipper.descend_to(path) }).is_some();
-            if !found {
-              return Err(RoutineError { code: RoutineErrorCode::ConstantPathNonExistant, instruction })
-            }
-          }
-        PathDif::Root => focus_zipper.reset(),
-        PathDif::Noop => {}
-      }
+        let Instruction_ { op, const_arg, input_registers } = instructions[*program_counter];
+        macro_rules! binary_space_op {($OP:ident) => {{ 
+            let [arg_0, arg_1, ..] = input_registers;
+            let out = space_reg[arg_0 as usize].clone();
+            out.$OP(&space_reg[arg_1 as usize]);
+            space_reg[*program_counter] = out;
+        }};}
+        macro_rules! const_path {() => { &const_paths_store[const_arg.offset .. const_arg.offset + const_arg.len];};}
 
-      // ////////
-      // Do OP //
-      // ////////
-      let mut out = unsafe { reg_zh.write_zipper_at_exclusive_path_unchecked(out_path) };
-      macro_rules! save_output_space {() => {
-        #[allow(unreachable_code)]
-        {
-          out.reset();
-          *registers[instruction].space.borrow_mut() = Some(out);
+        match op {
+            Op::Empty                => { // should be a no-op
+                                          core::debug_assert!(space_reg[*program_counter].is_empty())
+                                        },
+
+            Op::Call                 => { let [arg_0 /* the whole path must fist be concatted with all args */, ..] = input_registers;
+                                          let PathStoreReference { offset, len } = path_reg[arg_0 as usize];
+                                          
+                                          let path = &path_buffer[offset..offset+len];
+                                          if let Some(m) =  self.memo.read_zipper_at_path(path).make_map() {
+                                            // if we can get the value now without running a full routine
+                                            space_reg[*program_counter] = m;
+
+                                          } else {
+                                            // this branch assumes we need to change routines.
+
+                                            let offsets_len = call_stack.offsets.len();
+                                            
+                                            let mut wz = self.routine_continuations.write_zipper();
+                                            wz.descend_to(&call_stack.data[call_stack.offsets[offsets_len-2]..call_stack.offsets[offsets_len-1]]);
+                                            
+                                            if let Some(cont) = wz.get_value() {
+                                              if cont.program_counter > *program_counter {
+                                                // the current continuation should be discarded and rerun
+                                                // the rerun should aquire the more advanced continuation
+                                                continue 'routine;
+                                              }
+                                            }
+                                            
+                                            call_stack.data.extend_from_slice(path);
+                                            call_stack.offsets.push(call_stack.data.len());
+                                            
+                                            wz.set_value(record);
+                                            
+                                            // we want to skip bumping the program counter, it should only be advanced when we sucessfully call the routine
+                                            continue 'routine                                            
+                                          }
+                                        },
+
+            Op::Mention              => { todo!("I'm not sure what this is ... (as Argument!)")
+                                        },
+
+            Op::Singleton            => { let [arg_0,..] = input_registers;
+                                          let PathStoreReference { offset, len } = path_reg[arg_0 as usize];
+                                          let prefix = &path_buffer[ offset .. offset+len ];
+                                          
+                                          space_reg[*program_counter] = BytesTrieMap::new();
+                                          let mut wz = space_reg[*program_counter].write_zipper_at_path(prefix);
+                                          wz.set_value(());
+                                        },
+
+            Op::Union                => binary_space_op!{join},
+            Op::Intersection         => binary_space_op!{meet},
+            Op::Subtraction          => binary_space_op!{subtract},
+            Op::Restriction          => binary_space_op!{restrict},
+
+
+            Op::Wrap                 => { let [arg_0 /* Space */, arg_1 /* Path */, .. ] = input_registers;
+                                          let PathStoreReference { offset, len } = path_reg[arg_1 as usize];
+                                          let prefix = &path_buffer[ offset .. offset + len ];
+                                          
+                                          let mut out = BytesTrieMap::new();
+                                          out.write_zipper_at_path(prefix).graft_map(space_reg[arg_0 as usize].clone());
+                                          
+                                          space_reg[*program_counter] = out;
+                                        },
+
+            Op::Unwrap               => { let [arg_0 /* Space */, arg_1 /* Path */, .. ] = input_registers;
+                                          let PathStoreReference { offset, len } = path_reg[arg_1 as usize];
+                                          let prefix = &path_buffer[ offset .. offset + len ];
+                                     
+                                          let Some(out) = space_reg[arg_0 as usize].read_zipper_at_borrowed_path(prefix).make_map() else { return Err(RoutineError_::RoutineMalformed((call_stack, *program_counter))); };
+                                          
+                                          space_reg[*program_counter] = out;
+                                        },
+
+            Op::DropHead             => { let [arg_0, .. ] = input_registers;
+                                          let mut out = space_reg[arg_0 as usize].clone();
+                                          let mut wz = out.write_zipper();
+
+                                          let mask = wz.child_mask();
+
+                                          let mut it = CfIter::new(&mask);
+                                          
+                                          while let Some(b) = it.next() {
+                                            if b == 0 {continue;}
+                                            assert!(wz.descend_to(&[b]));
+                                            wz.drop_head(b as usize);
+                                            assert!(wz.ascend(1));
+                                          }
+                                          drop(wz);
+                                          space_reg[*program_counter] = out;
+                                        },
+
+            Op::ExtractPathRef       => { let old_len = path_buffer.len();
+                                          path_buffer.extend_from_slice(const_path!());
+                                          path_reg[*program_counter] = PathStoreReference { offset : old_len, len : const_arg.len };
+                                        },
+
+            Op::ExtractSpaceMention  => { let rz = self.memo.read_zipper_at_borrowed_path(const_path!());
+                                          let Some(out) = rz.make_map() else { return Err(RoutineError_::ValueWasNotMemoed((call_stack, *program_counter))); };
+                                          
+                                          space_reg[*program_counter] = out;
+                                        },
+                                        
+            Op::Constant             => { path_buffer.reserve(const_arg.len);
+                                          let old_len = path_buffer.len();
+                                          path_buffer.extend_from_slice(const_path!());
+                                          path_reg[*program_counter] = PathStoreReference { offset : old_len, len : const_arg.len }
+                                        },
+
+            Op::Concat               => { let [arg_0, arg_1, ..] = input_registers;
+                                          let prefix_ref = path_reg[arg_0 as usize];
+                                          let suffix_ref = path_reg[arg_1 as usize];
+
+                                          let added_len = prefix_ref.len+suffix_ref.len;
+                                          path_buffer.reserve(added_len);
+
+                                          let old_len = path_buffer.len();
+
+                                          path_buffer.extend_from_within(prefix_ref.offset..prefix_ref.offset+prefix_ref.len);
+                                          path_buffer.extend_from_within(suffix_ref.offset..suffix_ref.offset+suffix_ref.len);
+
+                                          path_reg[*program_counter] = PathStoreReference { offset : old_len, len : added_len };
+                                        },
+
+
+
+            Op::Transformation       => todo!(),
+            Op::Composition          => todo!(),
+            Op::IterSubRoutine       => todo!(),
+            Op::Exit                 => { todo!("Union with Subroutine parent");
+                                          todo!("If Subroutine stack is empty, assign to memo!")
+                                        },
+
+
+
+            Op::Iteration            => todo!(),
+            Op::LeftResidual         => todo!(),
+            Op::RightResidual        => todo!(),
+            Op::NextPath             => todo!(),
+            Op::NextSubspace         => todo!(),
         }
-      };}
 
-      macro_rules! acquire_reg {
-        (let $SPACE:ident : Space = $REG:expr) => {
-              let mut __tmp = registers[$REG as usize].space.borrow();
-              let Some($SPACE) = __tmp.as_ref() else {
-                return Err(RoutineError { code: RoutineErrorCode::RegisterExprectedSpace, instruction });
-              };
-            };
-        (let $PATH:ident : Path = $REG:expr) => { 
-            let $PATH = &registers[$REG as usize].path[..];
-          };
-      }
-
-      match op {
-        Op::Empty => {
-            out.set_value(());
-            save_output_space!()
-          }
-
-        Op::Call      => todo!("Ref to other routine"),
-
-        Op::Mention   => {
-            todo!("I'm not sure what this is ... (as Argument!)")
-          }
-
-        Op::Singleton => {
-            let &[arg_0,..] = input_registers;
-            acquire_reg!{let path : Path = arg_0}
-            
-            out.descend_to(path);
-            out.set_value(());
-            save_output_space!{}
-          }
-
-        Op::Literal => {
-            let Ok(space) = self.lookup_constant_space(CH::coerce_space_handle(*const_arg)) else {return Err(RoutineError { code: RoutineErrorCode::SpaceLiteralNonExistant, instruction });};
-            out.graft_map(space);
-
-            save_output_space!{}
-          }
-
-        Op::Union => {
-            let &[arg_0, arg_1, ..] = input_registers;
-            acquire_reg!{let arg_0_z : Space = arg_0}
-            acquire_reg!{let arg_1_z : Space = arg_1}
-
-            out.graft(arg_0_z);
-            out.join(arg_1_z);
-            save_output_space!{}
-          }
-
-        Op::Intersection => {
-            let &[arg_0, arg_1, ..] = input_registers;
-            acquire_reg!{let arg_0_z : Space = arg_0}
-            acquire_reg!{let arg_1_z : Space = arg_1}
-
-            out.graft(&*arg_0_z);
-            out.meet(&*arg_1_z);
-            save_output_space!{}
-          }
-
-        Op::Subtraction => {
-            let &[arg_0, arg_1, ..] = input_registers;
-            acquire_reg!{let arg_0_z : Space = arg_0}
-            acquire_reg!{let arg_1_z : Space = arg_1}
-
-            out.graft(&*arg_0_z);
-            out.subtract(&*arg_1_z);
-            save_output_space!{}
-          }
-
-        Op::Restriction => {
-            let &[arg_0, arg_1, ..] = input_registers;
-            acquire_reg!{let arg_0_z  : Space = arg_0}
-            acquire_reg!{let arg_1_z  : Space = arg_1}
-
-            out.graft(arg_0_z);
-            out.restrict(arg_1_z);
-            save_output_space!{}
-          }
-
-        Op::Composition => todo!(),
-
-        Op::Wrap => {
-            let &[arg_0, arg_1, .. ] = input_registers;
-            acquire_reg!{let space : Space = arg_0}
-            acquire_reg!{let path  : Path  = arg_1}
-            out.descend_to(path);
-            out.graft(&*space);
-            save_output_space!{}
-          }
-
-        Op::Unwrap => {
-            let &[arg_0, arg_1, .. ] = input_registers;
-            acquire_reg!{let space : Space = arg_0}
-            acquire_reg!{let path  : Path  = arg_1}
-            let mut z = space.fork_read_zipper();
-            z.descend_to(path);
-            out.graft(&*space);
-            save_output_space!{}
-
-          }
-
-        Op::DropHead => {
-            // TODO! this drop head is over specialized and should be replaced with one you can plugin.
-            let &[arg_0, .. ] = input_registers;
-            acquire_reg!(let space : Space = arg_0);
-            out.graft(space);
-            let mask = out.child_mask();
-
-            let mut it = CfIter::new(&mask);
-
-            while let Some(b) = it.next() {
-              if b == 0 {continue;}
-              assert!(out.descend_to(&[b]));
-              out.drop_head(b as usize);
-              assert!(out.ascend(1));
-            }
-            save_output_space!{}
-          }
-
-        Op::Transformation      => todo!(),
-
-        Op::Iteration           => todo!("implement `NextPath` and `NextSubspace`"),
-
-        Op::NextPath => {
-          // the name is apparently a misnomer...
-          
-          // let &[arg_0, .. ] = input_registers;
-          // acquire_const_path!{let space : Space = arg_0}
-
-
-          // let path = space.
-          // registers[instruction as usize].path.reserve_exact(focus_path.len());
-          // registers[instruction as usize].path.extend_from_slice(focus_path);
-          // registers[instruction as usize].path.extend_from_slice(path);
-
-
-
-          todo!{}
-        },
-
-        Op::NextSubspace => {
-
-            todo!{}
-
-            save_output_space!{}
-          },
-
-        Op::ExtractPathRef      => {
-            acquire_const_path!{let path : ConstArg = *const_arg}
-            
-            let focus_path = focus_zipper.path();
-            registers[instruction as usize].path.reserve_exact(focus_path.len() + path.len());
-            registers[instruction as usize].path.extend_from_slice(focus_path);
-            registers[instruction as usize].path.extend_from_slice(path);
-          }
-
-        Op::ExtractSpaceMention => {
-            acquire_const_path!{let path : ConstArg = *const_arg}
-
-            let mut reader = focus_zipper.fork_read_zipper();
-            reader.descend_to(path);
-            out.graft(&reader);
-            save_output_space!{}
-          }
-
-        Op::Constant => {
-            acquire_const_path!(let path : ConstArg = *const_arg);
-
-            registers[instruction as usize].path.reserve_exact(path.len());
-            registers[instruction as usize].path.extend_from_slice(path);
-          }
-
-        Op::Concat => {
-            let &[arg_0, arg_1, ..] = input_registers;
-            acquire_reg!{let left  : Path = arg_0}
-            acquire_reg!{let right : Path = arg_1}
-
-            let mut out_path = Vec::with_capacity(left.len() + right.len());
-            out_path.extend_from_slice(left);
-            out_path.extend_from_slice(right);
-            
-            registers[instruction as usize].path = out_path;
-          }
-        Op::LeftResidual        => todo!(),
-
-        Op::RightResidual       => todo!(),
+        *program_counter += 1;
       }
     }
-
-    drop(registers);
-    drop(reg_zh);
-    register_zipper.reset();
-    focus_zipper.reset();
-
-    Ok(())
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// enum PathItem<BytesHandle> {
-//   Symbol(BytesHandle),
-//   Variable(BytesHandle),
-//   Arity(usize)
-// }
-
-
-
-// #[test]
-// fn h() {
-//   let mut t = BytesTrieMap::new();
-//   t.insert(b"aaa", 1);
-//   t.insert(b"aab", 2);
-//   t.insert(b"aac", 3);
-
-//   '_zippers : {
-//     let mut zh = t.zipper_head();
-//     let mut src = zh.write_zipper_at_exclusive_path(b"aa");
-//     let mut dest = zh.write_zipper_at_exclusive_path(b"ab");
-    
-//     dest.graft(&src);
-//   }
-
-//   let c = t.iter().map(|(v,i)| (v.clone(), *i)).collect::<Vec<_>>();
-//   println!("{:?}", c)
-  
-// }

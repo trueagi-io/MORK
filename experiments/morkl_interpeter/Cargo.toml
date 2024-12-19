@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 pathmap = {workspace = true}
+bucket_map = {path = "../symbol_mapping/bucket_map"}

@@ -7,6 +7,7 @@ use pathmap::trie_map::BytesTrieMap;
 
 mod handle;
 use handle::*;
+pub use handle::{SharedMappingHandle, WritePermit};
 
 mod symbol_backing;
 use symbol_backing::*;

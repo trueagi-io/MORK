@@ -32,17 +32,17 @@ Load data from json and querying using (a subset of) [JSONPath](https://datatrac
 
 - [x] Definition of Expr type structures to represent S-expressions efficiently in memory with high cache locality and searchability
 
-- [ ] Derivation of a triemap over a range of algebraic data structures, (excluding dependent typing).  See [Multiplate](https://wiki.haskell.org/Multiplate)
+- [x] Derivation of a triemap over a range of algebraic data structures, (excluding dependent typing).  See [Multiplate](https://wiki.haskell.org/Multiplate)
 
 - [x] Fast and memory-efficient S-expression triemap to support MeTTa atoms
 
-- [ ] Union, intersection, and subtract ops for S-expression triemap (and other derived triemap types) implemented with algorithms that have optimal scaling properties (based on current SOTA)
+- [x] Union, intersection, and subtract ops for S-expression triemap (and other derived triemap types) implemented with algorithms that have optimal scaling properties (based on current SOTA)
 
 - [x] Fast primitive triemap implementing the space-wide ops (union, intersection, and subtract), based on ([Ring of Sets](https://en.wikipedia.org/wiki/Ring_of_sets))
 
 - [x] Automatic translation of slow declarative "shape matching" queries into more classical database queries, to support bidirectional pattern matching and unification
 
-- [ ] Streaming JSON parser (completed), and JSONPath query engine
+- [ ] ~~Streaming JSON parser (completed), and JSONPath query engine~~ Branched into its own project.
 
 - [ ] ~~Take first place (or at least crack the top 3) in the [One Billion Row Challenge](https://github.com/gunnarmorling/1brc)~~ The datastructure is not the bottleneck in this situation.
 
@@ -68,7 +68,7 @@ Fearless concurrency based on isolation guarantees to allow scaling without hitt
 
 - [ ] Implement the ZAM in Rust leveraging an existing framework
 
-- [ ] Benchmark and optimize towards maximizing serial-inference-operations-per-second
+- [x] Benchmark and optimize towards maximizing serial-inference-operations-per-second
 
 - [ ] Benchmark and optimize towards parallel decomposed operation throughput
 

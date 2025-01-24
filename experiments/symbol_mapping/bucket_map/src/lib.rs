@@ -15,7 +15,7 @@ use symbol_backing::*;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
-/// the positive values less than (1 << 63) are reserved for symbols, the negative values are leaft for other purposes.
+/// The top two bytes are left free for tagging
 type Symbol = i64;
 
 /// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
@@ -144,7 +144,7 @@ struct ThreadPermission{
 impl ThreadPermission {
   fn init(index : u8) -> ThreadPermission {
     core::debug_assert!(index < 0b_1000_0000, "The top bit of a symbol must be kept off.");
-    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS)};
+    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS*3 /* leave the top two bytes free for encoding in the pathmap the type/len, the third byte has the map index, the last 5 bytes leave the possibility for 2^40 symbols */)};
     ThreadPermission {
       thread_id: AtomicU64::new(0),
       next_symbol: AtomicU64::new(next_symbol_val),

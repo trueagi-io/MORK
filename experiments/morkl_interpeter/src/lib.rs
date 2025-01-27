@@ -391,7 +391,7 @@ impl Interpreter {
                                           let mut it = CfIter::new(&mask);
                                           
                                           while let Some(b) = it.next() {
-                                            if !Interpreter::is_len(b) || b == 0 {continue;}
+                                            if !Interpreter::is_length_byte(b) || b == 0 {continue;}
                                             assert!(wz.descend_to(&[b]));
                                             wz.drop_head(b as usize);
                                             assert!(wz.ascend(1));
@@ -468,24 +468,20 @@ impl Interpreter {
                                           continue 'subroutine; // skip the program counter increment
                                         },
 
-            Op::Exit                 => { 
-                                          match subroutine_stack.pop() {
-                                            None => { let mut wz  = self.memo.write_zipper_at_path(routine_with_arguments);
-                                                      let mut ret = BytesTrieMap::new();
-                                                      core::mem::swap(&mut ret, &mut space_reg[*program_counter-1]);
-                                                      wz.graft_map(ret.clone());
-                                                      return Ok(ret);
-                                                    }
-                                            Some(Subroutine { mut iter, zipper_space, mut read_zipper, subroutine_start_counter, previous_program_counter, prefix_first_byte })
-                                                 => if Interpreter::is_len(prefix_first_byte) && read_zipper.to_next_k_path(prefix_first_byte as usize) {
-                                                        subroutine_stack.push(Subroutine { read_zipper, iter, subroutine_start_counter, previous_program_counter, prefix_first_byte, zipper_space });
-                                                        *program_counter = subroutine_start_counter as usize;
-                                                    } else {
-                                                      // union value into parent
-                                                      let mut tmp = BytesTrieMap::new();
-                                                      core::mem::swap(&mut tmp, &mut space_reg[*program_counter-1]);
-                                                      space_reg[previous_program_counter as usize].join_into(tmp);
+            Op::Exit                 => match subroutine_stack.pop() {
+                                          None => { let ret = core::mem::replace(&mut space_reg[*program_counter-1], BytesTrieMap::new());
+                                                    self.memo.write_zipper_at_path(routine_with_arguments).graft_map(ret.clone());
+                                                    return Ok(ret);
+                                                  }
+                                          Some(Subroutine { mut iter, zipper_space, mut read_zipper, subroutine_start_counter, previous_program_counter, prefix_first_byte })
+                                               => { // union value into parent
+                                                    let tmp = core::mem::replace(&mut space_reg[*program_counter-1], BytesTrieMap::new());
+                                                    space_reg[previous_program_counter as usize].join_into(tmp);
                                                     
+                                                    if Interpreter::is_length_byte(prefix_first_byte) && read_zipper.to_next_k_path(prefix_first_byte as usize) {
+                                                      subroutine_stack.push(Subroutine { read_zipper, iter, subroutine_start_counter, previous_program_counter, prefix_first_byte, zipper_space });
+                                                      *program_counter = subroutine_start_counter as usize;
+                                                    } else {
                                                       match iter.next() {
                                                         Some(byte) => { Interpreter::decend_leading(&mut read_zipper, byte);
                                                                         subroutine_stack.push(Subroutine { read_zipper, iter, subroutine_start_counter, previous_program_counter, prefix_first_byte : byte, zipper_space });
@@ -494,7 +490,7 @@ impl Interpreter {
                                                         None       => *program_counter = previous_program_counter as usize,
                                                       }
                                                     }
-                                          }
+                                                  }
                                         },
         }
 
@@ -503,11 +499,12 @@ impl Interpreter {
     }
   }
   
-  fn is_len(byte : u8)-> bool {0b_00_11_11_11 >= byte /* note the first nibble is 00 */ }
+  fn is_length_byte(byte : u8)-> bool {0b_00_11_11_11 >= byte /* note the first nibble is 00 */ }
 
   fn decend_leading(rz : &mut pathmap::zipper::ReadZipperOwned<()>, prefix_first_byte : u8) {
+    rz.reset();
     core::assert!(rz.descend_to(&[prefix_first_byte]));
-    if Interpreter::is_len(prefix_first_byte)  {
+    if Interpreter::is_length_byte(prefix_first_byte)  {
       core::assert!(rz.descend_first_k_path(prefix_first_byte as usize));
     }
   }

@@ -1,5 +1,5 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
-use std::sync::Arc;
+use std::{collections::btree_map::Range, sync::Arc};
 
 use pathmap::{ring::Lattice, trie_map::BytesTrieMap, zipper::{WriteZipper, Zipper, ZipperIteration}};
 
@@ -119,6 +119,9 @@ type PathRef<'a>      = &'a [u8];
 
 #[derive(Debug, Clone, Copy)]
 struct PathStoreReference { offset : PathOffset, len : PathLen}
+impl PathStoreReference {
+  fn as_range(self)->core::ops::Range<usize> { self.offset..self.offset+self.len }
+}
 
 type Fuel = u64;
 type ProgramCounter = usize;
@@ -155,6 +158,7 @@ impl Clone for Subroutine {
 
 #[derive(Clone)]
 struct RoutineActivationRecord {
+  /// For the moment there is no use of this field, I expect that to change
   arg_offsets      : ParsedRoutine,
   routine_code     : Routine,
   program_counter  : ProgramCounter,
@@ -227,9 +231,11 @@ impl Interpreter {
   ) -> Result<BytesTrieMap<()>, RoutineError_> {
     #![cfg_attr(rustfmt, rustfmt::skip)]
 
+    /// The slice is descibed by a pair of offsets in a classic half open range
     const SLICE_SIZE : usize = 2;
 
     let initial_slice : [usize ; SLICE_SIZE] = [0,routine_with_arguments.len()];
+    // call stack is a concatination of the routine call path, the offsets describe a half open range for each neighboring pair of offsets.
     let mut call_stack : CallStack = CallStack { data: Vec::from(routine_with_arguments), offsets : Vec::from(initial_slice) };
 
     'routine : loop {
@@ -239,8 +245,8 @@ impl Interpreter {
       let popped_value : Option<BytesTrieMap<()>> = 'find_memo : {
         
         let len   = call_stack.offsets.len();
-        let start = call_stack.offsets[len-2];
-        let end   = call_stack.offsets[len-1];
+        let start = call_stack.offsets[len-SLICE_SIZE];
+        let end   = call_stack.offsets[len-(SLICE_SIZE-1)];
         let routine_path = &call_stack.data[start..end];
         
         let rz = self.memo.read_zipper_at_path(routine_path);
@@ -248,8 +254,8 @@ impl Interpreter {
 
         if call_stack.offsets.len() == SLICE_SIZE { return Ok(m)};
 
-        // pop value
-        unsafe { call_stack.data.set_len(end) };
+        // pop value (the routine and args)
+        call_stack.data.truncate(end);
         call_stack.offsets.pop();
         Some(m)
       };
@@ -310,13 +316,11 @@ impl Interpreter {
                                           core::debug_assert!(space_reg[*program_counter].is_empty())
                                         },
 
-            Op::Call                 => { let [arg_0 /* the whole path must fist be concatted with all args */, ..] = input_registers;
-                                          let PathStoreReference { offset, len } = path_reg[arg_0 as usize];
-                                          
-                                          let path = &path_buffer[offset..offset+len];
-                                          if let Some(m) =  self.memo.read_zipper_at_path(path).make_map() {
+            Op::Call                 => { let [arg_0 /* the whole path must first be concatted with all args */, ..] = input_registers;
+                                          let path = &path_buffer[path_reg[arg_0 as usize].as_range()];
+                                          if let Some(memo) =  self.memo.read_zipper_at_path(path).make_map() {
                                             // if we can get the value now without running a full routine
-                                            space_reg[*program_counter] = m;
+                                            space_reg[*program_counter] = memo;
 
                                           } else {
                                             // this branch assumes we need to change routines.
@@ -334,9 +338,11 @@ impl Interpreter {
                                               }
                                             }
                                             
+                                            // push to call stack
                                             call_stack.data.extend_from_slice(path);
                                             call_stack.offsets.push(call_stack.data.len());
                                             
+                                            // save the current continuation
                                             wz.set_value(record);
                                             
                                             // we want to skip bumping the program counter, it should only be advanced when we sucessfully call the routine
@@ -346,8 +352,7 @@ impl Interpreter {
 
 
             Op::Singleton            => { let [arg_0,..] = input_registers;
-                                          let PathStoreReference { offset, len } = path_reg[arg_0 as usize];
-                                          let prefix = &path_buffer[ offset .. offset+len ];
+                                          let prefix = &path_buffer[ path_reg[arg_0 as usize].as_range() ];
                                           
                                           space_reg[*program_counter] = BytesTrieMap::new();
                                           let mut wz = space_reg[*program_counter].write_zipper_at_path(prefix);
@@ -361,8 +366,7 @@ impl Interpreter {
 
 
             Op::Wrap                 => { let [arg_0 /* Space */, arg_1 /* Path */, .. ] = input_registers;
-                                          let PathStoreReference { offset, len } = path_reg[arg_1 as usize];
-                                          let prefix = &path_buffer[ offset .. offset + len ];
+                                          let prefix = &path_buffer[ path_reg[arg_1 as usize].as_range() ];
                                           
                                           let mut out = BytesTrieMap::new();
                                           out.write_zipper_at_path(prefix).graft_map(space_reg[arg_0 as usize].clone());
@@ -371,9 +375,8 @@ impl Interpreter {
                                         },
 
             Op::Unwrap               => { let [arg_0 /* Space */, arg_1 /* Path */, .. ] = input_registers;
-                                          let PathStoreReference { offset, len } = path_reg[arg_1 as usize];
-                                          let prefix = &path_buffer[ offset .. offset + len ];
-                                     
+                                          let prefix = &path_buffer[ path_reg[arg_1 as usize].as_range() ];
+                                          
                                           let Some(out) = space_reg[arg_0 as usize].read_zipper_at_borrowed_path(prefix).make_map() else { return Err(RoutineError_::RoutineMalformed((call_stack, *program_counter))); };
                                           
                                           space_reg[*program_counter] = out;
@@ -413,8 +416,7 @@ impl Interpreter {
             Op::ExtractSpaceMention  => { let Some(out) = ( if let Some(Subroutine { read_zipper, .. }) = subroutine_stack.last() {
                                                               read_zipper.make_map()
                                                             } else {
-                                                              let rz = self.memo.read_zipper_at_borrowed_path(const_path!());
-                                                              rz.make_map() 
+                                                              self.memo.read_zipper_at_borrowed_path(const_path!()).make_map() 
                                                             }
                                                           )
                                           else { return Err(RoutineError_::ValueWasNotMemoed((call_stack, *program_counter))); };
@@ -438,8 +440,8 @@ impl Interpreter {
 
                                           let old_len = path_buffer.len();
 
-                                          path_buffer.extend_from_within(prefix_ref.offset..prefix_ref.offset+prefix_ref.len);
-                                          path_buffer.extend_from_within(suffix_ref.offset..suffix_ref.offset+suffix_ref.len);
+                                          path_buffer.extend_from_within( prefix_ref.as_range() );
+                                          path_buffer.extend_from_within( suffix_ref.as_range() );
 
                                           path_reg[*program_counter] = PathStoreReference { offset : old_len, len : added_len };
                                         },

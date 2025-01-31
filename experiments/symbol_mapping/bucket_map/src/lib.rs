@@ -78,7 +78,7 @@ impl SharedMapping {
     if sym <= 0 {
       return None;
     }
-    let bucket = (sym as u64) >> U64_BYTES-1;
+    let bucket = (sym as u64) >> U64_BYTES-3;
 
     '_lock_scope : {
       self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_ne_bytes()[..])

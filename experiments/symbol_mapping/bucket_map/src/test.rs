@@ -17,6 +17,32 @@ fn simple_example() {
   drop(handle);
 }
 
+
+#[test]
+fn multiple_values() {
+  let handle = SharedMapping::new();
+  
+  core::assert_eq!(handle.get_sym(b"abc"), None);
+  core::assert_eq!(handle.get_bytes(5), None);
+
+  let permit = handle.try_aquire_permission().unwrap();
+
+  let bytes =[b"abc", b"def", b"foo", b"bar"];
+  let sym = [b"abc", b"def", b"foo", b"bar"].map(|bs| permit.get_sym_or_insert(bs));
+
+  drop(permit);
+  
+  for (idx, each) in sym.iter().enumerate() {
+    core::assert_eq!(Some(*each), handle.get_sym(&bytes[idx][..]));
+    core::assert_eq!(Some(&bytes[idx][..]), handle.get_bytes(*each));
+
+  }
+
+  drop(handle);
+}
+
+
+
 #[test]
 fn same_sym() {
   let handle = SharedMapping::new();

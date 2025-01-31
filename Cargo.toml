@@ -9,7 +9,7 @@ members = [
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
     "frontend/",
-    #"kernel/" LP: Looks to be in a state of heavy experimentation
+    "kernel/"
 ]
 
 [workspace.package]
@@ -20,7 +20,8 @@ edition = "2021"
 # Internal to MORK
 mork-bytestring = {path = "./experiments/expr/bytestring"}
 mork-frontend = {path = "./frontend"}
-# mork = {path = "./kernel"} LP: Looks to be in a state of heavy experimentation
+mork = {path = "./kernel"}
+bucket_map = {path = "./experiments/symbol_mapping/bucket_map"}
 
 # External to MORK
 [workspace.dependencies.pathmap]

@@ -8,6 +8,8 @@ rustflags = "-C opt-level=3 -C target-cpu=native"
 
 
 [dependencies]
-pathmap = { workspace=true }
+pathmap = { workspace = true }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace=true }
+bucket_map = { workspace = true }
+memmap2 = "0.9.5"

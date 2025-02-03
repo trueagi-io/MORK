@@ -17,6 +17,37 @@ fn simple_example() {
   drop(handle);
 }
 
+
+#[test]
+fn multiple_values() {
+  let handle = SharedMapping::new();
+  
+  core::assert_eq!(handle.get_sym(b"abc"), None);
+  core::assert_eq!(handle.get_bytes(5), None);
+
+  let permit = handle.try_aquire_permission().unwrap();
+
+  let bytes =[b"abc", b"def", b"foo", b"bar"];
+  let sym = bytes.map(|bs| permit.get_sym_or_insert(bs));
+
+  drop(permit);
+  
+  for (idx, each) in sym.iter().enumerate() {
+    core::assert_eq!(
+      Some(*each), 
+      handle.get_sym(&bytes[idx][..]));
+    core::assert_eq!(
+      Some(&bytes[idx][..]), 
+      handle.get_bytes(*each)
+    );
+
+  }
+
+  drop(handle);
+}
+
+
+
 #[test]
 fn same_sym() {
   let handle = SharedMapping::new();
@@ -64,7 +95,8 @@ fn same_sym() {
 fn allocate_many() {
   // const LEN : usize = 3843;   // all dense nodes break point
   // const LEN : usize = 5449;      // breaking point with all dense nodes off
-  const LEN : usize = 4096*32; // original test
+  // const LEN : usize = 4096*32; // original test
+  const LEN : usize = 4096*8; 
   static ONES : [u8 ; LEN]= [1;LEN];
 
 

@@ -5,8 +5,9 @@ extern crate alloc;
 use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr, AtomicU64}};
 use pathmap::trie_map::BytesTrieMap;
 
-pub mod handle;
-pub use handle::*;
+mod handle;
+use handle::*;
+pub use handle::{SharedMappingHandle, WritePermit};
 
 mod symbol_backing;
 use symbol_backing::*;
@@ -14,7 +15,7 @@ use symbol_backing::*;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
-/// the positive values less than (1 << 63) are reserved for symbols, the negative values are leaft for other purposes.
+/// The top two bytes are left free for tagging
 type Symbol = i64;
 
 /// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
@@ -42,7 +43,7 @@ pub struct SharedMapping {
   pub(crate) flags            : AtomicU64,
   pub(crate) permissions      : AlignArray<ThreadPermission>,
   pub(crate) to_symbol        : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
-  /// the path is a Symbol as __native endian bytes__.
+  /// the path is a Symbol as __big endian bytes__.
   pub(crate) to_bytes         : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
 }
 
@@ -77,10 +78,10 @@ impl SharedMapping {
     if sym <= 0 {
       return None;
     }
-    let bucket = (sym as u64) >> U64_BYTES-1;
+    let bucket = (sym as u64) >> U64_BYTES-3;
 
     '_lock_scope : {
-      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_ne_bytes()[..])
+      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_be_bytes()[..])
     }.map(|t| unsafe {&*t.as_raw_slice()})
   }
 
@@ -143,7 +144,7 @@ struct ThreadPermission{
 impl ThreadPermission {
   fn init(index : u8) -> ThreadPermission {
     core::debug_assert!(index < 0b_1000_0000, "The top bit of a symbol must be kept off.");
-    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS)};
+    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS*3 /* leave the top two bytes free for encoding in the pathmap the type/len, the third byte has the map index, the last 5 bytes leave the possibility for 2^40 symbols */)};
     ThreadPermission {
       thread_id: AtomicU64::new(0),
       next_symbol: AtomicU64::new(next_symbol_val),

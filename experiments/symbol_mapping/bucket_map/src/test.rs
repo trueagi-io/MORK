@@ -28,13 +28,18 @@ fn multiple_values() {
   let permit = handle.try_aquire_permission().unwrap();
 
   let bytes =[b"abc", b"def", b"foo", b"bar"];
-  let sym = [b"abc", b"def", b"foo", b"bar"].map(|bs| permit.get_sym_or_insert(bs));
+  let sym = bytes.map(|bs| permit.get_sym_or_insert(bs));
 
   drop(permit);
   
   for (idx, each) in sym.iter().enumerate() {
-    core::assert_eq!(Some(*each), handle.get_sym(&bytes[idx][..]));
-    core::assert_eq!(Some(&bytes[idx][..]), handle.get_bytes(*each));
+    core::assert_eq!(
+      Some(*each), 
+      handle.get_sym(&bytes[idx][..]));
+    core::assert_eq!(
+      Some(&bytes[idx][..]), 
+      handle.get_bytes(*each)
+    );
 
   }
 

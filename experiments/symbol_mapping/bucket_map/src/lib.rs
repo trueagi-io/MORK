@@ -43,7 +43,7 @@ pub struct SharedMapping {
   pub(crate) flags            : AtomicU64,
   pub(crate) permissions      : AlignArray<ThreadPermission>,
   pub(crate) to_symbol        : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
-  /// the path is a Symbol as __native endian bytes__.
+  /// the path is a Symbol as __big endian bytes__.
   pub(crate) to_bytes         : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
 }
 
@@ -81,7 +81,7 @@ impl SharedMapping {
     let bucket = (sym as u64) >> U64_BYTES-3;
 
     '_lock_scope : {
-      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_ne_bytes()[..])
+      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_be_bytes()[..])
     }.map(|t| unsafe {&*t.as_raw_slice()})
   }
 

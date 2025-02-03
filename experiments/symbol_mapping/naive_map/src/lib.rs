@@ -21,7 +21,7 @@ impl SharedMapping {
   pub fn get_bytes(&self, sym : Symbol) -> Option<&[u8]> {
     '_lock_scope : {
       let lock = self.to_bytes.read().unwrap();
-      lock.get(&sym.to_ne_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
+      lock.get(&sym.to_be_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
     }
   }
 
@@ -60,7 +60,7 @@ impl<'a> WritePermit<'a> {
       let sym = self.next_sym.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
       '_lock_scope_bytes : {
         let mut lock_bytes = self.to_bytes.write().unwrap();
-        lock_bytes.insert(sym.to_ne_bytes(), store);
+        lock_bytes.insert(sym.to_be_bytes(), store);
         
         lock_sym.insert(bytes, sym);
         sym

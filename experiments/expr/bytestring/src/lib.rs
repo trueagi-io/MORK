@@ -515,7 +515,7 @@ impl Expr {
     }
 
     #[inline(never)]
-    pub fn serialize<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str>(&self, t: &mut Target, map_symbol: F) -> () {
+    pub fn serialize<'f, Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'f str + 'f>(&self, t: &mut Target, map_symbol: F) -> () {
         let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
         execute_loop(&mut traversal, *self, 0);
     }
@@ -624,9 +624,9 @@ impl Debug for Expr {
     }
 }
 
-struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
+struct SerializerTraversal<'a, 'f, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'f str + 'f> { out: &'a mut Target, map_symbol: F, transient: bool }
 
-impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
+impl <'f, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'f str + 'f> Traversal<(), ()> for SerializerTraversal<'_, 'f, Target, F> {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }

@@ -81,18 +81,18 @@ impl<'a> WritePermit<'a> {
           Slab::register_bytes(slab_ptr,bytes)
         }
       };
-      let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed) as i64;
+      let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed).to_be_bytes();
       
       let old_sym = sym_guard.insert(bytes, new_sym);
       core::debug_assert!(matches!(old_sym, Option::None));
 
-      let sym_bytes = new_sym.to_be_bytes();
+      let sym_bytes = new_sym;
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
 
         let old_thin = bytes_guard.insert(sym_bytes.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
-      }
+        }
 
       new_sym
     };
@@ -124,7 +124,6 @@ thread_local! {
 
 pub struct SharedMappingHandle(pub(crate) core::ptr::NonNull<SharedMapping>);
 unsafe impl Send for SharedMappingHandle {}
-unsafe impl Sync for SharedMappingHandle {}
 
 impl SharedMappingHandle {
 

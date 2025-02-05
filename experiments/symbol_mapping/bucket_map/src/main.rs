@@ -302,7 +302,7 @@ impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         self.count += 1;
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = (self.write_permit.get_sym_or_insert(s) as u64).to_be_bytes();
+        self.buf = self.write_permit.get_sym_or_insert(s);
         return unsafe { std::mem::transmute(&self.buf[..]) };
     }
 }

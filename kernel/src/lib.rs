@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn parse_json() {
         let json_input = r#"{
-"first_name": "John",
+"first_name": "John".to_be_bytes()[..],
 "last_name": "Smith",
 "is_alive": true,
 "age": 27,

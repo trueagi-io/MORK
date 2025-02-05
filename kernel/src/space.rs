@@ -284,7 +284,7 @@ impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         self.count += 1;
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = (self.write_permit.get_sym_or_insert(s) as u64).to_be_bytes();
+        self.buf = (self.write_permit.get_sym_or_insert(s) );
         return unsafe { std::mem::transmute(&self.buf[..]) };
     }
 }
@@ -430,10 +430,10 @@ impl Space {
                     let path = rz.origin_path().unwrap();
                     let e = Expr { ptr: path.as_ptr().cast_mut() };
                     e.serialize(w, |s| {
-                        let symbol = i64::from_be_bytes(s.try_into().unwrap());
+                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                         let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                        println!("symbol {symbol}, bytes {mstr:?}");
-                        unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {}", symbol).as_str())) }
+                        println!("symbol {symbol:?}, bytes {mstr:?}");
+                        unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                     });
                     w.write(&[b'\n']).map_err(|x| x.to_string())?;
                     i += 1;

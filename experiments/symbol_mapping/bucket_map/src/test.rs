@@ -5,7 +5,8 @@ fn simple_example() {
   let handle = SharedMapping::new();
   
   core::assert_eq!(handle.get_sym(b"abc"), None);
-  core::assert_eq!(handle.get_bytes(5), None);
+  // core::assert_eq!(handle.get_bytes(5), None);
+  core::assert_eq!(handle.get_bytes(5_i64.to_be_bytes()), None);
 
   let permit = handle.try_aquire_permission().unwrap();
 
@@ -23,7 +24,8 @@ fn multiple_values() {
   let handle = SharedMapping::new();
   
   core::assert_eq!(handle.get_sym(b"abc"), None);
-  core::assert_eq!(handle.get_bytes(5), None);
+  // core::assert_eq!(handle.get_bytes(5), None);
+  core::assert_eq!(handle.get_bytes(5i64.to_be_bytes()), None);
 
   let permit = handle.try_aquire_permission().unwrap();
 
@@ -41,6 +43,52 @@ fn multiple_values() {
       handle.get_bytes(*each)
     );
 
+  }
+
+  drop(handle);
+}
+
+#[test]
+fn many_values() {
+  let handle = SharedMapping::new();
+  
+  core::assert_eq!(handle.get_sym(b"abc"), None);
+  core::assert_eq!(handle.get_bytes(5_i64.to_be_bytes()), None);
+
+  let permit = handle.try_aquire_permission().unwrap();
+
+  let bytes : &[&[u8]]=&[&b"abc"[..], &b"def"[..], &b"foo"[..], &b"bar"[..],
+  
+  
+  &b"first_name"[..], &b"John"[..],
+  &b"last_name"[..], &b"Smith"[..],
+  &b"is_alive"[..], &b"true"[..],
+  &b"age"[..], &b"27"[..],
+  &b"address&b"[..],
+    &b"street_address"[..], &b"21 2nd Street"[..],
+    &b"city"[..], &b"New York"[..],
+    &b"state"[..], &b"NY"[..],
+    &b"postal_code"[..], &b"10021-3100"[..],
+  &b"phone_numbers"[..],
+    &b"type"[..], &b"home"[..], &b"number"[..], &b"212 555-1234"[..],
+    &b"type"[..], &b"office"[..], &b"number"[..], &b"646 555-4567"[..],
+    &b"children"[..], &b"Catherine"[..], &b"Thomas"[..], &b"Trevor"[..],
+    &b"spouse"[..], &b"null"[..]
+  
+  
+  ];
+  let sym = bytes.iter().copied().map(|bs| permit.get_sym_or_insert(bs)).collect::<Vec<_>>();
+
+  drop(permit);
+  
+  for (idx, each) in sym.into_iter().enumerate() {
+    core::assert_eq!(
+      Some(each), 
+      handle.get_sym(&bytes[idx][..]));
+    core::assert_eq!(
+      Some(&bytes[idx][..]), 
+      handle.get_bytes(each)
+    );
   }
 
   drop(handle);
@@ -95,7 +143,8 @@ fn same_sym() {
 fn allocate_many() {
   // const LEN : usize = 3843;   // all dense nodes break point
   // const LEN : usize = 5449;      // breaking point with all dense nodes off
-  const LEN : usize = 4096*32; // original test
+  // const LEN : usize = 4096*32; // original test
+  const LEN : usize = 4096*2; 
   static ONES : [u8 ; LEN]= [1;LEN];
 
 

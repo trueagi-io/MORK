@@ -5,7 +5,7 @@ members = [
     "benchmarks/logic-query/",
     "benchmarks/oeis/",
     "experiments/expr/bytestring/",
-    "experiments/expr/dyck/", "experiments/morkl_interpreter", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
+    "experiments/expr/dyck/", "experiments/morkl_interpreter", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map", "experiments/pathmap_merkle_serialization",
     "frontend/",
     "kernel/" # LP: Looks to be in a state of heavy experimentation
 ]

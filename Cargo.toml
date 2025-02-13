@@ -7,7 +7,8 @@ members = [
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/morkl_interpeter", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
     "frontend/",
-    #"kernel/" LP: Looks to be in a state of heavy experimentation
+    #"kernel/", LP: Looks to be in a state of heavy experimentation
+    "server/",
 ]
 
 [workspace.package]

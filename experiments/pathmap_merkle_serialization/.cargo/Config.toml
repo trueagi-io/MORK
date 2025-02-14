@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-C", "target-cpu=native"] # RUSTFLAGS="-C target-cpu=native"  cargo build

@@ -50,13 +50,16 @@ impl Slab {
       }
       let head = (*_self).slab_data.add(slab.write_pos);
 
-      let data_ptr = if len < i8::MAX as usize {
+      let offset = if len < i8::MAX as usize {
         head.write(!(len as u8));
-        head.byte_add(1)
+        1
       } else { 
         (head as *mut u64).write_unaligned(len as u64);
-        head.byte_add(U64_BYTES)
+        U64_BYTES
       };
+      let data_ptr = head.byte_add(offset);
+      (*_self).write_pos += offset + len;
+
       core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
     
       ThinBytes(head) 
@@ -70,7 +73,7 @@ impl Slab {
 /// if top bit set, the lenght is the bitwise not of that byte.
 /// if the top is not set, read that byte and the next three as a u32 and use that as the length.
 #[derive(Clone, Copy)]
-pub(crate) struct ThinBytes(*const u8);
+pub(crate) struct ThinBytes(pub(crate) *const u8);
 
 impl ThinBytes {
   pub(crate) fn as_raw_slice(self) -> *const [u8] {

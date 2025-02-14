@@ -38,7 +38,7 @@ impl<'a> WritePermit<'a> {
     // So we eagerly write to the Slab if the currently allocated one has space.
     // If we find out someone else has beat us to adding it to the store, we want to revert
     // our eager write.
-    let mut eager_and_recovery = None;
+    let mut eager_and_recovery : Option<(ThinBytes, (*mut Slab, Slab))> = None;
 
     let mut slab_ptr = thread_permission.symbol_table_last.load(atomic::Ordering::Relaxed);
 
@@ -67,6 +67,7 @@ impl<'a> WritePermit<'a> {
 
       let thin_bytes_ptr = if let Some((thin_bytes,_)) = eager_and_recovery {
         // the eager write pays off.
+        eager_and_recovery = None;
         thin_bytes
       } else {
         // We need to hold the lock while allocating, otherwise our allocation goes to waste.
@@ -80,18 +81,18 @@ impl<'a> WritePermit<'a> {
           Slab::register_bytes(slab_ptr,bytes)
         }
       };
-      let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed) as i64;
+      let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed).to_be_bytes();
       
       let old_sym = sym_guard.insert(bytes, new_sym);
       core::debug_assert!(matches!(old_sym, Option::None));
 
-      let sym_bytes = new_sym.to_ne_bytes();
+      let sym_bytes = new_sym;
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
 
         let old_thin = bytes_guard.insert(sym_bytes.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
-      }
+        }
 
       new_sym
     };

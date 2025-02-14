@@ -5,10 +5,10 @@ members = [
     "benchmarks/logic-query/",
     "benchmarks/oeis/",
     "experiments/expr/bytestring/",
-    "experiments/expr/dyck/", "experiments/morkl_interpeter", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
+    "experiments/expr/dyck/", "experiments/morkl_interpreter", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/naive_map",
     "frontend/",
-    #"kernel/", LP: Looks to be in a state of heavy experimentation
-    "server/",
+    "server",
+    "kernel/"
 ]
 
 [workspace.package]
@@ -19,10 +19,11 @@ edition = "2021"
 # Internal to MORK
 mork-bytestring = {path = "./experiments/expr/bytestring"}
 mork-frontend = {path = "./frontend"}
-# mork = {path = "./kernel"} LP: Looks to be in a state of heavy experimentation
+mork = {path = "./kernel"}
 
 # External to MORK
 # pathmap = {path = "../PathMap" , features = ["all_dense_nodes"]}
 [workspace.dependencies.pathmap]
-path = "../PathMap" 
-# features = ["all_dense_nodes"]
+path = "../PathMap"
+features = ["jemalloc"]
+# features = ["jemalloc", "all_dense_nodes"]

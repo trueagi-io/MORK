@@ -11,3 +11,6 @@ rustflags = "-C opt-level=3 -C target-cpu=native"
 pathmap = { workspace=true }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace=true }
+
+[features]
+pathmap_counters = []

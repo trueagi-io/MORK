@@ -6,8 +6,7 @@ use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr
 use pathmap::trie_map::BytesTrieMap;
 
 mod handle;
-use handle::*;
-pub use handle::{SharedMappingHandle, WritePermit};
+pub use handle::*;
 
 mod symbol_backing;
 use symbol_backing::*;
@@ -15,8 +14,10 @@ use symbol_backing::*;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
-/// The top two bytes are left free for tagging
-type Symbol = i64;
+/// The top two bytes are left free for tagging, 
+// Big endian!
+type Symbol = [u8;SYM_LEN];
+const SYM_LEN : usize = 8;
 
 /// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
 const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
@@ -43,7 +44,7 @@ pub struct SharedMapping {
   pub(crate) flags            : AtomicU64,
   pub(crate) permissions      : AlignArray<ThreadPermission>,
   pub(crate) to_symbol        : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
-  /// the path is a Symbol as __native endian bytes__.
+  /// the path is a Symbol as __big endian bytes__.
   pub(crate) to_bytes         : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
 }
 
@@ -75,13 +76,13 @@ impl SharedMapping {
 
   /// Aquire the bytes associated with a [`Symbol`]
   pub fn get_bytes(&self, sym: Symbol)-> Option<&[u8]> {
-    if sym <= 0 {
+    if sym[SYM_LEN-1] > i8::MIN as u8 {
       return None;
     }
-    let bucket = (sym as u64) >> U64_BYTES-1;
+    let bucket = sym[SYM_LEN-3];
 
     '_lock_scope : {
-      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_ne_bytes()[..])
+      self.to_bytes[bucket as usize].0.read().unwrap().get(sym)
     }.map(|t| unsafe {&*t.as_raw_slice()})
   }
 

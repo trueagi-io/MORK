@@ -10,7 +10,8 @@ members = [
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/bucket_map_dependant_tests", "experiments/symbol_mapping/naive_map",
     "frontend/",
-    "kernel/"
+    "kernel/",
+    "server"
 ]
 
 [workspace.package]

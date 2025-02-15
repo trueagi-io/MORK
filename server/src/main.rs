@@ -92,7 +92,7 @@ impl MorkService {
         let shutdown_watcher = hyper_util::server::graceful::GracefulShutdown::new();
 
         let listener = TcpListener::bind(addr).await?;
-        println!("Server starting. {} worker threads. Listening on {addr:?}...", self.0.workers.thread_count); //GOAT Log this
+        println!("Server starting. {} worker threads. Listening on {addr:?}...", self.0.workers.thread_count()); //GOAT Log this
 
         //Connection listener loop
         loop {
@@ -139,61 +139,32 @@ impl MorkService {
         Ok(())
     }
     /// Attempts to allocate a worker thread to run `work_f`, and replies with an `ack` or a busy response
-    fn dispatch_to_worker(&self, command: Command) -> <Self as Service<Request<IncomingBody>>>::Future {
-        //See if we have a spare worker thread to dedicate to this work
-        match self.0.workers.assign_worker() {
-            Some(work_thread) => {
-
-                //Acquire the resources (mainly zippers) to perform the operation
-                match command.def.gather(self, &command) {
-                    Ok(resources) => {
-                        let self_clone = self.clone();
-                        Box::pin(async move {
-                            println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
-
-                            //Spin off a thread to do the work
-                            tokio::task::spawn_blocking(move || {
-                                match command.def.work(&self_clone, &command, resources) {
-                                    Ok(()) => {
-                                        println!("Successful completion: cmd={}", command.def.name()); //GOAT Log this sucessful completion
-                                    },
-                                    Err(e) => {
-                                        println!("Command encountered error: cmd={} err={}", command.def.name(), e); //GOAT Log this error
-                                    }
-                                }
-                                self_clone.0.workers.replace_worker(work_thread);
-                            });
-
-                            Ok(Response::new(full_response("Request Acknowledged")))
-                        })
-                    },
-                    Err(err) => {
-                        println!("Failed to Acquire Resources: {err:?}"); //GOAT Log this
-                        self.0.workers.replace_worker(work_thread);
-                        let mut response = Response::new(empty_response());
-                        *response.status_mut() = StatusCode::UNAUTHORIZED;
-                        Box::pin(async { Ok(response) })
-                    }
+    fn dispatch_work(&self, command: Command) -> <Self as Service<Request<IncomingBody>>>::Future {
+        let work_thread = if command.def.consume_worker() {
+            //See if we have a spare worker thread to dedicate to this work
+            match self.0.workers.assign_worker() {
+                Some(work_thread) => Some(work_thread),
+                None => {
+                    println!("Rejected Connection: Busy"); //GOAT Log this
+                    let mut response = Response::new(empty_response());
+                    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                    return Box::pin(async { Ok(response) })
                 }
             }
-            None => {
-                println!("Rejected Connection: Busy"); //GOAT Log this
-                let mut response = Response::new(empty_response());
-                *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
-                Box::pin(async { Ok(response) })
-            }
-        }
-    }
-    /// Dispatches a task that runs in the async runtime - this is for tasks that are not very CPU-heavy
-    fn dispatch_async(&self, command: Command) -> <Self as Service<Request<IncomingBody>>>::Future {
+        } else {
+            None
+        };
 
-        //Acquire the resources to perform the operation
+        //Acquire the resources (mainly zippers) to perform the operation
         match command.def.gather(self, &command) {
             Ok(resources) => {
                 let ctx = self.clone();
                 Box::pin(async move {
+                    println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
+
                     let cmd_name = command.def.name();
-                    match command.def.work_async(ctx, command, resources).await {
+                    let work_result = command.def.work(ctx, work_thread, command, resources).await;
+                    match work_result {
                         Ok(()) => {
                             Ok(Response::new(full_response("Request Acknowledged")))
                         },
@@ -408,25 +379,25 @@ impl Service<Request<IncomingBody>> for MorkService {
                 let command = fut_err!((|| {
                     parse_command::<BusywaitCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_to_worker(command)
+                self.dispatch_work(command)
             },
             (&Method::GET, ImportCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<ImportCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_to_worker(command)
+                self.dispatch_work(command)
             },
             (&Method::GET, FetchCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<FetchCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_async(command)
+                self.dispatch_work(command)
             }
             (&Method::GET, StopCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<StopCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_async(command)
+                self.dispatch_work(command)
             },
             // Return 404 Not Found for other routes.
             _ => {
@@ -440,64 +411,95 @@ impl Service<Request<IncomingBody>> for MorkService {
 }
 
 #[cfg(feature = "tokio_workers")]
-struct WorkerPool {
-    thread_count: usize,
-    threads_available: core::sync::atomic::AtomicUsize,
+mod worker_pool {
+    use std::sync::Arc;
+    use super::{BoxedErr, Command};
+
+    pub struct WorkerPool {
+        thread_count: usize,
+        /// We'll use the Arc's strong_count to keep track of the number of threds in use.  Since the
+        /// `Arc` inside `WorkThreadHandle` is private and `WorkThreadHandle` is `!Clone`, we can use
+        /// this as an atomic counter
+        thread_counter: Arc<()>,
+    }
+
+    #[allow(dead_code)] //The inner Arc is just to keep an atomic count so we don't ever access it
+    pub struct WorkThreadHandle(Arc<()>);
+
+    impl WorkThreadHandle {
+        pub async fn dispatch_blocking_task<F>(self, cmd: Command, task: F)
+            where F: FnOnce(Command) -> Result<(), BoxedErr> + 'static + Send
+        {
+            //Spin off a thread to do the work
+            tokio::task::spawn_blocking(move || {
+                match task(cmd.clone()) {
+                    Ok(()) => {
+                        println!("Successful completion: cmd={}", cmd.def.name()); //GOAT Log this sucessful completion
+                    },
+                    Err(e) => {
+                        println!("Command encountered error: cmd={} err={}", cmd.def.name(), e); //GOAT Log this error
+                    }
+                }
+
+                // **VERY** important that the closure captures the Arc in self, otherwise it will be
+                // dropped, and the thread will appear available
+                let _ = Arc::strong_count(&self.0);
+            });
+        }
+    }
+
+    impl WorkerPool {
+        pub fn new() -> Self {
+            // We want to reserve one OS thread for dealing with the responses and the watchdog
+            let thread_count = tokio::runtime::Handle::current().metrics().num_workers() - 1;
+            assert!(thread_count >= 1);
+
+            Self {
+                thread_count,
+                thread_counter: Arc::new(()),
+            }
+        }
+        /// Returns the total number of worker threads
+        pub fn thread_count(&self) -> usize {
+            self.thread_count
+        }
+        /// Returns the number of available workers at the point in time when it is called
+        pub fn available_workers(&self) -> usize {
+            self.thread_count + 1 - Arc::strong_count(&self.thread_counter)
+        }
+        /// Returns `Some` if a worker is available, otherwise returns `None`
+        pub fn assign_worker(&self) -> Option<WorkThreadHandle> {
+            //ATOMICITY NOTE: by doing the clone first and then the check, we could end up in a situation
+            // where two tasks attempt to get the last worker, do this clone, and both see too many threads
+            // are taken so fail.  I.e there is a small chance we report busy when there was one thread
+            // available.  There is no chance, however, that more threads are given out than are allowed.
+            let new_arc = self.thread_counter.clone();
+            //Note: +2 = +1 for the Arc in the pool, and +1 for le vs lt
+            if Arc::strong_count(&new_arc) < self.thread_count+2 {
+                Some(WorkThreadHandle(new_arc))
+            } else {
+                None
+            }
+        }
+        //GOAT, now dropping the worker is all that's needed
+        // /// Puts the worker thread back into the pool, ready to accept new work
+        // pub fn replace_worker(&self, _thread: WorkThreadHandle) {
+        //     //Dropping the `WorkThreadHandle` is all that's needed
+        // }
+
+        /// Returns as soon as there are no outstanting worker threads
+        ///
+        /// NOTE: this polling loop is a little cheezy, should probably do a cond_var or something
+        pub async fn wait_for_worker_completion(&self) {
+            while self.available_workers() < self.thread_count {
+                tokio::time::sleep(core::time::Duration::from_millis(5)).await;
+            }
+        }
+    }
 }
 
 #[cfg(feature = "tokio_workers")]
-type WorkThreadHandle = ();
-
-#[cfg(feature = "tokio_workers")]
-impl WorkerPool {
-    fn new() -> Self {
-        // We want to reserve one OS thread for dealing with the responses and the watchdog
-        let thread_count = tokio::runtime::Handle::current().metrics().num_workers() - 1;
-        assert!(thread_count >= 1);
-
-        Self {
-            thread_count,
-            threads_available: core::sync::atomic::AtomicUsize::new(thread_count),
-        }
-    }
-    /// Returns the number of available workers at the point in time when it is called
-    fn available_workers(&self) -> usize {
-        self.threads_available.load(core::sync::atomic::Ordering::Relaxed)
-    }
-    /// Returns `Some` if a worker is available, otherwise returns `None`
-    fn assign_worker(&self) -> Option<WorkThreadHandle> {
-        let mut old = self.threads_available.load(core::sync::atomic::Ordering::Relaxed);
-        loop {
-            if old == 0 {
-                return None
-            }
-            let new = old-1;
-            match self.threads_available.compare_exchange_weak(old, new, core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::Relaxed) {
-                Ok(_) => return Some(()),
-                Err(x) => old = x,
-            }
-        }
-    }
-    /// Puts the worker thread back into the pool, ready to accept new work
-    fn replace_worker(&self, _thread: WorkThreadHandle) {
-        let mut old = self.threads_available.load(core::sync::atomic::Ordering::Relaxed);
-        loop {
-            let new = old+1;
-            match self.threads_available.compare_exchange_weak(old, new, core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::Relaxed) {
-                Ok(_) => return,
-                Err(x) => old = x,
-            }
-        }
-    }
-    /// Returns as soon as there are no outstanting worker threads
-    ///
-    /// NOTE: this polling loop is a little cheezy, should probably do a cond_var or something
-    async fn wait_for_worker_completion(&self) {
-        while self.available_workers() < self.thread_count {
-            tokio::time::sleep(core::time::Duration::from_millis(5)).await;
-        }
-    }
-}
+use worker_pool::*;
 
 #[cfg(feature = "mork_workers")]
 struct WorkerPool {
@@ -558,8 +560,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 //GOAT
 // merge import and fetch
-//   File Versioning is still necessary for now
-//   Tie up a worker the whole time
 //   property to specify fmt
 //   support file:// URLs
 //

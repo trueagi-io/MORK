@@ -100,6 +100,7 @@ async fn many_request_delayed_test() -> Result<(), Error> {
 }
 
 /// Saturates the workers and then issues a stop request, and ensures no more connections are received
+/// Also tests that the stop request can get through even if the server is under heavy load
 #[tokio::test]
 async fn stop_request_test() -> Result<(), Error> {
     const URL: &str = "http://127.0.0.1:8000/busywait/2000";

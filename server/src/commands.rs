@@ -3,11 +3,11 @@ use core::any::Any;
 use core::pin::Pin;
 use std::future::Future;
 use std::io::{Write, BufWriter};
+use std::path::PathBuf;
 
 use pathmap::zipper::ZipperCreation;
 
-use super::BoxedErr;
-use super::MorkService;
+use super::{BoxedErr, MorkService, WorkThreadHandle};
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -20,6 +20,7 @@ pub struct BusywaitCmd;
 impl CommandDefinition for BusywaitCmd {
     const NAME: &'static str = "busywait";
     const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::UInt,
@@ -32,12 +33,14 @@ impl CommandDefinition for BusywaitCmd {
     fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
         Ok(None)
     }
-    fn work(_ctx: &MorkService, cmd: &Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
-        let millis = cmd.args[0].as_u64();
-        std::thread::sleep(std::time::Duration::from_millis(millis));
+    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+        thread.unwrap().dispatch_blocking_task(cmd, move |cmd| {
+            let millis = cmd.args[0].as_u64();
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+            Ok(())
+        }).await;
         Ok(())
     }
-    async fn work_async(_ctx: MorkService, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> { unreachable!() }
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -50,6 +53,7 @@ pub struct FetchCmd;
 impl CommandDefinition for FetchCmd {
     const NAME: &'static str = "fetch";
     const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -71,8 +75,7 @@ impl CommandDefinition for FetchCmd {
         let path = ctx.0.resource_store.new_path_for_resource(file_uri)?;
         Ok(Some(Box::new(path)))
     }
-    fn work(_ctx: &MorkService, _cmd: &Command, _resources: Option<Resources>) -> Result<(), BoxedErr> { unreachable!() }
-    async fn work_async(ctx: MorkService, cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<(), BoxedErr> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -83,17 +86,18 @@ impl CommandDefinition for FetchCmd {
         //Spin off a task to handle the download
         tokio::task::spawn(async move {
             let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+            let local_file_path = resources.unwrap().downcast::<PathBuf>().unwrap();
 
             let mut response = ctx.0.http_client.get(&*file_uri).send().await.unwrap(); //GOAT NO UNWRAP!!
             if response.status().is_success() {
 
-                let mut writer = BufWriter::new(std::fs::File::create("/tmp/goat").unwrap());//GOAT NO UNWRAP!!
+                let mut writer = BufWriter::new(std::fs::File::create(&*local_file_path).unwrap());//GOAT NO UNWRAP!!
 
                 while let Some(chunk) = response.chunk().await.unwrap() {//GOAT NO UNWRAP!!
                     writer.write(&*chunk).unwrap();//GOAT NO UNWRAP!!
                 }
 
-                println!("Successful download"); //GOAT Log this sucessful completion
+                println!("Successful download: file saved to '{:?}'", local_file_path); //GOAT Log this sucessful completion
 
             } else {
                 //GOAT, Update the status map
@@ -127,6 +131,7 @@ pub struct ImportCmd;
 impl CommandDefinition for ImportCmd {
     const NAME: &'static str = "import";
     const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -152,10 +157,9 @@ impl CommandDefinition for ImportCmd {
         //     .map_err(|err| err.into())
         Err("goat".into())
     }
-    fn work(ctx: &MorkService, cmd: &Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
         Err("goat".into())
     }
-    async fn work_async(_ctx: MorkService, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> { unreachable!() }
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -168,6 +172,7 @@ pub struct StopCmd;
 impl CommandDefinition for StopCmd {
     const NAME: &'static str = "stop";
     const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[]
     }
@@ -177,8 +182,7 @@ impl CommandDefinition for StopCmd {
     fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
         Ok(None)
     }
-    fn work(_ctx: &MorkService, _cmd: &Command, _resources: Option<Resources>) -> Result<(), BoxedErr> { unreachable!() }
-    async fn work_async(ctx: MorkService, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
         ctx.0.stop_cmd.notify_waiters();
         Ok(())
     }
@@ -210,6 +214,9 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     /// Glue to get a constant reference to the Self singleton
     const CONST_CMD: &'static Self;
 
+    /// Whether or not this command requires a free worker be available in order to proceed
+    const CONSUME_WORKER: bool;
+
     /// Arguments, `(arg_type, arg_name, arg_description)`
     fn args() -> &'static [ArgDef];
 
@@ -219,29 +226,27 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     /// Function to gather resources needed to execute the command
     fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr>;
 
-    /// Function to perform the execution
-    ///
-    /// GOAT, it's a wart, but only `work` OR `work_async` will be called depending on the command
-    fn work(ctx: &MorkService, cmd: &Command, resources: Option<Resources>) -> Result<(), BoxedErr>;
-
-    /// Function to perform the execution async, used for commands that require the async
-    /// runtime and aren't CPU-intensive
-    fn work_async(ctx: MorkService, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<(), BoxedErr>> + Sync + Send;
+    /// Method to perform the execution.  If anything CPU-intensive is done in this method,
+    /// it should call `dispatch_blocking_task` for that work
+    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<(), BoxedErr>> + Sync + Send;
 }
 
 /// Object-safe wrapper over CommandDefinition
 pub(crate) trait CmdDefObject: 'static + Send + Sync {
     fn name(&self) -> &'static str;
+    fn consume_worker(&self) -> bool;
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
     fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr>;
-    fn work(&self, ctx: &MorkService, cmd: &Command, resources: Option<Resources>) -> Result<(), BoxedErr>;
-    fn work_async(&self, ctx: MorkService, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>>;
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>>;
 }
 
 impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + CommandDefinition {
     fn name(&self) -> &'static str {
         Self::NAME
+    }
+    fn consume_worker(&self) -> bool {
+        Self::CONSUME_WORKER
     }
     // fn args(&self) -> &'static [ArgDef] {
     //     Self::args()
@@ -252,11 +257,8 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
         Self::gather(ctx, cmd)
     }
-    fn work(&self, ctx: &MorkService, cmd: &Command, resources: Option<Resources>) -> Result<(), BoxedErr> {
-        Self::work(ctx, cmd, resources)
-    }
-    fn work_async(&self, ctx: MorkService, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>> {
-        Box::pin(Self::work_async(ctx, cmd, resources))
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>> {
+        Box::pin(Self::work(ctx, thread, cmd, resources))
     }
 }
 

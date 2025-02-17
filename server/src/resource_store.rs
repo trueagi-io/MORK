@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::fs::{self, File};
 use std::io::{self, ErrorKind};
 
-use super::BoxedErr;
+use super::{CommandError, StatusCode};
 
 const HASH_SEED: i64 = 1234;
 const IN_PROGRESS_TIMESTAMP: &'static str = "0000000000000000";
@@ -25,7 +25,7 @@ pub struct ResourceStore {
 
 impl ResourceStore {
     /// Creates a new `ResourceStore`, using a directory specified by `path`
-    pub fn new_with_dir_path<P: AsRef<Path>>(path: P) -> Result<Self, BoxedErr> {
+    pub fn new_with_dir_path<P: AsRef<Path>>(path: P) -> Result<Self, CommandError> {
         let dir_path: PathBuf = path.as_ref().into();
 
         //Create the resource storage dir, if it doesn't exist
@@ -43,16 +43,22 @@ impl ResourceStore {
     /// a zero-length file at the path so the same file isn't downloaded multiple times in parallel 
     ///
     /// Returns an error if the file already exists
-    pub fn new_path_for_resource(&self, res_identifier: &str) -> Result<PathBuf, BoxedErr> {
+    pub fn new_path_for_resource(&self, res_identifier: &str) -> Result<PathBuf, CommandError> {
         let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
-        let _file = File::create_new(&path)?;
+        let _file = File::create_new(&path).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                CommandError::external(StatusCode::TOO_EARLY, "File requested while a download of the same file was in-progress")
+            } else {
+                err.into() //Another (Internal) Rrror
+            }
+        })?;
         Ok(path)
     }
     /// Updates an existing in-progress resource with a timestamp, marking it as finalized
     ///
     /// This method should be called when the parsing and loading of a resource has finished
-    pub fn set_timestamp_for_resource(&self, res_identifier: &str, new_timestamp: u64) -> Result<(), BoxedErr> {
+    pub fn set_timestamp_for_resource(&self, res_identifier: &str, new_timestamp: u64) -> Result<(), CommandError> {
         let old_file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let new_file_name = format!("{new_timestamp:16x}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let old_path: PathBuf = self.dir_path.join(Path::new(&old_file_name));
@@ -63,7 +69,7 @@ impl ResourceStore {
     /// Removes a specific resource from the store
     ///
     /// This method should be called when an error occurred during download, parsing, or loading
-    pub fn purge_in_progress_resource(&self, res_identifier: &str) -> Result<(), BoxedErr> {
+    pub fn purge_in_progress_resource(&self, res_identifier: &str) -> Result<(), CommandError> {
         let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
         fs::remove_file(path)?;
@@ -72,7 +78,7 @@ impl ResourceStore {
     /// Removes all files in the store
     ///
     /// This method should be called after syncing the server with the log, before accepting new connections
-    pub fn reset(&self) -> Result<(), BoxedErr> {
+    pub fn reset(&self) -> Result<(), CommandError> {
         fs::remove_dir_all(&self.dir_path)?;
         fs::create_dir_all(&self.dir_path)?;
         Ok(())
@@ -81,7 +87,7 @@ impl ResourceStore {
     ///
     /// This method should be called after a server snap-shotted to remove files already integrated
     /// into the frozen version of the database
-    pub fn purge_before_timestamp(&self, threshold_timestamp: u64) -> Result<(), BoxedErr> {
+    pub fn purge_before_timestamp(&self, threshold_timestamp: u64) -> Result<(), CommandError> {
         for entry in fs::read_dir(&self.dir_path)? {
             let entry = entry?; // Get DirEntry
             let path = entry.path();
@@ -96,12 +102,12 @@ impl ResourceStore {
 }
 
 /// Returns the timestamp for a given file path
-fn timestamp_from_path<P: AsRef<Path>>(path: P) -> Result<u64, BoxedErr> {
+fn timestamp_from_path<P: AsRef<Path>>(path: P) -> Result<u64, CommandError> {
     let path = path.as_ref();
-    let name_str = path.file_name().ok_or_else(|| "unrecognized file in resources dir")?
-        .to_str().ok_or_else(|| "file name contained invalid characters")?;
+    let name_str = path.file_name().ok_or_else(|| CommandError::internal("unrecognized file in resources dir"))?
+        .to_str().ok_or_else(|| CommandError::internal("file name contained invalid characters"))?;
     if name_str.len() < 33 {
-        return Err(format!("Unrecognized file in resources dir: {name_str}").into())
+        return Err(CommandError::internal(format!("Unrecognized file in resources dir: {name_str}")).into())
     }
     let timestamp = u64::from_str_radix(&name_str[0..16], 10)?;
     Ok(timestamp)

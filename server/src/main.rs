@@ -34,7 +34,7 @@ use resource_store::*;
 type BoxedErr = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Clone)]
-struct MorkService(Arc<MorkServiceInternals>);
+pub struct MorkService(Arc<MorkServiceInternals>);
 
 struct MorkServiceInternals {
     /// Signal when a shutdown command has been executed
@@ -145,9 +145,7 @@ impl MorkService {
             match self.0.workers.assign_worker() {
                 Some(work_thread) => Some(work_thread),
                 None => {
-                    println!("Rejected Connection: Busy"); //GOAT Log this
-                    let mut response = Response::new(empty_response());
-                    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+                    let response = MorkServerError::log_err(StatusCode::SERVICE_UNAVAILABLE, "Rejected Connection: Busy").error_response();
                     return Box::pin(async { Ok(response) })
                 }
             }
@@ -162,25 +160,20 @@ impl MorkService {
                 Box::pin(async move {
                     println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
 
-                    let cmd_name = command.def.name();
-                    let work_result = command.def.work(ctx, work_thread, command, resources).await;
+                    let work_result = command.def.work(ctx, work_thread, command.clone(), resources).await;
                     match work_result {
                         Ok(()) => {
-                            Ok(Response::new(full_response("Request Acknowledged")))
+                            Ok(ok_response("Request Acknowledged"))
                         },
                         Err(err) => {
-                            println!("Command encountered error: cmd={cmd_name} err={err}"); //GOAT Log this error
-                            let mut response = Response::new(empty_response());
-                            *response.status_mut() = StatusCode::IM_A_TEAPOT; //GOAT, I think we want a more defined error format, so the command worker code can send back something more meaningful
+                            let response = MorkServerError::cmd_err(err, &command).error_response();
                             Ok(response)
                         }
                     }
                 })
             },
             Err(err) => {
-                println!("Failed to Acquire Resources: {err:?}"); //GOAT Log this
-                let mut response = Response::new(empty_response());
-                *response.status_mut() = StatusCode::UNAUTHORIZED;
+                let response = MorkServerError::cmd_err(err, &command).error_response();
                 Box::pin(async { Ok(response) })
             }
         }
@@ -194,24 +187,63 @@ async fn got_cntl_c() {
         .expect("failed to install CTRL+C signal handler");
 }
 
-/// Utility function to make Empty response body
-fn empty_response() -> BoxBody<Bytes, hyper::Error> {
-    Empty::<Bytes>::new()
-        .map_err(|never| match never {})
-        .boxed()
+//GOAT, I don't know if it actually makes any sense for `MorkServerError` to be an object, since, we now
+// create it and consume it in immediate succession, so perhaps the most sensible thing is to just turn
+// `MorkServerError` into a set of functions.
+//
+/// Encapsulates an error that can be returned to the client, either immediately or eventually
+#[derive(Debug)]
+pub struct MorkServerError {
+    /// The http status code to return to the client
+    status_code: StatusCode,
 }
-/// Utility function to make Empty response body
-fn full_response<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
-    Full::new(chunk.into())
+
+impl MorkServerError {
+    /// Creates a new MorkServerError and logs the error immediately to the logs
+    #[inline]
+    pub fn log_err<Desc: core::fmt::Display>(status_code: StatusCode, log_description: Desc) -> Self {
+        println!("{}", log_description); //GOAT Log this
+        Self {status_code}
+    }
+    /// Creates a new MorkServerError originating from a command, and logs the error immediately to the logs
+    #[inline]
+    pub fn cmd_err(cmd_err: CommandError, cmd: &Command) -> Self {
+        match cmd_err {
+            CommandError::Internal(err) => {
+                Self::log_err(StatusCode::INTERNAL_SERVER_ERROR, format!("Error: \"{err}\" while executing command: {}", cmd.def.name()))
+            },
+            CommandError::External(err) => {
+                Self::log_err(err.status_code, err.log_message)
+            }
+        }
+    }
+    /// Constructs a corresponding HTTP error response for the `MorkServerError`
+    #[inline]
+    pub fn error_response(&self) -> Response<BoxBody<Bytes, hyper::Error>> {
+        error_response(self.status_code)
+    }
+}
+
+/// Utility function to make an error response
+fn error_response(status_code: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let response_body = Empty::<Bytes>::new()
         .map_err(|never| match never {})
-        .boxed()
+        .boxed();
+    let mut response = Response::new(response_body);
+    *response.status_mut() = status_code;
+    response
+}
+/// Utility function to make an "Ok 200" response body with the supplied text
+fn ok_response<T: Into<Bytes>>(chunk: T) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let response_body = Full::new(chunk.into())
+        .map_err(|never| match never {})
+        .boxed();
+    Response::new(response_body)
 }
 
 /// Returns and logs a "Bad Request"
 fn bad_request_err(e: <MorkService as Service<Request<IncomingBody>>>::Error) -> <MorkService as Service<Request<IncomingBody>>>::Future {
-    println!("Failed to parse request args: {e:?}"); //GOAT Log this
-    let mut response = Response::new(empty_response());
-    *response.status_mut() = StatusCode::BAD_REQUEST;
+    let response = MorkServerError::log_err(StatusCode::BAD_REQUEST, format!("Failed to parse request args: {e:?}")).error_response();
     Box::pin(async { Ok(response) })
 }
 
@@ -387,12 +419,6 @@ impl Service<Request<IncomingBody>> for MorkService {
                 })(), bad_request_err);
                 self.dispatch_work(command)
             },
-            (&Method::GET, FetchCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<FetchCmd>(remaining, req.uri())
-                })(), bad_request_err);
-                self.dispatch_work(command)
-            }
             (&Method::GET, StopCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<StopCmd>(remaining, req.uri())
@@ -401,10 +427,8 @@ impl Service<Request<IncomingBody>> for MorkService {
             },
             // Return 404 Not Found for other routes.
             _ => {
-                println!("Unknown URL: {}", req.uri().path()); //GOAT Log this?
-                let mut not_found = Response::new(empty_response());
-                *not_found.status_mut() = StatusCode::NOT_FOUND;
-                Box::pin(async { Ok(not_found) })
+                let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path())).error_response();
+                return Box::pin(async { Ok(response) })
             }
         }
     }

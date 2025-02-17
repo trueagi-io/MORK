@@ -32,7 +32,7 @@ impl CommandDefinition for BusywaitCmd {
         }]
     }
     fn properties() -> &'static [PropDef] { &[] }
-    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
     async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
@@ -72,9 +72,9 @@ impl CommandDefinition for ImportCmd {
             required: true
         }]
     }
-    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-        let file_path = ctx.0.resource_store.new_path_for_resource(file_uri)?;
+        let file_path = ctx.0.resource_store.new_path_for_resource(file_uri).await?;
 
         let map_path = cmd.args[0].as_path();
         //GOAT, come back here
@@ -136,7 +136,7 @@ impl CommandDefinition for StopCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
     async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
@@ -181,7 +181,7 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     fn properties() -> &'static [PropDef];
 
     /// Function to gather resources needed to execute the command
-    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError>;
+    fn gather(ctx: MorkService, cmd: Command) -> impl Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send;
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
@@ -194,7 +194,7 @@ pub trait CmdDefObject: 'static + Send + Sync {
     fn consume_worker(&self) -> bool;
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
-    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError>;
+    fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>>;
     fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>>;
 }
 
@@ -211,8 +211,8 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     // fn properties(&self) -> &'static [PropDef] {
     //     Self::properties()
     // }
-    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError> {
-        Self::gather(ctx, cmd)
+    fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>> {
+        Box::pin(Self::gather(ctx, cmd))
     }
     fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>> {
         Box::pin(Self::work(ctx, thread, cmd, resources))

@@ -176,25 +176,25 @@ async fn stop_request_test() -> Result<(), Error> {
 /// Tests the "import" command
 #[tokio::test]
 async fn import_request_test() -> Result<(), Error> {
-    const FETCH_URL: &str = "http://127.0.0.1:8000/fetch/%7Eroyals.toy.metta/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/%7Eroyals.toy%7E.metta";
+    //GOAT: Should host the content on a local server with predictable delays, to cut down
+    // on spurious failures from external servers behaving erratically.)
+    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
 
-    let response = reqwest::get(FETCH_URL).await?;
-    if response.status().is_success() {
-        let body = response.text().await?;
-        println!("Response: {}", body);
-    } else {
-        println!("Failed to load page: {}", response.status());
-    }
-
+    //First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
-
     if response.status().is_success() {
-        let body = response.text().await?;
-        println!("Response: {}", body);
+        println!("Response: {}", response.text().await?);
     } else {
-        println!("Failed to load page: {}", response.status());
+        panic!("Failed to load page: {}", response.status());
     }
+    //GOAT, sleep for 200ms or so, and then check that we can inspect the path.
+
+    //Now test a situation where we make a request to the same path, which should be rejected
+    //GOAT
+
+    //Now test a situation where we make a request for the same file, while the previous download is
+    // still in process
+    //GOAT
 
     Ok(())
 }

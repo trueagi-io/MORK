@@ -1,5 +1,5 @@
 
 #[derive(Clone)]
-pub struct StatusRecord {
+pub enum StatusRecord {
     
 }

@@ -5,6 +5,8 @@ use std::future::Future;
 use std::io::{Write, BufWriter};
 use std::path::PathBuf;
 
+use hyper::StatusCode;
+
 use pathmap::zipper::ZipperCreation;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
@@ -30,10 +32,10 @@ impl CommandDefinition for BusywaitCmd {
         }]
     }
     fn properties() -> &'static [PropDef] { &[] }
-    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
+    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
         thread.unwrap().dispatch_blocking_task(cmd, move |cmd| {
             let millis = cmd.args[0].as_u64();
             std::thread::sleep(std::time::Duration::from_millis(millis));
@@ -44,21 +46,21 @@ impl CommandDefinition for BusywaitCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// fetch
+// import
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
-/// Fetch a remotely-hosted file to the server's local file store
-pub struct FetchCmd;
+/// Fetch a remotely-hosted file, parse it, and load it into the map
+pub struct ImportCmd;
 
-impl CommandDefinition for FetchCmd {
-    const NAME: &'static str = "fetch";
+impl CommandDefinition for ImportCmd {
+    const NAME: &'static str = "import";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "file_name",
-            desc: "The name of the file in the local store",
+            name: "map_path",
+            desc: "The path in the map at which to import the file",
             required: true
         }]
     }
@@ -70,12 +72,20 @@ impl CommandDefinition for FetchCmd {
             required: true
         }]
     }
-    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
+    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError> {
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-        let path = ctx.0.resource_store.new_path_for_resource(file_uri)?;
-        Ok(Some(Box::new(path)))
+        let file_path = ctx.0.resource_store.new_path_for_resource(file_uri)?;
+
+        let map_path = cmd.args[0].as_path();
+        //GOAT, come back here
+        // ctx.0.zipper_head.write_zipper_at_exclusive_path(map_path)
+        //     .map(|zipper| Some(Box::new(zipper) as Resources))
+        //     .map_err(|err| err.into())
+        // Err("goat".into())
+
+        Ok(Some(Box::new(file_path)))
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -110,59 +120,6 @@ impl CommandDefinition for FetchCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// import
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// Parse a file and load it into the map
-///
-/// DISCUSSION: The `import` command is different from the Scala server in that the Scala server
-///  will initiate a fetch for data that does not exist, prior to importing it, where this server
-///  requires a separate `fetch` command to fetch the data.  The reasons behind this change are:
-///  1. Letting the user explicitly control their storage.  This puts versioning in the user's
-///   hands.  Allowing the user to initiate a new fetch if the data has been updated, but allowing
-///   the user to access the previously downloaded file if they just want to reload it for some
-///   reason.
-///  2. Thread allocation.  We don't want to hold a worker thread while the download is happening,
-///   because the download doesn't use much CPU.  But we don't want to risk a worker thread being
-///   unavailable for parsing & loading if the server happened to get saturated between when the
-///   download was initiated and when it was completed.
-pub struct ImportCmd;
-
-impl CommandDefinition for ImportCmd {
-    const NAME: &'static str = "import";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "map_path",
-            desc: "The path in the map at which to import the file",
-            required: true
-        },
-        ArgDef{
-            arg_type: ArgType::Path,
-            name: "file_name",
-            desc: "The name of the file in the local store",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[]
-    }
-    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
-        let map_path = cmd.args[0].as_path();
-        //GOAT, come back here
-        // ctx.0.zipper_head.write_zipper_at_exclusive_path(map_path)
-        //     .map(|zipper| Some(Box::new(zipper) as Resources))
-        //     .map_err(|err| err.into())
-        Err("goat".into())
-    }
-    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
-        Err("goat".into())
-    }
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // stop
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
@@ -179,10 +136,10 @@ impl CommandDefinition for StopCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
+    fn gather(_ctx: &MorkService, _cmd: &Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), BoxedErr> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
         ctx.0.stop_cmd.notify_waiters();
         Ok(())
     }
@@ -224,21 +181,21 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     fn properties() -> &'static [PropDef];
 
     /// Function to gather resources needed to execute the command
-    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr>;
+    fn gather(ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError>;
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
-    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<(), BoxedErr>> + Sync + Send;
+    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<(), CommandError>> + Sync + Send;
 }
 
 /// Object-safe wrapper over CommandDefinition
-pub(crate) trait CmdDefObject: 'static + Send + Sync {
+pub trait CmdDefObject: 'static + Send + Sync {
     fn name(&self) -> &'static str;
     fn consume_worker(&self) -> bool;
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
-    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr>;
-    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>>;
+    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError>;
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>>;
 }
 
 impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + CommandDefinition {
@@ -254,10 +211,10 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     // fn properties(&self) -> &'static [PropDef] {
     //     Self::properties()
     // }
-    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, BoxedErr> {
+    fn gather(&self, ctx: &MorkService, cmd: &Command) -> Result<Option<Resources>, CommandError> {
         Self::gather(ctx, cmd)
     }
-    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), BoxedErr>> + Sync + Send>> {
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>> {
         Box::pin(Self::work(ctx, thread, cmd, resources))
     }
 }
@@ -268,6 +225,36 @@ pub struct Command {
     pub def: &'static dyn CmdDefObject,
     pub args: Vec<ArgVal>,
     pub properties: Vec<Option<ArgVal>>
+}
+
+/// An error type that can be returned from a command
+#[derive(Debug)]
+pub enum CommandError {
+    /// An internal server error that is not the result of a client action
+    Internal(BoxedErr),
+    /// An error originating from an action done by the client
+    External(ExternalError)
+}
+
+#[derive(Debug)]
+pub struct ExternalError {
+    pub(crate) log_message: String,
+    pub(crate) status_code: StatusCode,
+}
+
+impl CommandError {
+    pub fn internal<Desc: Into<Box<dyn core::error::Error + Send + Sync>>>(desc: Desc) -> Self {
+        Self::Internal(desc.into())
+    }
+    pub fn external<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
+        Self::External(ExternalError{ status_code, log_message: log_message.into() })
+    }
+}
+
+impl<E: core::error::Error + Send + Sync + 'static> From<E> for CommandError {
+    fn from(err: E) -> Self {
+        Self::Internal(Box::new(err))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

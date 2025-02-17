@@ -55,7 +55,7 @@ struct MorkServiceInternals {
 }
 
 impl MorkService {
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
 
         let http_client_builder = reqwest::Client::builder();
         let http_client = http_client_builder
@@ -74,8 +74,8 @@ impl MorkService {
         let status_map = status_map.into_zipper_head([]);
 
         // Init the ResourceStore
-        let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).unwrap();
-        resource_store.reset().unwrap();
+        let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
+        resource_store.reset().await.unwrap();
 
         let internals = MorkServiceInternals {
             stop_cmd: Notify::new(),
@@ -154,10 +154,10 @@ impl MorkService {
         };
 
         //Acquire the resources (mainly zippers) to perform the operation
-        match command.def.gather(self, &command) {
-            Ok(resources) => {
-                let ctx = self.clone();
-                Box::pin(async move {
+        let ctx = self.clone();
+        Box::pin(async move {
+            match command.def.gather(ctx.clone(), command.clone()).await {
+                Ok(resources) => {
                     println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
 
                     let work_result = command.def.work(ctx, work_thread, command.clone(), resources).await;
@@ -170,13 +170,13 @@ impl MorkService {
                             Ok(response)
                         }
                     }
-                })
-            },
-            Err(err) => {
-                let response = MorkServerError::cmd_err(err, &command).error_response();
-                Box::pin(async { Ok(response) })
+                },
+                Err(err) => {
+                    let response = MorkServerError::cmd_err(err, &command).error_response();
+                    Ok(response)
+                }
             }
-        }
+        })
     }
 }
 
@@ -574,7 +574,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = SERVER_ADDR.parse().expect("Invalid Server Address Format");
 
     //Init the Mork network service
-    let service = MorkService::new();
+    let service = MorkService::new().await;
 
     //Run the Mork service
     service.run(addr).await?;

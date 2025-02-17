@@ -10,7 +10,7 @@
 //!
 
 use std::path::{Path, PathBuf};
-use std::fs::{self, File};
+use tokio::fs::{self, File};
 use std::io::{self, ErrorKind};
 
 use super::{CommandError, StatusCode};
@@ -25,14 +25,14 @@ pub struct ResourceStore {
 
 impl ResourceStore {
     /// Creates a new `ResourceStore`, using a directory specified by `path`
-    pub fn new_with_dir_path<P: AsRef<Path>>(path: P) -> Result<Self, CommandError> {
+    pub async fn new_with_dir_path<P: AsRef<Path>>(path: P) -> Result<Self, CommandError> {
         let dir_path: PathBuf = path.as_ref().into();
 
         //Create the resource storage dir, if it doesn't exist
         if dir_path.exists() && !dir_path.is_dir() {
             return Err(io::Error::new(ErrorKind::AlreadyExists, format!("Resource path exists but is not a directory: {:?}", dir_path)).into());
         } else {
-            fs::create_dir_all(&dir_path)?;
+            fs::create_dir_all(&dir_path).await?;
         }
 
         Ok(Self {
@@ -43,10 +43,10 @@ impl ResourceStore {
     /// a zero-length file at the path so the same file isn't downloaded multiple times in parallel 
     ///
     /// Returns an error if the file already exists
-    pub fn new_path_for_resource(&self, res_identifier: &str) -> Result<PathBuf, CommandError> {
+    pub async fn new_path_for_resource(&self, res_identifier: &str) -> Result<PathBuf, CommandError> {
         let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
-        let _file = File::create_new(&path).map_err(|err| {
+        let _file = File::create_new(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
                 CommandError::external(StatusCode::TOO_EARLY, "File requested while a download of the same file was in-progress")
             } else {
@@ -58,43 +58,43 @@ impl ResourceStore {
     /// Updates an existing in-progress resource with a timestamp, marking it as finalized
     ///
     /// This method should be called when the parsing and loading of a resource has finished
-    pub fn set_timestamp_for_resource(&self, res_identifier: &str, new_timestamp: u64) -> Result<(), CommandError> {
+    pub async fn set_timestamp_for_resource(&self, res_identifier: &str, new_timestamp: u64) -> Result<(), CommandError> {
         let old_file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let new_file_name = format!("{new_timestamp:16x}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let old_path: PathBuf = self.dir_path.join(Path::new(&old_file_name));
         let new_path: PathBuf = self.dir_path.join(Path::new(&new_file_name));
-        fs::rename(old_path, new_path)?;
+        fs::rename(old_path, new_path).await?;
         Ok(())
     }
     /// Removes a specific resource from the store
     ///
     /// This method should be called when an error occurred during download, parsing, or loading
-    pub fn purge_in_progress_resource(&self, res_identifier: &str) -> Result<(), CommandError> {
+    pub async fn purge_in_progress_resource(&self, res_identifier: &str) -> Result<(), CommandError> {
         let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
-        fs::remove_file(path)?;
+        fs::remove_file(path).await?;
         Ok(())
     }
     /// Removes all files in the store
     ///
     /// This method should be called after syncing the server with the log, before accepting new connections
-    pub fn reset(&self) -> Result<(), CommandError> {
-        fs::remove_dir_all(&self.dir_path)?;
-        fs::create_dir_all(&self.dir_path)?;
+    pub async fn reset(&self) -> Result<(), CommandError> {
+        fs::remove_dir_all(&self.dir_path).await?;
+        fs::create_dir_all(&self.dir_path).await?;
         Ok(())
     }
     /// Removes all files in the store that are time-stamped before the specified value
     ///
     /// This method should be called after a server snap-shotted to remove files already integrated
     /// into the frozen version of the database
-    pub fn purge_before_timestamp(&self, threshold_timestamp: u64) -> Result<(), CommandError> {
-        for entry in fs::read_dir(&self.dir_path)? {
-            let entry = entry?; // Get DirEntry
+    pub async fn purge_before_timestamp(&self, threshold_timestamp: u64) -> Result<(), CommandError> {
+        let mut dir = fs::read_dir(&self.dir_path).await?;
+        while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
 
             let file_timestamp = timestamp_from_path(&path)?;
             if file_timestamp < threshold_timestamp {
-                fs::remove_file(path)?;
+                fs::remove_file(path).await?;
             }
         }
         Ok(())

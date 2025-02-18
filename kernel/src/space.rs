@@ -2,7 +2,6 @@ use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::time::Instant;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
-use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -224,7 +223,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             let size = stack.pop().unwrap();
             let mut v = vec![];
             for _ in 0..size { v.push(stack.pop().unwrap()) }
-            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
             transition(stack, loc, f);
             loc.ascend(size as usize);
@@ -241,7 +240,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
             transition(stack, loc, f);
             loc.ascend(size as usize);
@@ -251,7 +250,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
-            loc.descend_to(&[item_byte(Arity(arity))]);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
@@ -263,7 +262,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            loc.descend_to(&[item_byte(Arity(arity))]);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
@@ -329,10 +328,8 @@ macro_rules! expr {
         let p = Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
         unsafe {
-            println!("before copy {:?}", p.span().as_ref().unwrap());
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
-            println!("after copy {:?}", Expr{ ptr: b }.span().as_ref().unwrap());
             Expr{ ptr: b }
         }
     }};

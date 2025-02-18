@@ -515,11 +515,7 @@ impl Expr {
                 Ok(Tag::VarRef(i)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
                 Ok(Tag::SymbolSize(s)) => { unreachable!() }
                 Ok(Tag::Arity(_)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
-                Err(s) => { let ns = subst(s);
-                    println!("origin {:?}", s);
-                    println!("replac {:?}", ns);
-
-                    oz.write_symbol(ns); oz.loc += 1 + ns.len(); }
+                Err(s) => { let ns = subst(s); oz.write_symbol(ns); oz.loc += 1 + ns.len(); }
             }
 
             if !ez.next() {

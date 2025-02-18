@@ -2,14 +2,16 @@
 use core::any::Any;
 use core::pin::Pin;
 use std::future::Future;
-use std::io::{Write, BufWriter};
 use std::path::PathBuf;
 
-use hyper::StatusCode;
+use tokio::fs::File;
+use tokio::io::{BufWriter, AsyncWriteExt};
 
-use pathmap::zipper::ZipperCreation;
+use hyper::StatusCode;
+use hyper::body::Bytes;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
+use super::status_map::{StatusRecord, FetchError};
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -35,13 +37,13 @@ impl CommandDefinition for BusywaitCmd {
     async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
+    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         thread.unwrap().dispatch_blocking_task(cmd, move |cmd| {
             let millis = cmd.args[0].as_u64();
             std::thread::sleep(std::time::Duration::from_millis(millis));
             Ok(())
         }).await;
-        Ok(())
+        Ok("ACK. Waiting".into())
     }
 }
 
@@ -73,19 +75,19 @@ impl CommandDefinition for ImportCmd {
         }]
     }
     async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+        //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_path = ctx.0.resource_store.new_path_for_resource(file_uri).await?;
 
+        //Flag this path in the map as being busy, and therefore off-limits to other operations
         let map_path = cmd.args[0].as_path();
-        //GOAT, come back here
-        // ctx.0.zipper_head.write_zipper_at_exclusive_path(map_path)
-        //     .map(|zipper| Some(Box::new(zipper) as Resources))
-        //     .map_err(|err| err.into())
-        // Err("goat".into())
+        ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
+            CommandError::from_status_record(status, format!("Error accssing path {map_path:?}"))
+        })?;
 
         Ok(Some(Box::new(file_path)))
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -93,29 +95,77 @@ impl CommandDefinition for ImportCmd {
         // fetch takes too long.  So it we always return success, and then caller has one fewer
         // case to worry about.
 
-        //Spin off a task to handle the download
-        tokio::task::spawn(async move {
-            let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-            let local_file_path = resources.unwrap().downcast::<PathBuf>().unwrap();
+        //Spin off a task to handle the download, which will, in turn, kick off the rest of the operations
+        tokio::task::spawn(import_do_download(ctx, cmd, resources));
+        Ok("ACK. Starting Import".into())
+    }
+}
 
-            let mut response = ctx.0.http_client.get(&*file_uri).send().await.unwrap(); //GOAT NO UNWRAP!!
-            if response.status().is_success() {
+async fn import_do_download(ctx: MorkService, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
+    let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+    let local_file_path = resources.unwrap().downcast::<PathBuf>().unwrap();
+    let map_path = cmd.args[0].as_path();
 
-                let mut writer = BufWriter::new(std::fs::File::create(&*local_file_path).unwrap());//GOAT NO UNWRAP!!
+    let mut response = ctx.0.http_client.get(&*file_uri).send().await?;
+    if response.status().is_success() {
 
-                while let Some(chunk) = response.chunk().await.unwrap() {//GOAT NO UNWRAP!!
-                    writer.write(&*chunk).unwrap();//GOAT NO UNWRAP!!
-                }
+        let mut writer = BufWriter::new(File::create(&*local_file_path).await?);
 
-                println!("Successful download: file saved to '{:?}'", local_file_path); //GOAT Log this sucessful completion
+        while let Some(chunk) = response.chunk().await? {
+            writer.write(&*chunk).await?;
+        }
+        writer.flush().await?;
 
-            } else {
-                //GOAT, Update the status map
-                // println!("Failed to load remote resource: {}", response.status());
-            }
-        });
+        println!("Successful download: file saved to '{:?}'", local_file_path); //GOAT Log this sucessful completion
+    } else {
+        println!("Failed to load remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
 
-        Ok(())
+        //Clean up the resource
+        ctx.0.resource_store.purge_in_progress_resource(file_uri).await?;
+
+        //Update the status map, so the client can see what happened when they try to read from this path
+        let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
+        match ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err)) {
+            Ok(()) => {},
+            Err(err) => {return Err(CommandError::internal(err))}
+        }
+    }
+    Ok(())
+}
+
+struct ImportCmdResources {
+    file_path: PathBuf,
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// status
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Returns the status associated with a path in the trie
+pub struct StatusCmd;
+
+impl CommandDefinition for StatusCmd {
+    const NAME: &'static str = "status";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "map_path",
+            desc: "The path in the map for which to check the status",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+        Ok(None)
+    }
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let map_path = cmd.args[0].as_path();
+        let status = ctx.0.status_map.get_status(map_path);
+        Ok(format!("Status = {status:?}").into())
     }
 }
 
@@ -139,9 +189,9 @@ impl CommandDefinition for StopCmd {
     async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<(), CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         ctx.0.stop_cmd.notify_waiters();
-        Ok(())
+        Ok("ACK. Initiating Shutdown.  Connections will not longer be accepted".into())
     }
 }
 
@@ -185,7 +235,7 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
-    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<(), CommandError>> + Sync + Send;
+    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<Bytes, CommandError>> + Sync + Send;
 }
 
 /// Object-safe wrapper over CommandDefinition
@@ -195,7 +245,7 @@ pub trait CmdDefObject: 'static + Send + Sync {
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
     fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>>;
-    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>>;
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>>;
 }
 
 impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + CommandDefinition {
@@ -214,7 +264,7 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>> {
         Box::pin(Self::gather(ctx, cmd))
     }
-    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<(), CommandError>> + Sync + Send>> {
+    fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>> {
         Box::pin(Self::work(ctx, thread, cmd, resources))
     }
 }
@@ -227,7 +277,7 @@ pub struct Command {
     pub properties: Vec<Option<ArgVal>>
 }
 
-/// An error type that can be returned from a command
+/// An error type from a command that can be logged and returned to a client
 #[derive(Debug)]
 pub enum CommandError {
     /// An internal server error that is not the result of a client action
@@ -236,10 +286,18 @@ pub enum CommandError {
     External(ExternalError)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ExternalError {
     pub(crate) log_message: String,
     pub(crate) status_code: StatusCode,
+}
+
+impl ExternalError {
+    pub fn new<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
+        Self {
+            status_code, log_message: log_message.into()
+        }
+    }
 }
 
 impl CommandError {
@@ -248,6 +306,14 @@ impl CommandError {
     }
     pub fn external<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
         Self::External(ExternalError{ status_code, log_message: log_message.into() })
+    }
+    pub fn from_status_record<M: Into<String>>(status_record: StatusRecord, log_message: M) -> Self {
+        match status_record {
+            StatusRecord::PathClear => unreachable!(),
+            StatusRecord::AccessForbidden => Self::external(StatusCode::FORBIDDEN, log_message),
+            StatusRecord::PathInUse => Self::external(StatusCode::CONFLICT, log_message),
+            StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
+        }
     }
 }
 

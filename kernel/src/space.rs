@@ -1,5 +1,3 @@
-use std::fmt::format;
-use std::hint::black_box;
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::time::Instant;
@@ -16,9 +14,38 @@ pub struct Space {
     pub(crate) sm: SharedMappingHandle
 }
 
-static mut SIZES: [u64; 4] = [0u64; 4];
-static mut ARITIES: [u64; 4] = [0u64; 4];
-static mut VARS: [u64; 4] = [0u64; 4];
+const SIZES: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let mut size = 1;
+    while size < 64 {
+        let k = item_byte(Tag::SymbolSize(size));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        size += 1;
+    }
+    ret
+};
+const ARITIES: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let mut arity = 1;
+    while arity < 64 {
+        let k = item_byte(Tag::Arity(arity));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        arity += 1;
+    }
+    ret
+};
+const VARS: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let nv_byte = item_byte(Tag::NewVar);
+    ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
+    let mut size = 1;
+    while size < 64 {
+        let k = item_byte(Tag::VarRef(size));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        size += 1;
+    }
+    ret
+};
 
 struct CfIter<'a> {
     i: u8,
@@ -58,23 +85,6 @@ impl <'a> Iterator for CfIter<'a> {
 
 fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
-pub fn setup() {
-    for size in 1..64 {
-        let k = item_byte(Tag::SymbolSize(size));
-        unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
-    for arity in 1..64 {
-        let k = item_byte(Tag::Arity(arity));
-        unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
-    let nv_byte = item_byte(Tag::NewVar);
-    unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
-    for size in 1..64 {
-        let k = item_byte(Tag::VarRef(size));
-        unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
 }
 
 const ITER_AT_DEPTH: u8 = 0;
@@ -133,7 +143,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), unsafe { SIZES });
+            let m = mask_and(loc.child_mask(), SIZES);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
@@ -162,7 +172,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), unsafe { VARS });
+            let m = mask_and(loc.child_mask(), VARS);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
@@ -174,7 +184,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+            let m = mask_and(loc.child_mask(), ARITIES);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
@@ -344,21 +354,6 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        for size in 1..64 {
-            let k = item_byte(Tag::SymbolSize(size));
-            unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-        }
-        for arity in 1..64 {
-            let k = item_byte(Tag::Arity(arity));
-            unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-        }
-        let nv_byte = item_byte(Tag::NewVar);
-        unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
-        for size in 1..64 {
-            let k = item_byte(Tag::VarRef(size));
-            unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-        }
-
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
     }
 
@@ -461,16 +456,14 @@ impl Space {
         let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(&self.sm);
         loop {
-            unsafe {
-                let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-                match parser.sexpr(&mut it, &mut ez) {
-                    Ok(()) => { self.btm.insert(&stack[..ez.loc], ()); }
-                    Err(ParserError::InputFinished) => { break }
-                    Err(other) => { panic!("{:?}", other) }
-                }
-                i += 1;
-                it.variables.clear();
+            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+            match parser.sexpr(&mut it, &mut ez) {
+                Ok(()) => { self.btm.insert(&stack[..ez.loc], ()); }
+                Err(ParserError::InputFinished) => { break }
+                Err(other) => { panic!("{:?}", other) }
             }
+            i += 1;
+            it.variables.clear();
         }
         println!("loading took {} ms", t0.elapsed().as_millis());
         Ok(i)

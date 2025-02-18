@@ -165,7 +165,8 @@ impl CommandDefinition for StatusCmd {
     async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         let map_path = cmd.args[0].as_path();
         let status = ctx.0.status_map.get_status(map_path);
-        Ok(format!("Status = {status:?}").into())
+        let json_string = serde_json::to_string(&status)?;
+        Ok(json_string.into())
     }
 }
 

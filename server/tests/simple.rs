@@ -181,20 +181,24 @@ async fn import_request_test() -> Result<(), Error> {
     const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
     const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
 
-//GOAT, put this back
-    // //1. First test an end-to-end sucessful fetch and parse
-    // let response = reqwest::get(IMPORT_URL).await?;
-    // assert!(response.status().is_success());
-    // println!("Response: {}", response.text().await?);
+    //1. First test an end-to-end sucessful fetch and parse
+    let response = reqwest::get(IMPORT_URL).await?;
+    assert!(response.status().is_success());
+    println!("Response: {}", response.text().await?);
 
-    // // Check the path immediately; we should get a "path busy" response
-    // let response = reqwest::get(STATUS_URL).await?;
-    // assert!(response.status().is_success());
-    // println!("Response: {}", response.text().await?);
-    // // assert!() GOAT, Should we serialize the response as JSON?
+    // Check the path immediately; we should get a "path busy" response
+    let response = reqwest::get(STATUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathInUse");
 
-    // //GOAT, sleep for 1s, and then check that we can inspect the path.
+    //Now sleep for a bit (600ms), and then check that we can inspect the path.
+    std::thread::sleep(std::time::Duration::from_millis(600));
 
+    //GOAT, check that the path contains a clear status
+    //GOAT, check that we got the right data in the path
 
     //2. Now test a bogus URL, to make sure we can get the error back
     const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
@@ -204,16 +208,20 @@ async fn import_request_test() -> Result<(), Error> {
     println!("Response: {}", response_text);
     assert!(response_text.starts_with("ACK"));
 
-    //Now sleep for a second, and check that the path contains the correct error
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    //Now sleep for a bit (600ms), and check that the path contains the correct error
+    std::thread::sleep(std::time::Duration::from_millis(600));
     let response = reqwest::get(STATUS_URL).await?;
     assert!(response.status().is_success());
-    println!("Response: {}", response.text().await?);
-    // assert!() GOAT, Should we serialize the response as JSON?
-
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "fetchError");
 
     //3. Now test a situation where we make a request for the same file at a different path, while the
     // previous download is still in process
+    //GOAT
+
+    //Now sleep for a bit (600ms), and check that everything got cleaned up and the re-fetch will succeed
     //GOAT
 
     Ok(())

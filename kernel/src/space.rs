@@ -117,6 +117,44 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
+fn all_at_depth<F>(loc: &mut ReadZipperUntracked<()>, level: u32, mut action: F) where F: FnMut(&mut ReadZipperUntracked<()>) -> () {
+    assert!(level > 0);
+    let mut i = 0;
+    while i < level {
+        if loc.descend_first_byte() {
+            i += 1
+        } else if loc.to_next_sibling_byte() {
+        } else if loc.ascend_byte() {
+            i -= 1
+        } else {
+            return;
+        }
+    }
+
+    while i > 0 {
+        if i == level {
+            action(loc);
+            if loc.to_next_sibling_byte() {
+            } else {
+                assert!(loc.ascend_byte());
+                i -= 1;
+            }
+        } else if i < level {
+            if loc.to_next_sibling_byte() {
+                while i < level && loc.descend_first_byte() {
+                    i += 1;
+                }
+            } else {
+                if loc.ascend_byte() {
+                    i -= 1;
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+    }
+}
+
 fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, f: &mut F) {
     // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("label {}", label(*stack.last().unwrap()));
@@ -125,12 +163,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
-            if loc.descend_first_k_path(size as usize) {
-                transition(stack, loc, f);
-                while loc.to_next_k_path(size as usize) {
-                    transition(stack, loc, f);
-                }
-            }
+            all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
             stack.push(size);
         }
         ITER_NESTED => {

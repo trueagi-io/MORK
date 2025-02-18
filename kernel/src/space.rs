@@ -3,7 +3,7 @@ use std::hint::black_box;
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::time::Instant;
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
 use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
@@ -13,7 +13,7 @@ use pathmap::zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zi
 
 pub struct Space {
     pub(crate) btm: BytesTrieMap<()>,
-    sm: SharedMappingHandle
+    pub(crate) sm: SharedMappingHandle
 }
 
 static mut SIZES: [u64; 4] = [0u64; 4];
@@ -223,13 +223,21 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(size)
         }
         ITER_VAR_SYMBOL => {
+            let size = stack.pop().unwrap();
+            let mut v = vec![];
+            for _ in 0..size { v.push(stack.pop().unwrap()) }
+
             stack.push(ITER_VARIABLES);
             transition(stack, loc, f);
             stack.pop();
 
-            stack.push(ITER_SYMBOL);
+            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&v[..]);
             transition(stack, loc, f);
-            stack.pop();
+            loc.ascend(size as usize);
+            loc.ascend(1);
+            for _ in 0..size { stack.push(v.pop().unwrap()) }
+            stack.push(size)
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
@@ -239,19 +247,21 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(arity);
         }
         ITER_VAR_ARITY => {
+            let arity = stack.pop().unwrap();
+
             stack.push(ITER_VARIABLES);
             transition(stack, loc, f);
             stack.pop();
 
-            stack.push(ITER_ARITY);
+            loc.descend_to(&[item_byte(Arity(arity))]);
             transition(stack, loc, f);
-            stack.pop();
+            loc.ascend(1);
+            stack.push(arity);
         }
         _ => { unreachable!() }
     }
     stack.push(last);
 }
-
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     let mut v = vec![];
@@ -278,7 +288,7 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     }
 }
 
-struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: WritePermit<'a> }
+pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: WritePermit<'a> }
 
 impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
@@ -290,7 +300,7 @@ impl <'a> Parser for ParDataParser<'a> {
 }
 
 impl <'a> ParDataParser<'a> {
-    fn new(handle: &'a SharedMappingHandle) -> Self {
+    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
         Self {
             count: 3,
             buf: (3u64).to_be_bytes(),
@@ -299,8 +309,56 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
+#[macro_export]
+macro_rules! expr {
+    ($space:ident, $s:literal) => {{
+        let mut src = parse!($s);
+        let q = Expr{ ptr: src.as_mut_ptr() };
+        let mut pdp = ParDataParser::new(&$space.sm);
+        let mut buf = [0u8; 2048];
+        let p = Expr{ ptr: buf.as_mut_ptr() };
+        let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
+        unsafe {
+            println!("before copy {:?}", p.span().as_ref().unwrap());
+            let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
+            std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
+            println!("after copy {:?}", Expr{ ptr: b }.span().as_ref().unwrap());
+            Expr{ ptr: b }
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! sexpr {
+    ($space:ident, $e:expr) => {{
+        let mut v = vec![];
+        $e.serialize(&mut v, |s| {
+            let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+            let mstr = $space.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+            // println!("symbol {symbol:?}, bytes {mstr:?}");
+            unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+        });
+        String::from_utf8(v).unwrap()
+    }};
+}
+
 impl Space {
     pub fn new() -> Self {
+        for size in 1..64 {
+            let k = item_byte(Tag::SymbolSize(size));
+            unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
+        }
+        for arity in 1..64 {
+            let k = item_byte(Tag::Arity(arity));
+            unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
+        }
+        let nv_byte = item_byte(Tag::NewVar);
+        unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
+        for size in 1..64 {
+            let k = item_byte(Tag::VarRef(size));
+            unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
+        }
+
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
     }
 
@@ -432,7 +490,7 @@ impl Space {
                     e.serialize(w, |s| {
                         let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                         let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                        println!("symbol {symbol:?}, bytes {mstr:?}");
+                        // println!("symbol {symbol:?}, bytes {mstr:?}");
                         unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                     });
                     w.write(&[b'\n']).map_err(|x| x.to_string())?;
@@ -475,7 +533,8 @@ impl Space {
             match e.transformData(pattern, template, &mut oz) {
                 Ok(()) => {
                     // todo (here and below) descend to dynamic path and reset/ascend to static prefix
-                    wz.descend_to(unsafe { &*oz.finish_span() });
+                    // println!("{}", sexpr!(self, oz.root));
+                    wz.descend_to(&buffer[..oz.loc]);
                     wz.set_value(());
                     wz.reset()
                 }

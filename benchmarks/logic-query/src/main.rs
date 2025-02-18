@@ -492,11 +492,13 @@ fn main() {
     let t0 = Instant::now();
     let mut z = space.read_zipper();
 
+    let mut visited = 0;
     let mut buffer = vec![ACTION, ITER_EXPR];
     transition(&mut buffer, &mut z, &mut |loc| {
         black_box(loc.origin_path());
+        visited += 1;
     });
-    println!("iterating all took {} microseconds", t0.elapsed().as_micros());
+    println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
     let t0 = Instant::now();
     let mut z = space.read_zipper();

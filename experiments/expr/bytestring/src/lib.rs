@@ -2,7 +2,7 @@ use std::fmt::{Debug, format, Formatter, Write};
 use std::{mem, ops};
 use std::ops::ControlFlow;
 use smallvec::SmallVec;
-use std::ptr::slice_from_raw_parts;
+use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
@@ -503,6 +503,27 @@ impl Expr {
                     iz.next(); if !ez.next() { return Ok(bindings) };
                 }
                 _ => { return Err(TypeMismatch(ez.tag(), iz.tag())) }
+            }
+        }
+    }
+
+    pub fn substitute_symbols<F : for <'a> FnMut(&'a [u8]) -> &'a [u8]>(self, oz: &mut ExprZipper, mut subst: F) -> *mut [u8] {
+        let mut ez = ExprZipper::new(self);
+        loop {
+            match ez.item() {
+                Ok(Tag::NewVar) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                Ok(Tag::VarRef(i)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                Ok(Tag::SymbolSize(s)) => { unreachable!() }
+                Ok(Tag::Arity(_)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                Err(s) => { let ns = subst(s);
+                    println!("origin {:?}", s);
+                    println!("replac {:?}", ns);
+
+                    oz.write_symbol(ns); oz.loc += 1 + ns.len(); }
+            }
+
+            if !ez.next() {
+                return slice_from_raw_parts_mut(oz.root.ptr, oz.loc);
             }
         }
     }

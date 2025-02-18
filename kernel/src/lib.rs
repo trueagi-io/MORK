@@ -3,11 +3,14 @@ mod json_parser;
 
 #[cfg(test)]
 mod tests {
+    use mork_frontend::bytestring_parser::Parser as SExprParser;
+    use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
+    use crate::{expr, sexpr};
     use crate::json_parser::{Parser, DebugTranscriber, WriteTranscriber};
     use crate::space::*;
 
     #[test]
-    fn parse() {
+    fn parse_sexpr() {
         let input = "(foo bar)\n";
         let mut s = Space::new();
         assert_eq!(s.load(input.as_bytes()).unwrap(), 1);
@@ -90,5 +93,36 @@ mod tests {
         let mut res = Vec::<u8>::new();
         s.dump(&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
+    }
+
+    #[test]
+    fn query_simple() {
+        let reconstruction = r#"(first_name John)
+(last_name Smith)
+(is_alive true)
+(age 27)
+(address (street_address 21 2nd Street))
+(address (city New York))
+(address (state NY))
+(address (postal_code 10021-3100))
+(phone_numbers (0 (type home)))
+(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (1 (type office)))
+(phone_numbers (1 (number 646 555-4567)))
+(children (0 Catherine))
+(children (1 Thomas))
+(children (2 Trevor))
+(spouse null)
+"#;
+        let mut s = Space::new();
+        assert_eq!(16, s.load(reconstruction.as_bytes()).unwrap());
+
+        unsafe { println!("{:?}", serialize(expr!(s, "[2] children [2] $ $").span().as_ref().unwrap())); }
+        s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
+        s.query(expr!(s, "[2] children [2] $ $"), |e| println!("effect {:?}", sexpr!(s, e)));
+
+        let mut res = Vec::<u8>::new();
+        s.dump(&mut res).unwrap();
+        println!("{}", String::from_utf8(res).unwrap());
     }
 }

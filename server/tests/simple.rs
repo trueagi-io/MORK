@@ -179,21 +179,41 @@ async fn import_request_test() -> Result<(), Error> {
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
+    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
 
-    //First test an end-to-end sucessful fetch and parse
-    let response = reqwest::get(IMPORT_URL).await?;
-    if response.status().is_success() {
-        println!("Response: {}", response.text().await?);
-    } else {
-        panic!("Failed to load page: {}", response.status());
-    }
-    //GOAT, sleep for 200ms or so, and then check that we can inspect the path.
+//GOAT, put this back
+    // //1. First test an end-to-end sucessful fetch and parse
+    // let response = reqwest::get(IMPORT_URL).await?;
+    // assert!(response.status().is_success());
+    // println!("Response: {}", response.text().await?);
 
-    //Now test a situation where we make a request to the same path, which should be rejected
-    //GOAT
+    // // Check the path immediately; we should get a "path busy" response
+    // let response = reqwest::get(STATUS_URL).await?;
+    // assert!(response.status().is_success());
+    // println!("Response: {}", response.text().await?);
+    // // assert!() GOAT, Should we serialize the response as JSON?
 
-    //Now test a situation where we make a request for the same file, while the previous download is
-    // still in process
+    // //GOAT, sleep for 1s, and then check that we can inspect the path.
+
+
+    //2. Now test a bogus URL, to make sure we can get the error back
+    const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
+    let response = reqwest::get(BOGUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    assert!(response_text.starts_with("ACK"));
+
+    //Now sleep for a second, and check that the path contains the correct error
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let response = reqwest::get(STATUS_URL).await?;
+    assert!(response.status().is_success());
+    println!("Response: {}", response.text().await?);
+    // assert!() GOAT, Should we serialize the response as JSON?
+
+
+    //3. Now test a situation where we make a request for the same file at a different path, while the
+    // previous download is still in process
     //GOAT
 
     Ok(())

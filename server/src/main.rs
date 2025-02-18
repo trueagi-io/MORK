@@ -44,7 +44,7 @@ struct MorkServiceInternals {
     /// ZipperHead for accessing the primary map
     primary_map: ZipperHeadOwned<()>,
     /// ZipperHead for accessing status and permissions associated with paths
-    status_map: ZipperHeadOwned<StatusRecord>,
+    status_map: StatusMap,
     /// Versioned storage for on-disk resources
     resource_store: ResourceStore,
     /// The http client used to fetch remote files
@@ -69,9 +69,7 @@ impl MorkService {
         let primary_map = primary_map.into_zipper_head([]);
 
         // Load the status map also
-        //GOAT, ACTually load it!!
-        let status_map = BytesTrieMap::<StatusRecord>::new();
-        let status_map = status_map.into_zipper_head([]);
+        let status_map = StatusMap::new();
 
         // Init the ResourceStore
         let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
@@ -162,8 +160,8 @@ impl MorkService {
 
                     let work_result = command.def.work(ctx, work_thread, command.clone(), resources).await;
                     match work_result {
-                        Ok(()) => {
-                            Ok(ok_response("Request Acknowledged"))
+                        Ok(response_bytes) => {
+                            Ok(ok_response(response_bytes))
                         },
                         Err(err) => {
                             let response = MorkServerError::cmd_err(err, &command).error_response();
@@ -407,6 +405,8 @@ impl Service<Request<IncomingBody>> for MorkService {
         //Decode the request
         let (command_name, remaining) = split_command(req.uri().path());
         match (req.method(), command_name) {
+            //GOAT, we really ought to have a macro here (or elsewhere) to reduce copy-pasta but keep the match statement dispatch.
+            //  In fact we could dispatch via the command definition to save one additional indirection (doubtful it matters though)
             (&Method::GET, BusywaitCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<BusywaitCmd>(remaining, req.uri())
@@ -416,6 +416,12 @@ impl Service<Request<IncomingBody>> for MorkService {
             (&Method::GET, ImportCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<ImportCmd>(remaining, req.uri())
+                })(), bad_request_err);
+                self.dispatch_work(command)
+            },
+            (&Method::GET, StatusCmd::NAME) => {
+                let command = fut_err!((|| {
+                    parse_command::<StatusCmd>(remaining, req.uri())
                 })(), bad_request_err);
                 self.dispatch_work(command)
             },

@@ -1,4 +1,5 @@
 
+use serde::{Serialize, Serializer};
 
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{WriteZipper, Zipper, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperValueAccess};
@@ -13,7 +14,9 @@ use crate::BoxedErr;
 /// The results of a user's command, and errors in particular, will be written to the status map so the
 /// user can check them, and so future commands don't proceed if their required resources are in a bad
 /// or unready state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(tag = "status")]
+#[serde(rename_all = "camelCase")]
 pub enum StatusRecord {
     #[default]
     PathClear,
@@ -22,10 +25,15 @@ pub enum StatusRecord {
     FetchError(FetchError)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchError {
     pub(crate) log_message: String,
+    #[serde(serialize_with = "serialize_status_code")]
     pub(crate) status_code: StatusCode,
+}
+fn serialize_status_code<S: Serializer>(status_code: &StatusCode, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_u16((*status_code).into())
 }
 
 impl FetchError {

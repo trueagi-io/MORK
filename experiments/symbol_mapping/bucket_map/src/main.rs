@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::WriteZipper;
+// use pathmap::zipper::WriteZipper;
 use bstr::ByteSlice;
 use naive_map;
 

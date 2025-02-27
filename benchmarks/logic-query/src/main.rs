@@ -5,7 +5,7 @@ use mork_bytestring::*;
 use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipper};
+use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 
 
@@ -87,8 +87,9 @@ fn label(l: u8) -> String {
 }
 
 fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, f: &mut F) {
-    // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
-    // println!("label {}", label(*stack.last().unwrap()));
+    println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
+    println!("|path {:?}", serialize(loc.origin_path().unwrap()));
+    println!("\\label {}", label(*stack.last().unwrap()));
     let last = stack.pop().unwrap();
     match last {
         ACTION => { f(loc) }
@@ -425,7 +426,7 @@ impl DataParser {
 
 impl Parser for DataParser {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
-        // return unsafe { std::mem::transmute(s) };
+        return unsafe { std::mem::transmute(s) };
         if s.len() == 0 { return Self::EMPTY }
         let mut z = self.symbols.write_zipper_at_path(s);
         let r = z.get_value_or_insert_with(|| {
@@ -457,8 +458,8 @@ fn main() {
     }
 
 
-    // let mut file = std::fs::File::open("resources/test.metta")
-    let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
+    // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/small.metta")
         .expect("Should have been able to read the file");
     let mut buf = vec![];
     file.read_to_end(&mut buf).unwrap();
@@ -477,10 +478,11 @@ fn main() {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr(&mut it, &mut ez) {
             Ok(()) => {
+                // println!("{:?}", ez.root);
                 space.insert(&stack[..ez.loc], ());
             }
             Err(ParserError::InputFinished) => break,
-            Err(other) => panic!("{:?}", other)
+            Err(other) => panic!("{:?} (byte {}, line {})", other, it.loc, it.src[..it.loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
         }
         i += 1;
         it.variables.clear();
@@ -499,6 +501,13 @@ fn main() {
         visited += 1;
     });
     println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
+
+    z.reset();
+    while let Some(_) = z.to_next_val() {
+        println!("{:?}", Expr{ ptr: z.path().as_ptr().cast_mut() })
+    }
+
+    return;
 
     let t0 = Instant::now();
     let mut z = space.read_zipper();

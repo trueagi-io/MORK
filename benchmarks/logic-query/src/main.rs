@@ -87,9 +87,9 @@ fn label(l: u8) -> String {
 }
 
 fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, f: &mut F) {
-    println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
-    println!("|path {:?}", serialize(loc.origin_path().unwrap()));
-    println!("\\label {}", label(*stack.last().unwrap()));
+    // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
+    // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
+    // println!("\\label {}", label(*stack.last().unwrap()));
     let last = stack.pop().unwrap();
     match last {
         ACTION => { f(loc) }
@@ -452,14 +452,14 @@ fn main() {
     }
     let nv_byte = item_byte(Tag::NewVar);
     unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
-    for size in 1..64 {
+    for size in 0..64 {
         let k = item_byte(Tag::VarRef(size));
         unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
 
 
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92.metta")
-    let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/small.metta")
+    let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta")
         .expect("Should have been able to read the file");
     let mut buf = vec![];
     file.read_to_end(&mut buf).unwrap();
@@ -473,7 +473,7 @@ fn main() {
     let t0 = Instant::now();
     #[allow(unused)]
     let mut i = 0;
-    let mut stack = [0u8; 2048];
+    let mut stack = [0u8; 2 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr(&mut it, &mut ez) {
@@ -502,10 +502,13 @@ fn main() {
     });
     println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
-    z.reset();
+    let mut z = space.read_zipper();
+    let mut k = 0;
     while let Some(_) = z.to_next_val() {
-        println!("{:?}", Expr{ ptr: z.path().as_ptr().cast_mut() })
+        k += 1;
+        // println!("{:?}", Expr{ ptr: z.path().as_ptr().cast_mut() })
     }
+    println!("{}", k);
 
     return;
 

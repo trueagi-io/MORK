@@ -304,7 +304,11 @@ pub enum ValueSlice<'read, 'encode> {
 }
 
 /// this constant exists purely for debugging compression of zeros
+#[cfg(not(debug_assertions))]
 const INCR : usize = 0x_1;
+#[cfg(debug_assertions)]
+const INCR : usize = 0x_1;
+// const INCR : usize = 0x_100000;
 
 fn register<V>(
   ctx             : &mut Ctx,
@@ -321,13 +325,11 @@ fn register<V>(
 
             
             let cur_pos = context.data_file.stream_position()?;
-            // dbg!(("ROLLBACK", cur_pos, rollback_pos));
             context.data_file.seek_relative(rollback_pos as i64 - cur_pos as i64)?;
             (hash, offset)
           } else {
             // advance
 
-            // dbg!(("ADVANCE", rollback_pos));
             let idx = context.count;
             context.values.insert(hash, idx);
             context.count += INCR;
@@ -347,7 +349,7 @@ fn register<V>(
         hasher.write_u8(tag as u8);
         context.data_file.write(&[tag as u8, b' '])?;
         for b in i {
-          // dbg!(b as char);
+
           
 
           hasher.write_u8(b);
@@ -414,7 +416,7 @@ fn register<V>(
 
   let acc_out = match cata_case {
     CataCase::Mapf(map_f)           => { let MapF { origin_path, value } = map_f;
-                                        dbg!("MAP_F");
+
                                          let nil      = register(ctx, CataCase::AlgF(AlgF { origin_path : &[], child_mask: &[0;4], accs: &mut [] }), serialize_value)?.hash_idx;
                                          
                                          let value = {
@@ -460,7 +462,7 @@ fn register<V>(
                                        }
     CataCase::CollapseF(collapse_f) => { let CollapseF { value, acc, origin_path } = collapse_f;
 
-                                         dbg!("COLLAPSE_F");
+
                                          
                                          let value = {
 
@@ -518,7 +520,7 @@ fn register<V>(
                                         //  let non_branch_root = if let ([acc], []) = acc, origin_path { true
                                         //  } else {false};
 
-                                        dbg!("ALG_F");
+
                                          // compute the hash : seed(0) -> forall branchhash . write_u128(branch hash)
                                          
                                          // reset the scratch buffer
@@ -541,7 +543,7 @@ fn register<V>(
                                            let Accumulator { mut hash_idx, max_len, val_count, paths_count, mut lost_bytes } = core::mem::replace(each, Ok(Accumulator::zeroed()))?;
 
                                            '_deal_with_lost_bytes : {
-                                             dbg!((&origin_path, std::str::from_utf8(&lost_bytes.jump_sub_slice)));
+
                                              hash_idx = maybe_make_path_node(ctx, &lost_bytes.jump_sub_slice, hash_idx)?;
                                              ctx.lost_bytes_pool.push(lost_bytes.jump_sub_slice);
                                            };
@@ -576,7 +578,7 @@ fn register<V>(
                                                data_file.write(&[b'\n'])?;
                                                
                                                let new_pos = data_file.stream_position()?;
-                                              //  dbg!(new_pos);
+
                                                value_offsets.push(new_pos);
                                                
 
@@ -602,7 +604,7 @@ fn register<V>(
                                          }
                                        }
     CataCase::JumpF(jump_f)         => { let JumpF { origin_path, sub_path, acc, .. } = jump_f;
-                                        dbg!("JUMP_F");
+
                                          core::debug_assert!(!sub_path.is_empty());
 
                                          let mut cont = acc?;
@@ -687,6 +689,7 @@ fn offset_and_childmask_zero_compressor(f : &std::fs::File, out_dir_path: impl A
     byte_boundary = !byte_boundary;
     let ascii = each?;
     core::debug_assert!(ascii.is_ascii_alphanumeric() || ascii.is_ascii_whitespace());
+
     match ascii {
       b'v' 
     | b'p'  => { skip = true;
@@ -694,13 +697,14 @@ fn offset_and_childmask_zero_compressor(f : &std::fs::File, out_dir_path: impl A
                },
       b'\n' => {
                  skip = false;
-                 if *zeroes > 0 {
+                 if *zeroes > 0 && !hit_x {
                    write_zeroes(zeroes, &mut out, byte_boundary)?;
                  }
                  if hit_x {
-                  out.write(b"00")?;
-                  hit_x = false
+                   // only happens once for "nil"
+                   out.write(b"00")?;
                  }
+                 hit_x = false;
                  byte_boundary = false;
                  out.write(b"\n")?;
                }
@@ -714,24 +718,35 @@ fn offset_and_childmask_zero_compressor(f : &std::fs::File, out_dir_path: impl A
                    out.write(b"0")?;
                  } else if !byte_boundary && *zeroes == 0 {
                    out.write(b"0")?;
+                   hit_x = false;
                  } else {
                    *zeroes += 1;
                  }
                  
                }
-      _     => {
-                 if let b'x' = ascii {
-                   byte_boundary = false
+      b'x'  => { 
+                 if *zeroes > 0 {
+                   core::debug_assert!(!hit_x);
+                   write_zeroes(zeroes, &mut out, byte_boundary)?;
                  }
+                if hit_x {panic!()}
+                 out.write(b"x")?;
+                 byte_boundary = false;
+                 hit_x = true;
+                 *zeroes = 0;
+                 
+               }
+      _     => {
                  if *zeroes > 0 {
                    core::debug_assert!(!hit_x);
                    write_zeroes(zeroes, &mut out, byte_boundary)?;
                  }
                  if hit_x && !byte_boundary {
-                   out.write(&[b'0'])?;
+                   out.write(b"0")?;
                  }
-                 hit_x = ascii == b'x';
+                 
                  out.write(&[ascii])?;
+                 hit_x = false
                }
     };
   }
@@ -894,7 +909,7 @@ fn deserialize_file<V : ZipperValue>(file_path : impl AsRef<std::path::Path>, de
                                                           cur = rest
                                                         }
                                 _                    => { 
-                                                          return Err(std::io::Error::other("Malformed serialized ByteTrie, expected path as `(<hex_top><Hex_bot>)*`"))
+                                                          return Err(std::io::Error::other("Malformed serialized ByteTrie, expected value as `(<hex_top><Hex_bot>)*`"))
                                                         }
                                }
                              }
@@ -907,7 +922,8 @@ fn deserialize_file<V : ZipperValue>(file_path : impl AsRef<std::path::Path>, de
                            }
 
       // child mask has compression but no b'x' bytes
-      Tag::CHILD_MASK   => { let mut mask_buf = decompress_zeros_compression_child_mask(data)?;
+      Tag::CHILD_MASK   => { 
+                             let mut mask_buf = decompress_zeros_compression_child_mask(data)?;
                              let mask = mask_buf.map(u64::from_be_bytes).map(u64::reverse_bits);
 
                             deserialized.push(Deserialized::ChildMask(mask));
@@ -966,7 +982,7 @@ fn deserialize_file<V : ZipperValue>(file_path : impl AsRef<std::path::Path>, de
 
                              let [mask_idx, branches_idx] = node_buf.map(|x| x as usize);
                              
-                             let Deserialized::ChildMask(mask) = &deserialized[mask_idx] else { return Err(std::io::Error::other("Malformed serialized ByteTrie, expected path as `(<hex_top><Hex_bot>)*`")); };
+                             let Deserialized::ChildMask(mask) = &deserialized[mask_idx] else { return Err(std::io::Error::other("Malformed serialized ByteTrie, expected childmask as `(/?<hex_top><Hex_bot>)*`")); };
                              let iter = pathmap::utils::ByteMaskIter::new(*mask);
 
                              let Deserialized::Branches(r) = &deserialized[branches_idx] else { return Err(std::io::Error::other("Malformed serialized ByteTrie, expected branches")); };
@@ -1055,6 +1071,14 @@ fn decompress_zeros_compression_offset(mut encoded_hex : &[u8], buffer : &mut [u
 
     }
   }
+
+  #[cfg(debug_assertions)]
+  if INCR != 1 {
+    for each in buffer.iter_mut() {
+      *each >>= INCR.trailing_zeros();
+    }
+  }
+
   Ok(count)
 }
 
@@ -1101,7 +1125,7 @@ fn decompress_zeros_compression_child_mask(mut encoded_hex : &[u8], )->Result<[[
                                                           
                                                           encoded_hex = rest;
                                                         }
-      _                                              => { return Err(std::io::Error::other("Malformed serialized ByteTrie")); }
+      _                                              => { return Err(std::io::Error::other("Malformed serialized ByteTrie, childmask")); }
 
     }
   }
@@ -1375,19 +1399,247 @@ use super::*;
 
 
 
-    // for l in 0..LEN {
-    //   trie.insert(&ARR[..l], as_arc(&ARR[..l]));
-    // }
-    // for l in 0..LEN {
-    //   trie.insert(&ARR[l..], as_arc(&ARR[..l]));
-    // }
-    // for l in 0..LEN {
-    //   trie.insert(&ARR[l..], as_arc(&ARR[..LEN]));
-    // }
+
+    trie.insert(b"fgsfdgsfdgfds57desf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57desM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57abesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57abesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57abesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57abesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57abesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57abesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57abesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57abesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57abcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57abce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57abcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57abcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57agbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57agbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57agbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57agbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57dxxxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxgbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxgbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxgbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57axxxgbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123dzxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxgbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxgbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxgbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdgsfdgfds57123azxgbcg", as_arc(b"xyz"));
 
 
 
-    // trie.insert(b"a", as_arc(b""));
+
+
+
+
+    trie.insert(b"57gfdgsfgfdgfsdggsdesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdbcg", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdgbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdgbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdgbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdgbcg", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxbcg", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxgbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxgbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxgbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsdxxxgbcg", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23dzxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxbcg", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxgbcd", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxgbce", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxgbcf", as_arc(b"xyz"));
+    trie.insert(b"57gfdgsfgfdgfsdggsd23azxgbcg", as_arc(b"xyz"));
+
+
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57desM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57abcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57agbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57agbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57agbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57agbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57dxxxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxgbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxgbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxgbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57axxxgbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesI", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesJ", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesK", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123dzxesM", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesf", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesF", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesG", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesH", as_arc(b"lmnopqrstuv"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesI", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesJ", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesK", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbesM", as_arc(b"lmnopqrstu"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxbcg", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxgbcd", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxgbce", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxgbcf", as_arc(b"xyz"));
+    trie.insert(b"fgsfdfdsafssfdsfsdgsfdgfds57123azxgbcg", as_arc(b"xyz"));
+
+
+
+    for l in 0..LEN {
+      trie.insert(&ARR[..l], as_arc(&ARR[..l]));
+      if l >= 1 {trie.insert(&ARR[1..l], as_arc(&ARR[..15]));};
+    }
+    for l in 0..LEN {
+      trie.insert(&ARR[l..], as_arc(&ARR[..l]));
+      if l <= LEN {trie.insert(&ARR[l..LEN], as_arc(&ARR[..25]));};
+    }
+    for l in 0..LEN {
+      trie.insert(&ARR[l..], as_arc(&ARR[..LEN]));
+    }
+
 
     let trie_clone = trie.clone();
 
@@ -1410,13 +1662,8 @@ use super::*;
     let de_path = path.join("zero_compressed_hex.data");
     let de = deserialize_file(&de_path, |b|as_arc(b)).unwrap();
 
-    trace(trie_clone.clone());
+    // trace(trie_clone.clone());
     let [src,de_] = [string_pathmap_as_btree_dbg(trie_clone), string_pathmap_as_btree_dbg(de)];
-    
-
-    println!("src : {:#?}\nde  : {:#?}", src, de_);
-
-
 
     core::assert!(src == de_);
 

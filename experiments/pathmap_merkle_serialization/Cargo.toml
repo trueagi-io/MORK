@@ -6,8 +6,5 @@ edition.workspace = true
 [dependencies]
 pathmap = { workspace = true}
 gxhash = "3.4.1"
+zstd = "0.13.3"
 
-
-
-# [build]
-# rustflags = ["-C", "target-cpu=native"] # RUSTFLAGS="-C target-cpu=native"  cargo build

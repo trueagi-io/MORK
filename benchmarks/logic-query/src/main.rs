@@ -2,7 +2,6 @@ use std::hint::black_box;
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
@@ -66,6 +65,9 @@ const ITER_ARITY: u8 = 8;
 const ITER_VAR_SYMBOL: u8 = 9;
 const ITER_VAR_ARITY: u8 = 10;
 const ACTION: u8 = 11;
+const BEGIN_RANGE: u8 = 12;
+const FINALIZE_RANGE: u8 = 13;
+const REFER_RANGE: u8 = 14;
 
 #[allow(unused)]
 fn label(l: u8) -> String {
@@ -193,7 +195,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             let size = stack.pop().unwrap();
             let mut v = vec![];
             for _ in 0..size { v.push(stack.pop().unwrap()) }
-            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
             transition(stack, loc, f);
             loc.ascend(size as usize);
@@ -210,7 +212,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
             transition(stack, loc, f);
             loc.ascend(size as usize);
@@ -220,7 +222,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
-            loc.descend_to(&[item_byte(Arity(arity))]);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
@@ -232,7 +234,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            loc.descend_to(&[item_byte(Arity(arity))]);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
@@ -243,112 +245,191 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
 }
 
 
-// fn iter_expr_tail<'a, F>(z0: &mut ReadZipper<()>, mut action: &'a mut F) -> &'a mut F where F: FnMut(&mut ReadZipper<()>) -> () {
-//     iter_arities(z0, &mut |a1, z1| {
-//         if a1 > 1 {
-//             iter_expr(z1, action);
-//         }
-//     });
-//     action
-// }
-// EXAMPLE
-//  QUERY: [3] a $ c
-//  SPACE: [3]-a b c
-//              \d c
-//            \p q r
-//         $
-// RESULT : [3]-a b c
-//               \d c
-//          $
-// fn iter_indiscriminate_bidirectional_matching<F>(z: &mut ReadZipper<()>, ez: &mut ExprZipper, mut action: &mut F) where F: FnMut(&mut ReadZipper<()>) -> () {
-//     match ez.item() {
-//         Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
-//             if ez.next() { iter_expr(z, &mut |z0| iter_indiscriminate_bidirectional_matching(z0, &mut ez.clone(), action)) }
-//             else { iter_expr(z, action) }
-//         }
-//         Ok(Tag::SymbolSize(_)) => { unreachable!() }
-//         Ok(Tag::Arity(a)) => {
-//             let skip = unsafe { *ez.subexpr().span() }.len();
-//             if ez.has_pibling() { iter_variables(z, |z0| iter_indiscriminate_bidirectional_matching(z0, &mut ExprZipper{ root: ez.root, loc: ez.loc + skip, trace: vec![]}, action)) }
-//             else { iter_variables(z, action) }
-//
-//             if z.descend_to(&[item_byte(Tag::Arity(a))]) {
-//                 match a {
-//                     0 => {
-//                         if ez.next() { iter_indiscriminate_bidirectional_matching(z, &mut ez.clone(), action) }
-//                         else { action(z) }
-//                     }
-//                     1 => {
-//                         assert!(ez.next());
-//                         iter_indiscriminate_bidirectional_matching(z, &mut ez.clone(), &mut |z0| {
-//                             if ez.next() { iter_indiscriminate_bidirectional_matching(z, &mut ez.clone(), action) }
-//                             else { action(z0) }
-//                         });
-//                     }
-//                     2 => {
-//                         assert!(ez.next());
-//                         iter_indiscriminate_bidirectional_matching(z, &mut ez.clone(), &mut |z0| {
-//                             assert!(ez.next());
-//                             iter_indiscriminate_bidirectional_matching(z0, &mut ez.clone(), &mut |z1| {
-//                                 if ez.next() { iter_indiscriminate_bidirectional_matching(z1, &mut ez.clone(), action) }
-//                                 else { action(z1) }
-//                             })
-//                         });
-//                     }
-//                     3 => {
-//                         assert!(ez.next());
-//                         iter_indiscriminate_bidirectional_matching(z, &mut ez.clone(), &mut |z0| {
-//                             assert!(ez.next());
-//                             iter_indiscriminate_bidirectional_matching(z0, &mut ez.clone(), &mut |z1| {
-//                                 assert!(ez.next());
-//                                 iter_indiscriminate_bidirectional_matching(z1, &mut ez.clone(), &mut |z2| {
-//                                     if ez.next() { iter_indiscriminate_bidirectional_matching(z2, &mut ez.clone(), action) }
-//                                     else { action(z2) }
-//                                 })
-//                             })
-//                         })
-//                     }
-//                     _ => { panic!("unimplemented expr matching arity") }
-//                 }
-//             }
-//             z.ascend(1);
-//
-//         }
-//         Err(s) => {
-//             let skip = unsafe { *ez.subexpr().span() }.len();
-//             if ez.has_next() { iter_variables(z, |z0| iter_indiscriminate_bidirectional_matching(z0, &mut ExprZipper{ root: ez.root, loc: ez.loc + skip, trace: vec![]}, action)) }
-//             else { iter_variables(z, action) }
-//
-//             if z.descend_to(&[item_byte(Tag::SymbolSize(s.len() as u8))]) {
-//                 if z.descend_to(s) {
-//                     if ez.has_next() { iter_indiscriminate_bidirectional_matching(z, &mut ExprZipper{ root: ez.root, loc: ez.loc + s.len() + 1, trace: vec![]}, action) }
-//                     else { action(z) }
-//                 }
-//                 z.ascend(s.len());
-//             }
-//             z.ascend(1);
-//         }
-//     }
-// }
+fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, references: &mut Vec<(u32, u32)>, f: &mut F) {
+    // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
+    // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
+    // println!("|refs {:?}", references);
+    // println!("\\label {}", label(*stack.last().unwrap()));
+    let last = stack.pop().unwrap();
+    match last {
+        ACTION => { f(loc) }
+        ITER_AT_DEPTH => {
+            let size = stack.pop().unwrap();
+            if loc.descend_first_k_path(size as usize) {
+                referential_transition(stack, loc, references, f);
+                while loc.to_next_k_path(size as usize) {
+                    referential_transition(stack, loc, references, f);
+                }
+            }
+            stack.push(size);
+        }
+        ITER_NESTED => {
+            let arity = stack.pop().unwrap();
+            let l = stack.len();
+            for _ in 0..arity { stack.push(ITER_EXPR); }
+            referential_transition(stack, loc, references, f);
+            stack.truncate(l);
+            stack.push(arity)
+        }
+        ITER_SYMBOL_SIZE => {
+            let m = mask_and(loc.child_mask(), unsafe { SIZES });
+            let mut it = CfIter::new(&m);
 
-/*
-  def indiscriminateBidirectionalMatchingTrace(): Vector[Instr] = this match
-    case Var(i) if i > 0 =>
-      Vector(Instr.ClearApps, Instr.RestrictSymbols(i))
-    case Var(_) => Vector.empty
-    case App(f, a) =>
-      Vector(Instr.ClearSymbols, Instr.ZoomInApps)
-      ++ f.indiscriminateBidirectionalMatchingTrace()
-      ++ Vector(Instr.ZoomOutApps, Instr.CollectApps(a.indiscriminateBidirectionalMatchingTrace(): _*))
- */
+            while let Some(b) = it.next() {
+                if let Tag::SymbolSize(s) = byte_item(b) {
+                    let buf = [b];
+                    if loc.descend_to(buf) {
+                        let last = stack.pop().unwrap();
+                        stack.push(s);
+                        stack.push(last);
+                        referential_transition(stack, loc, references, f);
+                        stack.pop();
+                        stack.pop();
+                        stack.push(last);
+                    }
+                    loc.ascend(1);
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+        ITER_SYMBOLS => {
+            stack.push(ITER_AT_DEPTH);
+            stack.push(ITER_SYMBOL_SIZE);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+            stack.pop();
+        }
+        ITER_VARIABLES => {
+            let m = mask_and(loc.child_mask(), unsafe { VARS });
+            let mut it = CfIter::new(&m);
 
-// enum Instr {
-//     ClearExpr(),
-//     ClearSymbols(),
-//     RestrictSymbols(Vec<u8>),
-//     RestrictArities(u8),
-//     Step(u8),
-// }
+            while let Some(b) = it.next() {
+                let buf = [b];
+                if loc.descend_to(buf) {
+                    referential_transition(stack, loc, references, f);
+                }
+                loc.ascend(1);
+            }
+        }
+        ITER_ARITIES => {
+            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+            let mut it = CfIter::new(&m);
+
+            while let Some(b) = it.next() {
+                if let Tag::Arity(a) = byte_item(b) {
+                    let buf = [b];
+                    if loc.descend_to(buf) {
+                        let last = stack.pop().unwrap();
+                        stack.push(a);
+                        stack.push(last);
+                        referential_transition(stack, loc, references, f);
+                        stack.pop();
+                        stack.pop();
+                        stack.push(last);
+                    }
+                    loc.ascend(1);
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+        ITER_EXPR => {
+            stack.push(ITER_VARIABLES);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+
+            stack.push(ITER_SYMBOLS);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+
+            stack.push(ITER_NESTED);
+            stack.push(ITER_ARITIES);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+            stack.pop();
+        }
+        ITER_SYMBOL => {
+            let size = stack.pop().unwrap();
+            let mut v = vec![];
+            for _ in 0..size { v.push(stack.pop().unwrap()) }
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
+            loc.descend_to(&v[..]);
+            referential_transition(stack, loc, references, f);
+            loc.ascend(size as usize);
+            loc.ascend(1);
+            for _ in 0..size { stack.push(v.pop().unwrap()) }
+            stack.push(size)
+        }
+        ITER_VAR_SYMBOL => {
+            let size = stack.pop().unwrap();
+            let mut v = vec![];
+            for _ in 0..size { v.push(stack.pop().unwrap()) }
+
+            stack.push(ITER_VARIABLES);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
+            loc.descend_to(&v[..]);
+            referential_transition(stack, loc, references, f);
+            loc.ascend(size as usize);
+            loc.ascend(1);
+            for _ in 0..size { stack.push(v.pop().unwrap()) }
+            stack.push(size)
+        }
+        ITER_ARITY => {
+            let arity = stack.pop().unwrap();
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
+            referential_transition(stack, loc, references, f);
+            loc.ascend(1);
+            stack.push(arity);
+        }
+        ITER_VAR_ARITY => {
+            let arity = stack.pop().unwrap();
+
+            stack.push(ITER_VARIABLES);
+            referential_transition(stack, loc, references, f);
+            stack.pop();
+
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
+            referential_transition(stack, loc, references, f);
+            loc.ascend(1);
+            stack.push(arity);
+        }
+        BEGIN_RANGE => {
+            references.push((loc.path().len() as u32, 0));
+            referential_transition(stack, loc, references, f);
+            references.pop();
+        }
+        FINALIZE_RANGE => {
+            references.last_mut().unwrap().1 = loc.path().len() as u32;
+            referential_transition(stack, loc, references, f);
+            references.last_mut().unwrap().1 = 0;
+        }
+        REFER_RANGE => {
+            let index = stack.pop().unwrap();
+            let (begin, end) = references[index as usize];
+            let subexpr = Expr { ptr: loc.path()[begin as usize..end as usize].as_ptr().cast_mut() };
+
+            let substack = indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(subexpr));
+            let substack_len = substack.len();
+            stack.extend(substack);
+            referential_transition(stack, loc, references, f);
+            stack.truncate(stack.len() - substack_len);
+
+            // println!("pushing ITER_EXPR but could do {}", serialize(&loc.path()[begin as usize..end as usize]));
+            // stack.push(ITER_EXPR);
+            // referential_transition(stack, loc, references, f);
+            // stack.pop();
+
+            stack.push(index);
+        }
+        _ => { unreachable!() }
+    }
+    stack.push(last);
+}
+
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     let mut v = vec![];
@@ -356,6 +437,37 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
         match ez.item() {
             Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
                 v.push(ITER_EXPR);
+            }
+            Ok(Tag::SymbolSize(_)) => { unreachable!() }
+            Err(s) => {
+                v.push(ITER_VAR_SYMBOL);
+                v.push(s.len() as u8);
+                v.extend(s);
+            }
+            Ok(Tag::Arity(a)) => {
+                v.push(ITER_VAR_ARITY);
+                v.push(a);
+            }
+        }
+        if !ez.next() {
+            v.reverse();
+            return v
+        }
+    }
+}
+
+fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
+    let mut v = vec![];
+    loop {
+        match ez.item() {
+            Ok(Tag::NewVar) => {
+                v.push(BEGIN_RANGE);
+                v.push(ITER_EXPR);
+                v.push(FINALIZE_RANGE);
+            }
+            Ok(Tag::VarRef(r)) => {
+                v.push(REFER_RANGE);
+                v.push(r);
             }
             Ok(Tag::SymbolSize(_)) => { unreachable!() }
             Err(s) => {
@@ -502,15 +614,36 @@ fn main() {
     });
     println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
-    let mut z = space.read_zipper();
-    let mut k = 0;
-    while let Some(_) = z.to_next_val() {
-        k += 1;
-        // println!("{:?}", Expr{ ptr: z.path().as_ptr().cast_mut() })
-    }
-    println!("{}", k);
+    // let mut z = space.read_zipper();
+    // let mut k = 0;
+    // let mut total_res = 0;
+    // let mut max_res = 0;
+    // let mut buffer = vec![];
+    // while let Some(_) = z.to_next_val() {
+    //     let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
+    //     buffer.push(ACTION);
+    //     if k % 100 == 0 { println!("expr  {}", unsafe { serialize(se.span().as_ref().unwrap()) }); }
+    //     // buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(se)));
+    //     buffer.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(se)));
+    //     let mut visited = 0;
+    //     let mut rz = space.read_zipper();
+    //     let mut references: Vec<(u32, u32)> = vec![];
+    //     // transition(&mut buffer, &mut rz, &mut |loc| {
+    //     referential_transition(&mut buffer, &mut rz, &mut references, &mut |loc| {
+    //         black_box(loc.origin_path());
+    //         visited += 1;
+    //     });
+    //     assert!(visited >= 1);
+    //     total_res += visited;
+    //     max_res = max_res.max(visited);
+    //     k += 1;
+    //     buffer.clear();
+    // }
 
-    return;
+    // println!("searching all in all (queries {} average res {}, max res {}) took {} microseconds", k, total_res/k, max_res, t0.elapsed().as_micros());
+    // transition; searching all in all (queries 91692 average res 7, max res 23625) took 108261746 microseconds
+    // referential; searching all in all (queries 91692 average res 3, max res 12199) took 143654826 microseconds
+    // return;
 
     let t0 = Instant::now();
     let mut z = space.read_zipper();

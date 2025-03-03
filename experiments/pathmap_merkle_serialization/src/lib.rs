@@ -2,8 +2,6 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
 
 
-// let cif = (fn) => (a) => (b) => (x) => (fn(x) ? a : b)(x);
-
 macro_rules! hex { () => { b'A'..=b'F' | b'0'..=b'9'}; }
 
 use std::{any::type_name, cell::RefCell, collections::VecDeque, hash::Hasher, io::{BufRead, BufReader, BufWriter, IoSliceMut, Read, Seek, Write}, path::PathBuf};

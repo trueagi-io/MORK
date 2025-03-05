@@ -101,14 +101,17 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
-            all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
 
-            // if loc.descend_first_k_path(size as usize) {
-            //     transition(stack, loc, f);
-            //     while loc.to_next_k_path(size as usize) {
-            //         transition(stack, loc, f);
-            //     }
-            // }
+            if false { // broken on normal execution
+                all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
+            } else { // broken on all-dense-nodes execution
+                if loc.descend_first_k_path(size as usize) {
+                    transition(stack, loc, f);
+                    while loc.to_next_k_path(size as usize) {
+                        transition(stack, loc, f);
+                    }
+                }
+            }
             stack.push(size);
         }
         ITER_NESTED => {
@@ -265,7 +268,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
 
-            if true { // broken on normal execution
+            if false { // broken on normal execution
                 all_at_depth(loc, size as _, |loc| referential_transition(stack, loc, references, f));
             } else { // broken on all-dense-nodes execution
                 if loc.descend_first_k_path(size as usize) {
@@ -628,6 +631,8 @@ fn main() {
 
     let mut visited = 0;
     let mut buffer = vec![ACTION, ITER_EXPR];
+    // let mut references: Vec<(u32, u32)> = vec![];
+    // referential_transition(&mut buffer, &mut z, &mut references, &mut |loc| {
     transition(&mut buffer, &mut z, &mut |loc| {
         black_box(loc.origin_path());
         visited += 1;

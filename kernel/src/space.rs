@@ -5,7 +5,7 @@ use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, pa
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration};
+use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperWriting};
 
 
 pub struct Space {
@@ -188,8 +188,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
 
             while let Some(b) = it.next() {
                 if let Tag::Arity(a) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
+                    if loc.descend_to_byte(b) {
                         let last = stack.pop().unwrap();
                         stack.push(a);
                         stack.push(last);

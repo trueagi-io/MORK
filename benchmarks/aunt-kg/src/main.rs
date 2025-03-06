@@ -2,6 +2,7 @@ use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, Context, ParserError};
+use pathmap::ring::AlgebraicStatus;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
 
@@ -79,7 +80,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head_2<Z: WriteZipper<()>>(loc: &mut Z) {
+fn drop_symbol_head_2<Z: ZipperWriting<()> + pathmap::zipper::Zipper<()> + pathmap::zipper::ZipperMoving>(loc: &mut Z) {
     let m = mask_and(loc.child_mask(), unsafe { SIZES });
     let mut it = CfIter::new(&m);
 
@@ -99,7 +100,7 @@ fn drop_symbol_head_2<Z: WriteZipper<()>>(loc: &mut Z) {
     loc.drop_head(1);
 }
 
-fn main() {
+fn main() -> Result<(),&'static str> {
     for size in 1..64 {
         let k = item_byte(Tag::SymbolSize(size));
         unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
@@ -144,7 +145,7 @@ fn main() {
     let parent_symbol = parser.tokenizer(b"parent");
     parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
     parent_path.extend(parent_symbol);
-    let mut parent_zipper = family_head.read_zipper_at_path(&parent_path[..]);
+    let mut parent_zipper = family_head.read_zipper_at_path(&parent_path[..]).map_err(|_|concat!("failed to make parent zipper at", line!(), "in main"))?;
     let mut child_path = vec![item_byte(Tag::Arity(3))];
     let child_symbol = parser.tokenizer(b"child");
     child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
@@ -187,7 +188,7 @@ fn main() {
     drop(child_zipper);
 
     println!("creating extra index took (child) {} microseconds", t1.elapsed().as_micros());
-    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make a read zipper for `family_head` as line ", line!(), " in main."))?.val_count());
 
     let t2 = Instant::now();
 
@@ -197,14 +198,14 @@ fn main() {
     let female_symbol = parser.tokenizer(b"female");
     female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
     female_path.extend(female_symbol);
-    let mut female_zipper = family_head.read_zipper_at_path(&female_path[..]);
+    let mut female_zipper = family_head.read_zipper_at_path(&female_path[..]).map_err(|_|concat!("failed to make `female_zipper` from `family_head` at line ", line!(), " in main"))?;
 
     let mut male_path = vec![item_byte(Tag::Arity(2))];
     let male_symbol = parser.tokenizer(b"male");
     male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
     male_path.extend(male_symbol);
 
-    let male_zipper = family_head.read_zipper_at_path(&male_path[..]);
+    let male_zipper = family_head.read_zipper_at_path(&male_path[..]).map_err(|_|concat!("failed to make `male_zipper` from `family_head` at line ", line!(), " in main"))?;
 
     let mut person_path = vec![item_byte(Tag::Arity(2))];
     let person_symbol = parser.tokenizer(b"person");
@@ -218,7 +219,7 @@ fn main() {
     drop(person_zipper);
 
     println!("creating extra index took (person) {} microseconds", t2.elapsed().as_micros());
-    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total now {}", family_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `family_head` at line ", line!(), " in main"))?.val_count());
 
     let t3 = Instant::now();
 
@@ -226,21 +227,24 @@ fn main() {
     let output_head = output.zipper_head();
     let mut parent_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&parent_query_out_path[..]) };
 
-    assert!(family_head.read_zipper_at_path(&person_path[..]).path_exists());
+    assert!(family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?.path_exists());
 
     parent_query_out_zipper.graft(&child_zipper);
     parent_query_out_zipper.reset();
-    assert!(parent_query_out_zipper.restrict(&family_head.read_zipper_at_path(&person_path[..])));
+    assert!(matches!(
+        parent_query_out_zipper.restrict(&family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?),
+        AlgebraicStatus::Element|AlgebraicStatus::Element 
+    ));
     drop(parent_query_out_zipper);
 
     println!("getting all parents took {} microseconds", t3.elapsed().as_micros());
-    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `output_head` at line ", line!(), " in main"))?.val_count());
 
     let t4 = Instant::now();
     let mother_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
     let mut mother_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&mother_query_out_path[..]) };
 
-    let mut person_rzipper = family_head.read_zipper_at_path(&person_path[..]);
+    let mut person_rzipper = family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?;
     let mut child_rzipper = child_zipper.fork_read_zipper();
     female_zipper.reset();
 
@@ -260,7 +264,7 @@ fn main() {
                 mother_query_out_zipper.reset();
                 mother_query_out_zipper.descend_to(person_rzipper.path());
                 mother_query_out_zipper.graft(&child_rzipper);
-                assert!(mother_query_out_zipper.meet(&female_zipper));
+                assert!(matches!(mother_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
             }
         }
     }
@@ -268,7 +272,7 @@ fn main() {
 
     println!("getting all mothers took {} microseconds", t4.elapsed().as_micros());
     // println!("j {_j}");
-    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `output_head` at line ", line!(), " in main"))?.val_count());
     // let C2 = counters::Counters::count_ocupancy(&output);
     // println!("previous tn count {}", C2.total_child_items() as f64/C2.total_nodes() as f64);
     // C2.print_histogram_by_depth();
@@ -292,9 +296,9 @@ fn main() {
                 sister_query_out_zipper.reset();
                 sister_query_out_zipper.descend_to(person_rzipper.path());
                 sister_query_out_zipper.graft(&parent_zipper);
-                assert!(sister_query_out_zipper.restrict(&child_rzipper));
+                assert!(matches!(sister_query_out_zipper.restrict(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
                 drop_symbol_head_2(&mut sister_query_out_zipper);
-                assert!(sister_query_out_zipper.meet(&female_zipper));
+                assert!(matches!(sister_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
                 if sister_query_out_zipper.descend_to(person_rzipper.path()) {
                     sister_query_out_zipper.remove_value();
                 }
@@ -305,7 +309,7 @@ fn main() {
 
     println!("getting all sisters took {} microseconds", t5.elapsed().as_micros());
     // println!("j {_j}");
-    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `output_head` at line ", line!(), " in main"))?.val_count());
 
     //         val parents = family(Concat("child", person))
     //         val grandparents = (family("child") <| parents).tail
@@ -330,12 +334,12 @@ fn main() {
                 aunt_query_out_zipper.reset();
                 aunt_query_out_zipper.descend_to(person_rzipper.path());
                 aunt_query_out_zipper.graft(&child_zipper);
-                assert!(aunt_query_out_zipper.restrict(&child_rzipper));
+                assert!(matches!(aunt_query_out_zipper.restrict(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
                 drop_symbol_head_2(&mut aunt_query_out_zipper);
                 if !aunt_query_out_zipper.restricting(&parent_zipper) { continue }
                 drop_symbol_head_2(&mut aunt_query_out_zipper);
-                assert!(aunt_query_out_zipper.subtract(&child_rzipper));
-                assert!(aunt_query_out_zipper.meet(&female_zipper));
+                assert!(matches!(aunt_query_out_zipper.subtract(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                assert!(matches!(aunt_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
             }
         }
     }
@@ -343,7 +347,7 @@ fn main() {
 
     println!("getting all aunts took {} microseconds", t6.elapsed().as_micros());
     // println!("j {_j}");
-    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).val_count());
+    println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `output_head` at line ", line!(), " in main"))?.val_count());
 
     /*
     iter-optimization (interning, all-dense-nodes)
@@ -495,4 +499,6 @@ fn main() {
     //         }
     //     }
     // }
+
+    Ok(())
 }

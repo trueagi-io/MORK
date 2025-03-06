@@ -5,7 +5,7 @@ use mork_bytestring::*;
 use mork_bytestring::Tag::{Arity, SymbolSize};
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipperUntracked, WriteZipper};
+use pathmap::zipper::{ReadZipperUntracked, Zipper, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 
 
@@ -116,8 +116,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
 
             while let Some(b) = it.next() {
                 if let Tag::SymbolSize(s) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
+                    if loc.descend_to_byte(b) {
                         let last = stack.pop().unwrap();
                         stack.push(s);
                         stack.push(last);

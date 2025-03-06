@@ -1,7 +1,8 @@
 use std::io::Read;
 use std::time::Instant;
+use std::usize;
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, WriteZipper};
+use pathmap::zipper::{Zipper, ZipperMoving, ZipperWriting, ZipperCreation};
 use num::BigInt;
 
 
@@ -41,7 +42,7 @@ impl <'a> Iterator for CfIter<'a> {
     }
 }
 
-fn drop_symbol_head_byte<Z: WriteZipper<usize>>(loc: &mut Z) {
+fn drop_symbol_head_byte<Z: ZipperWriting<usize> + Zipper<usize> + ZipperMoving>(loc: &mut Z) {
     let m = loc.child_mask();
     let mut it = CfIter::new(&m);
 
@@ -113,7 +114,7 @@ fn main() {
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
         buildz.descend_to(&s[..]);
-        match buildz.get_value() {
+        match buildz.value() {
             None => { buildz.set_value(i); }
             Some(_v) => { /* keep the smallest integer sequence */ }
         }
@@ -130,7 +131,7 @@ fn main() {
         let t1 = Instant::now();
         let mut z1 = unsafe{ map_head.write_zipper_at_exclusive_path_unchecked(k) };
 
-        z1.graft(&map_head.read_zipper_at_path(&[i - 1]));
+        z1.graft(&map_head.read_zipper_at_path(&[i - 1]).unwrap());
         drop_symbol_head_byte(&mut z1);
 
         println!("drophead {i} took {} ms", t1.elapsed().as_millis());

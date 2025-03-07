@@ -2,7 +2,6 @@ use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Parser, Context, ParserError};
-use pathmap::ring::AlgebraicStatus;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
 
@@ -80,7 +79,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head_2<Z: ZipperWriting<()> + pathmap::zipper::Zipper<()> + pathmap::zipper::ZipperMoving>(loc: &mut Z) {
+fn drop_symbol_head_2<Z: Zipper<()> + ZipperMoving + ZipperWriting<()>>(loc: &mut Z) {
     let m = mask_and(loc.child_mask(), unsafe { SIZES });
     let mut it = CfIter::new(&m);
 
@@ -109,6 +108,7 @@ fn main() -> Result<(),&'static str> {
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/toy.metta")
     // let mut file = std::fs::File::open("/home/adam/Projects/metta-examples/aunt-kg/royal92_simple.metta")
     let mut file = std::fs::File::open("/Users/admin/Desktop/royal92_simple.metta")
+    // let mut file = std::fs::File::open("/Users/admin/Desktop/royal92_chopped.metta")
         .expect("Should have been able to read the file");
     let mut buf = vec![];
     file.read_to_end(&mut buf).unwrap();
@@ -152,7 +152,7 @@ fn main() -> Result<(),&'static str> {
     child_path.extend(child_symbol);
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
 
-    let mut child_zipper = unsafe{ family_head.write_zipper_at_exclusive_path_unchecked(&child_path[..]) };
+    let mut child_zipper = family_head.write_zipper_at_exclusive_path(&child_path[..]).map_err(|_|concat!("failed to make child zipper at", line!(), "in main"))?;
 
     let mut patternv = vec![item_byte(Tag::Arity(3))];
     patternv.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
@@ -231,10 +231,7 @@ fn main() -> Result<(),&'static str> {
 
     parent_query_out_zipper.graft(&child_zipper);
     parent_query_out_zipper.reset();
-    assert!(matches!(
-        parent_query_out_zipper.restrict(&family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?),
-        AlgebraicStatus::Element|AlgebraicStatus::Element 
-    ));
+    parent_query_out_zipper.restrict(&family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?);
     drop(parent_query_out_zipper);
 
     println!("getting all parents took {} microseconds", t3.elapsed().as_micros());
@@ -264,7 +261,7 @@ fn main() -> Result<(),&'static str> {
                 mother_query_out_zipper.reset();
                 mother_query_out_zipper.descend_to(person_rzipper.path());
                 mother_query_out_zipper.graft(&child_rzipper);
-                assert!(matches!(mother_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                mother_query_out_zipper.meet(&female_zipper);
             }
         }
     }
@@ -296,9 +293,9 @@ fn main() -> Result<(),&'static str> {
                 sister_query_out_zipper.reset();
                 sister_query_out_zipper.descend_to(person_rzipper.path());
                 sister_query_out_zipper.graft(&parent_zipper);
-                assert!(matches!(sister_query_out_zipper.restrict(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                sister_query_out_zipper.restrict(&child_rzipper);
                 drop_symbol_head_2(&mut sister_query_out_zipper);
-                assert!(matches!(sister_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                sister_query_out_zipper.meet(&female_zipper);
                 if sister_query_out_zipper.descend_to(person_rzipper.path()) {
                     sister_query_out_zipper.remove_value();
                 }
@@ -334,12 +331,12 @@ fn main() -> Result<(),&'static str> {
                 aunt_query_out_zipper.reset();
                 aunt_query_out_zipper.descend_to(person_rzipper.path());
                 aunt_query_out_zipper.graft(&child_zipper);
-                assert!(matches!(aunt_query_out_zipper.restrict(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                aunt_query_out_zipper.restrict(&child_rzipper);
                 drop_symbol_head_2(&mut aunt_query_out_zipper);
                 if !aunt_query_out_zipper.restricting(&parent_zipper) { continue }
                 drop_symbol_head_2(&mut aunt_query_out_zipper);
-                assert!(matches!(aunt_query_out_zipper.subtract(&child_rzipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
-                assert!(matches!(aunt_query_out_zipper.meet(&female_zipper), AlgebraicStatus::Element|AlgebraicStatus::Identity));
+                aunt_query_out_zipper.subtract(&child_rzipper);
+                aunt_query_out_zipper.meet(&female_zipper);
             }
         }
     }

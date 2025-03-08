@@ -59,16 +59,19 @@ impl SharedMapping {
 
   /// This is unsafe because this could be done inside a stack frame, whick makes safety guarantees more difficult.
   /// This has been made public for use in initializing a static.
-  pub unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
+  pub const unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
     let inner = (*uninit).as_mut_ptr();
     unsafe {
       (*inner).count = AtomicU64::new(1);
       (*inner).flags = AtomicU64::new(init_flags);
 
-      for each in 0..=MAX_WRITER_THREAD_INDEX {
-        (&raw mut (*inner).permissions[each]).write(AlignCache(ThreadPermission::init(each as u8)));
-        (&raw mut (*inner).to_symbol[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
-        (&raw mut (*inner).to_bytes[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+      let mut i = 0;
+      while i <= MAX_WRITER_THREAD_INDEX {
+        (&raw mut (*inner).permissions[i]).write(AlignCache(ThreadPermission::init(i as u8)));
+        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+
+        i+=1;
       }
       SharedMappingHandle( core::ptr::NonNull::new_unchecked(inner) )
     }
@@ -143,7 +146,7 @@ struct ThreadPermission{
 
 
 impl ThreadPermission {
-  fn init(index : u8) -> ThreadPermission {
+  const fn init(index : u8) -> ThreadPermission {
     core::debug_assert!(index < 0b_1000_0000, "The top bit of a symbol must be kept off.");
     let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS*3 /* leave the top two bytes free for encoding in the pathmap the type/len, the third byte has the map index, the last 5 bytes leave the possibility for 2^40 symbols */)};
     ThreadPermission {

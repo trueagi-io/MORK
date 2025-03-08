@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::WriteZipper;
+// use pathmap::zipper::WriteZipper;
 use bstr::ByteSlice;
 use naive_map;
 
@@ -340,7 +340,7 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
 }
 
 fn main() {
-    let filepath = "/run/media/adam/2c0662f2-6bf7-4afb-8c8b-a9e645f31bc6/bmkg/ckg_v3/results/kg_properties_aggregated.metta";
+    let filepath = "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3/kg_properties_aggregated.metta";
     let mut file = std::fs::File::open(filepath)
         .expect("Should have been able to read the file");
     let slice = unsafe { memmap2::Mmap::map(&file).unwrap() };

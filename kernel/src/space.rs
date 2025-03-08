@@ -1,24 +1,50 @@
-use std::fmt::format;
-use std::hint::black_box;
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::time::Instant;
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
-use mork_bytestring::Tag::{Arity, SymbolSize};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration};
+use pathmap::zipper::{ReadZipperUntracked, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperWriting};
 
 
 pub struct Space {
     pub(crate) btm: BytesTrieMap<()>,
-    sm: SharedMappingHandle
+    pub(crate) sm: SharedMappingHandle
 }
 
-static mut SIZES: [u64; 4] = [0u64; 4];
-static mut ARITIES: [u64; 4] = [0u64; 4];
-static mut VARS: [u64; 4] = [0u64; 4];
+const SIZES: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let mut size = 1;
+    while size < 64 {
+        let k = item_byte(Tag::SymbolSize(size));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        size += 1;
+    }
+    ret
+};
+const ARITIES: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let mut arity = 1;
+    while arity < 64 {
+        let k = item_byte(Tag::Arity(arity));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        arity += 1;
+    }
+    ret
+};
+const VARS: [u64; 4] = {
+    let mut ret = [0u64; 4];
+    let nv_byte = item_byte(Tag::NewVar);
+    ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
+    let mut size = 1;
+    while size < 64 {
+        let k = item_byte(Tag::VarRef(size));
+        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
+        size += 1;
+    }
+    ret
+};
 
 struct CfIter<'a> {
     i: u8,
@@ -58,23 +84,6 @@ impl <'a> Iterator for CfIter<'a> {
 
 fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
-pub fn setup() {
-    for size in 1..64 {
-        let k = item_byte(Tag::SymbolSize(size));
-        unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
-    for arity in 1..64 {
-        let k = item_byte(Tag::Arity(arity));
-        unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
-    let nv_byte = item_byte(Tag::NewVar);
-    unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
-    for size in 1..64 {
-        let k = item_byte(Tag::VarRef(size));
-        unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
-    }
 }
 
 const ITER_AT_DEPTH: u8 = 0;
@@ -133,7 +142,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), unsafe { SIZES });
+            let m = mask_and(loc.child_mask(), SIZES);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
@@ -162,7 +171,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), unsafe { VARS });
+            let m = mask_and(loc.child_mask(), VARS);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
@@ -174,13 +183,12 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+            let m = mask_and(loc.child_mask(), ARITIES);
             let mut it = CfIter::new(&m);
 
             while let Some(b) = it.next() {
                 if let Tag::Arity(a) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
+                    if loc.descend_to_byte(b) {
                         let last = stack.pop().unwrap();
                         stack.push(a);
                         stack.push(last);
@@ -214,7 +222,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             let size = stack.pop().unwrap();
             let mut v = vec![];
             for _ in 0..size { v.push(stack.pop().unwrap()) }
-            loc.descend_to(&[item_byte(SymbolSize(size))]);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
             transition(stack, loc, f);
             loc.ascend(size as usize);
@@ -223,35 +231,45 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(size)
         }
         ITER_VAR_SYMBOL => {
+            let size = stack.pop().unwrap();
+            let mut v = vec![];
+            for _ in 0..size { v.push(stack.pop().unwrap()) }
+
             stack.push(ITER_VARIABLES);
             transition(stack, loc, f);
             stack.pop();
 
-            stack.push(ITER_SYMBOL);
+            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
+            loc.descend_to(&v[..]);
             transition(stack, loc, f);
-            stack.pop();
+            loc.ascend(size as usize);
+            loc.ascend(1);
+            for _ in 0..size { stack.push(v.pop().unwrap()) }
+            stack.push(size)
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
-            loc.descend_to(&[item_byte(Arity(arity))]);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
         }
         ITER_VAR_ARITY => {
+            let arity = stack.pop().unwrap();
+
             stack.push(ITER_VARIABLES);
             transition(stack, loc, f);
             stack.pop();
 
-            stack.push(ITER_ARITY);
+            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
             transition(stack, loc, f);
-            stack.pop();
+            loc.ascend(1);
+            stack.push(arity);
         }
         _ => { unreachable!() }
     }
     stack.push(last);
 }
-
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     let mut v = vec![];
@@ -278,7 +296,7 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     }
 }
 
-struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: WritePermit<'a> }
+pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: WritePermit<'a> }
 
 impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
@@ -290,13 +308,44 @@ impl <'a> Parser for ParDataParser<'a> {
 }
 
 impl <'a> ParDataParser<'a> {
-    fn new(handle: &'a SharedMappingHandle) -> Self {
+    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
         Self {
             count: 3,
             buf: (3u64).to_be_bytes(),
             write_permit: handle.try_aquire_permission().unwrap()
         }
     }
+}
+
+#[macro_export]
+macro_rules! expr {
+    ($space:ident, $s:literal) => {{
+        let mut src = parse!($s);
+        let q = Expr{ ptr: src.as_mut_ptr() };
+        let mut pdp = ParDataParser::new(&$space.sm);
+        let mut buf = [0u8; 2048];
+        let p = Expr{ ptr: buf.as_mut_ptr() };
+        let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
+        unsafe {
+            let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
+            std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
+            Expr{ ptr: b }
+        }
+    }};
+}
+
+#[macro_export]
+macro_rules! sexpr {
+    ($space:ident, $e:expr) => {{
+        let mut v = vec![];
+        $e.serialize(&mut v, |s| {
+            let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+            let mstr = $space.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+            // println!("symbol {symbol:?}, bytes {mstr:?}");
+            unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+        });
+        String::from_utf8(v).unwrap()
+    }};
 }
 
 impl Space {
@@ -403,16 +452,14 @@ impl Space {
         let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(&self.sm);
         loop {
-            unsafe {
-                let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-                match parser.sexpr(&mut it, &mut ez) {
-                    Ok(()) => { self.btm.insert(&stack[..ez.loc], ()); }
-                    Err(ParserError::InputFinished) => { break }
-                    Err(other) => { panic!("{:?}", other) }
-                }
-                i += 1;
-                it.variables.clear();
+            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+            match parser.sexpr(&mut it, &mut ez) {
+                Ok(()) => { self.btm.insert(&stack[..ez.loc], ()); }
+                Err(ParserError::InputFinished) => { break }
+                Err(other) => { panic!("{:?}", other) }
             }
+            i += 1;
+            it.variables.clear();
         }
         println!("loading took {} ms", t0.elapsed().as_millis());
         Ok(i)
@@ -432,7 +479,7 @@ impl Space {
                     e.serialize(w, |s| {
                         let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                         let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                        println!("symbol {symbol:?}, bytes {mstr:?}");
+                        // println!("symbol {symbol:?}, bytes {mstr:?}");
                         unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                     });
                     w.write(&[b'\n']).map_err(|x| x.to_string())?;
@@ -475,7 +522,8 @@ impl Space {
             match e.transformData(pattern, template, &mut oz) {
                 Ok(()) => {
                     // todo (here and below) descend to dynamic path and reset/ascend to static prefix
-                    wz.descend_to(unsafe { &*oz.finish_span() });
+                    // println!("{}", sexpr!(self, oz.root));
+                    wz.descend_to(&buffer[..oz.loc]);
                     wz.set_value(());
                     wz.reset()
                 }

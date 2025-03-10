@@ -11,6 +11,7 @@ pub use handle::*;
 mod symbol_backing;
 use symbol_backing::*;
 
+pub mod serialization;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
@@ -19,33 +20,33 @@ const U64_BYTES : usize = u64::BITS as usize / 8;
 type Symbol = [u8;SYM_LEN];
 const SYM_LEN : usize = 8;
 
-/// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
+/// it's important that the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
 const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
 const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
 
 /// We don't want locks to implicitly cause chache misses because they are too close together.
 #[repr(align(64 /* bytes; cache line */))]
-struct AlignCache<T>(T);
-type AlignArray<T> = [AlignCache<T>; MAX_WRITER_THREAD_INDEX+1];
+pub(crate) struct AlignCache<T>(pub(crate) T);
+type AlignArray<T> = [AlignCache<T>; MAX_WRITER_THREADS];
 
 
 #[repr(u64)]
 enum SharedMappingFlags {
   KeepSlabsAlive = 1 << 0,
-  HeapAlocated   = 1 << 1,
+  HeapAllocated   = 1 << 1,
 }
-const PEARSON_BOUND : usize = 8;
+pub(crate) const PEARSON_BOUND : usize = 8;
 
 /// The [`SharedMapping`] is the datatype that holds buckets to split the maps that hold the symbols to reduce contention bewteen multiple threads.
 /// There can be a maximum of 128 threads that can write.
 
 pub struct SharedMapping {
-  pub(crate) count            : AtomicU64,
-  pub(crate) flags            : AtomicU64,
-  pub(crate) permissions      : AlignArray<ThreadPermission>,
-  pub(crate) to_symbol        : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
+  pub(crate) count             : AtomicU64,
+  pub(crate) flags             : AtomicU64,
+  pub(crate) permissions       : AlignArray<ThreadPermission>,
+  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
   /// the path is a Symbol as __big endian bytes__.
-  pub(crate) to_bytes         : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
+  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
 }
 
 impl SharedMapping {
@@ -53,11 +54,11 @@ impl SharedMapping {
   pub fn new()->SharedMappingHandle {
     unsafe {
       let ptr = alloc::alloc::alloc(alloc::alloc::Layout::new::<MaybeUninit<SharedMapping>>()) as *mut MaybeUninit<SharedMapping>;
-      SharedMapping::init(ptr, SharedMappingFlags::HeapAlocated as u64)
+      SharedMapping::init(ptr, SharedMappingFlags::HeapAllocated as u64)
     }
   }
 
-  /// This is unsafe because this could be done inside a stack frame, whick makes safety guarantees more difficult.
+  /// This is unsafe because this could be done inside a stack frame, which makes safety guarantees more difficult.
   /// This has been made public for use in initializing a static.
   pub const unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
     let inner = (*uninit).as_mut_ptr();
@@ -131,17 +132,17 @@ impl core::ops::Drop for SharedMapping {
 
 /// Represents the data that a thread can access after aquiring a [`WritePermit`], a thread can only have access to one permit.
 /// each Thread permit has an index built into the top byte of it's `next_symbol` field.
-struct ThreadPermission{
+pub(crate) struct ThreadPermission{
   // flags : AtomicU64,
   /// [`std::thread::ThreadId`] holds an [`std::num::NonZeroU64`]. this Atomic represents an `Option<std::num::NonZeroU64>` where `Option::None == 0`
-  thread_id : AtomicU64, 
+  pub(crate) thread_id : AtomicU64, 
   /// the leading byte represents the "thread number"
   /// the rest represents the symbol count
-  next_symbol : AtomicU64,
+  pub(crate) next_symbol : AtomicU64,
   /// this value should be null if a symbol table is not initialized
-  symbol_table_start   : std::sync::atomic::AtomicPtr<Slab>,
+  pub(crate) symbol_table_start   : std::sync::atomic::AtomicPtr<Slab>,
   /// this value should be null if a symbol table is not initialized
-  symbol_table_last : std::sync::atomic::AtomicPtr<Slab>,
+  pub(crate) symbol_table_last : std::sync::atomic::AtomicPtr<Slab>,
 }
 
 

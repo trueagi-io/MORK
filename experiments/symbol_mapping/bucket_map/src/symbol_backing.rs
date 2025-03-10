@@ -13,7 +13,8 @@ impl Slab {
   pub(crate) unsafe fn allocate(bytes : u64)-> *mut Slab {
     let slab_size = (bytes as usize + core::mem::size_of::<Slab>()).max(4096);
     let layout = alloc::alloc::Layout::array::<core::cell::UnsafeCell<u8>>(slab_size).unwrap().align_to(4096).expect("Cannot be aligned");
-    let allocation = alloc::alloc::alloc(layout);
+    // for serialization we want the tail to be zeroed so that it compresses well
+    let allocation = alloc::alloc::alloc_zeroed(layout);
     
     let out = allocation as *mut Slab;
     *out = Slab {
@@ -23,6 +24,9 @@ impl Slab {
       slab_data : allocation.add(core::mem::size_of::<Slab>())
     };
     out
+  }
+  pub(crate) fn total_slab_size(&self) -> usize {
+    self.slab_len + core::mem::size_of::<Slab>()
   }
   
   pub(crate) unsafe fn free(mut slab : *mut Self) {
@@ -54,7 +58,12 @@ impl Slab {
         head.write(!(len as u8));
         1
       } else { 
-        (head as *mut u64).write_unaligned(len as u64);
+        // new version for serialization
+        (head as *mut [u8;8]).write_unaligned((len as u64).to_be_bytes());
+
+        // // old version
+        // (head as *mut u64).write_unaligned(len as u64);
+
         U64_BYTES
       };
       let data_ptr = head.byte_add(offset);
@@ -83,7 +92,11 @@ impl ThinBytes {
       let (ptr, len) = if (1<<u8::BITS-1) & tag != 0 {
         (self.0.byte_add(1),(!tag) as usize)
       } else {
-        (self.0.byte_add(U64_BYTES), (self.0 as *const u64).read_unaligned() as usize)
+        // new version for serialization
+        (self.0.byte_add(U64_BYTES), u64::from_be_bytes((self.0 as *const [u8;8]).read_unaligned()) as usize)
+
+        // // old version
+        // (self.0.byte_add(U64_BYTES), (self.0 as *const u64).read_unaligned() as usize)
       };
 
       core::slice::from_raw_parts(ptr, len)

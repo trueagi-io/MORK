@@ -521,7 +521,7 @@ impl Expr {
         }
     }
 
-    pub fn unification(self, other: Expr) -> Result<Expr, ExtractFailure> {
+    pub fn unification(self, other: Expr, o: Expr) -> Result<Expr, ExtractFailure> {
         // [2][2] $ a [2] _1  a  unification
         // [2][2] b $ [2]  b _1
         //  ^ Arity-Arity, eq
@@ -559,9 +559,6 @@ impl Expr {
 
         let mut ez = ExprZipper::new(self);
         let mut iz = ExprZipper::new(other);
-        let mut resv = vec![0; 512];
-        let mut o = Expr{ ptr: resv.as_mut_ptr() };
-        mem::forget(resv);
         let mut oz = ExprZipper::new(o);
         let mut nvi = 0;
         loop {
@@ -587,7 +584,7 @@ impl Expr {
                     unsafe {
                         println!("  other  {:?}", serialize(&*self.span()));
                     }
-                    return self.unification(other)
+                    return self.unification(other, o)
                 }
                 (lhs, Ok(Tag::NewVar)) => {
                     println!("lhs-$");
@@ -598,7 +595,7 @@ impl Expr {
                     println!("  osubs {:?} / _{}", ez.subexpr(), nvi+1);
                     other.substitute_one_de_bruijn_future(nvi as u8, ez.subexpr(), &mut oz);
                     println!("  after {:?}", serialize(oz.span()));
-                    return self.unification(o);
+                    return self.unification(o, other)
                 }
                 (Ok(Tag::NewVar), Ok(Tag::VarRef(r2))) => {
                     println!("$-_{}", r2+1);
@@ -612,7 +609,7 @@ impl Expr {
                         println!("  self  {:?}", serialize(&*self.span()));
                         println!("  other {:?}", serialize(&*other.span()));
                     }
-                    return self.unification(other)
+                    return self.unification(other, o)
                 }
                 (Ok(Tag::NewVar), rhs) => {
                     println!("$-rhs");
@@ -623,7 +620,7 @@ impl Expr {
                     println!("  ssubs {:?} / _{}", iz.subexpr(), nvi+1);
                     self.substitute_one_de_bruijn_future(nvi as u8, iz.subexpr(), &mut oz);
                     println!("  after {:?}", serialize(oz.span()));
-                    return o.unification(other);
+                    return o.unification(other, self);
                 }
                 (Ok(Tag::VarRef(r1)), Ok(Tag::VarRef(r2))) => {
                     if r1 != r2 {
@@ -645,7 +642,7 @@ impl Expr {
                             println!("  self  {:?}", serialize(&*self.span()));
                             println!("  other {:?}", serialize(&*other.span()));
                         }
-                        return self.unification(other)
+                        return self.unification(other, o)
                     }
                     let enext = ez.next(); let inext = iz.next();
                     assert_eq!(enext, inext);
@@ -664,7 +661,7 @@ impl Expr {
                     let mut es = unsafe { ez.subexpr().span().as_ref().unwrap().to_vec() };
                     other.substitute_one_de_bruijn_future(r, Expr{ ptr: es.as_mut_ptr() }, &mut oz);
                     println!("  after {:?}", serialize(oz.span()));
-                    return self.unification(o);
+                    return self.unification(o, other);
                 }
                 (Ok(Tag::VarRef(r)), _) => {
                     println!("_{}-rhs", r+1);
@@ -676,7 +673,7 @@ impl Expr {
                     let mut is = unsafe { iz.subexpr().span().as_ref().unwrap().to_vec() };
                     self.substitute_one_de_bruijn_future(r, Expr{ ptr: is.as_mut_ptr() }, &mut oz);
                     println!("  after {:?}", serialize(oz.span()));
-                    return other.unification(o);
+                    return other.unification(o, self);
                 }
                 (Err(aslice), Err(bslice)) => {
                     if aslice != bslice { return Err(SymbolMismatch(aslice.to_vec(), bslice.to_vec())) }
@@ -715,12 +712,15 @@ impl Expr {
         let mut transformation = vec![item_byte(Tag::Arity(2))];
         transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
+        transformation.reserve(512);
         let mut data = vec![item_byte(Tag::Arity(2))];
         data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
         data.push(item_byte(Tag::NewVar));
         println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
         println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
-        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() })?;
+        data.reserve(512);
+        let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
+        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
         let mut rz = ExprZipper::new(res);
         rz.next_child(); rz.next_child();
         rz.subexpr().unbind(&mut ExprZipper::new(rz.subexpr()));
@@ -739,7 +739,8 @@ impl Expr {
         }
         println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
         println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
-        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() })?;
+        let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
+        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
         Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
     }
 

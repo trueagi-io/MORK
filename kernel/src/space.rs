@@ -1,11 +1,12 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
+use std::fs::File;
 use std::time::Instant;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{ReadZipperUntracked, WriteZipper, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration};
+use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting};
 
 
 pub struct Space {
@@ -37,7 +38,7 @@ const VARS: [u64; 4] = {
     let mut ret = [0u64; 4];
     let nv_byte = item_byte(Tag::NewVar);
     ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
-    let mut size = 1;
+    let mut size = 0;
     while size < 64 {
         let k = item_byte(Tag::VarRef(size));
         ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
@@ -163,7 +164,12 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
-            all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
+            if loc.descend_first_k_path(size as usize) {
+                transition(stack, loc, f);
+                while loc.to_next_k_path(size as usize) {
+                    transition(stack, loc, f);
+                }
+            }
             stack.push(size);
         }
         ITER_NESTED => {
@@ -351,6 +357,59 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
+pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipperUntracked<'a, 'b, ()>, pdp: ParDataParser<'a> }
+impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
+    #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
+        let token = self.pdp.tokenizer(s.into().as_bytes());
+        let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
+        path.extend(token);
+        self.wz.descend_to(&path[..]);
+        self.wz.set_value(());
+        self.wz.ascend(path.len());
+    }
+}
+impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
+    #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+        if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+        let token = self.pdp.tokenizer(i.to_string().as_bytes());
+        self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+        self.wz.descend_to(token);
+    }
+    #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+        self.wz.ascend(self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1);
+        if last { self.wz.ascend(1); }
+    }
+    #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
+    #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+        if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+        let token = self.pdp.tokenizer(k.to_string().as_bytes());
+        // let token = k.to_string();
+        self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+        self.wz.descend_to(token);
+    }
+    #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+        let token = self.pdp.tokenizer(k.to_string().as_bytes());
+        // let token = k.to_string();
+        self.wz.ascend(token.len() + 1);
+        if last { self.wz.ascend(1); }
+    }
+    #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
+    #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
+    #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
+        let mut s = String::new();
+        if negative { s.push('-'); }
+        s.push_str(mantissa.to_string().as_str());
+        if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
+        self.write(s);
+        self.count += 1;
+    }
+    #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
+    #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
+    #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
+    #[inline(always)] fn begin(&mut self) -> () {}
+    #[inline(always)] fn end(&mut self) -> () {}
+}
+
 #[macro_export]
 macro_rules! expr {
     ($space:ident, $s:literal) => {{
@@ -387,6 +446,10 @@ impl Space {
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
     }
 
+    pub fn statistics(&self) {
+        println!("val count {}", self.btm.val_count());
+    }
+
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
@@ -418,65 +481,56 @@ impl Space {
     }
 
     pub fn load_json(&mut self, r: &[u8]) -> Result<usize, String> {
-        pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipperUntracked<'a, 'b, ()>, pdp: ParDataParser<'a> }
-        impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
-            #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
-                let token = self.pdp.tokenizer(s.into().as_bytes());
-                let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
-                path.extend(token);
-                self.wz.descend_to(&path[..]);
-                self.wz.set_value(());
-                self.wz.ascend(path.len());
-            }
-        }
-        impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
-            #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
-                if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
-                let token = self.pdp.tokenizer(i.to_string().as_bytes());
-                self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
-                self.wz.descend_to(token);
-            }
-            #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
-                self.wz.ascend(self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1);
-                if last { self.wz.ascend(1); }
-            }
-            #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
-            #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
-                if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
-                let token = self.pdp.tokenizer(k.to_string().as_bytes());
-                // let token = k.to_string();
-                self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
-                self.wz.descend_to(token);
-            }
-            #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
-                let token = self.pdp.tokenizer(k.to_string().as_bytes());
-                // let token = k.to_string();
-                self.wz.ascend(token.len() + 1);
-                if last { self.wz.ascend(1); }
-            }
-            #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
-            #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
-            #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
-                let mut s = String::new();
-                if negative { s.push('-'); }
-                s.push_str(mantissa.to_string().as_str());
-                if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
-                self.write(s);
-                self.count += 1;
-            }
-            #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
-            #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
-            #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
-            #[inline(always)] fn begin(&mut self) -> () {}
-            #[inline(always)] fn end(&mut self) -> () {}
-        }
-
         let mut wz = self.write_zipper_unchecked();
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
         let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         p.parse(&mut st).unwrap();
         Ok(st.count)
     }
+
+/*    pub fn load_neo4j(&mut self, uri: &str, user: &str, pass: &str) -> Result<usize, String> {
+        use neo4rs::*;
+        let graph = Graph::new(uri, user, pass).unwrap();
+        // static mut space: Space = Space::new();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+          .enable_io()
+          // .unhandled_panic(tokio::runtime::UnhandledPanic::Ignore)
+          .build()
+          .unwrap();
+        // let mut pdp = ParDataParser::new(&space.sm);
+
+            // let mut handles = Vec::new();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let mut result = rt.block_on(graph
+                                       // .execute(query("MATCH (s)-[p]->(o) RETURN {sid: id(s), pid: id(p), oid: id(o)} LIMIT 100")) // LIMIT 1000000
+                                       .execute(query("MATCH (s)-[p]->(o) RETURN id(s), id(p), id(o)")) // LIMIT 1000000
+        ).unwrap();
+        while let Ok(Some(row)) = rt.block_on(result.next()) {
+            let s: i64 = row.get("id(s)").unwrap();
+            let p: i64 = row.get("id(p)").unwrap();
+            let o: i64 = row.get("id(o)").unwrap();
+            // std::hint::black_box((s, p, o));
+            let mut buf = [0u8; 24];
+            // let e = Expr{ ptr: buf.as_mut_ptr() };
+            // let mut ez = ExprZipper::new(e);
+            // ez.loc += 1;
+            // {
+            //     let internal = pdp.tokenizer();
+            //     ez.write_symbol(&internal[..]);
+            //     ez.loc += internal.len() + 1;
+            // }
+
+            buf[0..8].copy_from_slice(&s.to_be_bytes());
+            buf[8..16].copy_from_slice(&p.to_be_bytes());
+            buf[16..24].copy_from_slice(&o.to_be_bytes());
+            // space.
+            unsafe { self.btm.insert(&buf, ()); }
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(count.load(std::sync::atomic::Ordering::Relaxed) as usize)
+    }*/
 
     pub fn load(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut it = Context::new(r);
@@ -525,6 +579,32 @@ impl Space {
         Ok(i)
     }
 
+    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) {
+        pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
+                                           |v, b| pathmap::serialization::ValueSlice::Read(&[]),
+                                           path.as_ref());
+    }
+
+    pub fn restore(&mut self, path: impl AsRef<std::path::Path>) {
+        let mut path_buf = path.as_ref().to_path_buf();
+        path_buf.push("zero_compressed_hex.data");
+        self.btm = pathmap::serialization::deserialize_file(path_buf, |_| ()).unwrap();
+    }
+
+    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) {
+        let mut path_buf = path.as_ref().to_path_buf();
+        path_buf.push("space.paths.gz");
+        let mut file = File::create(path_buf).unwrap();
+        pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file);
+    }
+
+    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) {
+        let mut path_buf = path.as_ref().to_path_buf();
+        path_buf.push("space.paths.gz");
+        let mut file = File::open(path_buf).unwrap();
+        pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ());
+    }
+
     pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
         let mut rz = self.btm.read_zipper();
         let mut pz = ExprZipper::new(pattern);
@@ -563,13 +643,16 @@ impl Space {
                 }
                 Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
                     // upgrade to full unification
+                    // println!("full unification");
                     match e.transform(pattern, template) {
                         Ok(e) => {
                             wz.descend_to(unsafe { &*e.span() });
                             wz.set_value(());
                             wz.reset()
                         }
-                        _ => {}
+                        _ => {
+
+                        }
                     }
                 }
                 _ => {}

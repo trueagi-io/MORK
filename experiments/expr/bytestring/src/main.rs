@@ -1040,7 +1040,7 @@ fn unification() {
                             item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::SymbolSize(1)), b'a',
                             item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::SymbolSize(1)), b'a'];
         let r = Expr{ ptr: rv.as_mut_ptr() };
-        match lhs.unification(rhs) {
+        match lhs.unification(rhs, Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
             Err(e) => { panic!("{:?}", e); }
         }
@@ -1064,7 +1064,7 @@ fn unification() {
                           item_byte(Tag::SymbolSize(1)), b'a',
                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::VarRef(0))];
         let r = Expr{ ptr: rv.as_mut_ptr() };
-        match lhs.unification(rhs) {
+        match lhs.unification(rhs, Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
             Err(e) => { panic!("{:?}", e); }
         }
@@ -1087,7 +1087,7 @@ fn unification() {
         let mut rv = parse!("[5] $ _1 _1 _1 A");
         let r = Expr{ ptr: rv.as_mut_ptr() };
 
-        match lhs.unification(rhs) {
+        match lhs.unification(rhs, Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
             Err(e) => { panic!("{:?}", e); }
         }
@@ -1104,17 +1104,58 @@ fn unification() {
         let mut rv = parse!("[2] [2] flip [3] = $ [3] T _1 [4] a _1 $ _1 [2] axiom [3] = [3] T _1 [4] a _1 _2 _1 _1");
         let r = Expr{ ptr: rv.as_mut_ptr() };
 
-        match lhs.unification(rhs) {
+        let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
+        match lhs.unification(rhs, o) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
-            Err(e) => { panic!("{:?}", e); }
+            Err(e) => {
+                println!("lhs  {:?}", lhs);
+                println!("rhs  {:?}", rhs);
+                println!("out  {:?}", o);
+                panic!("{:?}", e); }
         }
     }
 }
 
+use freeze::{LiquidVecRef, BumpAllocRef};
+pub struct AExpr<'a> {
+    buf: LiquidVecRef<'a>
+}
+
+impl <'a> AExpr<'a> {
+    pub fn new(a: &BumpAllocRef, e: impl AsRef<[u8]>) -> AExpr {
+        a.top().extend_from_slice(e.as_ref());
+        AExpr { buf: a.top() }
+    }
+
+    pub fn used(mut self) -> Expr {
+        Expr { ptr: self.buf.as_mut_ptr() }
+    }
+}
+
+impl <'a> Drop for AExpr<'a>  {
+    fn drop(&mut self) {
+        self.buf.set_len(0)
+    }
+}
+
+pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
+        where Bytes : AsRef<[u8]>, Body : Fn(fn(Bytes) -> Expr) -> () {
+    let allocf = |bs: Bytes| {
+        alloc.top().extend_from_slice(bs.as_ref());
+        Expr { ptr: alloc.top().as_mut_ptr() }
+    };
+    body(allocf);
+    alloc.top().set_len(0)
+}
+
 #[test]
 fn transform() {
-    {
-        let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
+    let mut buf0 = BumpAllocRef::new();
+    let mut buf1 = BumpAllocRef::new();
+    let mut buf2 = BumpAllocRef::new();
+    with_buffer(&mut buf0, |alloc| {
+        let src = alloc(parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"));
+        // let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
         let mut patv = parse!("[2] axiom [3] = _2 _1"); let pat = Expr{ ptr: patv.as_mut_ptr() };
         let mut templv = parse!("[2] flip [3] = $ $"); let templ = Expr{ ptr: templv.as_mut_ptr() };
 
@@ -1124,7 +1165,7 @@ fn transform() {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
             Err(e) => { panic!("{:?}", e); }
         }
-    }
+    });
     {
         let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
         let mut patv = parse!("[2] axiom [3] = $ $"); let pat = Expr{ ptr: patv.as_mut_ptr() };

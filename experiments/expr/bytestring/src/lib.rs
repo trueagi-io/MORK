@@ -1,8 +1,8 @@
 use std::fmt::{Debug, format, Formatter, Write};
-use std::{mem, ops};
+use std::{mem, ops, ptr};
 use std::ops::ControlFlow;
 use smallvec::SmallVec;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::ptr::{null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
@@ -114,6 +114,7 @@ pub struct Expr {
 pub enum ExtractFailure {
     IntroducedVar(),
     RecurrentVar(u8),
+    RefMismatch(u8, u8),
     RefSymbolEarlyMismatch(u8, u8, u8),
     RefSymbolMismatch(u8, Vec<u8>, Vec<u8>),
     RefTypeMismatch(u8, Tag, Tag),
@@ -162,10 +163,13 @@ macro_rules! traverseh {
 
 impl Expr {
     pub fn span(self) -> *const [u8] {
-        let mut ez = ExprZipper::new(self);
-        loop {
-            if !ez.next() {
-                return ez.finish_span();
+        if self.ptr.is_null() { slice_from_raw_parts(null(), 0) }
+        else {
+            let mut ez = ExprZipper::new(self);
+            loop {
+                if !ez.next() {
+                    return ez.finish_span();
+                }
             }
         }
     }
@@ -192,6 +196,11 @@ impl Expr {
 
     pub fn references(self) -> usize {
         traverse!(usize, usize, self, |_| 0, |_, _| 1, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x)
+    }
+
+    pub fn forward_references(self, at: u8) -> usize {
+        traverseh!(usize, usize, u64, self, if at > 0 { (!0u64) >> (64 - at) } else { 0 },
+            |c: &mut u64, _| { *c |= 1u64 << ((*c).trailing_ones()); 0 }, |c: &mut u64, _, r| if (1u64 << r) & *c == 0 { *c |= 1u64 << r; 1 } else { 0 }, |_, _, _| 0, |_, _, _| 0, |_, _, x, y| x + y, |_, _, x| x).1
     }
 
     pub fn variables(self) -> usize {
@@ -227,8 +236,19 @@ impl Expr {
         let mut var_count = 0;
         loop {
             match ez.tag() {
-                Tag::NewVar => { oz.write_move(unsafe { substitutions[var_count].span().as_ref().unwrap() }); var_count += 1; }
-                Tag::VarRef(r) => { oz.write_move(unsafe { substitutions[r as usize].span().as_ref().unwrap() }); }
+                Tag::NewVar => {
+                    match unsafe { substitutions[var_count].span().as_ref() } {
+                        None => { oz.write_new_var(); oz.loc += 1; }
+                        Some(r) => { oz.write_move(r); }
+                    }
+                    var_count += 1;
+                 }
+                Tag::VarRef(r) => {
+                    match unsafe { substitutions[r as usize].span().as_ref() } {
+                        None => { oz.write_var_ref(r); oz.loc += 1; }
+                        Some(r) => { oz.write_move(r); }
+                    }
+                }
                 Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
                 Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
             }
@@ -239,8 +259,175 @@ impl Expr {
         }
     }
 
+    pub fn equate_var(self, new_var: u8, refer_to: u8, oz: &mut ExprZipper) -> *const [u8] {
+        assert!(new_var > refer_to);
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    if new_var == var_count {
+                        oz.write_var_ref(refer_to);
+                        oz.loc += 1;
+                    } else {
+                        oz.write_new_var();
+                        oz.loc += 1;
+                    }
+                    var_count += 1;
+                }
+                Tag::VarRef(r) => {
+                    if new_var == r {
+                        oz.write_var_ref(refer_to);
+                        oz.loc += 1;
+                    } else if r > new_var {
+                        oz.write_var_ref(r - 1);
+                        oz.loc += 1;
+                    } else {
+                        oz.write_var_ref(r);
+                        oz.loc += 1;
+                    }
+                }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                return ez.finish_span()
+            }
+        }
+    }
+
+    pub fn equate_var_inplace(self, new_var: u8, refer_to: u8) -> *const [u8] {
+        assert!(new_var >= refer_to);
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    if new_var == var_count {
+                        ez.write_var_ref(refer_to);
+                    }
+                    var_count += 1;
+                }
+                Tag::VarRef(r) => {
+                    if new_var == r {
+                        ez.write_var_ref(refer_to);
+                    } else if r > new_var {
+                        ez.write_var_ref(r - 1);
+                    }
+                }
+                Tag::SymbolSize(s) => {  }
+                Tag::Arity(_) => {  }
+            }
+
+            if !ez.next() {
+                return ez.finish_span()
+            }
+        }
+    }
+
+    pub fn equate_vars_inplace(self, refers: &mut [u8]) {
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0;
+        let mut bound = 0;
+        // println!("refers {:?}", refers);
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    if refers[var_count] != 0xffu8 {
+                        ez.write_var_ref(refers[var_count]);
+                        bound += 1;
+                    } else {
+                        refers[var_count] = var_count as u8 - bound;
+                    }
+                    var_count += 1;
+                }
+                Tag::VarRef(r) => {
+                    if refers[r as usize] != 0xffu8 {
+                        ez.write_var_ref(refers[r as usize]);
+                    } else {
+                        // unreachable!()
+                    }
+                }
+                Tag::SymbolSize(s) => {  }
+                Tag::Arity(_) => {  }
+            }
+
+            if !ez.next() {
+                return
+            }
+        }
+    }
+
+    pub fn substitute_one_de_bruijn(self, idx: u8, substitution: Expr, oz: &mut ExprZipper) -> *const [u8] {
+        let mut var: u8 = item_byte(Tag::NewVar);
+        let nvs = self.newvars();
+        let mut vars = vec![Expr{ ptr: &mut var }; nvs];
+        vars[idx as usize] = substitution;
+        self.substitute_de_bruijn(&vars[..], oz)
+    }
+
+    pub fn substitute_one_de_bruijn_future(self, r: u8, substitution: Expr, oz: &mut ExprZipper) {
+        let mut sez = ExprZipper::new(substitution);
+        println!("self {:?}", self);
+        println!("sodbf {:?} / _{}", substitution, r+1);
+        let mut wnv = 0;
+        let mut nv = 0;
+        let mut vr = 0;
+        let mut refers = [0xffu8; 64];
+        let displaced = (substitution.newvars() + substitution.forward_references(r)) as i32 - 1;
+        println!("  displaced {}+{}", substitution.newvars(), substitution.forward_references(r));
+        loop {
+            // println!("item {} {:?}", sez.loc, sez.item());
+            match sez.item() {
+                Ok(Tag::VarRef(i)) => {
+                    let mut offset = r as i32 + displaced +i as i32;
+                    assert!(offset >= 0);
+                    let ri = offset as usize;
+                    if i > r { // in this expr or later
+                        if refers[ri] != 0xff {
+                            println!("present _{} to _{}", offset +1, refers[ri] + 1);
+                            sez.write_var_ref(refers[ri]);
+                        } else {
+                            // let offset = substitution.newvars()+wnv as usize+vr as usize +i as usize;
+                            if (i as i32) <= ((r as i32)+displaced+1) {
+                                println!("inexpr _{} _{}", i+1, r + vr +nv+wnv +1);
+                                refers[ri] = r + vr + nv+wnv;
+                                // println!("{:?}", refers);
+                            } else { // outside of this expr after substitution
+                                println!("future _{} _{}", i +1, r + vr +nv+wnv +1);
+                                refers[i as usize] = r + vr + nv+wnv;
+                            }
+                            // println!("offset[{}] = {}", offset, r + vr +nv+wnv);
+                            sez.write_new_var();
+                            wnv += 1
+                        }
+                    } else {
+                        println!("i={} <= r={}", i+1, r+1);
+                        println!("past _{} _{}", offset + 1, i+1);
+                        refers[(r+vr+nv+wnv) as usize] = i;
+                        sez.write_new_var();
+                        vr += 1;
+                    }
+                }
+                Ok(Tag::NewVar) => {
+                    nv += 1;
+                }
+                Err(_) => {}
+                _ => {}
+            }
+            if !sez.next() { break; }
+        }
+
+        let o = oz.subexpr();
+        self.substitute_one_de_bruijn(r, substitution, oz);
+        println!("{:?}", &refers[..]);
+        println!("  intrm {:?}", serialize(oz.span()));
+        o.equate_vars_inplace(&mut refers[..]);
+        println!("  final {:?}", o);
+    }
+
     pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
-        // this can technically be done in place...
         let mut ez = ExprZipper::new(self);
         let mut additions = vec![0u8; substitutions.len()];
         let mut var_count = 0;
@@ -270,13 +457,15 @@ impl Expr {
     fn bind(self, n: u8, oz: &mut ExprZipper) -> *const [u8] {
         // this.foldMap(i => Var(if i == 0 then {index += 1; -index - n} else if i > 0 then i else i - n), App(_, _))
         let mut ez = ExprZipper::new(self);
-        let mut var_count = 0u8;
+        let mut var_count = 0;
         loop {
             match ez.tag() {
                 Tag::NewVar => {
-                    if n >= var_count { oz.write_var_ref(n + var_count); oz.loc += 1; var_count += 1; }
-                    else { oz.write_var_ref(var_count - n); oz.loc += 1; var_count += 1; } }
-                Tag::VarRef(i) => { oz.write_var_ref(n + i); oz.loc += 1; } // good
+                    oz.write_var_ref(n + var_count); oz.loc += 1; var_count += 1;
+                }
+                Tag::VarRef(i) => {
+                    oz.write_var_ref(n + i); oz.loc += 1; // good
+                }
                 Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
                 Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
             }
@@ -307,6 +496,27 @@ impl Expr {
                 //     Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
                 // }
                 return new_var;
+            }
+        }
+    }
+
+    fn unbind(self, oz: &mut ExprZipper) -> *const [u8] {
+        let mut ez = ExprZipper::new(self);
+        let mut bound = [0u8; 64];
+        let mut nvars = 0;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => { oz.write_new_var(); oz.loc += 1; nvars += 1; }
+                Tag::VarRef(i) => {
+                    if (i as usize) < nvars { oz.write_var_ref(bound[i as usize]); oz.loc += 1 }
+                    else { oz.write_new_var(); bound[nvars] = i; nvars += 1; oz.loc += 1; }
+                }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                return ez.finish_span()
             }
         }
     }
@@ -349,7 +559,7 @@ impl Expr {
 
         let mut ez = ExprZipper::new(self);
         let mut iz = ExprZipper::new(other);
-        let mut resv = vec![0; 100];
+        let mut resv = vec![0; 512];
         let mut o = Expr{ ptr: resv.as_mut_ptr() };
         mem::forget(resv);
         let mut oz = ExprZipper::new(o);
@@ -357,7 +567,7 @@ impl Expr {
         loop {
             match (ez.item(), iz.item()) {
                 (Ok(Tag::NewVar), Ok(Tag::NewVar)) => {
-                    // println!("both nvars");
+                    println!("$-$");
                     let enext = ez.next(); let inext = iz.next();
                     assert_eq!(enext, inext);
                     if !enext {
@@ -366,36 +576,77 @@ impl Expr {
                     };
                     nvi += 1;
                 }
-                (lhs, Ok(Tag::NewVar)) => {
-                    // println!("lhs-NewVar");
-                    let mut kvs = vec![];
-                    for i in 0..other.newvars() {
-                        if i == nvi { kvs.push(ez.subexpr()) }
-                        else {
-                            let mut v = vec![item_byte(Tag::NewVar)];
-                            kvs.push(Expr{ ptr: v.as_mut_ptr() });
-                            mem::forget(v);
-                        }
+                (Ok(Tag::VarRef(r1)), Ok(Tag::NewVar)) => {
+                    println!("_{}-$", r1+1);
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
                     }
-                    other.substitute_de_bruijn(&kvs, &mut oz);
+                    println!("  osubs _{} == _{}", nvi + 1, r1+1);
+                    other.equate_var_inplace(nvi, r1);
+                    unsafe {
+                        println!("  other  {:?}", serialize(&*self.span()));
+                    }
+                    return self.unification(other)
+                }
+                (lhs, Ok(Tag::NewVar)) => {
+                    println!("lhs-$");
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
+                    }
+                    println!("  osubs {:?} / _{}", ez.subexpr(), nvi+1);
+                    other.substitute_one_de_bruijn_future(nvi as u8, ez.subexpr(), &mut oz);
+                    println!("  after {:?}", serialize(oz.span()));
                     return self.unification(o);
                 }
-                (Ok(Tag::NewVar), rhs) => {
-                    // println!("NewVar-rhs");
-                    let mut kvs = vec![];
-                    for i in 0..self.newvars() {
-                        if i == nvi { kvs.push(iz.subexpr()) }
-                        else {
-                            let mut v = vec![item_byte(Tag::NewVar)];
-                            kvs.push(Expr{ ptr: v.as_mut_ptr() });
-                            mem::forget(v);
-                        }
+                (Ok(Tag::NewVar), Ok(Tag::VarRef(r2))) => {
+                    println!("$-_{}", r2+1);
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
                     }
-                    self.substitute_de_bruijn(&kvs, &mut oz);
+                    println!("  ssubs _{} == _{}", nvi + 1, r2+1);
+                    self.equate_var_inplace(nvi, r2);
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
+                    }
+                    return self.unification(other)
+                }
+                (Ok(Tag::NewVar), rhs) => {
+                    println!("$-rhs");
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
+                    }
+                    println!("  ssubs {:?} / _{}", iz.subexpr(), nvi+1);
+                    self.substitute_one_de_bruijn_future(nvi as u8, iz.subexpr(), &mut oz);
+                    println!("  after {:?}", serialize(oz.span()));
                     return o.unification(other);
                 }
                 (Ok(Tag::VarRef(r1)), Ok(Tag::VarRef(r2))) => {
-                    if r1 != r2 { panic!("var ref mismatch") }
+                    if r1 != r2 {
+                        println!("_{}-_{}", r1+1, r2+1);
+                        unsafe {
+                            println!("  self  {:?}", serialize(&*self.span()));
+                            println!("  other {:?}", serialize(&*other.span()));
+                        }
+                        if r1 < r2 {
+                            println!("  -subs newvar=_{} to refer to _{}", r2+1, r1+1);
+                            self.equate_var_inplace(r2, r1);
+                            other.equate_var_inplace(r2, r1);
+                        } else {
+                            println!("  +subs newvar=_{} to refer to _{}", r1+1, r2+1);
+                            self.equate_var_inplace(r1, r2);
+                            other.equate_var_inplace(r1, r2);
+                        }
+                        unsafe {
+                            println!("  self  {:?}", serialize(&*self.span()));
+                            println!("  other {:?}", serialize(&*other.span()));
+                        }
+                        return self.unification(other)
+                    }
                     let enext = ez.next(); let inext = iz.next();
                     assert_eq!(enext, inext);
                     if !enext {
@@ -403,8 +654,30 @@ impl Expr {
                         return Ok(self)
                     };
                 }
-                (_, Ok(Tag::VarRef(r))) => { return Err(RecurrentVar(r)) }
-                (Ok(Tag::VarRef(r)), _) => { return Err(RecurrentVar(r)) }
+                (_, Ok(Tag::VarRef(r))) => {
+                    println!("lhs-_{}", r + 1);
+                    unsafe {
+                        println!("  self  {:?}", serialize(&*self.span()));
+                        println!("  other {:?}", serialize(&*other.span()));
+                    }
+                    println!("  osubs {:?} / _{}", ez.subexpr(), r+1);
+                    let mut es = unsafe { ez.subexpr().span().as_ref().unwrap().to_vec() };
+                    other.substitute_one_de_bruijn_future(r, Expr{ ptr: es.as_mut_ptr() }, &mut oz);
+                    println!("  after {:?}", serialize(oz.span()));
+                    return self.unification(o);
+                }
+                (Ok(Tag::VarRef(r)), _) => {
+                    println!("_{}-rhs", r+1);
+                    unsafe {
+                    println!("  self  {:?}", serialize(&*self.span()));
+                    println!("  other {:?}", serialize(&*other.span()));
+                    }
+                    println!("  ssubs {:?} / _{}", iz.subexpr(), r+1);
+                    let mut is = unsafe { iz.subexpr().span().as_ref().unwrap().to_vec() };
+                    self.substitute_one_de_bruijn_future(r, Expr{ ptr: is.as_mut_ptr() }, &mut oz);
+                    println!("  after {:?}", serialize(oz.span()));
+                    return other.unification(o);
+                }
                 (Err(aslice), Err(bslice)) => {
                     if aslice != bslice { return Err(SymbolMismatch(aslice.to_vec(), bslice.to_vec())) }
                     let enext = ez.next(); let inext = iz.next();
@@ -440,12 +713,34 @@ impl Expr {
 
     pub fn transform(self, pattern: Expr, template: Expr) -> Result<Expr, ExtractFailure> {
         let mut transformation = vec![item_byte(Tag::Arity(2))];
+        transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
+        transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
+        let mut data = vec![item_byte(Tag::Arity(2))];
+        data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
+        data.push(item_byte(Tag::NewVar));
+        println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+        println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
+        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() })?;
+        let mut rz = ExprZipper::new(res);
+        rz.next_child(); rz.next_child();
+        rz.subexpr().unbind(&mut ExprZipper::new(rz.subexpr()));
+        Ok(rz.subexpr())
+    }
+
+    pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
+        let mut transformation = vec![item_byte(Tag::Arity(2))];
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
         transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
         let mut data = vec![item_byte(Tag::Arity(2)), item_byte(Tag::NewVar)];
         data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
+        unsafe {
+            let e = Expr{ ptr: data.as_mut_ptr().add(2)};
+            e.shift(1, &mut ExprZipper::new(e));
+        }
+        println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+        println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
         let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() })?;
-        Ok(Expr{ ptr: unsafe { data.as_mut_ptr().byte_add(1) } })
+        Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
     }
 
     pub fn extract_data(self, iz: &mut ExprZipper) -> Result<Vec<Expr>, ExtractFailure> {
@@ -480,6 +775,8 @@ impl Expr {
                     }
                 }
                 (Tag::VarRef(i), Tag::Arity(s)) => {
+                    println!("{:?} as template for {:?}", self, iz.root);
+                    println!("checking _{} against [{}]", i+1, s);
                     if let Tag::Arity(s_) = unsafe { byte_item(*bindings[i as usize].ptr) } {
                         if s != s_ { return Err(RefExprEarlyMismatch(i, s, s_)) }
                         // TODO this is quite wasteful: neither span should be re-calculated
@@ -636,7 +933,8 @@ impl Traversal<(), ()> for DebugTraversal {
 
 impl Debug for Expr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.string());
+        if self.ptr.is_null() { f.write_str("NULL")? }
+        else { f.write_str(&self.string())? }
         Ok(())
     }
 }

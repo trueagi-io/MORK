@@ -1,6 +1,6 @@
 use std::{alloc::Layout, fs::FileType, io::{BufReader, BufWriter, Read, Write}, ops::Range, os::unix::ffi::OsStrExt, path::Path, u64, usize};
 use pathmap::{morphisms::Catamorphism, trie_map::BytesTrieMap};
-
+use zip::ZipArchive;
 use crate::{bounded_pearson_hash, AlignCache, SharedMapping, SharedMappingHandle, Slab, Symbol, ThinBytes, ThreadPermission, MAX_WRITER_THREADS, SYM_LEN, U64_BYTES};
 
 
@@ -15,14 +15,21 @@ impl SharedMapping {
 
     let path = std::path::Path::new(out_dir.as_ref());
 
+
+    
+    let out_file_path = path.join("SharedMapping.zip");
+    let out_file = std::fs::File::create_new(&out_file_path)?;
+    let mut buffer = zip::ZipWriter::new(out_file);
     
     for (n, lock) in  locks.iter().enumerate() {
       core::debug_assert!(n<256);
       
-      let out_file_path = path.join(format!("SharedMapping_0x{:0>2X}.binary_data", n as u8));
+      // let out_file_path = path.join(format!("SharedMapping_0x{:0>2X}.binary_data", n as u8));
 
-      let out_file = std::fs::File::create_new(&out_file_path)?;
-      let mut buffer = BufWriter::new(out_file);
+      // let out_file = std::fs::File::create_new(&out_file_path)?;
+      // let mut buffer = BufWriter::new(out_file);
+      
+      buffer.start_file::<String,_>(format!("SharedMapping_0x{:0>2X}.binary_data", n as u8), zip::write::FileOptions::<()>::default().large_file(true))?;
 
       let reader = lock.read_zipper();
 
@@ -35,7 +42,7 @@ impl SharedMapping {
 
           let sym_len = sym.len();
 
-          buffer.write(o)?;
+          buffer.write(&o[2..])?;
 
           if sym_len < i8::MAX as usize {
             buffer.write(&[!(sym_len as u8)])?;
@@ -45,23 +52,27 @@ impl SharedMapping {
 
           buffer.write(sym)?;
           // makes the file output mildly more readable
-          buffer.write(b"\n")?;
+          // buffer.write(b"\n")?;
 
           count += 1;
         };
         Ok(())
       })?;
 
-      buffer.flush()?;
+      // buffer.flush()?;
 
-      drop(buffer);
+
+      // drop(buffer);
 
       if count == 0 {
-        while out_file_path.exists() {
-          let _ = std::fs::remove_file(&out_file_path);
-        }
+        // while out_file_path.exists() {
+        //   let _ = std::fs::remove_file(&out_file_path);
+        // }
+        buffer.abort_file()?;
       }
     }
+
+    buffer.finish()?.flush()?;
 
     Ok(())
   }
@@ -79,11 +90,19 @@ impl SharedMapping {
     let mut to_symbol = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<Symbol>::new());
     let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<ThinBytes>::new());
 
-    for each in std::fs::read_dir(&path)? {
-      let entry = each?;
-      if entry.file_type()?.is_file() {
-        let file_name = entry.file_name();
+    let mut zip_file = ZipArchive::new( std::fs::File::open(path.join("SharedMapping.zip"))? ).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
+
+    let files = zip_file.file_names().map(|s|s.to_owned()).collect::<Vec<_>>();
+
+    for file_name in files {
         let file_name_bytes = file_name.as_bytes();
+    // }
+
+    // for each in std::fs::read_dir(&path)? {
+    //   let entry = each?;
+    //   if entry.file_type()?.is_file() {
+    //     let file_name = entry.file_name();
+    //     let file_name_bytes = file_name.as_bytes();
 
         const LEADING   : &[u8] = b"SharedMapping_0x";
         const EXTENSION : &[u8] = b".binary_data";
@@ -105,8 +124,11 @@ impl SharedMapping {
         const HEX_BITS : u32 = 4;
         let index = (hex_to_byte(top) << HEX_BITS | hex_to_byte(bot)) as usize;
 
-        let mut file = std::fs::File::open(path.join(&file_name))?;
-        let slab_size = file.metadata()?.len() as usize;
+        // let mut file = std::fs::File::open(path.join(&file_name))?;
+        // let slab_size = file.metadata()?.len() as usize;
+
+        let mut file = zip_file.by_name(&file_name).map_err(|_| std::io::Error::other("File failed to be extracted from zip"))?;
+        let slab_size = file.size() as usize;
 
         unsafe {
           let slab_ptr = Slab::allocate(slab_size as u64);
@@ -120,7 +142,8 @@ impl SharedMapping {
           while let diff @ 1..=usize::MAX = file.read(&mut slab_slice[start..slab_size])? {
             start += diff;
           }
-          file.flush()?;
+          // file.flush()?;
+          
           drop(file);
 
           // at this point we are done with the file. We have to parse the slice inside the slab
@@ -131,13 +154,15 @@ impl SharedMapping {
 
           
 
-          while let Some((sym_bytes, to_parse_0)) = to_parse.split_at_checked(8) {
-            let sym : Symbol = (sym_bytes.as_ptr() as *const [u8;SYM_LEN]).read();
+          while let Some((sym_bytes, to_parse_0)) = to_parse.split_at_checked(SYM_LEN-2) {
+            let [s0,s1,s2,s3,s4,s5] = (sym_bytes.as_ptr() as *const [u8;SYM_LEN-2]).read();
+            let sym : Symbol = [0,0,s0,s1,s2,s3,s4,s5];
+            // let sym : Symbol = (sym_bytes.as_ptr() as *const [u8;SYM_LEN]).read();
             if u64::from_be_bytes(sym) == 0 {
               break
             }
 
-            let leading_byte = to_parse[0];
+            let leading_byte = to_parse_0[0];
 
             // read out the length
             let (length, to_parse_2) = if (leading_byte | (1 << u8::BITS-1)) == 0 {
@@ -147,19 +172,21 @@ impl SharedMapping {
               let Some((len_byte, to_parse_1)) = to_parse_0.split_at_checked(1) else { return Err(std::io::Error::other(concat!("Malformed data, expected length byte, file : ", file!(), ", line : ", line!() ))); };
               ((!len_byte[0]) as usize, to_parse_1)
             };
+            // dbg!((length, to_parse_2.len()));
 
             max_symbol = max_symbol.max(u64::from_be_bytes(sym));
 
             to_symbol[bounded_pearson_hash::<{crate::PEARSON_BOUND}>(&to_parse[0..length]) as usize % MAX_WRITER_THREADS].insert(&to_parse_2[0..length], sym);         
             to_bytes[index].insert(sym_bytes, ThinBytes(to_parse_2.as_ptr()));
           
-            let Some((_, [b'\n', to_parse_3 @ .. ])) = to_parse_2.split_at_checked(length) else { return Err(std::io::Error::other(concat!("Malformed data, expected b'\\n', file : ", file!(), ", line : ", line!() ))); };
+            // let Some((_, [b'\n', to_parse_3 @ .. ])) = to_parse_2.split_at_checked(length) else { return Err(std::io::Error::other(concat!("Malformed data, expected b'\\n', file : ", file!(), ", line : ", line!() ))); };
+            let Some((_, [to_parse_3 @ .. ])) = to_parse_2.split_at_checked(length) else { return Err(std::io::Error::other(concat!("Malformed data, unexpected end', file : ", file!(), ", line : ", line!() ))); };
 
             to_parse = to_parse_3;
           }
 
           (*mapping_ptr).permissions[index].0.next_symbol.store(max_symbol+1, core::sync::atomic::Ordering::Relaxed);
-        }
+        // }
 
       }
     }
@@ -238,6 +265,8 @@ use super::*;
       unsafe {
         let l = as_as_btree(left);
         let r = as_as_btree(right);
+
+        dbg!((&l,&r));
     
         l == r
       }

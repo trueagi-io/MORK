@@ -5,7 +5,7 @@ use crate::{bounded_pearson_hash, SharedMapping, SharedMappingHandle, Slab, Symb
 
 
 impl SharedMapping {
-  /// Serialize the [`SharedMapping`] to a zip64 file. it must be deserialized using [`SharedMapping::deserialize`].
+  /// Serialize the [`SharedMapping`] to a file. it must be deserialized using [`SharedMapping::deserialize`].
   /// The file at the out path will be overwritten.
   pub fn serialize(&self, out_path : impl AsRef<Path>)->Result<(),std::io::Error> {
     // we need to read-lock the all the maps
@@ -61,7 +61,7 @@ impl SharedMapping {
     Ok(())
   }
 
-  /// Deserialize the [`SharedMapping`] from a zip64 file made by [`SharedMapping::serialize`].
+  /// Deserialize the [`SharedMapping`] from a file made by [`SharedMapping::serialize`].
   pub fn deserialize(in_path : impl AsRef<Path>) -> Result<SharedMappingHandle, std::io::Error> {
     let shared_mapping = SharedMapping::new();
     let mapping_ptr = shared_mapping.0.as_ptr();

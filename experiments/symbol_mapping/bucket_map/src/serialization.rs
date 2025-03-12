@@ -63,6 +63,7 @@ impl SharedMapping {
 
   /// Deserialize the [`SharedMapping`] from a file made by [`SharedMapping::serialize`].
   pub fn deserialize(in_path : impl AsRef<Path>) -> Result<SharedMappingHandle, std::io::Error> {
+    println!("function start");
     let shared_mapping = SharedMapping::new();
     let mapping_ptr = shared_mapping.0.as_ptr();
 
@@ -71,8 +72,11 @@ impl SharedMapping {
     let mut to_symbol = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<Symbol>::new());
     let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<ThinBytes>::new());
 
-    let mut zip_file = ZipArchive::new( std::fs::File::open(in_path.as_ref())? ).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
-
+    println!("opening file");
+    let file = std::fs::File::open(in_path.as_ref())?;
+    println!("opening zip");
+    let mut zip_file = ZipArchive::new(file).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
+    println!("getting index");
     let files = zip_file.file_names().map(|s|s.to_owned()).collect::<Vec<_>>();
 
     for file_name in files {
@@ -97,10 +101,10 @@ impl SharedMapping {
       
       const HEX_BITS : u32 = 4;
       let index = (hex_to_byte(top) << HEX_BITS | hex_to_byte(bot)) as usize;
-      
+      println!("by name {file_name}");
       let mut file = zip_file.by_name(&file_name).map_err(|_| std::io::Error::other("File failed to be extracted from zip"))?;
       let slab_size = file.size() as usize;
-      
+      println!("size {}", slab_size);
       unsafe {
         let slab_ptr = Slab::allocate(slab_size as u64);
         (*mapping_ptr).permissions[index].0.symbol_table_start.store(slab_ptr, core::sync::atomic::Ordering::Relaxed);

@@ -7,12 +7,12 @@ use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::ByteMaskIter;
-use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting};
-
+use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
+use crate::json_parser::Transcriber;
 
 pub struct Space {
     pub(crate) btm: BytesTrieMap<()>,
-    pub(crate) sm: SharedMappingHandle
+    pub sm: SharedMappingHandle
 }
 
 const SIZES: [u64; 4] = {
@@ -709,49 +709,116 @@ impl Space {
         Ok(st.count)
     }
 
-/*    pub fn load_neo4j(&mut self, uri: &str, user: &str, pass: &str) -> Result<usize, String> {
+    pub fn load_neo4j_triples(&mut self, uri: &str, user: &str, pass: &str) -> Result<usize, String> {
         use neo4rs::*;
         let graph = Graph::new(uri, user, pass).unwrap();
-        // static mut space: Space = Space::new();
 
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
           // .unhandled_panic(tokio::runtime::UnhandledPanic::Ignore)
           .build()
           .unwrap();
-        // let mut pdp = ParDataParser::new(&space.sm);
+        let mut pdp = ParDataParser::new(&self.sm);
 
-            // let mut handles = Vec::new();
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut count = 0;
 
-        let mut result = rt.block_on(graph
-                                       // .execute(query("MATCH (s)-[p]->(o) RETURN {sid: id(s), pid: id(p), oid: id(o)} LIMIT 100")) // LIMIT 1000000
-                                       .execute(query("MATCH (s)-[p]->(o) RETURN id(s), id(p), id(o)")) // LIMIT 1000000
-        ).unwrap();
+        let mut result = rt.block_on(graph.execute(
+            query("MATCH (s)-[p]->(o) RETURN id(s), id(p), id(o)"))).unwrap();
+        let spo_symbol = pdp.tokenizer("SPO".as_bytes());
         while let Ok(Some(row)) = rt.block_on(result.next()) {
             let s: i64 = row.get("id(s)").unwrap();
             let p: i64 = row.get("id(p)").unwrap();
             let o: i64 = row.get("id(o)").unwrap();
             // std::hint::black_box((s, p, o));
-            let mut buf = [0u8; 24];
-            // let e = Expr{ ptr: buf.as_mut_ptr() };
-            // let mut ez = ExprZipper::new(e);
-            // ez.loc += 1;
-            // {
-            //     let internal = pdp.tokenizer();
-            //     ez.write_symbol(&internal[..]);
-            //     ez.loc += internal.len() + 1;
-            // }
-
-            buf[0..8].copy_from_slice(&s.to_be_bytes());
-            buf[8..16].copy_from_slice(&p.to_be_bytes());
-            buf[16..24].copy_from_slice(&o.to_be_bytes());
+            let mut buf = [0u8; 64];
+            let e = Expr{ ptr: buf.as_mut_ptr() };
+            let mut ez = ExprZipper::new(e);
+            ez.write_arity(4);
+            ez.loc += 1;
+            {
+                ez.write_symbol(&spo_symbol[..]);
+                ez.loc += spo_symbol.len() + 1;
+            }
+            {
+                let internal = pdp.tokenizer(&s.to_be_bytes());
+                ez.write_symbol(&internal[..]);
+                ez.loc += internal.len() + 1;
+            }
+            {
+                let internal = pdp.tokenizer(&p.to_be_bytes());
+                ez.write_symbol(&internal[..]);
+                ez.loc += internal.len() + 1;
+            }
+            {
+                let internal = pdp.tokenizer(&o.to_be_bytes());
+                ez.write_symbol(&internal[..]);
+                ez.loc += internal.len() + 1;
+            }
             // space.
-            unsafe { self.btm.insert(&buf, ()); }
-            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            unsafe { self.btm.insert(ez.span(), ()); }
+            count += 1;
         }
-        Ok(count.load(std::sync::atomic::Ordering::Relaxed) as usize)
-    }*/
+        Ok(count)
+    }
+
+    pub fn load_neo4j_node_properties(&mut self, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> {
+        use neo4rs::*;
+        let graph = Graph::new(uri, user, pass).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+          .enable_io()
+          // .unhandled_panic(tokio::runtime::UnhandledPanic::Ignore)
+          .build()
+          .unwrap();
+        let mut pdp = ParDataParser::new(&self.sm);
+        let zh = self.btm.zipper_head();
+        let mut wz = zh.write_zipper_at_exclusive_path(&[]).unwrap();
+        let sa_symbol = pdp.tokenizer("NKV".as_bytes());
+        let mut nodes = 0;
+        let mut attributes = 0;
+
+        wz.descend_to_byte(item_byte(Tag::Arity(4)));
+        wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
+        wz.descend_to(sa_symbol);
+
+        let mut result = rt.block_on(graph.execute(
+            query("MATCH (s) RETURN id(s), s"))
+        ).unwrap();
+        while let Ok(Some(row)) = rt.block_on(result.next()) {
+            let s: i64 = row.get("id(s)").unwrap();
+            let internal_s = pdp.tokenizer(&s.to_be_bytes());
+            wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
+            wz.descend_to(internal_s);
+
+            let a: BoltMap = row.get("s").unwrap();
+
+            for (bs, bt) in a.value.iter() {
+                let internal_k = pdp.tokenizer(bs.value.as_bytes());
+                wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_k.len() as _)));
+                wz.descend_to(internal_k);
+
+                let BoltType::String(bv) = bt else { unreachable!() };
+
+                let internal_v = pdp.tokenizer(bv.value.as_bytes());
+                wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                wz.descend_to(internal_v);
+
+                wz.set_value(());
+
+                wz.ascend(internal_v.len() + 1);
+
+                wz.ascend(internal_k.len() + 1);
+                attributes += 1;
+            }
+
+            wz.ascend(internal_s.len() + 1);
+            nodes += 1;
+            if nodes % 1000000 == 0 {
+                println!("{nodes} {attributes}");
+            }
+        }
+        Ok((nodes, attributes))
+    }
 
     pub fn load(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut it = Context::new(r);
@@ -800,30 +867,34 @@ impl Space {
         Ok(i)
     }
 
-    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) {
+    pub fn backup_symbols<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error>  {
+        self.sm.serialize(path)
+    }
+
+    pub fn restore_symbols(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+        self.sm = bucket_map::SharedMapping::deserialize(path)?;
+        Ok(())
+    }
+
+    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error> {
         pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
                                            |v, b| pathmap::serialization::ValueSlice::Read(&[]),
-                                           path.as_ref());
+                                           path.as_ref()).map(|_| ())
     }
 
-    pub fn restore(&mut self, path: impl AsRef<std::path::Path>) {
-        let mut path_buf = path.as_ref().to_path_buf();
-        path_buf.push("zero_compressed_hex.data");
-        self.btm = pathmap::serialization::deserialize_file(path_buf, |_| ()).unwrap();
+    pub fn restore(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+        self.btm = pathmap::serialization::deserialize_file(path, |_| ())?;
+        Ok(())
     }
 
-    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) {
-        let mut path_buf = path.as_ref().to_path_buf();
-        path_buf.push("space.paths.gz");
-        let mut file = File::create(path_buf).unwrap();
-        pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file);
+    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+        let mut file = File::create(path).unwrap();
+        pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) {
-        let mut path_buf = path.as_ref().to_path_buf();
-        path_buf.push("space.paths.gz");
-        let mut file = File::open(path_buf).unwrap();
-        pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ());
+    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+        let mut file = File::open(path).unwrap();
+        pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
     pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {

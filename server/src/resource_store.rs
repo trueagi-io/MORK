@@ -23,6 +23,56 @@ pub struct ResourceStore {
     dir_path: PathBuf,
 }
 
+/// Represents a resource that is in-use by a command
+pub struct ResourceHandle {
+    identifier: String,
+    path: Option<PathBuf>,
+}
+
+impl Drop for ResourceHandle {
+    fn drop(&mut self) {
+        let path = core::mem::take(&mut self.path);
+        match path {
+            Some(path) => {
+                tokio::task::spawn(async move {
+                    let _ = fs::remove_file(path).await;
+                });
+            },
+            None => {}
+        }
+    }
+}
+
+impl ResourceHandle {
+    /// Returns the filesystem path to the resource
+    pub fn path(&self) -> Result<&Path, CommandError> {
+        self.path.as_ref().map(|path| path.as_ref()).ok_or_else(|| self.resource_err())
+    }
+
+    /// Updates an existing in-progress resource with a timestamp, marking it as finalized
+    ///
+    /// This method should be called when the parsing and loading of a resource has finished
+    pub async fn finalize(&mut self, new_timestamp: u64) -> Result<(), CommandError> {
+        let old_path = self.path.as_ref().ok_or_else(|| self.resource_err())?;
+        let new_file_name = format!("{new_timestamp:0>16x}-{:16x}", gxhash::gxhash64(self.identifier.as_bytes(), HASH_SEED));
+        let dir_path: &Path = old_path.parent().ok_or_else(|| self.resource_err())?;
+        let new_path: PathBuf = dir_path.join(Path::new(&new_file_name));
+        fs::rename(old_path, new_path).await?;
+        self.path = None;
+        Ok(())
+    }
+
+    /// Internal method to make a `ResourceHandle` from an existing file
+    fn new(path: PathBuf, identifier: impl Into<String>) -> Self {
+        Self { path: Some(path), identifier: identifier.into() }
+    }
+
+    /// Internal method to compose an internal resource error
+    fn resource_err(&self) -> CommandError {
+        CommandError::internal(format!("Error accessing resource at path: {:?}", self.path))
+    }
+}
+
 impl ResourceStore {
     /// Creates a new `ResourceStore`, using a directory specified by `path`
     pub async fn new_with_dir_path<P: AsRef<Path>>(path: P) -> Result<Self, CommandError> {
@@ -43,37 +93,17 @@ impl ResourceStore {
     /// a zero-length file at the path so the same file isn't downloaded multiple times in parallel 
     ///
     /// Returns an error if the file already exists
-    pub async fn new_path_for_resource(&self, res_identifier: &str) -> Result<PathBuf, CommandError> {
+    pub async fn new_resource(&self, res_identifier: &str) -> Result<ResourceHandle, CommandError> {
         let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
         let _file = File::create_new(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
                 CommandError::external(StatusCode::TOO_EARLY, "File requested while a download of the same file was in-progress")
             } else {
-                err.into() //Another (Internal) Rrror
+                err.into() //Another (Internal) Errror
             }
         })?;
-        Ok(path)
-    }
-    /// Updates an existing in-progress resource with a timestamp, marking it as finalized
-    ///
-    /// This method should be called when the parsing and loading of a resource has finished
-    pub async fn set_timestamp_for_resource(&self, res_identifier: &str, new_timestamp: u64) -> Result<(), CommandError> {
-        let old_file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
-        let new_file_name = format!("{new_timestamp:16x}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
-        let old_path: PathBuf = self.dir_path.join(Path::new(&old_file_name));
-        let new_path: PathBuf = self.dir_path.join(Path::new(&new_file_name));
-        fs::rename(old_path, new_path).await?;
-        Ok(())
-    }
-    /// Removes a specific resource from the store
-    ///
-    /// This method should be called when an error occurred during download, parsing, or loading
-    pub async fn purge_in_progress_resource(&self, res_identifier: &str) -> Result<(), CommandError> {
-        let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
-        let path: PathBuf = self.dir_path.join(Path::new(&file_name));
-        fs::remove_file(path).await?;
-        Ok(())
+        Ok(ResourceHandle::new(path, res_identifier))
     }
     /// Removes all files in the store
     ///

@@ -1,5 +1,6 @@
 
 use std::time::Instant;
+use hyper::StatusCode;
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -41,7 +42,7 @@ async fn many_request_instant_test() -> Result<(), Error> {
                     println!("Response received with status: {}", status);
                 }
                 Err(err) => {
-                    eprintln!("Request failed: {:?}", err);
+                    println!("Request failed: {:?}", err);
                 }
             }
         });
@@ -82,7 +83,7 @@ async fn many_request_delayed_test() -> Result<(), Error> {
                     println!("Response received with status: {} - {:?} elapsed", status, start.elapsed());
                 }
                 Err(err) => {
-                    eprintln!("Request failed: {:?} - {:?} elapsed", err, start.elapsed());
+                    println!("Request failed: {:?} - {:?} elapsed", err, start.elapsed());
                 }
             }
         });
@@ -102,7 +103,7 @@ async fn many_request_delayed_test() -> Result<(), Error> {
 /// Saturates the workers and then issues a stop request, and ensures no more connections are received
 /// Also tests that the stop request can get through even if the server is under heavy load
 #[tokio::test]
-async fn stop_request_test() -> Result<(), Error> {
+async fn zzz_stop_request_test() -> Result<(), Error> {
     const URL: &str = "http://127.0.0.1:8000/busywait/2000";
     const STOP_URL: &str = "http://127.0.0.1:8000/stop/";
     const NUM_REQUESTS: usize = 100;
@@ -124,7 +125,7 @@ async fn stop_request_test() -> Result<(), Error> {
                     // println!("Response received with status: {} - {:?} elapsed", _status, _start.elapsed());
                 }
                 Err(_err) => {
-                    // eprintln!("Request failed: {:?} - {:?} elapsed", _err, _start.elapsed());
+                    // println!("Request failed: {:?} - {:?} elapsed", _err, _start.elapsed());
                 }
             }
         });
@@ -183,10 +184,13 @@ async fn import_request_test() -> Result<(), Error> {
 
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
-    assert!(response.status().is_success());
+    if !response.status().is_success() {
+        println!("{}", response.text().await?);
+        panic!()
+    }
     println!("Response: {}", response.text().await?);
 
-    // Check the path immediately; we should get a "path busy" response
+    // Check the path immediately; we should get a "pathInUse" response
     let response = reqwest::get(STATUS_URL).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;
@@ -195,15 +199,24 @@ async fn import_request_test() -> Result<(), Error> {
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathInUse");
 
     //Now sleep for a bit (600ms), and then check that we can inspect the path.
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    std::thread::sleep(std::time::Duration::from_millis(2600)); //GOAT, put this back to 600ms
+    let response = reqwest::get(STATUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
 
-    //GOAT, check that the path contains a clear status
-    //GOAT, check that we got the right data in the path
+    //Finally, check that we got the right data in the path
+    //GOAT
 
     //2. Now test a bogus URL, to make sure we can get the error back
     const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
     let response = reqwest::get(BOGUS_URL).await?;
-    assert!(response.status().is_success());
+    if !response.status().is_success() {
+        println!("{}", response.text().await?);
+        panic!()
+    }
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
     assert!(response_text.starts_with("ACK"));
@@ -217,9 +230,28 @@ async fn import_request_test() -> Result<(), Error> {
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "fetchError");
 
-    //3. Now test a situation where we make a request for the same file at a different path, while the
-    // previous download is still in process
-    //GOAT
+    //3. Now test a situation where we make a request for the same file at two different paths
+    // Since the file caching works on a per-resource basis, the second request should be denied
+    let response = reqwest::get(IMPORT_URL).await?;
+    if !response.status().is_success() {
+        println!("{}", response.text().await?);
+        panic!()
+    }
+    println!("Response: {}", response.text().await?);
+
+    //Ensure the second request gets rejected immediately with the right status
+    const ALT_PATH_URL: &str = "http://127.0.0.1:8000/import/royal-with-cheese/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
+    const ALT_STATUS_URL: &str = "http://127.0.0.1:8000/status/royal-with-cheese/";
+    let response = reqwest::get(ALT_PATH_URL).await?;
+    assert_eq!(response.status(), StatusCode::TOO_EARLY);
+
+    //Check that the path to the failed resource is clear and available
+    let response = reqwest::get(ALT_STATUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
 
     //Now sleep for a bit (600ms), and check that everything got cleaned up and the re-fetch will succeed
     //GOAT

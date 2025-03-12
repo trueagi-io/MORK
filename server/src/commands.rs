@@ -2,7 +2,6 @@
 use core::any::Any;
 use core::pin::Pin;
 use std::future::Future;
-use std::path::PathBuf;
 
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
@@ -12,6 +11,7 @@ use hyper::body::Bytes;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
 use super::status_map::{StatusRecord, FetchError};
+use super::resource_store::ResourceHandle;
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -77,7 +77,7 @@ impl CommandDefinition for ImportCmd {
     async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-        let file_path = ctx.0.resource_store.new_path_for_resource(file_uri).await?;
+        let file_handle = ctx.0.resource_store.new_resource(file_uri).await?;
 
         //Flag this path in the map as being busy, and therefore off-limits to other operations
         let map_path = cmd.args[0].as_path();
@@ -85,9 +85,11 @@ impl CommandDefinition for ImportCmd {
             CommandError::from_status_record(status, format!("Error accssing path {map_path:?}"))
         })?;
 
-        Ok(Some(Box::new(file_path)))
+        Ok(Some(Box::new(ImportCmdResources{
+            file: file_handle
+        })))
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -96,32 +98,49 @@ impl CommandDefinition for ImportCmd {
         // case to worry about.
 
         //Spin off a task to handle the download, which will, in turn, kick off the rest of the operations
-        tokio::task::spawn(import_do_download(ctx, cmd, resources));
+        tokio::task::spawn(import_do_download(ctx, thread.unwrap(), cmd, resources));
         Ok("ACK. Starting Import".into())
     }
 }
 
-async fn import_do_download(ctx: MorkService, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
+struct ImportCmdResources {
+    file: ResourceHandle
+}
+
+async fn import_do_download(ctx: MorkService, thread: WorkThreadHandle, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-    let local_file_path = resources.unwrap().downcast::<PathBuf>().unwrap();
+    let mut resources = resources.unwrap().downcast::<ImportCmdResources>().unwrap();
     let map_path = cmd.args[0].as_path();
 
     let mut response = ctx.0.http_client.get(&*file_uri).send().await?;
     if response.status().is_success() {
 
-        let mut writer = BufWriter::new(File::create(&*local_file_path).await?);
+        let mut writer = BufWriter::new(File::create(resources.file.path()?).await?);
 
         while let Some(chunk) = response.chunk().await? {
             writer.write(&*chunk).await?;
         }
         writer.flush().await?;
 
-        println!("Successful download: file saved to '{:?}'", local_file_path); //GOAT Log this sucessful completion
+        println!("Successful download: file saved to '{:?}'", resources.file.path()?); //GOAT Log this sucessful completion
+
+        //Now start the parsing
+        tokio::task::spawn_blocking(move || {
+
+            //GOAT, placeholder.  Call parser here
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+
+        }).await.map(|_| ()).map_err(|err| CommandError::internal(err))?;
+
+        //Finalize the resource and remove the lock on the path
+        let timestamp = 987654321; //GOAT, use a real timestamp
+        resources.file.finalize(timestamp).await?;
+        ctx.0.status_map.clear_status(map_path).map_err(|err| CommandError::internal(err))?;
+
+        thread.finalize().await;
+        println!("Sucessfully parsed and loaded the file"); //GOAT Log this!
     } else {
         println!("Failed to load remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
-
-        //Clean up the resource
-        ctx.0.resource_store.purge_in_progress_resource(file_uri).await?;
 
         //Update the status map, so the client can see what happened when they try to read from this path
         let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
@@ -131,10 +150,6 @@ async fn import_do_download(ctx: MorkService, cmd: Command, resources: Option<Re
         }
     }
     Ok(())
-}
-
-struct ImportCmdResources {
-    file_path: PathBuf,
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

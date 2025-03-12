@@ -13,7 +13,7 @@ mod tests {
     fn parse_sexpr() {
         let input = "(foo bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load(input.as_bytes()).unwrap(), 1);
+        assert_eq!(s.load_sexpr(input.as_bytes()).unwrap(), 1);
         let mut res = Vec::<u8>::new();
         s.dump(&mut res).unwrap();
         assert_eq!(input, String::from_utf8(res).unwrap());
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load(SEXPRS0.as_bytes()).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes()).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |e| {
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load(SEXPRS0.as_bytes()).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes()).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;

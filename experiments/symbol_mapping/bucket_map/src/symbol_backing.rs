@@ -59,7 +59,7 @@ impl Slab {
         1
       } else { 
         // new version for serialization
-        (head as *mut [u8;8]).write_unaligned((len as u64).to_be_bytes());
+        (head as *mut [u8;8]).write((len as u64).to_be_bytes());
 
         // // old version
         // (head as *mut u64).write_unaligned(len as u64);
@@ -89,11 +89,11 @@ impl ThinBytes {
     unsafe {
       let tag = *self.0;
 
-      let (ptr, len) = if (1<<u8::BITS-1) & tag != 0 {
+      let (ptr, len) = if ((1<<u8::BITS-1) & tag) != 0 {
         (self.0.byte_add(1),(!tag) as usize)
       } else {
         // new version for serialization
-        (self.0.byte_add(U64_BYTES), u64::from_be_bytes((self.0 as *const [u8;8]).read_unaligned()) as usize)
+        (self.0.byte_add(U64_BYTES), u64::from_be_bytes(*(self.0 as *const [u8;U64_BYTES])) as usize)
 
         // // old version
         // (self.0.byte_add(U64_BYTES), (self.0 as *const u64).read_unaligned() as usize)

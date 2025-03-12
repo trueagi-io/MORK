@@ -193,7 +193,31 @@ impl SharedMapping {
 
     Ok(shared_mapping)
   }
+
+
+  #[doc(hidden)]
+  fn reveal_tables<'a>(&'a self) -> Tables<'a> {
+    let mut to_bytes = Vec::new();
+    for each in self.to_bytes.iter() {
+      let lock = each.0.read().unwrap();
+      to_bytes.push(lock);
+    }
+    let mut to_symbol = Vec::new();
+    for each in self.to_symbol.iter() {
+      let lock = each.0.read().unwrap();
+      to_symbol.push(lock);
+    }
+    Tables { to_symbol, to_bytes }
+
+  }
 }
+
+#[doc(hidden)]
+struct Tables<'a> {
+  to_symbol : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<Symbol>>>,
+  to_bytes  : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<ThinBytes>>>
+}
+
 
 #[cfg(test)]
 mod test {
@@ -220,7 +244,7 @@ use super::*;
     static GO : std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let mut handles = Vec::new();
     for each in 0..MAX_WRITER_THREADS {
-      let mut handle = mapping.clone();
+      let handle = mapping.clone();
       handles.push(std::thread::spawn(move || {
         let handle_   = handle;
         let Ok(write_permit) = handle_.try_aquire_permission() else { return; };

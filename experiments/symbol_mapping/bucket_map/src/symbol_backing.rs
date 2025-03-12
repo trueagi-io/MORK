@@ -79,7 +79,7 @@ impl Slab {
 
 
 /// [`ThinBytes`] is a private type that will be used to point to symbols in the symbol store. the first byte it points to is descibes the length.
-/// if top bit set, the lenght is the bitwise not of that byte.
+/// if top bit set, the length is the bitwise not of that byte.
 /// if the top is not set, read that byte and the next three as a u32 and use that as the length.
 #[derive(Clone, Copy)]
 pub struct ThinBytes(pub(crate) *const u8);

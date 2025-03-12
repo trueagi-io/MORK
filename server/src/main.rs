@@ -457,6 +457,7 @@ mod worker_pool {
     pub struct WorkThreadHandle(Arc<()>);
 
     impl WorkThreadHandle {
+        /// Dispatches a blocking task to the work thread, to complete in the background
         pub async fn dispatch_blocking_task<F>(self, cmd: Command, task: F)
             where F: FnOnce(Command) -> Result<(), BoxedErr> + 'static + Send
         {
@@ -475,6 +476,11 @@ mod worker_pool {
                 // dropped, and the thread will appear available
                 let _ = Arc::strong_count(&self.0);
             });
+        }
+        /// Consumes the work thread ensuring it has a chance to complete
+        pub async fn finalize(self)
+        {
+            let _ = Arc::strong_count(&self.0);
         }
     }
 

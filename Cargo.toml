@@ -27,5 +27,5 @@ bucket_map = {path = "./experiments/symbol_mapping/bucket_map"}
 # External to MORK
 [workspace.dependencies.pathmap]
 path = "../PathMap"
-features = ["jemalloc"]
-# features = ["all_dense_nodes"]
+#features = ["jemalloc"]
+features = ["jemalloc", "all_dense_nodes"] #GOAT, disable "all_dense_nodes" when the meet bug is fixed

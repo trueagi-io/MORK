@@ -2,7 +2,7 @@
 use serde::{Serialize, Serializer};
 
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{WriteZipper, Zipper, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperValueAccess};
+use pathmap::zipper::{ZipperWriting, ZipperMoving, Zipper, ZipperCreation, ZipperHeadOwned, ZipperIteration};
 
 use hyper::StatusCode;
 
@@ -131,7 +131,7 @@ impl StatusMap {
 
     /// Internal method to Scan upwards from the zipper looking for the first [StatusRecord].  If `None`
     /// is returned then the path below the zipper is unencumbered
-    fn find_status<'a, Z: ZipperIteration<'a, StatusRecord> + ZipperValueAccess<StatusRecord>>(&self, z: &mut Z) -> Option<StatusRecord> {
+    fn find_status<'a, Z: ZipperIteration<'a, StatusRecord> + Zipper<StatusRecord>>(&self, z: &mut Z) -> Option<StatusRecord> {
         if let Some(val) = z.value() {
             return Some(val.clone())
         }

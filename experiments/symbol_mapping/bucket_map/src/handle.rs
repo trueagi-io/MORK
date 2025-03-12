@@ -174,7 +174,7 @@ impl core::ops::Drop for SharedMappingHandle {
       return;
     };
 
-    let allocated = self.flags.load(atomic::Ordering::Acquire) & SharedMappingFlags::HeapAlocated as u64 != 0;
+    let allocated = self.flags.load(atomic::Ordering::Acquire) & SharedMappingFlags::HeapAllocated as u64 != 0;
 
     unsafe { core::ptr::drop_in_place(self.0.as_mut()) }
 

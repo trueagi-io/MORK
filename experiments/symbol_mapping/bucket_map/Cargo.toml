@@ -8,6 +8,7 @@ pathmap = {workspace = true}
 mork-frontend = {workspace = true}
 mork-bytestring = {workspace = true}
 naive_map = { path = "../naive_map" }
+zip = "2.2.3"
 memchr = "2.7.4"
 glob = "0.3.1"
 memmap2 = "0.9.5"

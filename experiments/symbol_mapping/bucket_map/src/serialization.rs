@@ -69,7 +69,6 @@ impl SharedMapping {
 
   /// Deserialize the [`SharedMapping`] from a file made by [`SharedMapping::serialize`].
   pub fn deserialize(in_path : impl AsRef<Path>) -> Result<SharedMappingHandle, std::io::Error> {
-    println!("function start");
     let shared_mapping = SharedMapping::new();
     let mapping_ptr = shared_mapping.0.as_ptr();
 
@@ -78,11 +77,8 @@ impl SharedMapping {
     let mut to_symbol = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<Symbol>::new());
     let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<ThinBytes>::new());
 
-    println!("opening file");
     let file = std::fs::File::open(in_path.as_ref())?;
-    println!("opening zip");
     let mut zip_file = ZipArchive::new(file).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
-    println!("getting index");
     let files = zip_file.file_names().map(|s|s.to_owned()).collect::<Vec<_>>();
     
     fn hex_to_byte(&h : &u8)->u8 {
@@ -106,7 +102,6 @@ impl SharedMapping {
 
       meta_slice = tail;
     }
-    println!("{:#?}", file_sizes);
 
     for file_name in files {
       if file_name.as_str() == FILE_SIZES_META_FILENAME { continue; }
@@ -128,7 +123,6 @@ impl SharedMapping {
       
       const HEX_BITS : u32 = 4;
       let index = (hex_to_byte(top) << HEX_BITS | hex_to_byte(bot)) as usize;
-      println!("by name {file_name}");
       let mut file = zip_file.by_name(&file_name).map_err(|_| std::io::Error::other("File failed to be extracted from zip"))?;
       let slab_size =file_sizes[index] ;
       
@@ -274,7 +268,7 @@ use super::*;
         for (value, path) in shared_mapping.to_bytes[each].0.read().unwrap().iter()
         {
           core::assert!(value.len() == SYM_LEN);
-          out.insert(unsafe {core::mem::transmute((&*path.as_raw_slice()).to_owned())}, unsafe {*(value.as_ptr() as *const [u8;SYM_LEN])});
+          out2.insert(unsafe {*(value.as_ptr() as *const [u8;SYM_LEN])}, unsafe {core::mem::transmute((&*path.as_raw_slice()).to_owned())}, );
         }
       }
       

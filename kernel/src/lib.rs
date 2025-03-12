@@ -3,6 +3,7 @@ mod json_parser;
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
     use std::io::Read;
     use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
@@ -131,6 +132,22 @@ mod tests {
             }
             i += 1;
         });
+    }
+
+    #[test]
+    fn transform_multi() {
+        let mut s = Space::new();
+        let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
+        let mut fileb = vec![]; file.read_to_end(&mut fileb);
+        s.load(fileb.as_slice()).unwrap();
+
+        s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
+                                   expr!(s, "[3] Individuals _1 [2] Fullname $")],
+                          expr!(s, "[3] hasName _2 _3"));
+
+        // let mut res = Vec::<u8>::new();
+        // s.dump(&mut res).unwrap();
+        // println!("{}", String::from_utf8(res).unwrap());
     }
 
     const LOGICSEXPR0: &str = r#"(axiom (= (L $x $y $z) (R $x $y $z)))

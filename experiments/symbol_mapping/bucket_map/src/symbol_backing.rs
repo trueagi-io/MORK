@@ -103,6 +103,7 @@ impl ThinBytes {
     }
   }
 
+  /// this is only for debugging
   #[doc(hidden)]
   pub unsafe fn as_raw(self)->*const [u8] {
     self.as_raw_slice()

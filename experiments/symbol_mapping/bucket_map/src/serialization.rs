@@ -40,7 +40,7 @@ impl SharedMapping {
           // the top two bytes of sym is intentionaly left as zeroes
           count += buffer.write(&o[2..])?;
 
-          count += if sym_len < i8::MAX as usize {
+          count += if sym_len <= i8::MAX as usize{
             buffer.write(&[!(sym_len as u8)])?
           } else {
             buffer.write(&(sym_len as u64).to_be_bytes())?
@@ -78,8 +78,8 @@ impl SharedMapping {
     let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<ThinBytes>::new());
 
     let file = std::fs::File::open(in_path.as_ref())?;
-    let mut zip_file = ZipArchive::new(file).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
-    let files = zip_file.file_names().map(|s|s.to_owned()).collect::<Vec<_>>();
+    let mut zip_archive = ZipArchive::new(file).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
+    let files = zip_archive.file_names().map(|s|s.to_owned()).collect::<Vec<_>>();
     
     fn hex_to_byte(&h : &u8)->u8 {
       match h {
@@ -91,7 +91,7 @@ impl SharedMapping {
 
     let mut file_sizes = [0_usize; MAX_WRITER_THREADS];
     let mut meta = Vec::new();
-    zip_file.by_name(FILE_SIZES_META_FILENAME)?.read_to_end(&mut meta)?;
+    zip_archive.by_name(FILE_SIZES_META_FILENAME)?.read_to_end(&mut meta)?;
     let mut meta_slice = &meta[..];
     if meta_slice.len() as u32 % (2*u64::BITS/u8::BITS) != 0 { return Err(std::io::Error::other("Malformed metadata file"));  }
 
@@ -123,7 +123,7 @@ impl SharedMapping {
       
       const HEX_BITS : u32 = 4;
       let index = (hex_to_byte(top) << HEX_BITS | hex_to_byte(bot)) as usize;
-      let mut file = zip_file.by_name(&file_name).map_err(|_| std::io::Error::other("File failed to be extracted from zip"))?;
+      let mut zip_file = zip_archive.by_name(&file_name).map_err(|_| std::io::Error::other("File failed to be extracted from zip"))?;
       let slab_size =file_sizes[index] ;
       
       unsafe {
@@ -136,11 +136,11 @@ impl SharedMapping {
       
         // 6 byte symbol padding between the strings will persist, but this should dramatically load speed.
         let mut start = 0;
-        while let diff @ 1..=usize::MAX = file.read(&mut slab_slice[start..slab_size])? {
+        while let diff @ 1..=usize::MAX = zip_file.read(&mut slab_slice[start..slab_size])? {
           start += diff;
         }
         
-        drop(file);
+        drop(zip_file);
       
         // at this point we are done with the file. We have to parse the slice inside the slab
       
@@ -159,16 +159,17 @@ impl SharedMapping {
           let leading_byte = to_parse_0[0];
       
           // read out the length
-          let (length, to_parse_2) = if (leading_byte | (1 << u8::BITS-1)) == 0 {
+          let (length, to_parse_2) = if (leading_byte as i8).is_negative()
+          { let Some((_, to_parse_1)) = to_parse_0.split_at_checked(1) else { return Err(std::io::Error::other(concat!("Malformed data, expected length byte, file : ", file!(), ", line : ", line!() ))); };
+            ((!leading_byte) as usize, to_parse_1)
+          } else {
             let Some((len_bytes, to_parse_1)) = to_parse_0.split_at_checked(8) else { return Err(std::io::Error::other(concat!("Malformed data, expected 8 length bytes, file : ", file!(), ", line : ", line!() )));};
             (u64::from_be_bytes((len_bytes.as_ptr() as *const [u8;8]).read()) as usize, to_parse_1)
-          } else {
-            let Some((_, to_parse_1)) = to_parse_0.split_at_checked(1) else { return Err(std::io::Error::other(concat!("Malformed data, expected length byte, file : ", file!(), ", line : ", line!() ))); };
-            ((!leading_byte) as usize, to_parse_1)
           };
       
           max_symbol = max_symbol.max(u64::from_be_bytes(sym));
       
+
           to_symbol[bounded_pearson_hash::<{crate::PEARSON_BOUND}>(&to_parse[0..length]) as usize % MAX_WRITER_THREADS].insert(&to_parse_2[0..length], sym);         
           to_bytes[index].insert(&sym, ThinBytes(to_parse_0.as_ptr()));
         
@@ -195,8 +196,9 @@ impl SharedMapping {
   }
 
 
+  /// this is only for debugging
   #[doc(hidden)]
-  fn reveal_tables<'a>(&'a self) -> Tables<'a> {
+  pub fn reveal_tables<'a>(&'a self) -> Tables<'a> {
     let mut to_bytes = Vec::new();
     for each in self.to_bytes.iter() {
       let lock = each.0.read().unwrap();
@@ -212,6 +214,7 @@ impl SharedMapping {
   }
 }
 
+/// this is only for debugging
 #[doc(hidden)]
 struct Tables<'a> {
   to_symbol : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<Symbol>>>,
@@ -223,10 +226,36 @@ struct Tables<'a> {
 mod test {
   use std::collections::BTreeMap;
 
-use super::*;
+  use super::*;
+
+  #[test]
+  fn serialize_long() {
+    const LEN : usize = 4096*2; 
+    static ONES : [u8 ; LEN]= [1;LEN];
+  
+  
+    let handle = SharedMapping::new();
+  
+    let writer = handle.try_aquire_permission().unwrap();
+  
+    for each in 0..LEN {     // original test
+      writer.get_sym_or_insert(&ONES[0..each]);
+    }
+  
+    let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("serialize_long.zip");
+  
+    handle.serialize(&path).unwrap();
+    let load = SharedMapping::deserialize(&path).unwrap();
+    
+    core::assert_eq!(
+      handle.to_bytes[0].0.read().unwrap().val_count(),
+      load.to_bytes[0].0.read().unwrap().val_count()
+    );
+  }
 
   #[test]
   fn trivial_serialize() {
+
     let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("trivial_serialize.zip");
     
     const ALPHA_NUM : &'static [u8] = b"abcdefghijklmnopqrstuvwxyz\

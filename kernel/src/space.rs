@@ -551,4 +551,8 @@ impl Space {
         // println!("#symbols {}", self.sm.symbol_count());
         process::exit(0);
     }
+
+    pub fn into_map(self) -> BytesTrieMap<()> {
+        self.btm
+    }
 }

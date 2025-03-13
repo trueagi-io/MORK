@@ -14,18 +14,34 @@ use crate::BoxedErr;
 /// The results of a user's command, and errors in particular, will be written to the status map so the
 /// user can check them, and so future commands don't proceed if their required resources are in a bad
 /// or unready state.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(tag = "status")]
 #[serde(rename_all = "camelCase")]
 pub enum StatusRecord {
     #[default]
     PathClear,
-    PathInUse,
+    CountResult(CountResult),
+    // PathInUseForRead,
+    // PathInUseForWrite,
+    PathInUse, //GOAT, need to track read and write separately so two commands reading the same path don't conflict!!, and make sure we actually do correct exclusivity checking
     AccessForbidden,
-    FetchError(FetchError)
+    FetchError(FetchError),
+    ParseError(ParseError),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CountResult {
+    count: usize
+}
+
+impl From<usize> for CountResult {
+    fn from(count: usize) -> Self {
+        Self{ count }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FetchError {
     pub(crate) log_message: String,
@@ -38,9 +54,20 @@ fn serialize_status_code<S: Serializer>(status_code: &StatusCode, serializer: S)
 
 impl FetchError {
     pub fn new<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
-        Self {
-            status_code, log_message: log_message.into()
-        }
+        Self { status_code, log_message: log_message.into() }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseError {
+    //TODO, Eventually we probably want specific parse errors, such as line number / byte offset, etc.
+    pub(crate) log_message: String,
+}
+
+impl ParseError {
+    pub fn new<M: Into<String>>(log_message: M) -> Self {
+        Self { log_message: log_message.into() }
     }
 }
 
@@ -52,9 +79,13 @@ impl StatusRecord {
     fn can_reset(&self) -> bool {
         match self {
             Self::PathClear => true,
+            Self::CountResult(_) => true,
+            // Self::PathInUseForRead => false,
+            // Self::PathInUseForWrite => false,
             Self::PathInUse => false,
             Self::AccessForbidden => false,
             Self::FetchError(_) => true,
+            Self::ParseError(_) => true,
         }
     }
 }
@@ -114,9 +145,16 @@ impl StatusMap {
     }
 
     /// Sets the status in the map to affect a future operation
-    pub fn set_status(&self, path: &[u8], new_status: StatusRecord) -> Result<(), BoxedErr> {
+    pub fn set_status(&self, path: &[u8], new_status: StatusRecord, expected_status: StatusRecord) -> Result<(), BoxedErr> {
         let mut wz = self.zh.write_zipper_at_exclusive_path(path)?;
-        wz.set_value(new_status).ok_or_else(|| format!("set_status: expected clear path but found existing status.  path: {path:?}"))?;
+        match wz.set_value(new_status) {
+            Some(old_status) => {
+                if old_status != expected_status {
+                    return Err(format!("set_status: expected {expected_status:?} but found {old_status:?}.  path: {path:?}").into())
+                }
+            },
+            None => {}
+        }
         Ok(())
     }
 

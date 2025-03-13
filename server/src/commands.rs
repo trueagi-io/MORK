@@ -2,7 +2,10 @@
 use core::any::Any;
 use core::pin::Pin;
 use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::io::Read;
 
+use pathmap::zipper::{ZipperCreation, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -10,8 +13,10 @@ use hyper::StatusCode;
 use hyper::body::Bytes;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
-use super::status_map::{StatusRecord, FetchError};
+use super::status_map::{StatusRecord, FetchError, ParseError};
 use super::resource_store::ResourceHandle;
+
+use mork::space::Space;
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -45,6 +50,69 @@ impl CommandDefinition for BusywaitCmd {
         }).await;
         Ok("ACK. Waiting".into())
     }
+}
+
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// count
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Returns a count of values below the specified path.
+pub struct CountCmd;
+
+impl CommandDefinition for CountCmd {
+    const NAME: &'static str = "count";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "map_path",
+            desc: "The path in the map from which to count the values",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+        //Flag this path in the map as being busy, and therefore off-limits to other operations
+        let map_path = cmd.args[0].as_path();
+        ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
+            CommandError::from_status_record(status, format!("Error accssing path {map_path:?}"))
+        })?;
+        Ok(None)
+    }
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        tokio::task::spawn(async move {
+            match do_count(&ctx, thread.unwrap(), &cmd).await {
+                Ok(()) => {},
+                Err(err) => {
+                    println!("Internal Error occurred during count: {err:?}"); //GOAT Log this error
+                    let _ = ctx.0.status_map.clear_status(cmd.args[0].as_path());
+                }
+            }
+            async { () }
+        });
+        Ok("ACK. Starting Count".into())
+    }
+}
+
+async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command) -> Result<(), CommandError> {
+
+    let ctx_clone = ctx.clone();
+    let path = cmd.args[0].as_path().to_vec();
+    tokio::task::spawn_blocking(move || -> Result<(), CommandError> {
+        let rz = ctx_clone.0.primary_map.read_zipper_at_borrowed_path(&path)?;
+        let count = rz.val_count();
+
+        ctx_clone.0.status_map.set_status(&path, StatusRecord::CountResult(count.into()), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err))?;
+        Ok(())
+    }).await??;
+
+    thread.finalize().await;
+    println!("Count command successful"); //GOAT Log this!
+    Ok(())
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -97,8 +165,16 @@ impl CommandDefinition for ImportCmd {
         // fetch takes too long.  So it we always return success, and then caller has one fewer
         // case to worry about.
 
-        //Spin off a task to handle the download, which will, in turn, kick off the rest of the operations
-        tokio::task::spawn(import_do_download(ctx, thread.unwrap(), cmd, resources));
+        tokio::task::spawn(async move {
+            match do_import(&ctx, thread.unwrap(), &cmd, resources).await {
+                Ok(()) => {},
+                Err(err) => {
+                    println!("Internal Error occurred during import: {err:?}"); //GOAT Log this error
+                    let _ = ctx.0.status_map.clear_status(cmd.args[0].as_path());
+                }
+            }
+            async { () }
+        });
         Ok("ACK. Starting Import".into())
     }
 }
@@ -107,49 +183,127 @@ struct ImportCmdResources {
     file: ResourceHandle
 }
 
-async fn import_do_download(ctx: MorkService, thread: WorkThreadHandle, cmd: Command, resources: Option<Resources>) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: Option<Resources>) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
     let mut resources = resources.unwrap().downcast::<ImportCmdResources>().unwrap();
     let map_path = cmd.args[0].as_path();
 
+    // Do the remote fetching
+    //========================
     let mut response = ctx.0.http_client.get(&*file_uri).send().await?;
-    if response.status().is_success() {
-
-        let mut writer = BufWriter::new(File::create(resources.file.path()?).await?);
-
-        while let Some(chunk) = response.chunk().await? {
-            writer.write(&*chunk).await?;
-        }
-        writer.flush().await?;
-
-        println!("Successful download: file saved to '{:?}'", resources.file.path()?); //GOAT Log this sucessful completion
-
-        //Now start the parsing
-        tokio::task::spawn_blocking(move || {
-
-            //GOAT, placeholder.  Call parser here
-            std::thread::sleep(std::time::Duration::from_millis(2000));
-
-        }).await.map(|_| ()).map_err(|err| CommandError::internal(err))?;
-
-        //Finalize the resource and remove the lock on the path
-        let timestamp = 987654321; //GOAT, use a real timestamp
-        resources.file.finalize(timestamp).await?;
-        ctx.0.status_map.clear_status(map_path).map_err(|err| CommandError::internal(err))?;
-
-        thread.finalize().await;
-        println!("Sucessfully parsed and loaded the file"); //GOAT Log this!
-    } else {
-        println!("Failed to load remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
-
-        //Update the status map, so the client can see what happened when they try to read from this path
+    if !response.status().is_success() {
+        //User-facing error
+        println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
         let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
-        match ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err)) {
-            Ok(()) => {},
-            Err(err) => {return Err(CommandError::internal(err))}
-        }
+        return ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
     }
+
+    let mut writer = BufWriter::new(File::create(resources.file.path()?).await?);
+
+    //GOAT!!!  We need to communicate back to the user if the download craps out in the middle
+    while let Some(chunk) = response.chunk().await? {
+        writer.write(&*chunk).await?;
+    }
+    writer.flush().await?;
+
+    println!("Successful download from '{}', file saved to '{:?}'", file_uri, resources.file.path()?); //GOAT Log this sucessful completion
+
+    // Do the Parsing
+    //========================
+    let file_path = resources.file.path()?.to_owned();
+    let file_type = match detect_file_type(&file_path, file_uri) {
+        Ok(file_type) => file_type,
+        Err(err) => {
+            //User-facing error
+            println!("Import Failed. Unrecognized file type: {err:?}"); //GOAT, log this failure
+            let parse_err = ParseError::new(format!("Failed to recognize file format: {err:?}"));
+            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
+        }
+    };
+
+    let space = match tokio::task::spawn_blocking(move || {
+        import_do_parse(file_path, file_type)
+    }).await.map_err(|err| CommandError::internal(err))? {
+        Ok(space) => space,
+        Err(err) => {
+            //User-facing error
+            println!("Import Failed. Parse error: {err:?}"); //GOAT, log this failure
+            let parse_err = ParseError::new(format!("Failed to parse file: {err:?}"));
+            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
+        }
+    };
+
+    // Graft the data into the map and wrap up
+    //========================
+    let map = space.into_map();
+    let mut wz = ctx.0.primary_map.write_zipper_at_exclusive_path(map_path).map_err(|err| CommandError::internal(err))?;
+    wz.graft_map(map);
+
+    //Finalize the resource and remove the lock on the path
+    let timestamp = 987654321; //GOAT, use the real timestamp from this command.
+    resources.file.finalize(timestamp).await?;
+    ctx.0.status_map.clear_status(map_path).map_err(|err| CommandError::internal(err))?;
+
+    thread.finalize().await;
+    println!("Import command successful"); //GOAT Log this!
     Ok(())
+}
+
+enum InputDataType {
+    Metta, Json, Csv
+}
+
+/// Detects the type of file based on its name and/or contents
+fn detect_file_type(_file_path: &Path, uri: &str) -> Result<InputDataType, CommandError> {
+    let file_extension_err = || { CommandError::internal(format!("Unrecognized extension on file in url: {:?}", uri)) };
+
+    let start_char = uri.len()-6.min(uri.len());
+    let extension_start = uri[start_char..].rfind('.').ok_or_else(file_extension_err)? + start_char + 1;
+    let extension = &uri[extension_start..];
+
+    match extension {
+        "metta" |
+        "MeTTa" => Ok(InputDataType::Metta),
+        "json" |
+        "JSON" => Ok(InputDataType::Json),
+        "csv" => Ok(InputDataType::Csv),
+        _ => { Err(file_extension_err()) }
+    }
+}
+
+fn import_do_parse(file_path: PathBuf, file_type: InputDataType) -> Result<Space, CommandError> {
+    let mut space = Space::new();
+    match file_type {
+        InputDataType::Metta => {
+            //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
+            // I'm sure the parser is capable of streaming or chunking but I gotta
+            // figure out the right way to chunk the input without corrupting any data
+            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut buffer = Vec::new();
+            file_handle.read_to_end(&mut buffer)?;
+            let count = space.load(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            println!("Loaded {count} atoms from MeTTa S-Expr file: {file_path:?}");
+        },
+        InputDataType::Json => {
+            //GOAT, Same applies here about buffering the whole file.  The file-reading code
+            // if copy-pasta because it seems likely we'll want to open and stream the file
+            // differently depending on the format.  It not, it's easy to refactor.
+            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut buffer = Vec::new();
+            file_handle.read_to_end(&mut buffer)?;
+            let count = space.load_json(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            println!("Loaded {count} atoms from JSON file: {file_path:?}");
+        },
+        InputDataType::Csv => {
+            //GOAT, Same applies here about buffering the whole file
+            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut buffer = Vec::new();
+            file_handle.read_to_end(&mut buffer)?;
+            let count = space.load_csv(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            println!("Loaded {count} atoms from CSV file: {file_path:?}");
+        },
+    }
+    Ok(space)
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -326,9 +480,11 @@ impl CommandError {
     pub fn from_status_record<M: Into<String>>(status_record: StatusRecord, log_message: M) -> Self {
         match status_record {
             StatusRecord::PathClear => unreachable!(),
+            StatusRecord::CountResult(_) => unreachable!(),
             StatusRecord::AccessForbidden => Self::external(StatusCode::FORBIDDEN, log_message),
             StatusRecord::PathInUse => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
+            StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
         }
     }
 }

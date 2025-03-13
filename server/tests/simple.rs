@@ -199,7 +199,7 @@ async fn import_request_test() -> Result<(), Error> {
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathInUse");
 
     //Now sleep for a bit (600ms), and then check that we can inspect the path.
-    std::thread::sleep(std::time::Duration::from_millis(2600)); //GOAT, put this back to 600ms
+    std::thread::sleep(std::time::Duration::from_millis(600)); //GOAT, put this back to 600ms
     let response = reqwest::get(STATUS_URL).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;
@@ -207,8 +207,19 @@ async fn import_request_test() -> Result<(), Error> {
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
 
-    //Finally, check that we got the right data in the path
-    //GOAT
+    //Finally, check that we got the right data in the path by using the count command
+    const COUNT_URL: &str = "http://127.0.0.1:8000/count/royals/";
+    let response = reqwest::get(COUNT_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response = reqwest::get(STATUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "countResult");
+    assert_eq!(response_json.get("count").unwrap().as_i64().unwrap(), 13);
 
     //2. Now test a bogus URL, to make sure we can get the error back
     const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
@@ -230,7 +241,27 @@ async fn import_request_test() -> Result<(), Error> {
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "fetchError");
 
-    //3. Now test a situation where we make a request for the same file at two different paths
+    //3. Try with a file that we don't know how to load
+    const BAD_FILE_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md";
+    let response = reqwest::get(BAD_FILE_URL).await?;
+    if !response.status().is_success() {
+        println!("{}", response.text().await?);
+        panic!()
+    }
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    assert!(response_text.starts_with("ACK"));
+
+    //Now sleep for a bit (600ms), and check that the path contains the correct error
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let response = reqwest::get(STATUS_URL).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "parseError");
+
+    //4. Now test a situation where we make a request for the same file at two different paths
     // Since the file caching works on a per-resource basis, the second request should be denied
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {

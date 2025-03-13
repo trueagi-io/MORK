@@ -145,6 +145,7 @@ fn allocate_many() {
   // const LEN : usize = 5449;      // breaking point with all dense nodes off
   // const LEN : usize = 4096*32; // original test
   const LEN : usize = 4096*2; 
+  // const LEN : usize = 132; 
   static ONES : [u8 ; LEN]= [1;LEN];
 
 
@@ -158,4 +159,14 @@ fn allocate_many() {
     println!("LEN : {each}");
     writer.get_sym_or_insert(&ONES[0..each]);
   }
+
+  // println!("{:?}", handle.to_bytes[0].0.read().unwrap().val_count());
+  let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("allocate_many.zip");
+
+  println!("{:?}", handle.to_bytes[0].0.read().unwrap().val_count());
+    handle.serialize(&path).unwrap();
+    let load = SharedMapping::deserialize(&path).unwrap();
+  println!("{:?}", load.to_bytes[0].0.read().unwrap().val_count());
+    
+
 }

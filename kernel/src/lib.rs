@@ -3,6 +3,9 @@ mod json_parser;
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::Read;
+    use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
     use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
     use crate::{expr, sexpr};
@@ -13,7 +16,7 @@ mod tests {
     fn parse_sexpr() {
         let input = "(foo bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load(input.as_bytes()).unwrap(), 1);
+        assert_eq!(s.load_sexpr(input.as_bytes()).unwrap(), 1);
         let mut res = Vec::<u8>::new();
         s.dump(&mut res).unwrap();
         assert_eq!(input, String::from_utf8(res).unwrap());
@@ -99,7 +102,7 @@ mod tests {
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load(SEXPRS0.as_bytes()).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes()).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |e| {
@@ -116,7 +119,7 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load(SEXPRS0.as_bytes()).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes()).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
@@ -129,5 +132,85 @@ mod tests {
             }
             i += 1;
         });
+    }
+
+    #[test]
+    fn transform_multi() {
+        let mut s = Space::new();
+        let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
+        let mut fileb = vec![]; file.read_to_end(&mut fileb);
+        s.load(fileb.as_slice()).unwrap();
+
+        s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
+                                   expr!(s, "[3] Individuals _1 [2] Fullname $")],
+                          expr!(s, "[3] hasName _2 _3"));
+
+        // let mut res = Vec::<u8>::new();
+        // s.dump(&mut res).unwrap();
+        // println!("{}", String::from_utf8(res).unwrap());
+    }
+
+    const LOGICSEXPR0: &str = r#"(axiom (= (L $x $y $z) (R $x $y $z)))
+(axiom (= (L 1 $x $y) (R 1 $x $y)))
+(axiom (= (R $x (L $x $y $z) $w) $x))
+(axiom (= (R $x (R $x $y $z) $w) $x))
+(axiom (= (R $x (L $x $y $z) $x) (L $x (L $x $y $z) $x)))
+(axiom (= (L $x $y (\ $y $z)) (L $x $y $z)))
+(axiom (= (L $x $y (* $z $y)) (L $x $y $z)))
+(axiom (= (L $x $y (\ $z 1)) (L $x $z $y)))
+(axiom (= (L $x $y (\ $z $y)) (L $x $z $y)))
+(axiom (= (L $x 1 (\ $y 1)) (L $x $y 1)))
+(axiom (= (T $x (L $x $y $z)) $x))
+(axiom (= (T $x (R $x $y $z)) $x))
+(axiom (= (T $x (a $x $y $z)) $x))
+(axiom (= (T $x (\ (a $x $y $z) $w)) (T $x $w)))
+(axiom (= (T $x (* $y $y)) (T $x (\ (a $x $z $w) (* $y $y)))))
+(axiom (= (R (/ 1 $x) $x (\ $x 1)) (\ $x 1)))
+(axiom (= (\ $x 1) (/ 1 (L $x $x (\ $x 1)))))
+(axiom (= (L $x $x $x) (* (K $x (\ $x 1)) $x)))"#;
+
+    #[test]
+    fn subsumption() {
+        let mut s = Space::new();
+        s.load(LOGICSEXPR0.as_bytes()).unwrap();
+
+        // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
+        s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |e| c_out += 1);
+        assert_eq!(c_in, c_out);
+
+        let mut res = Vec::<u8>::new();
+        s.dump(&mut res).unwrap();
+        println!("{}", String::from_utf8(res).unwrap());
+    }
+
+    #[test]
+    fn big_subsumption() {
+        let mut s = Space::new();
+        let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta")
+          .expect("Should have been able to read the file");
+        let mut buf = vec![];
+        file.read_to_end(&mut buf).unwrap();
+        s.load(&buf[..]).unwrap();
+
+        // expr!(s, "[2] flip [3] \"=\" _2 _1")
+        // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
+        // s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
+        // s.query(expr!(s, "[2] axiom [3] = $ $"), |e| { println!("> {}", sexpr!(s, e)) });
+        let t0 = Instant::now();
+        let mut k = 0;
+        s.query(expr!(s, "$x"), |e| {
+            k += 1;
+            std::hint::black_box(e);
+            // println!("> {}", sexpr!(s, e))
+        });
+        println!("iterating all ({}) took {} microseconds", k, t0.elapsed().as_micros());
+
+
+
+        // let mut res = Vec::<u8>::new();
+        // s.dump(&mut res).unwrap();
+        // println!("{}", String::from_utf8(res).unwrap());
     }
 }

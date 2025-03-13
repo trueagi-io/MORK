@@ -59,7 +59,7 @@ impl Slab {
         1
       } else { 
         // new version for serialization
-        (head as *mut [u8;8]).write_unaligned((len as u64).to_be_bytes());
+        (head as *mut [u8;8]).write((len as u64).to_be_bytes());
 
         // // old version
         // (head as *mut u64).write_unaligned(len as u64);
@@ -79,21 +79,21 @@ impl Slab {
 
 
 /// [`ThinBytes`] is a private type that will be used to point to symbols in the symbol store. the first byte it points to is descibes the length.
-/// if top bit set, the lenght is the bitwise not of that byte.
+/// if top bit set, the length is the bitwise not of that byte.
 /// if the top is not set, read that byte and the next three as a u32 and use that as the length.
 #[derive(Clone, Copy)]
-pub(crate) struct ThinBytes(pub(crate) *const u8);
+pub struct ThinBytes(pub(crate) *const u8);
 
 impl ThinBytes {
   pub(crate) fn as_raw_slice(self) -> *const [u8] {
     unsafe {
       let tag = *self.0;
 
-      let (ptr, len) = if (1<<u8::BITS-1) & tag != 0 {
+      let (ptr, len) = if ((1<<u8::BITS-1) & tag) != 0 {
         (self.0.byte_add(1),(!tag) as usize)
       } else {
         // new version for serialization
-        (self.0.byte_add(U64_BYTES), u64::from_be_bytes((self.0 as *const [u8;8]).read_unaligned()) as usize)
+        (self.0.byte_add(U64_BYTES), u64::from_be_bytes(*(self.0 as *const [u8;U64_BYTES])) as usize)
 
         // // old version
         // (self.0.byte_add(U64_BYTES), (self.0 as *const u64).read_unaligned() as usize)
@@ -101,6 +101,12 @@ impl ThinBytes {
 
       core::slice::from_raw_parts(ptr, len)
     }
+  }
+
+  /// this is only for debugging
+  #[doc(hidden)]
+  pub unsafe fn as_raw(self)->*const [u8] {
+    self.as_raw_slice()
   }
 }
 

@@ -7,3 +7,4 @@ edition = "2021"
 pathmap = { workspace=true }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace=true }
+libz-sys = "1.1.21"

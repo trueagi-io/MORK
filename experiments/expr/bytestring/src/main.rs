@@ -1139,12 +1139,12 @@ impl <'a> Drop for AExpr<'a>  {
 }
 
 pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
-        where Bytes : AsRef<[u8]>, Body : Fn(fn(Bytes) -> Expr) -> () {
-    let allocf = |bs: Bytes| {
+        where Bytes : AsRef<[u8]>, Body : Fn(&mut dyn FnMut(Bytes) -> Expr) -> () {
+    let mut allocf = |bs: Bytes| {
         alloc.top().extend_from_slice(bs.as_ref());
         Expr { ptr: alloc.top().as_mut_ptr() }
     };
-    body(allocf);
+    body(&mut allocf);
     alloc.top().set_len(0)
 }
 

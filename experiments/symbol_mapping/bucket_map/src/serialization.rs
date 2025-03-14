@@ -216,15 +216,15 @@ impl SharedMapping {
 
 /// this is only for debugging
 #[doc(hidden)]
-struct Tables<'a> {
-  to_symbol : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<Symbol>>>,
-  to_bytes  : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<ThinBytes>>>
+pub struct Tables<'a> {
+  pub to_symbol : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<Symbol>>>,
+  pub to_bytes  : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<ThinBytes>>>
 }
 
 
 #[cfg(test)]
 mod test {
-  use std::collections::BTreeMap;
+  use std::{collections::BTreeMap, path::PathBuf};
 
 
 
@@ -262,7 +262,7 @@ use super::*;
       match val {
         Some(id) => core::assert!(unsafe {&(*id.as_raw_slice())[..]}.iter().all(|c| c.is_ascii_alphanumeric())),
         None => (),
-          };
+      };
     });
 
     core::assert!(unsafe {cmp_mappings(&handle, &load)});
@@ -348,3 +348,4 @@ use super::*;
   }
 
 }
+

@@ -139,7 +139,7 @@ mod tests {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb);
-        s.load(fileb.as_slice()).unwrap();
+        s.load_sexpr(fileb.as_slice()).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = Space::new();
-        s.load(LOGICSEXPR0.as_bytes()).unwrap();
+        s.load_sexpr(LOGICSEXPR0.as_bytes()).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
@@ -192,7 +192,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load(&buf[..]).unwrap();
+        s.load_sexpr(&buf[..]).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));

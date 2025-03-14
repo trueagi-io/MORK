@@ -820,7 +820,7 @@ impl Space {
         Ok((nodes, attributes))
     }
 
-    pub fn load(&mut self, r: &[u8]) -> Result<usize, String> {
+    pub fn load_sexpr(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut it = Context::new(r);
 
         let t0 = Instant::now();

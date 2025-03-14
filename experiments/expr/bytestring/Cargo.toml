@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 smallvec = "1.13.2"
-freeze = "0.1.1"
+freeze = { workspace=true }

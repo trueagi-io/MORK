@@ -25,6 +25,8 @@ mork = {path = "./kernel"}
 bucket_map = {path = "./experiments/symbol_mapping/bucket_map"}
 
 # External to MORK
+freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" }
+
 [workspace.dependencies.pathmap]
 path = "../PathMap"
 #features = ["jemalloc"]

@@ -1,9 +1,7 @@
-use std::fmt::{format, Formatter};
-use std::mem;
-use std::ptr::slice_from_raw_parts;
-use std::str::Utf8Error;
+#[allow(unused_imports)]
+use std::{fmt::{format, Formatter}, mem, ptr::slice_from_raw_parts, str::Utf8Error};
 use mork_bytestring::*;
-
+#[allow(unused)]
 fn traverse(ez: &mut ExprZipper) {
     loop {
         let d = ez.trace.len();
@@ -49,7 +47,7 @@ fn subexpr() {
     assert!(ez.next());
     assert!(ez.next());
     println!("after 3 next: {}", ez.item_str());
-    let mut sez = ExprZipper::new(ez.subexpr());
+    let sez = ExprZipper::new(ez.subexpr());
     // sez.traverse(0);
     println!("{:?}", sez.root);
 }
@@ -137,7 +135,7 @@ fn substitute() {
     // (F foo); (Bar $ $)
     let mut data = vec![vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'F', item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o'],
                                     vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'B', b'a', b'r', item_byte(Tag::NewVar), item_byte(Tag::NewVar)]];
-    let se = data.iter_mut().map(|mut i| Expr{ ptr: i.as_mut_ptr() }).collect::<Vec<Expr>>();
+    let se = data.iter_mut().map(|i| Expr{ ptr: i.as_mut_ptr() }).collect::<Vec<Expr>>();
     // (image (Rel $ $) (Im _2))
     let mut exprv = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'i', b'm', b'a', b'g', b'e',
                                     item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'R', b'e', b'l', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
@@ -951,7 +949,7 @@ fn counts() {
                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
-    let mut e = Expr { ptr: ev.as_mut_ptr() };
+    let e = Expr { ptr: ev.as_mut_ptr() };
     assert!(e.size() == 10 && e.symbols() == 4 && e.leaves() == 6 && e.newvars() == 1);
 }
 
@@ -962,7 +960,7 @@ fn unbound() {
                       item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
                       item_byte(Tag::NewVar),
                       item_byte(Tag::VarRef(0))];
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(!e.has_unbound());
     }
     {
@@ -970,7 +968,7 @@ fn unbound() {
                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
                           item_byte(Tag::NewVar),
                           item_byte(Tag::VarRef(1))];
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(!e.has_unbound());
     }
     {
@@ -978,7 +976,7 @@ fn unbound() {
                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
                           item_byte(Tag::NewVar),
                           item_byte(Tag::VarRef(2))];
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(e.has_unbound());
     }
 }
@@ -987,37 +985,37 @@ fn unbound() {
 fn forward_references() {
     {
         let mut ev = parse!("[2] _1 $");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(0), 1)
     }
     {
         let mut ev = parse!("[2] _1 $");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(1), 0)
     }
     {
         let mut ev = parse!("[2] $ _1");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(0), 0)
     }
     {
         let mut ev = parse!("[4] R _1 _2 _3");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(0), 3)
     }
     {
         let mut ev = parse!("[4] R $ _2 _3");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(0), 2)
     }
     {
         let mut ev = parse!("[4] R $ _2 _3");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(1), 1)
     }
     {
         let mut ev = parse!("[4] R _2 _2 _2");
-        let mut e = Expr { ptr: ev.as_mut_ptr() };
+        let e = Expr { ptr: ev.as_mut_ptr() };
         assert_eq!(e.forward_references(0), 1)
     }
 }
@@ -1079,6 +1077,7 @@ fn unification() {
         let rhs = Expr{ ptr: rhsv.as_mut_ptr() };
 
         let mut sdbv = vec![0; 100];
+        #[allow(unused_variables)]
         let sdb = Expr{ ptr: sdbv.as_mut_ptr() };
         // rhs.equate_var(1, 0, &mut ExprZipper::new(sdb));
         // lhs.equate_var(1, 0, &mut ExprZipper::new(sdb));
@@ -1151,8 +1150,6 @@ pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
 #[test]
 fn transform() {
     let mut buf0 = BumpAllocRef::new();
-    let mut buf1 = BumpAllocRef::new();
-    let mut buf2 = BumpAllocRef::new();
     with_buffer(&mut buf0, |alloc| {
         let src = alloc(parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"));
         // let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
@@ -1263,7 +1260,7 @@ fn to_string() {
                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
     // note the \0 is missing
-    let mut ez = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
+    let ez = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
     let s = "(= (func $) (add\x00 (\\x7\\x5b\\xcd\\x15 _1)))";
 
     assert_eq!(format!("{:?}", ez.root), s);

@@ -1,6 +1,6 @@
+#![allow(non_snake_case)]
 use std::fs::File;
 use std::io::Read;
-use std::ptr;
 
 
 #[derive(Copy, Clone)]
@@ -28,6 +28,7 @@ pub struct ExprZipper {
   trace: Vec<Breadcrumb>,
 }
 
+#[allow(unused)]
 impl ExprZipper {
   pub fn new(e: Expr) -> Self {
     match unsafe { *e.ptr } { // todo, should a zipper be allowed on a single item?

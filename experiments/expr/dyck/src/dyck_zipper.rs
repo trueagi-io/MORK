@@ -429,6 +429,7 @@ impl DyckStructureZipperU64 {
   }
 }
 
+#[allow(unused)]
 pub enum DFSLeftToRightAction {
   Root,
   DecendLeft,
@@ -444,5 +445,6 @@ pub enum DFSLeftToRightAction {
 /// 0b0..0101100                    [L R R L L]
 /// 0b1........1 rightmost element of a dyck word 0b01..(32 ones)..10..(31 zeroes)..0
 /// ```
+#[allow(unused)]
 #[derive(Clone, Copy)]
 pub struct TraversalPath(u32);

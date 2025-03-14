@@ -1,8 +1,11 @@
-use std::fmt::{Debug, format, Formatter, Write};
-use std::{mem, ops, ptr};
-use std::ops::ControlFlow;
+#[allow(unused_imports)]
+use std::{
+    fmt::{format, Debug, Formatter, Write}, 
+    mem, 
+    ops::{self, ControlFlow}, 
+    ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
+};
 use smallvec::SmallVec;
-use std::ptr::{null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
@@ -316,7 +319,7 @@ impl Expr {
                         ez.write_var_ref(r - 1);
                     }
                 }
-                Tag::SymbolSize(s) => {  }
+                Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
             }
 
@@ -349,7 +352,7 @@ impl Expr {
                         // unreachable!()
                     }
                 }
-                Tag::SymbolSize(s) => {  }
+                Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
             }
 
@@ -381,7 +384,7 @@ impl Expr {
             // println!("item {} {:?}", sez.loc, sez.item());
             match sez.item() {
                 Ok(Tag::VarRef(i)) => {
-                    let mut offset = r as i32 + displaced +i as i32;
+                    let offset = r as i32 + displaced +i as i32;
                     assert!(offset >= 0);
                     let ri = offset as usize;
                     if i > r { // in this expr or later
@@ -586,7 +589,7 @@ impl Expr {
                     }
                     return self.unification(other, o)
                 }
-                (lhs, Ok(Tag::NewVar)) => {
+                (_lhs, Ok(Tag::NewVar)) => {
                     println!("lhs-$");
                     unsafe {
                         println!("  self  {:?}", serialize(&*self.span()));
@@ -611,7 +614,7 @@ impl Expr {
                     }
                     return self.unification(other, o)
                 }
-                (Ok(Tag::NewVar), rhs) => {
+                (Ok(Tag::NewVar), _rhs) => {
                     println!("$-rhs");
                     unsafe {
                         println!("  self  {:?}", serialize(&*self.span()));
@@ -700,6 +703,7 @@ impl Expr {
         }
     }
 
+    #[allow(non_snake_case)]
     pub fn transformData(self, pattern: Expr, template: Expr, oz: &mut ExprZipper) -> Result<(), ExtractFailure> {
         let mut ez = ExprZipper::new(self);
         match pattern.extract_data(&mut ez) {
@@ -752,7 +756,7 @@ impl Expr {
                 (_, Tag::NewVar) => { return Err(IntroducedVar()) }
                 (_, Tag::VarRef(r)) => { return Err(RecurrentVar(r)) }
                 (Tag::NewVar, Tag::SymbolSize(_)) => { bindings.push(iz.subexpr()); iz.next(); if !ez.next() { return Ok(bindings) }; }
-                (Tag::NewVar, Tag::Arity(a)) => { bindings.push(iz.subexpr());
+                (Tag::NewVar, Tag::Arity(_a)) => { bindings.push(iz.subexpr());
 
                     let mut ez1 = ExprZipper::new(iz.subexpr());
                     let x = loop {
@@ -810,8 +814,8 @@ impl Expr {
         loop {
             match ez.item() {
                 Ok(Tag::NewVar) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
-                Ok(Tag::VarRef(i)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
-                Ok(Tag::SymbolSize(s)) => { unreachable!() }
+                Ok(Tag::VarRef(_i)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                Ok(Tag::SymbolSize(_s)) => { unreachable!() }
                 Ok(Tag::Arity(_)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
                 Err(s) => { let ns = subst(s); oz.write_symbol(ns); oz.loc += 1 + ns.len(); }
             }
@@ -844,7 +848,7 @@ trait Traversal<A, R> {
     fn add(&mut self, offset: usize, acc: A, sub: R) -> A;
     fn finalize(&mut self, offset: usize, acc: A) -> R;
 }
-
+#[allow(unused)]
 fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
     match unsafe { byte_item(*e.ptr.byte_add(i)) } {
         Tag::NewVar => { (1, t.new_var(i)) }
@@ -892,7 +896,7 @@ fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usi
             }
             Tag::Arity(a) => {
                 j += 1;
-                let mut acc = t.zero(j, a);
+                let acc = t.zero(j, a);
                 stack.push(State{ iter: a, payload: acc });
                 continue 'putting;
             }
@@ -919,7 +923,7 @@ fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usi
 }
 
 struct DebugTraversal { string: String, transient: bool }
-
+#[allow(unused_variables)]
 impl Traversal<(), ()> for DebugTraversal {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.string.push(' '); }; self.string.push('$'); }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('_'); self.string.push_str((i as u16 + 1).to_string().as_str()); }
@@ -941,7 +945,7 @@ impl Debug for Expr {
 }
 
 struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
-
+#[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
@@ -962,8 +966,8 @@ impl ExprZipper {
     #[inline] pub fn new(e: Expr) -> Self {
         match unsafe { byte_item(*e.ptr) } {
             Tag::NewVar => { Self { root: e, loc: 0, trace: vec![] } }
-            Tag::VarRef(r) => { Self { root: e, loc: 0, trace: vec![] } }
-            Tag::SymbolSize(s) => { Self { root: e, loc: 0, trace: vec![] } }
+            Tag::VarRef(_r) => { Self { root: e, loc: 0, trace: vec![] } }
+            Tag::SymbolSize(_s) => { Self { root: e, loc: 0, trace: vec![] } }
             Tag::Arity(a) => {
                 Self {
                     root: e,
@@ -1060,7 +1064,7 @@ impl ExprZipper {
         // let ct = self.tag_str();
         match self.trace[offset..].last_mut() {
             None => { false }
-            Some(&mut Breadcrumb { parent: p, arity: a, seen: ref mut s }) => {
+            Some(&mut Breadcrumb { parent: _p, arity: a, seen: ref mut s }) => {
                 // println!("parent {} loc {} tag {}", p, self.loc, ct);
                 // println!("{} < {}", s, a);
                 if *s < a {
@@ -1083,7 +1087,7 @@ impl ExprZipper {
     }
 
     pub fn parent(&mut self) -> bool {
-        let Some(Breadcrumb { parent: p, arity: a, seen: s }) = self.trace.last() else { return false; };
+        let Some(Breadcrumb { parent: p, .. }) = self.trace.last() else { return false; };
         self.loc = *p as usize;
         self.trace.pop();
         true
@@ -1100,7 +1104,7 @@ impl ExprZipper {
     }
 
     pub fn next_descendant(&mut self, to: i32, offset: usize) -> bool {
-        let (base, backup) = if to < 0 {
+        let (base, _backup) = if to < 0 {
             let last = self.trace.len() as i32 + to;
             (self.trace[last as usize].parent, self.trace[last as usize])
         } else if to > 0 {
@@ -1108,6 +1112,7 @@ impl ExprZipper {
         } else { (0, self.trace[0]) };
         let initial = self.trace.clone();
 
+        #[allow(unused_variables)]
         let mut lc = 0;
         loop {
             if !self.gnext(0) {
@@ -1162,14 +1167,14 @@ impl ExprZipper {
     pub fn finish_span(&self) -> *const [u8] {
         let size = self.loc + match self.tag() {
             Tag::NewVar => { 1 }
-            Tag::VarRef(r) => { 1 }
+            Tag::VarRef(_r) => { 1 }
             Tag::SymbolSize(s) => { 1 + (s as usize) }
-            Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
+            Tag::Arity(_a) => { unreachable!() /* expression can't end in arity */ }
         };
         return slice_from_raw_parts(self.root.ptr, size)
     }
 }
-
+#[allow(unused)]
 const fn to_bytes<const N: usize>(s: &str) -> [u8; N] {
     let bytes = s.as_bytes();
     let mut array = [0u8; N];

@@ -7,9 +7,9 @@ mod tests {
     use std::io::Read;
     use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
-    use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
+    use mork_bytestring::{Expr, parse, compute_length, ExprZipper};
     use crate::{expr, sexpr};
-    use crate::json_parser::{Parser, DebugTranscriber, WriteTranscriber};
+    use crate::json_parser::{Parser, WriteTranscriber};
     use crate::space::*;
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
     fn transform_multi() {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
-        let mut fileb = vec![]; file.read_to_end(&mut fileb);
+        let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
         s.load_sexpr(fileb.as_slice()).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
@@ -176,8 +176,8 @@ mod tests {
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |e| c_in += 1);
-        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |e| c_out += 1);
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();

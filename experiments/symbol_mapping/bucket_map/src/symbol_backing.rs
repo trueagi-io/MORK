@@ -25,6 +25,7 @@ impl Slab {
     };
     out
   }
+  #[allow(unused)]
   pub(crate) fn total_slab_size(&self) -> usize {
     self.slab_len + core::mem::size_of::<Slab>()
   }

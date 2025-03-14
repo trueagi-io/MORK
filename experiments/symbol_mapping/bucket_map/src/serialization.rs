@@ -224,7 +224,7 @@ pub struct Tables<'a> {
 
 #[cfg(test)]
 mod test {
-  use std::{collections::BTreeMap, path::PathBuf};
+  use std::collections::BTreeMap;
 
 
 

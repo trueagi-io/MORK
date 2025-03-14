@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use std::fs::File;
 use std::io::Read;
 use std::ptr;
@@ -79,7 +80,9 @@ impl BufferedIterator {
 // }
 
 pub trait Parser {
+  #[allow(non_upper_case_globals)]
   const empty: i64;
+  #[allow(non_upper_case_globals)]
   const singleton: i64;
 
   fn tokenizer(&mut self, s: String) -> i64;
@@ -108,13 +111,13 @@ pub trait Parser {
           let ind = indexOf(variables, &id);
           if ind == -1 {
             variables.push(id);
-            return unsafe { 0 as *const Expr }
+            return 0 as *const Expr
           } else {
-            return unsafe { -ind as *const Expr}
+            return -ind as *const Expr
           }
         }
         '(' => { return {
-          let mut res: *const Expr = unsafe { Self::empty as *const Expr };
+          let mut res: *const Expr = Self::empty as *const Expr;
           it.next();
           while it.head() != ')' as u8 {
             match it.head() as char {
@@ -123,7 +126,7 @@ pub trait Parser {
                 res = self.sexprUnsafe(it, variables, stack);
                 if it.head() == ')' as u8 {
                   let l = stack.len();
-                  stack.push((unsafe { Self::singleton as *const Expr }, res));
+                  stack.push((Self::singleton as *const Expr, res));
                   res = l as *const Expr;
                 } else {
                   while it.head() != ')' as u8 {
@@ -186,7 +189,7 @@ pub trait Parser {
               }
             }
           });
-          return unsafe { e as *const Expr }
+          return e as *const Expr
         }
       }
     }

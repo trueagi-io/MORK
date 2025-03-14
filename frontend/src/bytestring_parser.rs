@@ -1,10 +1,11 @@
-use mork_bytestring::{Expr, ExprZipper, Tag, item_byte, byte_item};
+use mork_bytestring::{ExprZipper, Tag, item_byte, byte_item};
 
-
+#[allow(non_snake_case)]
 fn isWhitespace(c: u8) -> bool {
   c == b' ' || c == b'\t' || c == b'\n'
 }
 
+#[allow(non_snake_case, unused)]
 fn isDigit(c: u8) -> bool {
   c == b'0' || c == b'1' || c == b'2' || c == b'3' || c == b'4' ||
   c == b'5' || c == b'6' || c == b'7' || c == b'8' || c == b'9'
@@ -110,7 +111,7 @@ pub trait Parser {
             match it.peek()? {
               c if isWhitespace(c) => { it.next()?; }
               _ => {
-                self.sexpr::<'a>(it, target)?;
+                self.sexpr(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
                   if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }

@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
   use std::{collections::BTreeMap, fs::create_dir_all, io::Read, path::PathBuf};
-  use pathmap::trie_map::BytesTrieMap;
   use bucket_map::{SharedMappingHandle, SharedMapping};
 
   #[test]
@@ -18,7 +17,7 @@ mod tests {
 
     let zip_file = "logic_query_small.zip";
 
-    serialize_derserialize_cmp(sm, zip_file);
+    serialize_derserialize_cmp(sm, zip_file).unwrap();
   }
   #[test]
   fn logic_query_big() {

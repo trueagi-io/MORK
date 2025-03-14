@@ -22,10 +22,10 @@ mod tests {
   #[test]
   fn logic_query_big() {
     let workspace_root = std::env::var("CARGO_WORKSPACE_DIR").unwrap();
-    let mut small_metta = std::fs::File::open(PathBuf::from(workspace_root).join("benchmarks/logic-query/resources/big.metta")).unwrap();
+    let mut big_metta = std::fs::File::open(PathBuf::from(workspace_root).join("benchmarks/logic-query/resources/big.metta")).unwrap();
     let mut s = String::new();
     
-    small_metta.read_to_string(&mut s).unwrap();
+    big_metta.read_to_string(&mut s).unwrap();
 
     let mut space : mork::space::Space = mork::space::Space::new();
     space.load_sexpr(s.as_bytes()).unwrap();

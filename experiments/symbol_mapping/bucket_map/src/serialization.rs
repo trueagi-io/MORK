@@ -226,20 +226,27 @@ struct Tables<'a> {
 mod test {
   use std::collections::BTreeMap;
 
-  use super::*;
+
+
+use super::*;
 
   #[test]
   fn serialize_long() {
-    const LEN : usize = 4096*2; 
-    static ONES : [u8 ; LEN]= [1;LEN];
-  
-  
+    const ARR_LEN : usize = 50; 
+    const ALPHA_NUM_LEN : usize = 62;
+    const LEN : usize = ARR_LEN*ALPHA_NUM_LEN;
+    const ALPHA_NUM : [[u8;ALPHA_NUM_LEN]; ARR_LEN] 
+    = [*b"abcdefghijklmnopqrstuvwxyz\
+       ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+       0123456789\
+      "; ARR_LEN];
+    static FLAT : &[u8 ; LEN]= unsafe {&(*((&ALPHA_NUM).as_ptr() as *const u8 as *const _)) };
     let handle = SharedMapping::new();
-  
+
     let writer = handle.try_aquire_permission().unwrap();
   
-    for each in 0..LEN {     // original test
-      writer.get_sym_or_insert(&ONES[0..each]);
+    for each in 0..LEN {
+      writer.get_sym_or_insert(&FLAT[0..each]);
     }
   
     let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("serialize_long.zip");
@@ -251,6 +258,16 @@ mod test {
       handle.to_bytes[0].0.read().unwrap().val_count(),
       load.to_bytes[0].0.read().unwrap().val_count()
     );
+    load.to_bytes[0].0.read().unwrap().read_zipper().into_cata_side_effect(|_mask,_accs,val : Option<&ThinBytes>,_path|{
+      match val {
+        Some(id) => core::assert!(unsafe {&(*id.as_raw_slice())[..]}.iter().all(|c| c.is_ascii_alphanumeric())),
+        None => (),
+          };
+    });
+
+    core::assert!(unsafe {cmp_mappings(&handle, &load)});
+
+    std::fs::remove_file(path).unwrap();
   }
 
   #[test]
@@ -299,34 +316,35 @@ mod test {
     unsafe {
       assert!(cmp_mappings(&mapping, &load));
     }
+    std::fs::remove_file(path).unwrap();
 
-    // below are helper functions that are not safe outside this test.
-    unsafe fn cmp_mappings(left : &SharedMapping, right: &SharedMapping) -> bool{
-  
-      unsafe {
-        let l = as_btree(left);
-        let r = as_btree(right);
+  }
+  // below are helper functions that are not safe outside this test.
+  unsafe fn cmp_mappings(left : &SharedMapping, right: &SharedMapping) -> bool{
 
-        l == r
+    unsafe {
+      let l = as_btree(left);
+      let r = as_btree(right);
+
+      l == r
+    }
+  }
+  unsafe fn as_btree(shared_mapping : &SharedMapping) ->(BTreeMap<String, [u8;8]>, BTreeMap<[u8;8], String>) {
+    let mut out = BTreeMap::new();
+    let mut out2= BTreeMap::new();
+    for each in 0..MAX_WRITER_THREADS {
+      for (path, value) in shared_mapping.to_symbol[each].0.read().unwrap().iter()
+      {
+        out.insert(unsafe {core::mem::transmute(path)}, *value);
+      }
+      for (value, path) in shared_mapping.to_bytes[each].0.read().unwrap().iter()
+      {
+        core::assert!(value.len() == SYM_LEN);
+        out2.insert(unsafe {*(value.as_ptr() as *const [u8;SYM_LEN])}, unsafe {core::mem::transmute((&*path.as_raw_slice()).to_owned())}, );
       }
     }
-    unsafe fn as_btree(shared_mapping : &SharedMapping) ->(BTreeMap<String, [u8;8]>, BTreeMap<[u8;8], String>) {
-      let mut out = BTreeMap::new();
-      let mut out2= BTreeMap::new();
-      for each in 0..MAX_WRITER_THREADS {
-        for (path, value) in shared_mapping.to_symbol[each].0.read().unwrap().iter()
-        {
-          out.insert(unsafe {core::mem::transmute(path)}, *value);
-        }
-        for (value, path) in shared_mapping.to_bytes[each].0.read().unwrap().iter()
-        {
-          core::assert!(value.len() == SYM_LEN);
-          out2.insert(unsafe {*(value.as_ptr() as *const [u8;SYM_LEN])}, unsafe {core::mem::transmute((&*path.as_raw_slice()).to_owned())}, );
-        }
-      }
-      
-      (out, out2)
-    }
+    
+    (out, out2)
   }
 
 }

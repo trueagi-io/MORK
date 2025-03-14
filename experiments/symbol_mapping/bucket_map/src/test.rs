@@ -156,17 +156,15 @@ fn allocate_many() {
   // for each in 3842..LEN {  // all dense nodes break point
   // for each in LEN-5441..LEN { // breaking point with all dense nodes off
   for each in 0..LEN {     // original test
-    println!("LEN : {each}");
+    // println!("LEN : {each}");
     writer.get_sym_or_insert(&ONES[0..each]);
   }
 
+  // let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("allocate_many.zip");
   // println!("{:?}", handle.to_bytes[0].0.read().unwrap().val_count());
-  let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("allocate_many.zip");
-
-  println!("{:?}", handle.to_bytes[0].0.read().unwrap().val_count());
-    handle.serialize(&path).unwrap();
-    let load = SharedMapping::deserialize(&path).unwrap();
-  println!("{:?}", load.to_bytes[0].0.read().unwrap().val_count());
-    
+  // handle.serialize(&path).unwrap();
+  // let load = SharedMapping::deserialize(&path).unwrap();
+  // println!("{:?}", load.to_bytes[0].0.read().unwrap().val_count());
+  // std::fs::remove_file(path).unwrap(); 
 
 }

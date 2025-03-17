@@ -83,8 +83,8 @@ fn decode_seq(s: &[u8]) -> Vec<BigInt> {
 }
 
 fn main() {
-    // let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
-    let mut file = std::fs::File::open("/Users/admin/Desktop/stripped")
+    let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
+    // let mut file = std::fs::File::open("/Users/admin/Desktop/stripped")
         .expect("Should have been able to read the file");
     let mut s = String::new();
     file.read_to_string(&mut s).unwrap();

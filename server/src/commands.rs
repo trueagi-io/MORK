@@ -444,7 +444,8 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
 pub struct Command {
     pub def: &'static dyn CmdDefObject,
     pub args: Vec<ArgVal>,
-    pub properties: Vec<Option<ArgVal>>
+    pub properties: Vec<Option<ArgVal>>,
+    pub cmd_id: u64,
 }
 
 /// An error type from a command that can be logged and returned to a client

@@ -274,7 +274,8 @@ fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri) -> 
         properties.push(prop);
     }
 
-    let command = Command { args, properties, def: CmdDef::CONST_CMD };
+    //GOAT, assign the cmd_id as a unique serial number that persists across server starts
+    let command = Command { args, properties, def: CmdDef::CONST_CMD, cmd_id: 0 };
     Ok(command)
 }
 

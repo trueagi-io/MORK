@@ -3,9 +3,10 @@ use core::any::Any;
 use core::pin::Pin;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::io::Read;
+use std::io::{Read, Write};
 
-use pathmap::zipper::{ZipperCreation, ZipperMoving, ZipperWriting};
+use bucket_map::SharedMappingHandle;
+use pathmap::zipper::{Zipper, ZipperCreation, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -106,7 +107,7 @@ async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command) ->
         let rz = ctx_clone.0.primary_map.read_zipper_at_borrowed_path(&path)?;
         let count = rz.val_count();
 
-        ctx_clone.0.status_map.set_status(&path, StatusRecord::CountResult(count.into()), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err))?;
+        ctx_clone.0.status_map.set_status(&path, StatusRecord::CountResult(count.into()), StatusRecord::PathInUse).map_err(CommandError::internal)?;
         Ok(())
     }).await??;
 
@@ -150,7 +151,7 @@ impl CommandDefinition for ImportCmd {
         //Flag this path in the map as being busy, and therefore off-limits to other operations
         let map_path = cmd.args[0].as_path();
         ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
-            CommandError::from_status_record(status, format!("Error accssing path {map_path:?}"))
+            CommandError::from_status_record(status, format!("Error accessing path {map_path:?}"))
         })?;
 
         Ok(Some(Box::new(ImportCmdResources{
@@ -195,7 +196,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
         //User-facing error
         println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
         let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
-        return ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
+        return ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err), StatusRecord::PathInUse).map_err(CommandError::internal);
     }
 
     let mut writer = BufWriter::new(File::create(resources.file.path()?).await?);
@@ -217,32 +218,32 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
             //User-facing error
             println!("Import Failed. Unrecognized file type: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to recognize file format: {err:?}"));
-            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
+            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(CommandError::internal);
         }
     };
 
+    let shared_mapping = ctx.0.global_symbol_table.clone();
     let space = match tokio::task::spawn_blocking(move || {
-        import_do_parse(file_path, file_type)
-    }).await.map_err(|err| CommandError::internal(err))? {
+        import_do_parse(file_path, file_type, shared_mapping)
+    }).await.map_err(CommandError::internal)? {
         Ok(space) => space,
         Err(err) => {
             //User-facing error
             println!("Import Failed. Parse error: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to parse file: {err:?}"));
-            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(|err| CommandError::internal(err));
+            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(CommandError::internal);
         }
     };
 
     // Graft the data into the map and wrap up
     //========================
-    let map = space.into_map();
-    let mut wz = ctx.0.primary_map.write_zipper_at_exclusive_path(map_path).map_err(|err| CommandError::internal(err))?;
-    wz.graft_map(map);
+    let mut wz = ctx.0.primary_map.write_zipper_at_exclusive_path(map_path).map_err(CommandError::internal)?;
+    wz.graft_map(space.into_map(/* we made the space with global symbol table, so this is compliant */));
 
     //Finalize the resource and remove the lock on the path
     let timestamp = 987654321; //GOAT, use the real timestamp from this command.
     resources.file.finalize(timestamp).await?;
-    ctx.0.status_map.clear_status(map_path).map_err(|err| CommandError::internal(err))?;
+    ctx.0.status_map.clear_status(map_path).map_err(CommandError::internal)?;
 
     thread.finalize().await;
     println!("Import command successful"); //GOAT Log this!
@@ -271,8 +272,9 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<InputDataType, Comma
     }
 }
 
-fn import_do_parse(file_path: PathBuf, file_type: InputDataType) -> Result<Space, CommandError> {
+fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMappingHandle) -> Result<Space, CommandError> {
     let mut space = Space::new();
+    space.sm = sm;
     match file_type {
         InputDataType::Metta => {
             //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
@@ -281,7 +283,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType) -> Result<Space
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            let count = space.load(&buffer[..]).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from MeTTa S-Expr file: {file_path:?}");
         },
         InputDataType::Json => {
@@ -291,7 +293,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType) -> Result<Space
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_json(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            let count = space.load_json(&buffer[..]).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from JSON file: {file_path:?}");
         },
         InputDataType::Csv => {
@@ -299,12 +301,123 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType) -> Result<Space
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_csv(&buffer[..]).map_err(|e| CommandError::internal(e))?;
+            let count = space.load_csv(&buffer[..]).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from CSV file: {file_path:?}");
         },
     }
     Ok(space)
 }
+struct ExportCmdResources {
+    file: ResourceHandle
+}
+
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// Export
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// deserialize a map, serve as a file to the client. 
+pub struct ExportCmd;
+
+impl CommandDefinition for ExportCmd {
+    const NAME: &'static str = "export";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "map_path",
+            desc: "The path in the map at which to export to file",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[PropDef{
+            arg_type: ArgType::String,
+            name: "uri",
+            desc: "The URI where to serve the file, only http and https schemes are currently supported",
+            required: true
+        }]
+    }
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+        //Make sure we can get a place to save the file to.
+        let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+        let state_count = ctx.0.monotonic_state_counter.increment_state();
+        let file_handle = ctx.0.resource_store.new_resource(&format!("export_{:0>16X}_to_{file_uri}.metta",state_count)).await?;
+
+        //Flag this path in the map as being busy, and therefore off-limits to other operations
+        let map_path = cmd.args[0].as_path();
+        ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
+            CommandError::from_status_record(status, format!("Error accessing path {map_path:?}"))
+        })?;
+
+        Ok(Some(Box::new(ExportCmdResources{
+            file: file_handle
+        })))
+    }
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let resources = resources.unwrap().downcast::<ExportCmdResources>().unwrap();
+        let path = resources.file.path()?;
+        let pathbuf = path.to_owned();
+        
+        tokio::task::spawn(async move {
+            match do_export(&ctx, thread.unwrap(), &cmd, pathbuf).await {
+                Ok(()) => {},
+                Err(err) => {
+                    println!("Internal Error occurred during export: {err:?}"); //GOAT Log this error
+                    let _ = ctx.0.status_map.clear_status(cmd.args[0].as_path());
+                }
+            }
+            async { () }
+        }).await?.await;
+
+        let mut out = Vec::with_capacity(4096);
+        std::fs::File::read_to_end(&mut std::fs::File::open(path)?, &mut out)?;
+
+        Ok(hyper::body::Bytes::from(out))
+    }
+}
+
+enum OutputDataType {
+    Metta
+}
+
+async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: PathBuf) -> Result<(), CommandError> {
+    let map_path = cmd.args[0].as_path();
+
+    let Some(map) = ctx.0.primary_map.read_zipper_at_path(map_path)
+        .map_err(CommandError::internal)?
+        .make_map() else {
+            return Err(CommandError::external(StatusCode::CONFLICT, "requested path prefix does not contain a space"))
+        };
+
+    // TODO the space interface should not have this function, as it isn't "type safe" for the embedded language,
+    //      but there is currently no other way to use dump.
+    let space = unsafe { Space::reconstruct(map, ctx.0.global_symbol_table.clone()) };
+
+    let res_path = resources;
+
+    // Do the deserialization
+    //========================
+    let file_path = res_path;
+    let file_type = OutputDataType::Metta;
+    match file_type {
+        OutputDataType::Metta => {
+            let file = std::fs::File::create(&file_path).map_err(CommandError::internal)?;
+            let mut writer = std::io::BufWriter::new(file);
+            space.dump(&mut writer).map_err(CommandError::internal)?;
+            writer.flush()?;
+    
+        },
+    }
+
+    ctx.0.status_map.clear_status(cmd.args[0].as_path()).map_err(CommandError::internal)?;
+    thread.finalize().await;
+    println!("Export command successful"); // TODO log this!
+
+    Ok(())
+}
+
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // status

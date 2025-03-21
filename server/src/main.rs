@@ -41,6 +41,8 @@ struct MorkServiceInternals {
     stop_cmd: Notify,
     /// Pool of worker threads to handled blocking pathmap operations
     workers: WorkerPool,
+    /// The global symbol table used by the primary map
+    global_symbol_table: bucket_map::SharedMappingHandle,
     /// ZipperHead for accessing the primary map
     primary_map: ZipperHeadOwned<()>,
     /// ZipperHead for accessing status and permissions associated with paths
@@ -48,10 +50,19 @@ struct MorkServiceInternals {
     /// Versioned storage for on-disk resources
     resource_store: ResourceStore,
     /// The http client used to fetch remote files
-    http_client: reqwest::Client
+    http_client: reqwest::Client,
+
+    monotonic_state_counter : MonotonicStateCounter
 
     //GOAT, need cmd-logger to facilitate replay, and maybe a separate human-readable log
     //GOAT, need permissions model
+}
+
+struct MonotonicStateCounter( core::sync::atomic::AtomicU64);
+impl MonotonicStateCounter {
+    fn increment_state(&self) -> u64 {
+        self.0.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl MorkService {
@@ -75,13 +86,20 @@ impl MorkService {
         let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
         resource_store.reset().await.unwrap();
 
+        // init symbol table
+        let global_symbol_table = bucket_map::SharedMapping::new();
+
+        let monotonic_state_counter = MonotonicStateCounter( core::sync::atomic::AtomicU64::new(0) );
+
         let internals = MorkServiceInternals {
             stop_cmd: Notify::new(),
             workers: WorkerPool::new(),
+            global_symbol_table,
             primary_map,
             status_map,
             resource_store,
             http_client,
+            monotonic_state_counter,
         };
         Self(Arc::new(internals))
     }

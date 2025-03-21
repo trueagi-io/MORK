@@ -667,6 +667,19 @@ impl Space {
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
     }
 
+
+    // Remy : we need to be able to reconstruct the map to do exports within the server
+    #[doc(hidden)]
+    /// Although not memory unsafe, the caller of this function is given the burden of passing the correct [`SharedMapping`]
+    /// to interpret the symbols embedded in the map.
+    /// It has been made unsafe to describe the fact that it cannot guarantee with a Result that the mapping passed in is valid.
+    pub unsafe fn reconstruct(btm : BytesTrieMap<()>, sm : SharedMappingHandle) -> Space{
+        Space {
+            btm,
+            sm,
+        }
+    }
+
     pub fn statistics(&self) {
         println!("val count {}", self.btm.val_count());
     }
@@ -855,7 +868,8 @@ impl Space {
                     e.serialize(w, |s| {
                         let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                         let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                        // println!("symbol {symbol:?}, bytes {mstr:?}");
+                        #[cfg(debug_assertions)]
+                        println!("symbol {symbol:?}, bytes {mstr:?}");
                         unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                     });
                     w.write(&[b'\n']).map_err(|x| x.to_string())?;

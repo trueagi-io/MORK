@@ -869,12 +869,12 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup_as_paths<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
+    pub fn backup_paths<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_as_paths<OutFilePath : AsRef<std::path::Path>>(&mut self, path: OutFilePath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
+    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
         pathmap::path_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, |_, _| ())
     }

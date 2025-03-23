@@ -1,6 +1,5 @@
 pub mod space;
 mod json_parser;
-pub mod prefix;
 
 #[cfg(test)]
 mod tests {
@@ -8,32 +7,19 @@ mod tests {
     use std::io::Read;
     use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
-    use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
-    use crate::{expr, sexpr, prefix};
-    use crate::json_parser::{Parser, DebugTranscriber, WriteTranscriber};
-    use crate::prefix::Prefix;
+    use mork_bytestring::{Expr, parse, compute_length, ExprZipper};
+    use crate::{expr, sexpr};
+    use crate::json_parser::{Parser, WriteTranscriber};
     use crate::space::*;
 
-
-    fn set_from_newlines(input : &str) -> std::collections::BTreeSet<&str> {
-        let mut set = std::collections::BTreeSet::new();
-        for each in input.split('\n').filter(|s| !s.is_empty()) {
-            set.insert(each);
-        }
-        set
-    }
-
     #[test]
-    fn prefix_parse_sexpr() {
-        let input = "((nested and) (singleton))\n(foo bar)\n(1 \"test\" 2)\n";
+    fn parse_sexpr() {
+        let input = "(foo bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_sexpr(input.as_bytes(), expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
+        assert_eq!(s.load_sexpr(input).unwrap(), 1);
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(expr!(s, "[2] my [2] prefix $"), expr!(s, "_1"), &mut res).unwrap();
-
-        // the order changed in the test for some reason so we need to use sets to not be concerened by this
-        let out = String::from_utf8(res).unwrap();
-        assert_eq!(set_from_newlines(input), set_from_newlines(&out));
+        s.dump_as_sexpr(&mut res).unwrap();
+        assert_eq!(input, String::from_utf8(res).unwrap());
     }
 
     #[test]
@@ -41,9 +27,9 @@ mod tests {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_csv(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',').unwrap(), 2);
+        assert_eq!(s.load_csv(csv_input).unwrap(), 2);
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
+        s.dump_as_sexpr(&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
     }
 
@@ -106,22 +92,20 @@ mod tests {
 
         let mut s = Space::new();
 
-        assert_eq!(16, s.load_json(json_input.as_bytes()).unwrap());
+        assert_eq!(16, s.load_json(json_input).unwrap());
 
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
-
-        let out = String::from_utf8(res).unwrap();
-        assert_eq!(set_from_newlines(SEXPRS0), set_from_newlines(&out));
+        s.dump_as_sexpr(&mut res).unwrap();
+        assert_eq!(SEXPRS0, String::from_utf8(res).unwrap());
     }
 
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr( SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0).unwrap());
 
         let mut i = 0;
-        s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
+        s.query(expr!(s, "[2] children [2] $ $"), |e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(children (0 Catherine))") }
                 1 => { assert_eq!(sexpr!(s, e), "(children (1 Thomas))") }
@@ -135,11 +119,11 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
-        s.query(expr!(s, "[2] child_results $x"), |_, e| {
+        s.query(expr!(s, "[2] child_results $"), |e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
                 1 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
@@ -154,8 +138,8 @@ mod tests {
     fn transform_multi() {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
-        let mut fileb = vec![]; file.read_to_end(&mut fileb);
-        s.load_sexpr(fileb.as_slice(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
+        s.load_sexpr(std::str::from_utf8(&fileb).unwrap()).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -188,16 +172,16 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = Space::new();
-        s.load_sexpr(LOGICSEXPR0.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr(LOGICSEXPR0).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_,e| c_in += 1);
-        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_,e| c_out += 1);
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
+        s.dump_as_sexpr(&mut res).unwrap();
         println!("{}", String::from_utf8(res).unwrap());
     }
 
@@ -208,7 +192,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load_sexpr(&buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr(std::str::from_utf8( &buf[..] ).unwrap()).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
@@ -216,7 +200,7 @@ mod tests {
         // s.query(expr!(s, "[2] axiom [3] = $ $"), |e| { println!("> {}", sexpr!(s, e)) });
         let t0 = Instant::now();
         let mut k = 0;
-        s.query(expr!(s, "$x"), |_,e| {
+        s.query(expr!(s, "$x"), |e| {
             k += 1;
             std::hint::black_box(e);
             // println!("> {}", sexpr!(s, e))
@@ -228,186 +212,5 @@ mod tests {
         // let mut res = Vec::<u8>::new();
         // s.dump(&mut res).unwrap();
         // println!("{}", String::from_utf8(res).unwrap());
-    }
-
-    #[test]
-    fn transform_multi_multi_no_match() {
-        let mut s = Space::new();
-
-        s.transform_multi_multi(&[expr!(s, "a")], &[expr!(s, "c")]);
-
-        let mut writer = Vec::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
-
-        let out = unsafe {
-            core::mem::transmute::<_,String>(writer)
-        };
-
-        println!("{}", out);
-
-        core::assert_ne!(&out, "c\n");
-    }
-
-
-    #[test]
-    fn transform_multi_multi_ignoring_second_template() {
-        let mut s = Space::new();
-                const SPACE_EXPRS: &str = 
-        concat!
-        ( "\n(val a b)"
-        );
-
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-        s.transform_multi_multi(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
-
-        let mut writer = Vec::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
-
-        let out = unsafe {
-            core::mem::transmute::<_,String>(writer)
-        };
-
-        println!("{}", out);
-
-        let vals = ["a","b","(val a b)"];
-        for each in vals {
-            assert!(out.lines().any(|i| i == each))
-        }
-    }
-
-    #[test]
-    fn metta_calculus_test0() {
-        let mut s = Space::new();
-        // (exec PC0 (, (? $channel $payload $body) 
-        //              (! $channel $payload)
-        //              (exec PC0 $p $t)) 
-        //           (, $body (exec PC0 $p $t)))
-
-        // const SPACE_EXPRS: &str = r#"
-        // (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
-        // (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
-
-        // (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
-        // (? (add $ret) (Z $y) (! $ret $y))
-
-        // (! (add result) ((S Z) (S Z)))
-        // "#;
-
-        const SPACE_EXPRS: &str = 
-        concat!
-        ( ""
-        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
-        , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, ))"
-
-        // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
-        , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
-        , "\n(? (add $ret) (Z $y) (! $ret $y))"
-        , "\n(! (add result) ((S Z) (S Z)))"
-        );
-
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-        s.metta_calculus(100);
-
-        let mut v = vec![];
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-
-        println!("\nRESULTS\n");
-        let res = String::from_utf8(v).unwrap();
-
-        assert_eq!(res.lines().count(), 3);
-        core::assert_eq!(
-            res, 
-            "(! (add result) ((S Z) (S Z)))\n\
-             (? (add $) (Z $) (! _1 _2))\n\
-             (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
-        );
-        
-        println!("{}", res);
-    }
-
-    #[test]
-    fn metta_calculus_swap_0() {
-        let mut s = Space::new();
-
-        const SPACE_EXPRS: &str =
-        concat!
-        ( ""
-        , "\n(val a b)"
-        , "\n(exec (swap_0 \"00\") (, (val $x $y)) (, (swaped-val (val $x $y) (val $y $x))) )" // swap vals
-        , "\n(exec (swap_0 \"01\") (, (val $x $y)) (, (pair $x $y)) )" // swap vals
-        );
-
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-        s.metta_calculus(100);
-
-        let mut writer = Vec::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
-
-        let out = String::from(std::str::from_utf8(&writer).unwrap());
-
-        // println!("\n{out:?}");
-        // println!("\n{:?}", s.dump_raw_at_root());
-
-        // println!("RESULTS:\n{}", out);
-        assert_eq!(out.lines().count(), 3);
-        assert_eq!(out, "(val a b)\n(pair a b)\n(swaped-val (val a b) (val b a))\n");
-    }
-
-    #[test]
-    fn metta_calculus_swap2() {
-
-        let mut s = Space::new();
-
-        const SPACE_EXPRS: &str =
-        concat!
-        ( ""
-        , "\n(val a b)"
-        , "\n(val c d)"
-        , "\n(val e f)"
-        , "\n(val g h)"
-
-        , "\n(def (metta_thread_basic 2) (, (swapped $v $u))"
-        , "\n                            (, (val $v $u))"
-        , "\n)"
-
-        , "\n(exec (metta_thread_basic 1) (, (val $x $y) (def (metta_thread_basic 2) $p $t) )"
-        , "\n                         (,"
-        , "\n                            (swapped $y $x)"
-        , "\n                            (exec (metta_thread_basic 1) $p $t)"
-        , "\n                         )"
-        , "\n)"
-        );
-
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-        s.metta_calculus(100);
-
-        let mut writer = Vec::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
-
-        let out = String::from(std::str::from_utf8(&writer).unwrap());
-
-        assert_eq!(out.lines().count(), 13);
-        assert_eq!(out,
-            "(val a b)\n\
-            (val b a)\n\
-            (val c d)\n\
-            (val d c)\n\
-            (val e f)\n\
-            (val f e)\n\
-            (val g h)\n\
-            (val h g)\n\
-            (swapped b a)\n\
-            (swapped d c)\n\
-            (swapped f e)\n\
-            (swapped h g)\n\
-            (def (metta_thread_basic 2) (, (swapped $ $)) (, (val _1 _2)))\n\
-            "
-        );
-
-        println!("RESULTS:\n{}", out);
     }
 }

@@ -1,14 +1,13 @@
-use std::io::{BufRead, Read, Write};
-use std::{mem, process, ptr};
+use std::io::Write;
+use std::process;
 use std::fs::File;
 use std::time::Instant;
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::ByteMaskIter;
 use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
-use crate::json_parser::Transcriber;
 
 pub struct Space {
     pub(crate) btm: BytesTrieMap<()>,
@@ -48,77 +47,42 @@ const VARS: [u64; 4] = {
     ret
 };
 
-struct CfIter<'a> {
-    i: u8,
-    w: u64,
-    mask: &'a [u64; 4]
-}
-
-impl <'a> CfIter<'a> {
-    fn new(mask: &'a [u64; 4]) -> Self {
-        Self {
-            i: 0,
-            w: mask[0],
-            mask: mask
-        }
-    }
-}
-
-impl <'a> Iterator for CfIter<'a> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<u8> {
-        loop {
-            if self.w != 0 {
-                let wi = self.w.trailing_zeros() as u8;
-                self.w ^= 1u64 << wi;
-                let index = self.i*64 + wi;
-                return Some(index)
-            } else if self.i < 3 {
-                self.i += 1;
-                self.w = *unsafe{ self.mask.get_unchecked(self.i as usize) };
-            } else {
-                return None
-            }
-        }
-    }
-}
-
 fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-const ITER_AT_DEPTH: u8 = 0;
-const ITER_SYMBOL_SIZE: u8 = 1;
-const ITER_SYMBOLS: u8 = 2;
-const ITER_VARIABLES: u8 = 3;
-const ITER_ARITIES: u8 = 4;
-const ITER_EXPR: u8 = 5;
-const ITER_NESTED: u8 = 6;
-const ITER_SYMBOL: u8 = 7;
-const ITER_ARITY: u8 = 8;
-const ITER_VAR_SYMBOL: u8 = 9;
-const ITER_VAR_ARITY: u8 = 10;
-const ACTION: u8 = 11;
-const BEGIN_RANGE: u8 = 12;
-const FINALIZE_RANGE: u8 = 13;
-const REFER_RANGE: u8 = 14;
+const ITER_AT_DEPTH    : u8 =  0;
+const ITER_SYMBOL_SIZE : u8 =  1;
+const ITER_SYMBOLS     : u8 =  2;
+const ITER_VARIABLES   : u8 =  3;
+const ITER_ARITIES     : u8 =  4;
+const ITER_EXPR        : u8 =  5;
+const ITER_NESTED      : u8 =  6;
+const ITER_SYMBOL      : u8 =  7;
+const ITER_ARITY       : u8 =  8;
+const ITER_VAR_SYMBOL  : u8 =  9;
+const ITER_VAR_ARITY   : u8 = 10;
+const ACTION           : u8 = 11;
+const BEGIN_RANGE      : u8 = 12;
+const FINALIZE_RANGE   : u8 = 13;
+const REFER_RANGE      : u8 = 14;
 
+#[allow(unused)]
 fn label(l: u8) -> String {
     match l {
-        ITER_AT_DEPTH => { "ITER_AT_DEPTH" }
-        ITER_SYMBOL_SIZE => { "ITER_SYMBOL_SIZE" }
-        ITER_SYMBOLS => { "ITER_SYMBOLS" }
-        ITER_VARIABLES => { "ITER_VARIABLES" }
-        ITER_ARITIES => { "ITER_ARITIES" }
-        ITER_EXPR => { "ITER_EXPR" }
-        ITER_NESTED => { "ITER_NESTED" }
-        ITER_SYMBOL => { "ITER_SYMBOL" }
-        ITER_ARITY => {" ITER_ARITY" }
-        ITER_VAR_SYMBOL => { "ITER_VAR_SYMBOL" }
-        ITER_VAR_ARITY => { "ITER_VAR_ARITY" }
-        ACTION => { "ACTION" }
-        _ => { return l.to_string() }
+        ITER_AT_DEPTH    => { "ITER_AT_DEPTH"      }
+        ITER_SYMBOL_SIZE => { "ITER_SYMBOL_SIZE"   }
+        ITER_SYMBOLS     => { "ITER_SYMBOLS"       }
+        ITER_VARIABLES   => { "ITER_VARIABLES"     }
+        ITER_ARITIES     => { "ITER_ARITIES"       }
+        ITER_EXPR        => { "ITER_EXPR"          }
+        ITER_NESTED      => { "ITER_NESTED"        }
+        ITER_SYMBOL      => { "ITER_SYMBOL"        }
+        ITER_ARITY       => { "ITER_ARITY"         }
+        ITER_VAR_SYMBOL  => { "ITER_VAR_SYMBOL"    }
+        ITER_VAR_ARITY   => { "ITER_VAR_ARITY"     }
+        ACTION           => { "ACTION"             }
+        _                => { return l.to_string() }
     }.to_string()
 }
 
@@ -186,7 +150,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_SYMBOL_SIZE => {
             let m = mask_and(loc.child_mask(), SIZES);
-            let mut it = CfIter::new(&m);
+            let mut it = pathmap::utils::ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
                 if let Tag::SymbolSize(s) = byte_item(b) {
@@ -215,7 +179,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_VARIABLES => {
             let m = mask_and(loc.child_mask(), VARS);
-            let mut it = CfIter::new(&m);
+            let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
                 let buf = [b];
@@ -227,7 +191,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_ARITIES => {
             let m = mask_and(loc.child_mask(), ARITIES);
-            let mut it = CfIter::new(&m);
+            let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
                 if let Tag::Arity(a) = byte_item(b) {
@@ -337,7 +301,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), unsafe { SIZES });
+            let m = mask_and(loc.child_mask(), SIZES);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -366,7 +330,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), unsafe { VARS });
+            let m = mask_and(loc.child_mask(), VARS);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -378,7 +342,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+            let m = mask_and(loc.child_mask(), ARITIES);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -563,7 +527,7 @@ impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         self.count += 1;
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = (self.write_permit.get_sym_or_insert(s) );
+        self.buf = self.write_permit.get_sym_or_insert(s);
         return unsafe { std::mem::transmute(&self.buf[..]) };
     }
 }
@@ -578,7 +542,16 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipperUntracked<'a, 'b, ()>, pdp: ParDataParser<'a> }
+type PathCount      = usize;
+type NodeCount      = usize;
+type AttributeCount = usize;
+type SExprCount     = usize;
+
+pub struct SpaceTranscriber<'a, 'b, 'c> { 
+    /// count of unnested values == path_count
+    path_count : PathCount, 
+    wz         : &'c mut WriteZipperUntracked<'a, 'b, ()>,
+    pdp        : ParDataParser<'a> }
 impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
     #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
         let token = self.pdp.tokenizer(s.into().as_bytes());
@@ -600,7 +573,7 @@ impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, '
         self.wz.ascend(self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1);
         if last { self.wz.ascend(1); }
     }
-    #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
+    #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.path_count += 1; }
     #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
         if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
         let token = self.pdp.tokenizer(k.to_string().as_bytes());
@@ -614,19 +587,19 @@ impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, '
         self.wz.ascend(token.len() + 1);
         if last { self.wz.ascend(1); }
     }
-    #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
-    #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
+    #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.path_count += 1; }
+    #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.path_count += 1; }
     #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
         let mut s = String::new();
         if negative { s.push('-'); }
         s.push_str(mantissa.to_string().as_str());
         if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
         self.write(s);
-        self.count += 1;
+        self.path_count += 1;
     }
-    #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
-    #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
-    #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
+    #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.path_count += 1; }
+    #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.path_count += 1; }
+    #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.path_count += 1; }
     #[inline(always)] fn begin(&mut self) -> () {}
     #[inline(always)] fn end(&mut self) -> () {}
 }
@@ -688,11 +661,11 @@ impl Space {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
 
-    pub fn load_csv(&mut self, r: &[u8]) -> Result<usize, String> {
+    pub fn load_csv(&mut self, r: &str) -> Result<PathCount, String> {
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut pdp = ParDataParser::new(&self.sm);
-        for sv in r.split(|&x| x == b'\n') {
+        for sv in r.as_bytes().split(|&x| x == b'\n') {
             if sv.len() == 0 { continue }
             let mut a = 0;
             let e = Expr{ ptr: stack.as_mut_ptr() };
@@ -714,21 +687,20 @@ impl Space {
         Ok(i)
     }
 
-    pub fn load_json(&mut self, r: &[u8]) -> Result<usize, String> {
+    pub fn load_json(&mut self, r: &str) -> Result<PathCount, String> {
         let mut wz = self.write_zipper_unchecked();
-        let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
-        p.parse(&mut st).unwrap();
-        Ok(st.count)
+        let mut st = SpaceTranscriber{ path_count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+        let mut p = crate::json_parser::Parser::new(r);
+        p.parse(&mut st).map_err(|e| format!("{e}"))?;
+        Ok(st.path_count)
     }
 
-    pub fn load_neo4j_triples(&mut self, uri: &str, user: &str, pass: &str) -> Result<usize, String> {
+    pub fn load_neo4j_triples(&mut self, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> {
         use neo4rs::*;
         let graph = Graph::new(uri, user, pass).unwrap();
 
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
-          // .unhandled_panic(tokio::runtime::UnhandledPanic::Ignore)
           .build()
           .unwrap();
         let mut pdp = ParDataParser::new(&self.sm);
@@ -742,7 +714,6 @@ impl Space {
             let s: i64 = row.get("id(s)").unwrap();
             let p: i64 = row.get("id(p)").unwrap();
             let o: i64 = row.get("id(o)").unwrap();
-            // std::hint::black_box((s, p, o));
             let mut buf = [0u8; 64];
             let e = Expr{ ptr: buf.as_mut_ptr() };
             let mut ez = ExprZipper::new(e);
@@ -768,19 +739,18 @@ impl Space {
                 ez.loc += internal.len() + 1;
             }
             // space.
-            unsafe { self.btm.insert(ez.span(), ()); }
+            self.btm.insert(ez.span(), ());
             count += 1;
         }
         Ok(count)
     }
 
-    pub fn load_neo4j_node_properties(&mut self, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> {
+    pub fn load_neo4j_node_properties(&mut self, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> {
         use neo4rs::*;
         let graph = Graph::new(uri, user, pass).unwrap();
 
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
-          // .unhandled_panic(tokio::runtime::UnhandledPanic::Ignore)
           .build()
           .unwrap();
         let mut pdp = ParDataParser::new(&self.sm);
@@ -833,10 +803,9 @@ impl Space {
         Ok((nodes, attributes))
     }
 
-    pub fn load(&mut self, r: &[u8]) -> Result<usize, String> {
-        let mut it = Context::new(r);
+    pub fn load_sexpr(&mut self, r: &str) -> Result<SExprCount, String> {
+        let mut it = Context::new(r.as_bytes());
 
-        let t0 = Instant::now();
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(&self.sm);
@@ -850,11 +819,10 @@ impl Space {
             i += 1;
             it.variables.clear();
         }
-        println!("loading took {} ms", t0.elapsed().as_millis());
         Ok(i)
     }
 
-    pub fn dump<W : Write>(&self, w: &mut W) -> Result<usize, String> {
+    pub fn dump_as_sexpr<W : Write>(&self, w: &mut W) -> Result<PathCount, String> {
         let mut rz = self.btm.read_zipper();
 
         let t0 = Instant::now();
@@ -881,7 +849,7 @@ impl Space {
         Ok(i)
     }
 
-    pub fn backup_symbols<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error>  {
+    pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<(), std::io::Error>  {
         self.sm.serialize(path)
     }
 
@@ -890,25 +858,25 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error> {
+    pub fn backup_as_dag<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<(), std::io::Error> {
         pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
-                                           |v, b| pathmap::serialization::ValueSlice::Read(&[]),
+                                           |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
                                            path.as_ref()).map(|_| ())
     }
 
-    pub fn restore(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+    pub fn restore_from_dag(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
         self.btm = pathmap::serialization::deserialize_file(path, |_| ())?;
         Ok(())
     }
 
-    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn backup_as_paths<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn restore_as_paths<OutFilePath : AsRef<std::path::Path>>(&mut self, path: OutFilePath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
-        pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
+        pathmap::path_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, |_, _| ())
     }
 
     pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
@@ -967,6 +935,7 @@ impl Space {
     }
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
+        #![allow(unused)]
         let mut arity_hack = BytesTrieMap::new();
         arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
         let mut rz = arity_hack.read_zipper();
@@ -999,7 +968,7 @@ impl Space {
         });
     }
 
-    pub fn done(self) -> ! {
+    pub(crate) fn _done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();
         // counters.print_run_length_histogram();

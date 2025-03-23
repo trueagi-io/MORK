@@ -2,7 +2,6 @@
 mod tests {
   use std::{collections::BTreeMap, fs::create_dir_all, io::Read, path::PathBuf};
   use bucket_map::{SharedMappingHandle, SharedMapping};
-use mork::{expr, sexpr};
 
   #[test]
   fn logic_query_small() {
@@ -13,8 +12,8 @@ use mork::{expr, sexpr};
     small_metta.read_to_string(&mut s).unwrap();
 
     let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
-    let sm : SharedMappingHandle = space.sym_table();
+    space.load_sexpr(&s).unwrap();
+    let sm : SharedMappingHandle = space.sm.clone();
 
     let zip_file = "logic_query_small.zip";
 
@@ -29,7 +28,7 @@ use mork::{expr, sexpr};
     big_metta.read_to_string(&mut s).unwrap();
 
     let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
+    space.load_sexpr(&s).unwrap();
     let sm : SharedMappingHandle = space.sm.clone();
 
     let zip_file = "logic_query_small.zip";
@@ -65,7 +64,7 @@ use mork::{expr, sexpr};
   unsafe fn as_btree(shared_mapping : &SharedMapping) ->(BTreeMap<Vec<u8>, [u8;8]>, BTreeMap<[u8;8], Vec<u8>>) {
     let mut out = BTreeMap::new();
     let mut out2= BTreeMap::new();
-    let bucket_map::Tables { to_symbol, to_bytes } = shared_mapping.reveal_tables();
+    let bucket_map::serialization::Tables { to_symbol, to_bytes } = shared_mapping.reveal_tables();
     for each in 0..bucket_map::MAX_WRITER_THREADS {
       for (path, value) in to_symbol[each].iter()
       {

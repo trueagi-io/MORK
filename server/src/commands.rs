@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
 use bucket_map::SharedMappingHandle;
-use pathmap::zipper::{Zipper, ZipperCreation, ZipperMoving, ZipperWriting};
+use pathmap::zipper::{ZipperAccess, ZipperCreation, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 

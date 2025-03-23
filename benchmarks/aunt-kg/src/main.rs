@@ -79,7 +79,7 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-fn drop_symbol_head_2<Z: Zipper<()> + ZipperMoving + ZipperWriting<()>>(loc: &mut Z) {
+fn drop_symbol_head_2<Z: Zipper + ZipperMoving + ZipperWriting<()>>(loc: &mut Z) {
     let m = mask_and(loc.child_mask(), unsafe { SIZES });
     let mut it = CfIter::new(&m);
 

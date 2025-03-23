@@ -2,7 +2,7 @@ use std::io::Read;
 use std::time::Instant;
 use std::usize;
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ZipperMoving, ZipperWriting, ZipperCreation};
+use pathmap::zipper::{Zipper, ZipperAccess, ZipperMoving, ZipperWriting, ZipperCreation};
 use num::BigInt;
 
 
@@ -42,7 +42,7 @@ impl <'a> Iterator for CfIter<'a> {
     }
 }
 
-fn drop_symbol_head_byte<Z: ZipperWriting<usize> + Zipper<usize> + ZipperMoving>(loc: &mut Z) {
+fn drop_symbol_head_byte<Z: ZipperWriting<usize> + Zipper + ZipperMoving>(loc: &mut Z) {
     let m = loc.child_mask();
     let mut it = CfIter::new(&m);
 

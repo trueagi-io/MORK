@@ -1,6 +1,6 @@
-use std::{mem, ptr};
-use std::hint::black_box;
-use std::time::Instant;
+#[allow(unused_imports)]
+use std::{hint::black_box, mem, ptr, time::Instant};
+#[allow(unused_imports)]
 use pathmap::ring::Lattice;
 use bucket_map::*;
 use rayon::prelude::*;
@@ -8,8 +8,8 @@ use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use pathmap::trie_map::BytesTrieMap;
 // use pathmap::zipper::WriteZipper;
-use bstr::ByteSlice;
-use naive_map;
+// use bstr::ByteSlice;
+// use naive_map;
 
 
 
@@ -321,19 +321,18 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
     let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
     let mut it = Context::new(slice);
     let mut parser = ParDataParser::new(handle);
+    #[allow(unused_variables)]
     let mut i = 0;
     let mut stack = [0; 2 << 19];
     loop {
-        unsafe {
-            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
-                Err(ParserError::InputFinished) => { break }
-                Err(other) => { panic!("{:?}", other) }
-            }
-            i += 1;
-            it.variables.clear();
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+            Err(ParserError::InputFinished) => { break }
+            Err(other) => { panic!("{:?}", other) }
         }
+        i += 1;
+        it.variables.clear();
     }
     // println!("inserted {}, symbols {}", i, parser.count - 3);
     btm
@@ -341,7 +340,7 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
 
 fn main() {
     let filepath = "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3/kg_properties_aggregated.metta";
-    let mut file = std::fs::File::open(filepath)
+    let file = std::fs::File::open(filepath)
         .expect("Should have been able to read the file");
     let slice = unsafe { memmap2::Mmap::map(&file).unwrap() };
 

@@ -18,11 +18,13 @@ const U64_BYTES : usize = u64::BITS as usize / 8;
 /// The top two bytes are left free for tagging, 
 // Big endian!
 type Symbol = [u8;SYM_LEN];
-const SYM_LEN : usize = 8;
+#[doc(hidden)]
+pub const SYM_LEN : usize = 8;
 
 /// it's important that the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
 const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
-const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
+#[doc(hidden)]
+pub const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
 
 /// We don't want locks to implicitly cause chache misses because they are too close together.
 #[repr(align(64 /* bytes; cache line */))]

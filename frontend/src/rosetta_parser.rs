@@ -362,7 +362,6 @@ impl<'a> SExp<'a> {
             None => unreachable!(),
         };
         let ParseContext {
-            string,
             ref mut stack,
             ..
         } = *ctx;

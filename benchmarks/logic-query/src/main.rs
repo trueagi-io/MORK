@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use std::fs::File;
 use std::hint::black_box;
 use std::io::Read;
@@ -7,6 +8,7 @@ use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
+#[allow(unused_imports)]
 use pathmap::utils::{ByteMaskIter, ByteMask};
 
 
@@ -31,8 +33,11 @@ const ITER_ARITY: u8 = 8;
 const ITER_VAR_SYMBOL: u8 = 9;
 const ITER_VAR_ARITY: u8 = 10;
 const ACTION: u8 = 11;
+#[allow(unused)]
 const BEGIN_RANGE: u8 = 12;
+#[allow(unused)]
 const FINALIZE_RANGE: u8 = 13;
+#[allow(unused)]
 const REFER_RANGE: u8 = 14;
 
 #[allow(unused)]
@@ -256,7 +261,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
     stack.push(last);
 }
 
-
+#[allow(unused)]
 fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>, loc: &mut ReadZipperUntracked<()>, references: &mut Vec<(u32, u32)>, f: &mut F) {
     // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
@@ -478,7 +483,7 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
         }
     }
 }
-
+#[allow(unused)]
 fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     let mut v = vec![];
     loop {
@@ -562,6 +567,7 @@ impl DataParser {
 impl Parser for DataParser {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         return unsafe { std::mem::transmute(s) };
+        #[allow(unreachable_code)]
         if s.len() == 0 { return Self::EMPTY }
         let mut z = self.symbols.write_zipper_at_path(s);
         let r = z.get_value_or_insert_with(|| {
@@ -674,6 +680,7 @@ fn main() {
 
     return;
     // let mut keeping_wz = keeping.write_zipper();
+    #[allow(unreachable_code)]
     let mut z = space.read_zipper();
     let mut k = 0;
     let mut total_unified = 0;
@@ -690,8 +697,10 @@ fn main() {
         let mut visited = 0;
         let mut unified = 0;
         let mut rz = space.read_zipper();
+        #[allow(unused_variables)]
         let mut references: Vec<(u32, u32)> = vec![];
 
+        #[allow(unused_variables)]
         transition(&mut buffer, &mut rz, &mut |loc| {
         // referential_transition(&mut buffer, &mut rz, &mut references, &mut |loc| {
         //     black_box(loc.origin_path());

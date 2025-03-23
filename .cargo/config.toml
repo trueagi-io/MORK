@@ -2,3 +2,7 @@
 [build]
 #rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat -C embed-bitcode=yes -Z dylib-lto"
 rustflags = ["--emit", "asm", "-C", "target-cpu=native"]
+
+# this allows tests to reference files datasets from the workspace root instead of being forced to work backwards
+[env]
+CARGO_WORKSPACE_DIR = { value = "", relative = true }

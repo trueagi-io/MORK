@@ -1,14 +1,13 @@
-use std::io::{BufRead, Read, Write};
-use std::{mem, process, ptr};
+use std::io::Write;
+use std::process;
 use std::fs::File;
 use std::time::Instant;
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::ByteMaskIter;
 use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
-use crate::json_parser::Transcriber;
 
 pub struct Space {
     pub(crate) btm: BytesTrieMap<()>,
@@ -104,6 +103,7 @@ const BEGIN_RANGE: u8 = 12;
 const FINALIZE_RANGE: u8 = 13;
 const REFER_RANGE: u8 = 14;
 
+#[allow(unused)]
 fn label(l: u8) -> String {
     match l {
         ITER_AT_DEPTH => { "ITER_AT_DEPTH" }
@@ -337,7 +337,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), unsafe { SIZES });
+            let m = mask_and(loc.child_mask(), SIZES);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -366,7 +366,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), unsafe { VARS });
+            let m = mask_and(loc.child_mask(), VARS);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -378,7 +378,7 @@ fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
+            let m = mask_and(loc.child_mask(), ARITIES);
             let mut it = ByteMaskIter::new(m);
 
             while let Some(b) = it.next() {
@@ -563,7 +563,7 @@ impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         self.count += 1;
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = (self.write_permit.get_sym_or_insert(s) );
+        self.buf = self.write_permit.get_sym_or_insert(s);
         return unsafe { std::mem::transmute(&self.buf[..]) };
     }
 }
@@ -768,7 +768,7 @@ impl Space {
                 ez.loc += internal.len() + 1;
             }
             // space.
-            unsafe { self.btm.insert(ez.span(), ()); }
+            self.btm.insert(ez.span(), ());
             count += 1;
         }
         Ok(count)
@@ -833,7 +833,7 @@ impl Space {
         Ok((nodes, attributes))
     }
 
-    pub fn load(&mut self, r: &[u8]) -> Result<usize, String> {
+    pub fn load_sexpr(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut it = Context::new(r);
 
         let t0 = Instant::now();
@@ -881,7 +881,7 @@ impl Space {
         Ok(i)
     }
 
-    pub fn backup_symbols<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error>  {
+    pub fn backup_symbols<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error>  {
         self.sm.serialize(path)
     }
 
@@ -890,9 +890,9 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error> {
+    pub fn backup<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
         pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
-                                           |v, b| pathmap::serialization::ValueSlice::Read(&[]),
+                                           |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
                                            path.as_ref()).map(|_| ())
     }
 
@@ -901,12 +901,12 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn backup_paths<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(usize, usize, usize), std::io::Error> {
         let mut file = File::create(path).unwrap();
         pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<(usize, usize, usize), std::io::Error> {
         let mut file = File::open(path).unwrap();
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
@@ -967,6 +967,7 @@ impl Space {
     }
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
+        #![allow(unused)]
         let mut arity_hack = BytesTrieMap::new();
         arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
         let mut rz = arity_hack.read_zipper();

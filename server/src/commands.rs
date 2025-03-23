@@ -283,7 +283,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMapp
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load(&buffer[..]).map_err(CommandError::internal)?;
+            let count = space.load_sexpr(&buffer[..]).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from MeTTa S-Expr file: {file_path:?}");
         },
         InputDataType::Json => {

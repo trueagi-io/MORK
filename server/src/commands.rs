@@ -283,7 +283,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMapp
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_sexpr(&buffer[..]).map_err(CommandError::internal)?;
+            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from MeTTa S-Expr file: {file_path:?}");
         },
         InputDataType::Json => {
@@ -293,7 +293,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMapp
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_json(&buffer[..]).map_err(CommandError::internal)?;
+            let count = space.load_json(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from JSON file: {file_path:?}");
         },
         InputDataType::Csv => {
@@ -301,7 +301,7 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMapp
             let mut file_handle = std::fs::File::open(&file_path)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_csv(&buffer[..]).map_err(CommandError::internal)?;
+            let count = space.load_csv(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
             println!("Loaded {count} atoms from CSV file: {file_path:?}");
         },
     }
@@ -405,7 +405,7 @@ async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
         OutputDataType::Metta => {
             let file = std::fs::File::create(&file_path).map_err(CommandError::internal)?;
             let mut writer = std::io::BufWriter::new(file);
-            space.dump(&mut writer).map_err(CommandError::internal)?;
+            space.dump_as_sexpr(&mut writer).map_err(CommandError::internal)?;
             writer.flush()?;
     
         },

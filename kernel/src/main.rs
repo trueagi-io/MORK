@@ -44,7 +44,7 @@ fn main() {
     println!("{:?}", s.sm.get_sym(b"SPO"));
 
     let restore_paths_start = Instant::now();
-    println!("restored paths {:?}", s.restore_paths("/dev/shm/combined.paths.gz").unwrap());
+    println!("restored paths {:?}", s.restore_as_paths("/dev/shm/combined.paths.gz").unwrap());
     println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
     s.statistics();
 

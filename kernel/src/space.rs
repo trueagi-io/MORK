@@ -279,7 +279,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
     stack.push(last);
 }
 
-fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
     // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
     // println!("|refs {:?}", references);

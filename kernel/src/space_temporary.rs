@@ -47,10 +47,10 @@ pub trait Space {
     // ===================== Methods used by shared impl ===================== 
 
     /// Gets a read zipper from a Reader
-    fn read_zipper<'r, 's>(&self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r>;
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r>;
 
     /// Gets a write zipper from a Writer
-    fn write_zipper<'w, 's>(&self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w;
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
@@ -58,7 +58,7 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr(&mut self, data: &str, dst: &mut Self::Writer<'_>) -> Result<SExprCount, Self::Err> {
+    fn load_sexpr<'s>(&'s self, data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, Self::Err> {
         let mut dst = self.write_zipper(dst);
         dst.reset();
         let mut it = Context::new(data.as_bytes());
@@ -84,8 +84,7 @@ pub trait Space {
         Ok(i)
     }
 
-    
-    fn dump_as_sexpr<W : std::io::Write>(&self, dst: &mut W, src: &mut Self::Reader<'_>) -> Result<crate::space::PathCount, String> {
+    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<crate::space::PathCount, String> {
         let mut rz = self.read_zipper(src);
 
         let t0 = Instant::now();
@@ -113,7 +112,7 @@ pub trait Space {
     }
 
 
-    fn transform(&mut self, reader : &mut Self::Reader<'_>, writer : &mut Self::Writer<'_> , pattern: Expr, template: Expr) {
+    fn transform<'s>(&'s self, reader : &mut Self::Reader<'s>, writer : &mut Self::Writer<'s> , pattern: Expr, template: Expr) {
         use mork_bytestring::ExtractFailure;
 
         // todo take read zipper at static pattern prefix
@@ -159,9 +158,7 @@ pub trait Space {
         });
     }
 
-
-
-    fn transition<'s, 'r, SRZ : SpaceReaderZipper<'s, 'r>, F:  FnMut(&mut SRZ) -> ()>(&mut self, stack: &mut Vec<u8>, loc: &mut SRZ, f: &mut F) {
+    fn transition<'s, 'r, SRZ : SpaceReaderZipper<'s, 'r>, F:  FnMut(&mut SRZ) -> ()>(&self, stack: &mut Vec<u8>, loc: &mut SRZ, f: &mut F) {
         use mork_bytestring::{Tag, byte_item, item_byte};
         let last = stack.pop().unwrap();
         match last {
@@ -349,10 +346,10 @@ impl Space for DefaultSpace {
         let path = path_as_bytes(path);
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }
-    fn read_zipper<'r, 's>(&self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
         reader
     }
-    fn write_zipper<'w, 's>(&self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {
         writer
     }
     fn symbol_table(&self) -> &SharedMappingHandle {

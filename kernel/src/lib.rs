@@ -4,8 +4,6 @@ pub use space_temporary::*;
 
 mod json_parser;
 
-mod struct_space_temporary;
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;

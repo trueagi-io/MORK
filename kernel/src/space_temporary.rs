@@ -10,13 +10,19 @@ use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTra
 
 use crate::space::ParDataParser;
 
+/// A path in the space, expressed in terms of the space's semantic
+pub type Path = [u8];
+
+/// Converts the semantic path into a [PathMap] bytes path
+pub fn path_as_bytes(path: &Path) -> Cow<[u8]> {
+    Cow::from(path)
+}
+
 /// The number of S-Expressions returned by [Space::load_sexpr]
 type SExprCount     = usize;
 
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space {
-    /// A path in the space, expressed in terms of the space's semantic
-    type Path: ?Sized;
     /// An authentication token used for access to the space
     type Auth;
     /// Objects of this type encapsulate a location in the space and the rights to read from that location
@@ -29,10 +35,10 @@ pub trait Space {
     // ===================== Methods used by caller ===================== 
 
     /// Requests a new [Space::Reader] from the `Space`
-    fn new_reader<'space>(&'space self, path: &Self::Path, auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err>;
+    fn new_reader<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err>;
 
     /// Requests a new [Space::Writer] from the `Space`
-    fn new_writer<'space>(&'space self, path: &Self::Path, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err>;
+    fn new_writer<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err>;
 
     // ===================== Methods used by shared impl ===================== 
 
@@ -44,9 +50,6 @@ pub trait Space {
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
-
-    /// Converts the semantic path into a [PathMap] bytes path
-    fn path_as_bytes(path: &Self::Path) -> Cow<[u8]>;
 
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
@@ -95,21 +98,17 @@ impl DefaultSpace {
 }
 
 impl Space for DefaultSpace {
-    type Path = [u8];
     type Auth = ();
     type Reader<'space> = ReadZipperTracked<'space, 'static, ()>;
     type Writer<'space> = WriteZipperTracked<'space, 'static, ()>;
     type Err = String;
 
-    fn path_as_bytes(path: &Self::Path) -> Cow<[u8]> {
-        Cow::from(path)
-    }
-    fn new_reader<'space>(&'space self, path: &Self::Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err> {
-        let path = Self::path_as_bytes(path);
+    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err> {
+        let path = path_as_bytes(path);
         self.map.read_zipper_at_path(path).map_err(|e| e.to_string())
     }
-    fn new_writer<'space>(&'space self, path: &Self::Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err> {
-        let path = Self::path_as_bytes(path);
+    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err> {
+        let path = path_as_bytes(path);
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }
     fn read_zipper<'r, 's>(&self, reader: &'r mut Self::Reader<'s>) -> impl ZipperMoving + ZipperReadOnly<'s, ()> + 'r {

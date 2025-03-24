@@ -1,4 +1,7 @@
 pub mod space;
+mod space_temporary;
+pub use space_temporary::*;
+
 mod json_parser;
 
 #[cfg(test)]

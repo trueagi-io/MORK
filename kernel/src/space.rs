@@ -542,10 +542,10 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-type PathCount      = usize;
-type NodeCount      = usize;
-type AttributeCount = usize;
-type SExprCount     = usize;
+pub type PathCount      = usize;
+pub type NodeCount      = usize;
+pub type AttributeCount = usize;
+pub type SExprCount     = usize;
 
 pub struct SpaceTranscriber<'a, 'b, 'c> { 
     /// count of unnested values == path_count
@@ -968,7 +968,8 @@ impl Space {
         });
     }
 
-    pub(crate) fn _done(self) -> ! {
+    #[doc(hidden /* this should not be part of the public api, but it will stay here until we can factor it out, `main.rs` is still implicitly dependant on it inside the commented code */)]
+    pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();
         // counters.print_run_length_histogram();

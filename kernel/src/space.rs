@@ -51,25 +51,21 @@ fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-/// this module will get refactored out 
-pub(crate) mod space_constants {
-    pub(crate) const ITER_AT_DEPTH    : u8 =  0;
-    pub(crate) const ITER_SYMBOL_SIZE : u8 =  1;
-    pub(crate) const ITER_SYMBOLS     : u8 =  2;
-    pub(crate) const ITER_VARIABLES   : u8 =  3;
-    pub(crate) const ITER_ARITIES     : u8 =  4;
-    pub(crate) const ITER_EXPR        : u8 =  5;
-    pub(crate) const ITER_NESTED      : u8 =  6;
-    pub(crate) const ITER_SYMBOL      : u8 =  7;
-    pub(crate) const ITER_ARITY       : u8 =  8;
-    pub(crate) const ITER_VAR_SYMBOL  : u8 =  9;
-    pub(crate) const ITER_VAR_ARITY   : u8 = 10;
-    pub(crate) const ACTION           : u8 = 11;
-    pub(crate) const BEGIN_RANGE      : u8 = 12;
-    pub(crate) const FINALIZE_RANGE   : u8 = 13;
-    pub(crate) const REFER_RANGE      : u8 = 14;
-}
-use space_constants::*;
+const ITER_AT_DEPTH    : u8 =  0;
+const ITER_SYMBOL_SIZE : u8 =  1;
+const ITER_SYMBOLS     : u8 =  2;
+const ITER_VARIABLES   : u8 =  3;
+const ITER_ARITIES     : u8 =  4;
+const ITER_EXPR        : u8 =  5;
+const ITER_NESTED      : u8 =  6;
+const ITER_SYMBOL      : u8 =  7;
+const ITER_ARITY       : u8 =  8;
+const ITER_VAR_SYMBOL  : u8 =  9;
+const ITER_VAR_ARITY   : u8 = 10;
+const ACTION           : u8 = 11;
+const BEGIN_RANGE      : u8 = 12;
+const FINALIZE_RANGE   : u8 = 13;
+const REFER_RANGE      : u8 = 14;
 
 #[allow(unused)]
 fn label(l: u8) -> String {

@@ -48,9 +48,15 @@ pub trait Space {
     // ===================== Methods used by shared impl ===================== 
 
     /// Gets a read zipper from a Reader
+    ///
+    /// NOTE: The `&mut Self::Reader` argument ensures exclusivity, but the `Reader` does
+    /// not conceptually have mutable state
     fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r>;
 
     /// Gets a write zipper from a Writer
+    ///
+    /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
+    /// not conceptually have mutable state
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w;
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
@@ -182,9 +188,11 @@ impl Space for DefaultSpace {
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }
     fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
+        reader.reset();
         reader
     }
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {
+        writer.reset();
         writer
     }
     fn symbol_table(&self) -> &SharedMappingHandle {

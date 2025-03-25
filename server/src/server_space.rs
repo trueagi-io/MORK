@@ -53,15 +53,15 @@ impl Space for ServerSpace {
     type Auth = ();
     type Reader<'space> = ReadPermission;
     type Writer<'space> = WritePermission;
-    type Err = CommandError;
+    type PermissionErr = CommandError;
 
-    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err> {
+    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
         let path = path_as_bytes(path);
-        self.status_map.get_read_permission(&path).map_err(|e| CommandError::Internal(e))
+        self.status_map.get_read_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
-    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err> {
+    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
         let path = path_as_bytes(path);
-        self.status_map.get_write_permission(&path).map_err(|e| CommandError::Internal(e))
+        self.status_map.get_write_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
     fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
         unsafe{ self.primary_map.read_zipper_at_borrowed_path_unchecked(reader.path()) }

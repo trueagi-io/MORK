@@ -4,9 +4,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
-use bucket_map::SharedMappingHandle;
 use mork::Space;
-use pathmap::zipper::{ZipperAccess, ZipperCreation, ZipperMoving, ZipperWriting};
+use pathmap::zipper::{ZipperAccess, ZipperCreation, ZipperMoving};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -181,7 +180,7 @@ struct ImportCmdResources {
     writer: WritePermission,
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: ImportCmdResources) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, mut resources: ImportCmdResources) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
 
     // Do the remote fetching
@@ -217,23 +216,20 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
         }
     };
 
-    let shared_mapping = ctx.0.space.symbol_table().clone();
-    let space = match tokio::task::spawn_blocking(move || {
-        import_do_parse(file_path, file_type, shared_mapping)
+    let ctx_clone = ctx.clone();
+    let map_path = resources.writer.path().to_owned();
+    let mut path_writer = resources.writer;
+    match tokio::task::spawn_blocking(move || {
+        import_do_parse(&ctx_clone.0.space, file_path, &mut path_writer, file_type)
     }).await.map_err(CommandError::internal)? {
-        Ok(space) => space,
+        Ok(()) => {},
         Err(err) => {
             //User-facing error
             println!("Import Failed. Parse error: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to parse file: {err:?}"));
-            return ctx.0.space.set_user_status(resources.writer.path(), StatusRecord::ParseError(parse_err))
+            return ctx.0.space.set_user_status(map_path, StatusRecord::ParseError(parse_err))
         }
     };
-
-    // Graft the data into the map and wrap up
-    //========================
-    let mut wz = ctx.0.space.write_zipper(&mut resources.writer);
-    wz.graft_map(space.into_map(/* we made the space with global symbol table, so this is compliant */));
 
     //Finalize the resource
     let timestamp = 987654321; //GOAT, use the real timestamp from this command.
@@ -275,7 +271,7 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?, dst)?;
+            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from MeTTa S-Expr file: {src_file:?}");
         },
         InputDataType::Json => {
@@ -285,19 +281,19 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_json(std::str::from_utf8(&buffer[..])?, dst)?;
+            let count = space.load_json(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from JSON file: {src_file:?}");
         },
         InputDataType::Csv => {
             //GOAT, Same applies here about buffering the whole file
-            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_csv(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
-            println!("Loaded {count} atoms from CSV file: {file_path:?}");
+            let count = space.load_csv(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from CSV file: {src_file:?}");
         },
     }
-    Ok(space)
+    Ok(())
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

@@ -327,77 +327,53 @@ impl CommandDefinition for ExportCmd {
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let state_count = ctx.0.monotonic_state_counter.increment_state();
         let file_handle = ctx.0.resource_store.new_resource(&format!("export_{:0>16X}_to_{file_uri}.metta",state_count)).await?;
-
-        //Flag this path in the map as being busy, and therefore off-limits to other operations
+        
+        //Flag this path in the map as being busy, and therefore off-limits to writers
         let map_path = cmd.args[0].as_path();
-        ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
-            CommandError::from_status_record(status, format!("Error accessing path {map_path:?}"))
-        })?;
-
-        Ok(Some(Box::new(ExportCmdResources{
-            file: file_handle
+        let reader = ctx.0.space.new_reader(map_path, &())?;
+        Ok(Some(Resources::new(ExportCmdResources{
+            file_handle,
+            reader
         })))
     }
-    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
-        let resources = resources.unwrap().downcast::<ExportCmdResources>().unwrap();
-        let path = resources.file.path()?;
-        let pathbuf = path.to_owned();
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let export_resources = resources.unwrap().downcast::<ExportCmdResources>();
+        let pathbuf = export_resources.file_handle.path()?.to_owned();
 
-        tokio::task::spawn(async move {
-            match do_export(&ctx, thread.unwrap(), &cmd, pathbuf).await {
+        tokio::task::spawn_blocking(move || async move {
+            match do_export(&ctx, thread.unwrap(), export_resources).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during export: {err:?}"); //GOAT Log this error
-                    let _ = ctx.0.status_map.clear_status(cmd.args[0].as_path());
                 }
             }
-            async { () }
         }).await?.await;
 
         let mut out = Vec::with_capacity(4096);
-        std::fs::File::read_to_end(&mut std::fs::File::open(path)?, &mut out)?;
+        std::fs::File::read_to_end(&mut std::fs::File::open(pathbuf)?, &mut out)?;
 
         Ok(hyper::body::Bytes::from(out))
     }
 }
 
 struct ExportCmdResources {
-    file: ResourceHandle
+    file_handle : ResourceHandle,
+    reader      : ReadPermission,
 }
 
-enum OutputDataType {
-    Metta
-}
-
-async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: PathBuf) -> Result<(), CommandError> {
-    let map_path = cmd.args[0].as_path();
-
-    let Some(map) = ctx.0.primary_map.read_zipper_at_path(map_path)
-        .map_err(CommandError::internal)?
-        .make_map() else {
-            return Err(CommandError::external(StatusCode::CONFLICT, "requested path prefix does not contain a space"))
-        };
-
-    // TODO the space interface should not have this function, as it isn't "type safe" for the embedded language,
-    //      but there is currently no other way to use dump.
-    let space = unsafe { Space::reconstruct(map, ctx.0.global_symbol_table.clone()) };
-
-    let res_path = resources;
-
+async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, ExportCmdResources { file_handle, mut reader }: ExportCmdResources) -> Result<(), CommandError> {
     // Do the deserialization
     //========================
-    let file_path = res_path;
-    let file_type = OutputDataType::Metta;
-    match file_type {
-        OutputDataType::Metta => {
-            let file = std::fs::File::create(&file_path).map_err(CommandError::internal)?;
-            let mut writer = std::io::BufWriter::new(file);
-            space.dump_as_sexpr(&mut writer).map_err(CommandError::internal)?;
-            writer.flush()?;
-        },
+    let file_path = file_handle.path()?;
+
+    // right now we only suport exporting MeTTa sexprs
+    '_metta : {
+        let file = std::fs::File::create(&file_path).map_err(CommandError::internal)?;
+        let mut writer = std::io::BufWriter::new(file);
+        ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|_|CommandError::internal(format!("failed to export to {:?}", file_path)))?;
+        writer.flush()?;
     }
 
-    ctx.0.status_map.clear_status(cmd.args[0].as_path()).map_err(CommandError::internal)?;
     thread.finalize().await;
     println!("Export command successful"); // TODO log this!
 

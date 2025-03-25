@@ -196,7 +196,7 @@ async fn import_request_test() -> Result<(), Error> {
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathInUse");
+    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary");
 
     //Now sleep for a bit (600ms), and then check that we can inspect the path.
     std::thread::sleep(std::time::Duration::from_millis(600)); //GOAT, put this back to 600ms

@@ -310,13 +310,17 @@ impl CommandDefinition for ExportCmd {
         &[ArgDef{
             arg_type: ArgType::Path,
             name: "map_path",
-            desc: "The path in the map at which to export to file",
+            desc: "The path in the map from which to export",
             required: true
         }]
     }
     fn properties() -> &'static [PropDef] {
         &[PropDef{
             arg_type: ArgType::String,
+
+            // name: "format",
+            // desc: "The format to export",
+            //GOAT, a uri arg makes no sense, since this command doesn't fetch.  Use a format arg instead, and make it optional
             name: "uri",
             desc: "The URI where to serve the file, only http and https schemes are currently supported",
             required: true
@@ -326,8 +330,11 @@ impl CommandDefinition for ExportCmd {
         //Make sure we can get a place to save the file to.
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let state_count = ctx.0.monotonic_state_counter.increment_state();
+        //GOAT, we don't need this complicated of an identifier.  Tie the resource to the request_id
+        //GOAT, why do we need a file at all?  Unlike import, which needs the disk for journaling reasons,
+        //  export doesn't change the space, so shouldn't need to journal, so no file is needed.
         let file_handle = ctx.0.resource_store.new_resource(&format!("export_{:0>16X}_to_{file_uri}.metta",state_count)).await?;
-        
+
         //Flag this path in the map as being busy, and therefore off-limits to writers
         let map_path = cmd.args[0].as_path();
         let reader = ctx.0.space.new_reader(map_path, &())?;
@@ -341,7 +348,7 @@ impl CommandDefinition for ExportCmd {
         let pathbuf = export_resources.file_handle.path()?.to_owned();
 
         tokio::task::spawn_blocking(move || async move {
-            match do_export(&ctx, thread.unwrap(), export_resources).await {
+            match do_export(&ctx, export_resources).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during export: {err:?}"); //GOAT Log this error
@@ -352,6 +359,9 @@ impl CommandDefinition for ExportCmd {
         let mut out = Vec::with_capacity(4096);
         std::fs::File::read_to_end(&mut std::fs::File::open(pathbuf)?, &mut out)?;
 
+        thread.unwrap().finalize().await;
+        println!("Export command successful"); // TODO log this!
+
         Ok(hyper::body::Bytes::from(out))
     }
 }
@@ -361,7 +371,7 @@ struct ExportCmdResources {
     reader      : ReadPermission,
 }
 
-async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, ExportCmdResources { file_handle, mut reader }: ExportCmdResources) -> Result<(), CommandError> {
+async fn do_export(ctx: &MorkService, ExportCmdResources { file_handle, mut reader }: ExportCmdResources) -> Result<(), CommandError> {
     // Do the deserialization
     //========================
     let file_path = file_handle.path()?;
@@ -373,9 +383,6 @@ async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, ExportCmdResourc
         ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|_|CommandError::internal(format!("failed to export to {:?}", file_path)))?;
         writer.flush()?;
     }
-
-    thread.finalize().await;
-    println!("Export command successful"); // TODO log this!
 
     Ok(())
 }

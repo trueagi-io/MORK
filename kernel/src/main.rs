@@ -30,7 +30,7 @@ fn bench_0() {
     let edgesfs = unsafe { memmap2::Mmap::map(&edgesf).unwrap() };
     let loaded = s.load_json( unsafe { std::str::from_utf8_unchecked( edgesfs.as_ref() )}).unwrap();
     println!("loaded {} edges in {} seconds", loaded, t1.elapsed().as_secs());
-    s.done();
+    done(&s);
 }
 
 
@@ -46,7 +46,7 @@ fn bench_1() {
     let edgesfs = unsafe { memmap2::Mmap::map(&edgesf).unwrap() };
     let loaded = s.load_json( unsafe { std::str::from_utf8_unchecked( edgesfs.as_ref() )}).unwrap();
     println!("loaded {} edges in {} seconds", loaded, t1.elapsed().as_secs());
-    s.done();
+    done(&s);
 }
 
 const TEST_DAG : bool = false;
@@ -100,4 +100,15 @@ fn bench_2() {
         s.backup_symbols("/dev/shm/combined.symbols.zip");
         println!("symbols backup took {}", backup_symbols_start.elapsed().as_secs());
     }
+}
+
+#[allow(unused_variables)]
+pub fn done(s : &Space) -> ! {
+    // let inner = s.inner_map_as_ref();
+    // let counters = pathmap::counters::Counters::count_ocupancy(inner);
+    // counters.print_histogram_by_depth();
+    // counters.print_run_length_histogram();
+    // counters.print_list_node_stats();
+    // println!("#symbols {}", self.sm.symbol_count());
+    std::process::exit(0)
 }

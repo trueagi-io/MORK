@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, process};
+use std::{fs::File, io::Write};
 use mork_bytestring::{byte_item, Expr, ExprZipper, item_byte, Tag};
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
@@ -226,14 +226,9 @@ impl Space {
         });
     }
 
-    #[doc(hidden /* this should not be part of the public api, but it will stay here until we can factor it out, `main.rs` is still implicitly dependant on it inside the commented code */)]
-    pub fn done(self) -> ! {
-        // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
-        // counters.print_histogram_by_depth();
-        // counters.print_run_length_histogram();
-        // counters.print_list_node_stats();
-        // println!("#symbols {}", self.sm.symbol_count());
-        process::exit(0);
+    #[doc(hidden)]
+    pub fn inner_map_as_ref(&self) -> &BytesTrieMap<()> {
+        &self.btm
     }
 
     pub fn into_map(self) -> BytesTrieMap<()> {

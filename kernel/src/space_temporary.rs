@@ -5,7 +5,7 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
-use pathmap::{morphisms::Catamorphism, trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
+use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
 pub type SExprCount     = usize;
@@ -204,15 +204,25 @@ pub(crate) mod stack_actions {
 } 
 use stack_actions::*;
 
+pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: bucket_map::WritePermit<'a> }
 
-pub(crate) fn backup_as_dag_impl<'s, 'r, RZ, OutFilePath>(rz : &'r mut RZ, path: OutFilePath) -> Result<(), std::io::Error> 
-    where 
-        &'r mut RZ : ZipperReadOnly<'s, ()> +  ZipperIteration<'s, ()> + ZipperAbsolutePath,
-        OutFilePath : AsRef<std::path::Path>
-{
-    pathmap::serialization::write_trie("neo4j triples", rz,
-                                       |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
-                                       path.as_ref()).map(|_| ())
+impl <'a> Parser for ParDataParser<'a> {
+    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
+        self.count += 1;
+        // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
+        self.buf = self.write_permit.get_sym_or_insert(s);
+        return unsafe { std::mem::transmute(&self.buf[..]) };
+    }
+}
+
+impl <'a> ParDataParser<'a> {
+    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
+        Self {
+            count: 3,
+            buf: (3u64).to_be_bytes(),
+            write_permit: handle.try_aquire_permission().unwrap()
+        }
+    }
 }
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestring::ExprZipper) -> Vec<u8> {
@@ -440,7 +450,6 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
     }
     stack.push(last);
 }
-
 pub(crate) fn referential_transition_impl<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
     use mork_bytestring::{Tag, byte_item, item_byte};
     use pathmap::utils::ByteMaskIter;
@@ -695,7 +704,7 @@ pub(crate) fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: E
         match e.transformData(pattern, template, &mut oz) {
             Ok(()) => {
                 // todo (here and below) descend to dynamic path and reset/ascend to static prefix
-                // println!("{}", sexpr!(self, oz.root));
+                // println!("{}", crate::sexpr!(self, oz.root));
                 wz.descend_to(&buffer[..oz.loc]);
                 wz.set_value(());
                 wz.reset()
@@ -1014,27 +1023,4 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         }
     }
     Ok((nodes, attributes))
-}
-
-
-
-pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: bucket_map::WritePermit<'a> }
-
-impl <'a> Parser for ParDataParser<'a> {
-    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
-        self.count += 1;
-        // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = self.write_permit.get_sym_or_insert(s);
-        return unsafe { std::mem::transmute(&self.buf[..]) };
-    }
-}
-
-impl <'a> ParDataParser<'a> {
-    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
-        Self {
-            count: 3,
-            buf: (3u64).to_be_bytes(),
-            write_permit: handle.try_aquire_permission().unwrap()
-        }
-    }
 }

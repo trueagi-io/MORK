@@ -30,7 +30,6 @@ impl CommandDefinition for BusywaitCmd {
     const NAME: &'static str = "busywait";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
-    type Resources = ();
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::UInt,
@@ -40,10 +39,10 @@ impl CommandDefinition for BusywaitCmd {
         }]
     }
     fn properties() -> &'static [PropDef] { &[] }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
+    async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         thread.unwrap().dispatch_blocking_task(cmd, move |cmd| {
             let millis = cmd.args[0].as_u64();
             std::thread::sleep(std::time::Duration::from_millis(millis));
@@ -64,7 +63,6 @@ impl CommandDefinition for CountCmd {
     const NAME: &'static str = "count";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
-    type Resources = ReadPermission;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -76,12 +74,12 @@ impl CommandDefinition for CountCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
         let map_path = cmd.args[0].as_path();
         let reader = ctx.0.space.new_reader(map_path, &())?;
-        Ok(Some(reader))
+        Ok(Some(Resources::new(reader)))
     }
-    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
         tokio::task::spawn(async move {
             match do_count(&ctx, thread.unwrap(), &cmd, resources.unwrap()).await {
                 Ok(()) => {},
@@ -95,10 +93,11 @@ impl CommandDefinition for CountCmd {
     }
 }
 
-async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, _cmd: &Command, mut reader: ReadPermission) -> Result<(), CommandError> {
+async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, _cmd: &Command, resources: Resources) -> Result<(), CommandError> {
 
     let ctx_clone = ctx.clone();
     tokio::task::spawn_blocking(move || -> Result<(), CommandError> {
+        let mut reader = resources.downcast::<ReadPermission>();
         let rz = ctx_clone.0.space.read_zipper(&mut reader);
         let count = rz.val_count();
         drop(rz);
@@ -123,7 +122,6 @@ impl CommandDefinition for ImportCmd {
     const NAME: &'static str = "import";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
-    type Resources = ImportCmdResources;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -140,7 +138,7 @@ impl CommandDefinition for ImportCmd {
             required: true
         }]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri).await?;
@@ -149,12 +147,12 @@ impl CommandDefinition for ImportCmd {
         let map_path = cmd.args[0].as_path();
         let writer = ctx.0.space.new_writer(map_path, &())?;
 
-        Ok(Some(ImportCmdResources{
+        Ok(Some(Resources::new(ImportCmdResources{
             file: file_handle,
             writer,
-        }))
+        })))
     }
-    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -180,8 +178,9 @@ struct ImportCmdResources {
     writer: WritePermission,
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, mut resources: ImportCmdResources) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: Resources) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+    let mut resources = resources.downcast::<ImportCmdResources>();
 
     // Do the remote fetching
     //========================
@@ -416,7 +415,6 @@ impl CommandDefinition for StatusCmd {
     const NAME: &'static str = "status";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = false;
-    type Resources = ();
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -428,10 +426,10 @@ impl CommandDefinition for StatusCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         let map_path = cmd.args[0].as_path();
         let status = ctx.0.space.get_status(map_path);
         let json_string = serde_json::to_string(&status)?;
@@ -450,17 +448,16 @@ impl CommandDefinition for StopCmd {
     const NAME: &'static str = "stop";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = false;
-    type Resources = ();
     fn args() -> &'static [ArgDef] {
         &[]
     }
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
         ctx.0.stop_cmd.notify_waiters();
         Ok("ACK. Initiating Shutdown.  Connections will not longer be accepted".into())
     }
@@ -492,9 +489,6 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     /// Whether or not this command requires a free worker be available in order to proceed
     const CONSUME_WORKER: bool;
 
-    /// The resources that need to be gathered, before the command can execute
-    type Resources: Send + Sync + 'static;
-
     /// Arguments, `(arg_type, arg_name, arg_description)`
     fn args() -> &'static [ArgDef];
 
@@ -502,11 +496,25 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     fn properties() -> &'static [PropDef];
 
     /// Function to gather resources needed to execute the command
-    fn gather(ctx: MorkService, cmd: Command) -> impl Future<Output=Result<Option<Self::Resources>, CommandError>> + Sync + Send;
+    fn gather(ctx: MorkService, cmd: Command) -> impl Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send;
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
-    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Self::Resources>) -> impl Future<Output=Result<Bytes, CommandError>> + Sync + Send;
+    fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> impl Future<Output=Result<Bytes, CommandError>> + Sync + Send;
+}
+
+/// An abstract type to contain the resources needed to execute the command
+pub struct Resources(Box<Box<dyn core::any::Any + Send + Sync>>);
+
+impl Resources {
+    pub fn new<T: Send + Sync + 'static>(t: T) -> Self {
+        //GOAT, Figure out something better than this double-box!!!
+        Resources(Box::new(Box::new(t)))
+    }
+    pub fn downcast<T: 'static>(mut self) -> T {
+        let inner = self.0.downcast_mut::<Option<Box<T>>>().unwrap();
+        *core::mem::take(inner).unwrap()
+    }
 }
 
 /// Object-safe wrapper over CommandDefinition

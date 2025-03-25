@@ -112,10 +112,6 @@ pub trait Space {
         transition_impl(stack, loc, f)
     }
 
-    fn referential_transition<'s, 'r, SRZ : SpaceReaderZipper<'s, 'r>, F: FnMut(&mut SRZ) -> ()>(&mut self,stack: &mut Vec<u8>, loc: &mut SRZ, references: &mut Vec<(u32, u32)>, f: &mut F) {
-        referential_transition_impl(stack, loc, references, f);
-    }
-
     fn query<'s, 'r, F : FnMut(Expr) -> ()>(&'s self, reader : &'r mut Self::Reader<'s>, pattern: Expr, effect: F) {
         let mut rz = self.read_zipper(reader);
         query_impl(&mut rz, pattern, effect);
@@ -237,7 +233,7 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestring::ExprZipper) -> Vec<u8> {
+pub(crate) fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestring::ExprZipper) -> Vec<u8> {
     use mork_bytestring::Tag;
     
     let mut v = vec![];
@@ -264,13 +260,11 @@ fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestring::ExprZip
     }
 }
 
-
-
-fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
+pub(crate) fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
     [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
 }
 
-const SIZES: [u64; 4] = {
+pub(crate) const SIZES: [u64; 4] = {
     use mork_bytestring::{item_byte, Tag};
 
     let mut ret = [0u64; 4];
@@ -282,7 +276,7 @@ const SIZES: [u64; 4] = {
     }
     ret
 };
-const ARITIES: [u64; 4] = {
+pub(crate) const ARITIES: [u64; 4] = {
     use mork_bytestring::{item_byte, Tag};
 
     let mut ret = [0u64; 4];
@@ -294,7 +288,7 @@ const ARITIES: [u64; 4] = {
     }
     ret
 };
-const VARS: [u64; 4] = {
+pub(crate) const VARS: [u64; 4] = {
     use mork_bytestring::{item_byte, Tag};
 
     let mut ret = [0u64; 4];
@@ -457,194 +451,6 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             transition_impl(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
-        }
-        _ => { unreachable!() }
-    }
-    stack.push(last);
-}
-pub(crate) fn referential_transition_impl<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
-    use mork_bytestring::{Tag, byte_item, item_byte};
-    use pathmap::utils::ByteMaskIter;
-
-    // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
-    // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
-    // println!("|refs {:?}", references);
-    // println!("\\label {}", label(*stack.last().unwrap()));
-    let last = stack.pop().unwrap();
-    match last {
-        ACTION => { f(loc) }
-        ITER_AT_DEPTH => {
-            let size = stack.pop().unwrap();
-            all_at_depth(loc, size as _, |loc| referential_transition_impl(stack, loc, references, f));
-            stack.push(size);
-        }
-        ITER_NESTED => {
-            let arity = stack.pop().unwrap();
-            let l = stack.len();
-            for _ in 0..arity { stack.push(ITER_EXPR); }
-            referential_transition_impl(stack, loc, references, f);
-            stack.truncate(l);
-            stack.push(arity)
-        }
-        ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), SIZES);
-            let mut it = ByteMaskIter::new(m);
-
-            while let Some(b) = it.next() {
-                if let Tag::SymbolSize(s) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
-                        let last = stack.pop().unwrap();
-                        stack.push(s);
-                        stack.push(last);
-                        referential_transition_impl(stack, loc, references, f);
-                        stack.pop();
-                        stack.pop();
-                        stack.push(last);
-                    }
-                    loc.ascend(1);
-                } else {
-                    unreachable!()
-                }
-            }
-        }
-        ITER_SYMBOLS => {
-            stack.push(ITER_AT_DEPTH);
-            stack.push(ITER_SYMBOL_SIZE);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-            stack.pop();
-        }
-        ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), VARS);
-            let mut it = ByteMaskIter::new(m);
-
-            while let Some(b) = it.next() {
-                let buf = [b];
-                if loc.descend_to(buf) {
-                    referential_transition_impl(stack, loc, references, f);
-                }
-                loc.ascend(1);
-            }
-        }
-        ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), ARITIES);
-            let mut it = ByteMaskIter::new(m);
-
-            while let Some(b) = it.next() {
-                if let Tag::Arity(a) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
-                        let last = stack.pop().unwrap();
-                        stack.push(a);
-                        stack.push(last);
-                        referential_transition_impl(stack, loc, references, f);
-                        stack.pop();
-                        stack.pop();
-                        stack.push(last);
-                    }
-                    loc.ascend(1);
-                } else {
-                    unreachable!()
-                }
-            }
-        }
-        ITER_EXPR => {
-            stack.push(ITER_VARIABLES);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-
-            stack.push(ITER_SYMBOLS);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-
-            stack.push(ITER_NESTED);
-            stack.push(ITER_ARITIES);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-            stack.pop();
-        }
-        ITER_SYMBOL => {
-            let size = stack.pop().unwrap();
-            let mut v = vec![];
-            for _ in 0..size { v.push(stack.pop().unwrap()) }
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
-                if loc.descend_to(&v[..]) {
-                    referential_transition_impl(stack, loc, references, f);
-                }
-                loc.ascend(size as usize);
-            }
-            loc.ascend_byte();
-            for _ in 0..size { stack.push(v.pop().unwrap()) }
-            stack.push(size)
-        }
-        ITER_VAR_SYMBOL => {
-            let size = stack.pop().unwrap();
-            let mut v = vec![];
-            for _ in 0..size { v.push(stack.pop().unwrap()) }
-
-            stack.push(ITER_VARIABLES);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
-                if loc.descend_to(&v[..]) {
-                    referential_transition_impl(stack, loc, references, f);
-                }
-                loc.ascend(size as usize);
-            }
-            loc.ascend_byte();
-            for _ in 0..size { stack.push(v.pop().unwrap()) }
-            stack.push(size)
-        }
-        ITER_ARITY => {
-            let arity = stack.pop().unwrap();
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-                referential_transition_impl(stack, loc, references, f);
-            }
-            loc.ascend_byte();
-            stack.push(arity);
-        }
-        ITER_VAR_ARITY => {
-            let arity = stack.pop().unwrap();
-
-            stack.push(ITER_VARIABLES);
-            referential_transition_impl(stack, loc, references, f);
-            stack.pop();
-
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-                referential_transition_impl(stack, loc, references, f);
-            }
-            loc.ascend_byte();
-            stack.push(arity);
-        }
-        BEGIN_RANGE => {
-            references.push((loc.path().len() as u32, 0));
-            referential_transition_impl(stack, loc, references, f);
-            references.pop();
-        }
-        FINALIZE_RANGE => {
-            references.last_mut().unwrap().1 = loc.path().len() as u32;
-            referential_transition_impl(stack, loc, references, f);
-            references.last_mut().unwrap().1 = 0;
-        }
-        REFER_RANGE => {
-            let index = stack.pop().unwrap();
-            let (begin, end) = references[index as usize];
-            let subexpr = Expr { ptr: loc.path()[begin as usize..end as usize].as_ptr().cast_mut() };
-
-            let substack = indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(subexpr));
-            let substack_len = substack.len();
-            stack.extend(substack);
-            referential_transition_impl(stack, loc, references, f);
-            stack.truncate(stack.len() - substack_len);
-
-            // println!("pushing ITER_EXPR but could do {}", serialize(&loc.path()[begin as usize..end as usize]));
-            // stack.push(ITER_EXPR);
-            // referential_transition(stack, loc, references, f);
-            // stack.pop();
-
-            stack.push(index);
         }
         _ => { unreachable!() }
     }

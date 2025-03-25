@@ -1,62 +1,27 @@
 use std::{fs::File, io::Write};
-use mork_bytestring::{byte_item, Expr, ExprZipper, item_byte, Tag};
+use mork_bytestring::{Expr, ExprZipper, item_byte, Tag};
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
     trie_map::BytesTrieMap, 
-    utils::ByteMaskIter, 
     zipper::{WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperMoving, ZipperWriting}
 };
 
-pub struct Space {
-    pub(crate) btm: BytesTrieMap<()>,
-    pub sm: SharedMappingHandle
-}
-
-const SIZES: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let mut size = 1;
-    while size < 64 {
-        let k = item_byte(Tag::SymbolSize(size));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        size += 1;
-    }
-    ret
+use crate::space_temporary::{
+    SIZES, ARITIES, VARS,
+    mask_and,
+    stack_actions::*
 };
-const ARITIES: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let mut arity = 1;
-    while arity < 64 {
-        let k = item_byte(Tag::Arity(arity));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        arity += 1;
-    }
-    ret
-};
-const VARS: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let nv_byte = item_byte(Tag::NewVar);
-    ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
-    let mut size = 0;
-    while size < 64 {
-        let k = item_byte(Tag::VarRef(size));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        size += 1;
-    }
-    ret
-};
-
-fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
-    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
-
-use crate::space_temporary::stack_actions::*;
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
     AttributeCount,
     SExprCount,
 };
+pub struct Space {
+    pub(crate) btm: BytesTrieMap<()>,
+    pub sm: SharedMappingHandle
+}
+
 
 #[macro_export]
 macro_rules! expr {
@@ -237,7 +202,42 @@ impl Space {
 }
 
 // Remy : This looks to only be used as a helper function for transform_multi, which I was not sure was done. This will be left here for now
+fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
+    let mut v = vec![];
+    loop {
+        match ez.item() {
+            Ok(Tag::NewVar) => {
+                v.push(BEGIN_RANGE);
+                v.push(ITER_EXPR);
+                v.push(FINALIZE_RANGE);
+            }
+            Ok(Tag::VarRef(r)) => {
+                v.push(REFER_RANGE);
+                v.push(r);
+            }
+            Ok(Tag::SymbolSize(_)) => { unreachable!() }
+            Err(s) => {
+                v.push(ITER_VAR_SYMBOL);
+                v.push(s.len() as u8);
+                v.extend(s);
+            }
+            Ok(Tag::Arity(a)) => {
+                v.push(ITER_VAR_ARITY);
+                v.push(a);
+            }
+        }
+        if !ez.next() {
+            v.reverse();
+            return v
+        }
+    }
+}
+
+// Remy : This looks to only be used as a helper function for transform_multi, which I was not sure was done. This will be left here for now
 fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
+    use mork_bytestring::{Tag, byte_item, item_byte};
+    use pathmap::utils::ByteMaskIter;
+
     // println!("/stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("|path {:?}", serialize(loc.origin_path().unwrap()));
     // println!("|refs {:?}", references);
@@ -405,7 +405,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(sta
             let (begin, end) = references[index as usize];
             let subexpr = Expr { ptr: loc.path()[begin as usize..end as usize].as_ptr().cast_mut() };
 
-            let substack = indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(subexpr));
+            let substack = crate::space_temporary::indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(subexpr));
             let substack_len = substack.len();
             stack.extend(substack);
             referential_transition(stack, loc, references, f);
@@ -421,63 +421,4 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(sta
         _ => { unreachable!() }
     }
     stack.push(last);
-}
-
-
-// Remy : This looks to only be used as a helper function for transform_multi, which I was not sure was done. This will be left here for now
-fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
-    let mut v = vec![];
-    loop {
-        match ez.item() {
-            Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
-                v.push(ITER_EXPR);
-            }
-            Ok(Tag::SymbolSize(_)) => { unreachable!() }
-            Err(s) => {
-                v.push(ITER_VAR_SYMBOL);
-                v.push(s.len() as u8);
-                v.extend(s);
-            }
-            Ok(Tag::Arity(a)) => {
-                v.push(ITER_VAR_ARITY);
-                v.push(a);
-            }
-        }
-        if !ez.next() {
-            v.reverse();
-            return v
-        }
-    }
-}
-
-// Remy : This looks to only be used as a helper function for transform_multi, which I was not sure was done. This will be left here for now
-fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
-    let mut v = vec![];
-    loop {
-        match ez.item() {
-            Ok(Tag::NewVar) => {
-                v.push(BEGIN_RANGE);
-                v.push(ITER_EXPR);
-                v.push(FINALIZE_RANGE);
-            }
-            Ok(Tag::VarRef(r)) => {
-                v.push(REFER_RANGE);
-                v.push(r);
-            }
-            Ok(Tag::SymbolSize(_)) => { unreachable!() }
-            Err(s) => {
-                v.push(ITER_VAR_SYMBOL);
-                v.push(s.len() as u8);
-                v.extend(s);
-            }
-            Ok(Tag::Arity(a)) => {
-                v.push(ITER_VAR_ARITY);
-                v.push(a);
-            }
-        }
-        if !ez.next() {
-            v.reverse();
-            return v
-        }
-    }
 }

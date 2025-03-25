@@ -68,19 +68,19 @@ pub trait Space {
         load_sexpr_impl(self.symbol_table(), data, &mut dst)
     }
 
-    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, String> {
+    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, Self::Err> {
         let mut rz = self.read_zipper(src);
         let sm = self.symbol_table();
         dump_as_sexpr_impl(sm, dst, &mut rz)
     }
 
-    fn load_csv<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, String> {
+    fn load_csv<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, Self::Err> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_csv_impl(sm, &mut wz, r)
     }
 
-    fn load_json<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, String> {
+    fn load_json<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, Self::Err> {
         let mut wz = self.write_zipper(writer);
         let sm = self.symbol_table();
 

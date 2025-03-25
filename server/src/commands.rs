@@ -124,6 +124,7 @@ impl CommandDefinition for ImportCmd {
     const NAME: &'static str = "import";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
+    type Resources = ImportCmdResources;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -140,22 +141,21 @@ impl CommandDefinition for ImportCmd {
             required: true
         }]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri).await?;
 
         //Flag this path in the map as being busy, and therefore off-limits to other operations
         let map_path = cmd.args[0].as_path();
-        ctx.0.status_map.try_set_status(map_path, true, StatusRecord::PathInUse).map_err(|status| {
-            CommandError::from_status_record(status, format!("Error accessing path {map_path:?}"))
-        })?;
+        let writer = ctx.0.space.new_writer(map_path, &())?;
 
-        Ok(Some(Box::new(ImportCmdResources{
-            file: file_handle
-        })))
+        Ok(Some(ImportCmdResources{
+            file: file_handle,
+            writer,
+        }))
     }
-    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
 
         //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
         // it fails straight away, so we can report that failure immediately?
@@ -164,11 +164,10 @@ impl CommandDefinition for ImportCmd {
         // case to worry about.
 
         tokio::task::spawn(async move {
-            match do_import(&ctx, thread.unwrap(), &cmd, resources).await {
+            match do_import(&ctx, thread.unwrap(), &cmd, resources.unwrap()).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during import: {err:?}"); //GOAT Log this error
-                    let _ = ctx.0.status_map.clear_status(cmd.args[0].as_path());
                 }
             }
             async { () }
@@ -178,13 +177,12 @@ impl CommandDefinition for ImportCmd {
 }
 
 struct ImportCmdResources {
-    file: ResourceHandle
+    file: ResourceHandle,
+    writer: WritePermission,
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: Option<Resources>) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, resources: ImportCmdResources) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-    let mut resources = resources.unwrap().downcast::<ImportCmdResources>().unwrap();
-    let map_path = cmd.args[0].as_path();
 
     // Do the remote fetching
     //========================
@@ -193,7 +191,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
         //User-facing error
         println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
         let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
-        return ctx.0.status_map.set_status(map_path, StatusRecord::FetchError(fetch_err), StatusRecord::PathInUse).map_err(CommandError::internal);
+        return ctx.0.space.set_user_status(resources.writer.path(), StatusRecord::FetchError(fetch_err))
     }
 
     let mut writer = BufWriter::new(File::create(resources.file.path()?).await?);
@@ -215,11 +213,11 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
             //User-facing error
             println!("Import Failed. Unrecognized file type: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to recognize file format: {err:?}"));
-            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(CommandError::internal);
+            return ctx.0.space.set_user_status(resources.writer.path(), StatusRecord::ParseError(parse_err))
         }
     };
 
-    let shared_mapping = ctx.0.global_symbol_table.clone();
+    let shared_mapping = ctx.0.space.symbol_table().clone();
     let space = match tokio::task::spawn_blocking(move || {
         import_do_parse(file_path, file_type, shared_mapping)
     }).await.map_err(CommandError::internal)? {
@@ -228,19 +226,18 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
             //User-facing error
             println!("Import Failed. Parse error: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to parse file: {err:?}"));
-            return ctx.0.status_map.set_status(map_path, StatusRecord::ParseError(parse_err), StatusRecord::PathInUse).map_err(CommandError::internal);
+            return ctx.0.space.set_user_status(resources.writer.path(), StatusRecord::ParseError(parse_err))
         }
     };
 
     // Graft the data into the map and wrap up
     //========================
-    let mut wz = ctx.0.primary_map.write_zipper_at_exclusive_path(map_path).map_err(CommandError::internal)?;
+    let mut wz = ctx.0.space.write_zipper(&mut resources.writer);
     wz.graft_map(space.into_map(/* we made the space with global symbol table, so this is compliant */));
 
-    //Finalize the resource and remove the lock on the path
+    //Finalize the resource
     let timestamp = 987654321; //GOAT, use the real timestamp from this command.
     resources.file.finalize(timestamp).await?;
-    ctx.0.status_map.clear_status(map_path).map_err(CommandError::internal)?;
 
     thread.finalize().await;
     println!("Import command successful"); //GOAT Log this!
@@ -269,29 +266,27 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<InputDataType, Comma
     }
 }
 
-fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMappingHandle) -> Result<Space, CommandError> {
-    let mut space = Space::new();
-    space.sm = sm;
+fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermission, file_type: InputDataType) -> Result<(), CommandError> {
     match file_type {
         InputDataType::Metta => {
             //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
             // I'm sure the parser is capable of streaming or chunking but I gotta
             // figure out the right way to chunk the input without corrupting any data
-            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
-            println!("Loaded {count} atoms from MeTTa S-Expr file: {file_path:?}");
+            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?, dst)?;
+            println!("Loaded {count} atoms from MeTTa S-Expr file: {src_file:?}");
         },
         InputDataType::Json => {
             //GOAT, Same applies here about buffering the whole file.  The file-reading code
             // if copy-pasta because it seems likely we'll want to open and stream the file
             // differently depending on the format.  It not, it's easy to refactor.
-            let mut file_handle = std::fs::File::open(&file_path)?;
+            let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
             file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_json(std::str::from_utf8(&buffer[..])?).map_err(CommandError::internal)?;
-            println!("Loaded {count} atoms from JSON file: {file_path:?}");
+            let count = space.load_json(std::str::from_utf8(&buffer[..])?, dst)?;
+            println!("Loaded {count} atoms from JSON file: {src_file:?}");
         },
         InputDataType::Csv => {
             //GOAT, Same applies here about buffering the whole file
@@ -304,10 +299,6 @@ fn import_do_parse(file_path: PathBuf, file_type: InputDataType, sm : SharedMapp
     }
     Ok(space)
 }
-struct ExportCmdResources {
-    file: ResourceHandle
-}
-
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Export
@@ -356,7 +347,7 @@ impl CommandDefinition for ExportCmd {
         let resources = resources.unwrap().downcast::<ExportCmdResources>().unwrap();
         let path = resources.file.path()?;
         let pathbuf = path.to_owned();
-        
+
         tokio::task::spawn(async move {
             match do_export(&ctx, thread.unwrap(), &cmd, pathbuf).await {
                 Ok(()) => {},
@@ -373,6 +364,10 @@ impl CommandDefinition for ExportCmd {
 
         Ok(hyper::body::Bytes::from(out))
     }
+}
+
+struct ExportCmdResources {
+    file: ResourceHandle
 }
 
 enum OutputDataType {
@@ -404,7 +399,6 @@ async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
             let mut writer = std::io::BufWriter::new(file);
             space.dump_as_sexpr(&mut writer).map_err(CommandError::internal)?;
             writer.flush()?;
-    
         },
     }
 
@@ -414,7 +408,6 @@ async fn do_export(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
 
     Ok(())
 }
-
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // status

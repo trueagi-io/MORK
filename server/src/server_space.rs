@@ -41,6 +41,9 @@ impl ServerSpace {
             status_map: status_map
         }
     }
+    pub fn get_status<P: AsRef<[u8]>>(&self, path: P) -> StatusRecord {
+        self.status_map.get_status(path.as_ref())
+    }
     pub fn set_user_status<P: AsRef<[u8]>>(&self, path: P, new_status: StatusRecord) -> Result<(), CommandError> {
         let path = path.as_ref();
         self.status_map.try_set_user_status(path, new_status)

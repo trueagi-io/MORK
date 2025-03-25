@@ -16,8 +16,6 @@ use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use pathmap::{trie_map::BytesTrieMap, zipper::ZipperHeadOwned};
-
 //GOAT, get this from a cfg file or cmd_line arg (or both)
 const SERVER_ADDR: &str = "127.0.0.1:8000";
 const RESOURCE_DIR: &str = "/tmp/mork_server_files";
@@ -26,7 +24,8 @@ mod commands;
 use commands::*;
 
 mod status_map;
-use status_map::*;
+mod server_space;
+use server_space::*;
 
 mod resource_store;
 use resource_store::*;
@@ -41,17 +40,14 @@ struct MorkServiceInternals {
     stop_cmd: Notify,
     /// Pool of worker threads to handled blocking pathmap operations
     workers: WorkerPool,
-    /// The global symbol table used by the primary map
-    global_symbol_table: bucket_map::SharedMappingHandle,
-    /// ZipperHead for accessing the primary map
-    primary_map: ZipperHeadOwned<()>,
-    /// ZipperHead for accessing status and permissions associated with paths
-    status_map: StatusMap,
     /// Versioned storage for on-disk resources
     resource_store: ResourceStore,
     /// The http client used to fetch remote files
     http_client: reqwest::Client,
+    /// The MORK kernel space
+    space: ServerSpace,
 
+    //GOAT, come back here
     monotonic_state_counter : MonotonicStateCounter
 
     //GOAT, need cmd-logger to facilitate replay, and maybe a separate human-readable log
@@ -74,29 +70,18 @@ impl MorkService {
                 .deflate(true)
                 .build().unwrap();
 
-        // Load the PathMap from the last snapshot
-        //GOAT, ACTually load it!!
-        let primary_map = BytesTrieMap::<()>::new();
-        let primary_map = primary_map.into_zipper_head([]);
-
-        // Load the status map also
-        let status_map = StatusMap::new();
-
         // Init the ResourceStore
         let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
         resource_store.reset().await.unwrap();
 
-        // init symbol table
-        let global_symbol_table = bucket_map::SharedMapping::new();
+        let space = ServerSpace::new();
 
         let monotonic_state_counter = MonotonicStateCounter( core::sync::atomic::AtomicU64::new(0) );
 
         let internals = MorkServiceInternals {
             stop_cmd: Notify::new(),
             workers: WorkerPool::new(),
-            global_symbol_table,
-            primary_map,
-            status_map,
+            space,
             resource_store,
             http_client,
             monotonic_state_counter,

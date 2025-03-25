@@ -29,5 +29,5 @@ freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" }
 
 [workspace.dependencies.pathmap]
 path = "../PathMap"
-features = ["jemalloc"]
-# features = ["jemalloc", "all_dense_nodes"]
+features = ["jemalloc", "zipper_tracking"]
+# features = ["jemalloc", "zipper_tracking", "all_dense_nodes"]

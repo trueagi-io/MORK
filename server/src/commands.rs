@@ -416,6 +416,7 @@ impl CommandDefinition for StatusCmd {
     const NAME: &'static str = "status";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = false;
+    type Resources = ();
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
@@ -427,12 +428,12 @@ impl CommandDefinition for StatusCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
         let map_path = cmd.args[0].as_path();
-        let status = ctx.0.status_map.get_status(map_path);
+        let status = ctx.0.space.get_status(map_path);
         let json_string = serde_json::to_string(&status)?;
         Ok(json_string.into())
     }
@@ -449,16 +450,17 @@ impl CommandDefinition for StopCmd {
     const NAME: &'static str = "stop";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = false;
+    type Resources = ();
     fn args() -> &'static [ArgDef] {
         &[]
     }
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Self::Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Self::Resources>) -> Result<Bytes, CommandError> {
         ctx.0.stop_cmd.notify_waiters();
         Ok("ACK. Initiating Shutdown.  Connections will not longer be accepted".into())
     }
@@ -581,8 +583,10 @@ impl CommandError {
         match status_record {
             StatusRecord::PathClear => unreachable!(),
             StatusRecord::CountResult(_) => unreachable!(),
-            StatusRecord::AccessForbidden => Self::external(StatusCode::FORBIDDEN, log_message),
-            StatusRecord::PathInUse => Self::external(StatusCode::CONFLICT, log_message),
+            StatusRecord::PathReadOnly => Self::external(StatusCode::FORBIDDEN, log_message),
+            StatusRecord::PathReadOnlyTemporary => Self::external(StatusCode::CONFLICT, log_message),
+            StatusRecord::PathForbidden => Self::external(StatusCode::FORBIDDEN, log_message),
+            StatusRecord::PathForbiddenTemporary => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
             StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
         }

@@ -5,10 +5,13 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
-use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
+use pathmap::{morphisms::Catamorphism, trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
 
-use crate::space::ParDataParser;
-
+/// The number of S-Expressions returned by [Space::load_sexpr]
+pub type SExprCount     = usize;
+pub type PathCount      = usize;
+pub type AttributeCount = usize;
+pub type NodeCount      = usize;
 /// A path in the space, expressed in terms of the space's semantic
 pub type Path = [u8];
 
@@ -17,11 +20,6 @@ pub fn path_as_bytes(path: &Path) -> Cow<[u8]> {
     Cow::from(path)
 }
 
-/// The number of S-Expressions returned by [Space::load_sexpr]
-type SExprCount     = usize;
-type PathCount = usize;
-type AttributeCount = usize;
-type NodeCount = usize;
 
 pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
 impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
@@ -122,39 +120,6 @@ pub trait Space {
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_properties_impl(sm, &mut wz, rt, uri, user, pass)
     }
-
-
-
-
-    fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<(), std::io::Error>  {
-        self.symbol_table().serialize(path)
-    }
-
-    // fn restore_symbols(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-    //     self.sm = bucket_map::SharedMapping::deserialize(path)?;
-    //     Ok(())
-    // }
-
-    fn backup_as_dag<'s, OutFilePath : AsRef<std::path::Path>>(&'s self, reader : &mut Self::Reader<'s>, path: OutFilePath) -> Result<(), std::io::Error> {
-        pathmap::serialization::write_trie("neo4j triples", self.read_zipper(reader),
-                                           |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
-                                           path.as_ref()).map(|_| ())
-    }
-
-    fn restore_from_dag<'s>(&'s self, writer : &mut Self::Writer<'s>, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-        self.write_zipper(writer).graft_map(pathmap::serialization::deserialize_file(path, |_| ())?);
-        Ok(())
-    }
-
-    fn backup_paths<'s, OutDirPath : AsRef<std::path::Path>>(&'s self, reader : &mut Self::Reader<'s>, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
-        let mut file = std::fs::File::create(path).unwrap();
-        pathmap::path_serialization::serialize_paths_(self.read_zipper(reader), &mut file)
-    }
-
-    fn restore_paths<'s, OutDirPath : AsRef<std::path::Path>>(&'s self, writer : &mut Self::Writer<'s>, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
-        let mut file = std::fs::File::open(path).unwrap();
-        pathmap::path_serialization::deserialize_paths(self.write_zipper(writer), &mut file, |_, _| ())
-    }
 }
 
 /// A default minimalist implementation of [Space]
@@ -198,37 +163,57 @@ impl Space for DefaultSpace {
     fn symbol_table(&self) -> &SharedMappingHandle {
         &self.sm
     }
-
-
-
-
-
-
-
-
-
-
 }
 
+// this module exists purely to make glob importing it easier
+pub(crate) mod stack_actions {
+    pub(crate) const ITER_AT_DEPTH    : u8 =  0;
+    pub(crate) const ITER_SYMBOL_SIZE : u8 =  1;
+    pub(crate) const ITER_SYMBOLS     : u8 =  2;
+    pub(crate) const ITER_VARIABLES   : u8 =  3;
+    pub(crate) const ITER_ARITIES     : u8 =  4;
+    pub(crate) const ITER_EXPR        : u8 =  5;
+    pub(crate) const ITER_NESTED      : u8 =  6;
+    pub(crate) const ITER_SYMBOL      : u8 =  7;
+    pub(crate) const ITER_ARITY       : u8 =  8;
+    pub(crate) const ITER_VAR_SYMBOL  : u8 =  9;
+    pub(crate) const ITER_VAR_ARITY   : u8 = 10;
+    pub(crate) const ACTION           : u8 = 11;
+    pub(crate) const BEGIN_RANGE      : u8 = 12;
+    pub(crate) const FINALIZE_RANGE   : u8 = 13;
+    pub(crate) const REFER_RANGE      : u8 = 14;
+
+    #[allow(unused)]
+    pub(crate) fn label(l: u8) -> String {
+        match l {
+            ITER_AT_DEPTH    => { "ITER_AT_DEPTH"      }
+            ITER_SYMBOL_SIZE => { "ITER_SYMBOL_SIZE"   }
+            ITER_SYMBOLS     => { "ITER_SYMBOLS"       }
+            ITER_VARIABLES   => { "ITER_VARIABLES"     }
+            ITER_ARITIES     => { "ITER_ARITIES"       }
+            ITER_EXPR        => { "ITER_EXPR"          }
+            ITER_NESTED      => { "ITER_NESTED"        }
+            ITER_SYMBOL      => { "ITER_SYMBOL"        }
+            ITER_ARITY       => { "ITER_ARITY"         }
+            ITER_VAR_SYMBOL  => { "ITER_VAR_SYMBOL"    }
+            ITER_VAR_ARITY   => { "ITER_VAR_ARITY"     }
+            ACTION           => { "ACTION"             }
+            _                => { return l.to_string() }
+        }.to_string()
+    }
+} 
+use stack_actions::*;
 
 
-const ITER_AT_DEPTH    : u8 =  0;
-const ITER_SYMBOL_SIZE : u8 =  1;
-const ITER_SYMBOLS     : u8 =  2;
-const ITER_VARIABLES   : u8 =  3;
-const ITER_ARITIES     : u8 =  4;
-const ITER_EXPR        : u8 =  5;
-const ITER_NESTED      : u8 =  6;
-const ITER_SYMBOL      : u8 =  7;
-const ITER_ARITY       : u8 =  8;
-const ITER_VAR_SYMBOL  : u8 =  9;
-const ITER_VAR_ARITY   : u8 = 10;
-const ACTION           : u8 = 11;
-const BEGIN_RANGE      : u8 = 12;
-const FINALIZE_RANGE   : u8 = 13;
-const REFER_RANGE      : u8 = 14;
-
-
+pub(crate) fn backup_as_dag_impl<'s, 'r, RZ, OutFilePath>(rz : &'r mut RZ, path: OutFilePath) -> Result<(), std::io::Error> 
+    where 
+        &'r mut RZ : ZipperReadOnly<'s, ()> +  ZipperIteration<'s, ()> + ZipperAbsolutePath,
+        OutFilePath : AsRef<std::path::Path>
+{
+    pathmap::serialization::write_trie("neo4j triples", rz,
+                                       |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
+                                       path.as_ref()).map(|_| ())
+}
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestring::ExprZipper) -> Vec<u8> {
     use mork_bytestring::Tag;
@@ -302,7 +287,7 @@ const VARS: [u64; 4] = {
     ret
 };
 
-fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
+pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
     use mork_bytestring::{Tag, byte_item, item_byte};
     let last = stack.pop().unwrap();
     match last {
@@ -456,7 +441,7 @@ fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> ()>(sta
     stack.push(last);
 }
 
-fn referential_transition_impl<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
+pub(crate) fn referential_transition_impl<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
     use mork_bytestring::{Tag, byte_item, item_byte};
     use pathmap::utils::ByteMaskIter;
 
@@ -645,7 +630,7 @@ fn referential_transition_impl<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()
     stack.push(last);
 }
 
-fn all_at_depth<Z : ZipperMoving, F>(loc: &mut Z, level: u32, mut action: F) where F: FnMut(&mut Z) -> () {
+pub(crate) fn all_at_depth<Z : ZipperMoving, F>(loc: &mut Z, level: u32, mut action: F) where F: FnMut(&mut Z) -> () {
     assert!(level > 0);
     let mut i = 0;
     while i < level {
@@ -685,7 +670,7 @@ fn all_at_depth<Z : ZipperMoving, F>(loc: &mut Z, level: u32, mut action: F) whe
 
 
 
-fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: Expr, template: Expr)
+pub(crate) fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: Expr, template: Expr)
     where 
         RZ : ZipperIteration<'r, ()> + ZipperAbsolutePath,
         WZ : ZipperMoving + ZipperWriting<()>
@@ -734,12 +719,10 @@ fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: Expr, templa
     });
 }
 
-fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
     where
     RZ : ZipperAbsolutePath + ZipperIteration<'s, ()>
 {
-    let src = src;
-
     let mut i = 0;
     loop {
         match src.to_next_val() {
@@ -762,11 +745,10 @@ fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMappingHandle, dst
     Ok(i)
 }
 
-fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
+pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
     where
     WZ : ZipperMoving + ZipperWriting<()>
 {
-    dst.reset();
     let mut it = Context::new(data.as_bytes());
 
     let mut i = 0;
@@ -790,7 +772,7 @@ fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut
 
 
 
-fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Expr, mut effect: F) 
+pub(crate) fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Expr, mut effect: F) 
     where
         RZ : ZipperAbsolutePath + ZipperIteration<'r, ()>
 {
@@ -806,7 +788,7 @@ fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Expr, mut eff
 
 
 
-fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
+pub(crate) fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -844,7 +826,7 @@ fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Re
 
 
 
-fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
+pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
     where 
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -922,7 +904,7 @@ impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, W
 
 
 
-fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
+pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -978,7 +960,7 @@ fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt :
 
 
 
-fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
+pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -1032,4 +1014,27 @@ fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         }
     }
     Ok((nodes, attributes))
+}
+
+
+
+pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: bucket_map::WritePermit<'a> }
+
+impl <'a> Parser for ParDataParser<'a> {
+    fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
+        self.count += 1;
+        // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
+        self.buf = self.write_permit.get_sym_or_insert(s);
+        return unsafe { std::mem::transmute(&self.buf[..]) };
+    }
+}
+
+impl <'a> ParDataParser<'a> {
+    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
+        Self {
+            count: 3,
+            buf: (3u64).to_be_bytes(),
+            write_permit: handle.try_aquire_permission().unwrap()
+        }
+    }
 }

@@ -20,6 +20,26 @@ pub fn path_as_bytes(path: &Path) -> Cow<[u8]> {
     Cow::from(path)
 }
 
+// One should not depend on the string representation of debug as per standard lib. this gives us the room to make these types better later.
+#[allow(unused)]
+#[derive(Debug)]
+pub struct DumpSExprError(String);
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadSExprError(String);
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadCsvError(String);
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadJsonError(String);
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadNeo4JTriplesError(String);
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadNeo4JNodePropertiesError(String);
+
 
 pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
 impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
@@ -32,16 +52,16 @@ pub trait Space {
     type Reader<'space> where Self: 'space;
     /// Objects of this type encapsulate a location in the space and the rights to write to that location
     type Writer<'space> where Self: 'space;
-    /// An error type
-    type Err;
+    /// An error type for when a new reader or writer cannot be authenticated.
+    type PermissionErr;
 
     // ===================== Methods used by caller ===================== 
 
     /// Requests a new [Space::Reader] from the `Space`
-    fn new_reader<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err>;
+    fn new_reader<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr>;
 
     /// Requests a new [Space::Writer] from the `Space`
-    fn new_writer<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err>;
+    fn new_writer<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr>;
 
     // ===================== Methods used by shared impl ===================== 
 
@@ -63,28 +83,28 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr<'s>(&'s self, data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, Self::Err> {
+    fn load_sexpr<'s>(&'s self, data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, LoadSExprError> {
         let mut dst = self.write_zipper(dst);
-        load_sexpr_impl(self.symbol_table(), data, &mut dst)
+        load_sexpr_impl(self.symbol_table(), data, &mut dst).map_err(LoadSExprError)
     }
 
-    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, Self::Err> {
+    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError> {
         let mut rz = self.read_zipper(src);
         let sm = self.symbol_table();
-        dump_as_sexpr_impl(sm, dst, &mut rz)
+        dump_as_sexpr_impl(sm, dst, &mut rz).map_err(DumpSExprError)
     }
 
-    fn load_csv<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, Self::Err> {
+    fn load_csv<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, LoadCsvError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
-        load_csv_impl(sm, &mut wz, r)
+        load_csv_impl(sm, &mut wz, r).map_err(LoadCsvError)
     }
 
-    fn load_json<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, Self::Err> {
+    fn load_json<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, LoadJsonError> {
         let mut wz = self.write_zipper(writer);
         let sm = self.symbol_table();
 
-        load_json_impl(sm, &mut wz, r)
+        load_json_impl(sm, &mut wz, r).map_err(LoadJsonError)
     }
 
 
@@ -109,16 +129,16 @@ pub trait Space {
         query_impl(&mut rz, pattern, effect);
     }
 
-    fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> {
+    fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
-        load_neo4j_triples_impl(sm, &mut wz, rt, uri, user, pass)
+        load_neo4j_triples_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JTriplesError)
     }
 
-    fn load_neo4j_node_properties<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> {
+    fn load_neo4j_node_properties<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodePropertiesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
-        load_neo4j_node_properties_impl(sm, &mut wz, rt, uri, user, pass)
+        load_neo4j_node_properties_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodePropertiesError)
     }
 }
 
@@ -142,13 +162,13 @@ impl Space for DefaultSpace {
     type Auth = ();
     type Reader<'space> = ReadZipperTracked<'space, 'static, ()>;
     type Writer<'space> = WriteZipperTracked<'space, 'static, ()>;
-    type Err = String;
+    type PermissionErr = String;
 
-    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::Err> {
+    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
         let path = path_as_bytes(path);
         self.map.read_zipper_at_path(path).map_err(|e| e.to_string())
     }
-    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::Err> {
+    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
         let path = path_as_bytes(path);
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }

@@ -26,13 +26,7 @@ pub fn path_as_bytes(path: &Path) -> Cow<[u8]> {
 pub struct DumpSExprError(String);
 #[allow(unused)]
 #[derive(Debug)]
-pub struct LoadSExprError(String);
-#[allow(unused)]
-#[derive(Debug)]
-pub struct LoadCsvError(String);
-#[allow(unused)]
-#[derive(Debug)]
-pub struct LoadJsonError(String);
+pub struct ParseError(String);
 #[allow(unused)]
 #[derive(Debug)]
 pub struct LoadNeo4JTriplesError(String);
@@ -83,9 +77,9 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr<'s>(&'s self, data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, LoadSExprError> {
+    fn load_sexpr<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, ParseError> {
         let mut dst = self.write_zipper(dst);
-        load_sexpr_impl(self.symbol_table(), data, &mut dst).map_err(LoadSExprError)
+        load_sexpr_impl(self.symbol_table(), src_data, &mut dst).map_err(ParseError)
     }
 
     fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError> {
@@ -94,19 +88,17 @@ pub trait Space {
         dump_as_sexpr_impl(sm, dst, &mut rz).map_err(DumpSExprError)
     }
 
-    fn load_csv<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, LoadCsvError> {
+    fn load_csv<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
         let sm = self.symbol_table();
-        let mut wz = self.write_zipper(writer);
-        load_csv_impl(sm, &mut wz, r).map_err(LoadCsvError)
+        let mut wz = self.write_zipper(dst);
+        load_csv_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
 
-    fn load_json<'s>(&'s self, writer : &mut Self::Writer<'s>, r: &str) -> Result<PathCount, LoadJsonError> {
-        let mut wz = self.write_zipper(writer);
+    fn load_json<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
+        let mut wz = self.write_zipper(dst);
         let sm = self.symbol_table();
-
-        load_json_impl(sm, &mut wz, r).map_err(LoadJsonError)
+        load_json_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
-
 
     fn transform<'s>(&'s self, reader : &mut Self::Reader<'s>, writer : &mut Self::Writer<'s> , pattern: Expr, template: Expr) {
         // todo take read zipper at static pattern prefix

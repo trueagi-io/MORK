@@ -504,12 +504,12 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
 }
 
 /// An abstract type to contain the resources needed to execute the command
-pub struct Resources(Box<Box<dyn core::any::Any + Send + Sync>>);
+pub struct Resources(Box<dyn core::any::Any + Send + Sync>);
 
 impl Resources {
     pub fn new<T: Send + Sync + 'static>(t: T) -> Self {
         //GOAT, Figure out something better than this double-box!!!
-        Resources(Box::new(Box::new(t)))
+        Resources(Box::new(Some(Box::new(t))))
     }
     pub fn downcast<T: 'static>(mut self) -> T {
         let inner = self.0.downcast_mut::<Option<Box<T>>>().unwrap();

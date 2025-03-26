@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
 use mork::Space;
-use pathmap::zipper::ZipperMoving;
+use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -132,21 +132,23 @@ impl CommandDefinition for ExportCmd {
     }
     fn properties() -> &'static [PropDef] {
         &[
-            //TODO, currently S-expressions are assumed
-            // PropDef {
-            //     arg_type: ArgType::String,
-            //     name: "format",
-            //     desc: "The format to export, default is metta S-Expressions",
-            //     required: false
-            // }
+            PropDef {
+                arg_type: ArgType::String,
+                name: "format",
+                desc: "The format to export, default is metta S-Expressions",
+                required: false
+            }
         ]
     }
     async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
+        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
         //Get the reader for this path in the map, which makes it off-limits to writers
         let map_path = cmd.args[0].as_path();
         let reader = ctx.0.space.new_reader(map_path, &())?;
         Ok(Some(Resources::new(ExportCmdResources{
+            format,
             reader
         })))
     }
@@ -165,18 +167,38 @@ impl CommandDefinition for ExportCmd {
 }
 
 struct ExportCmdResources {
-    reader      : ReadPermission,
+    format: DataFormat,
+    reader: ReadPermission,
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, ExportCmdResources { mut reader }: ExportCmdResources) -> Result<Bytes, CommandError> {
+fn do_export(ctx: &MorkService, ExportCmdResources { mut reader, format }: ExportCmdResources) -> Result<Bytes, CommandError> {
 
-    // TODO: Right now we only suport exporting MeTTa sexprs
-    let mut buffer = Vec::with_capacity(4096);
-    let mut writer = std::io::BufWriter::new(&mut buffer);
-    ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
-    writer.flush()?;
-    drop(writer);
+    let buffer = match format {
+        DataFormat::Metta => {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut writer = std::io::BufWriter::new(&mut buffer);
+            ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            writer.flush()?;
+            drop(writer);
+            buffer
+        },
+        DataFormat::Csv |
+        DataFormat::Json => {
+            b"Export Error: Unimplemented Export Format".to_vec()
+        },
+        DataFormat::Raw => {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut writer = std::io::BufWriter::new(&mut buffer);
+            let mut rz = ctx.0.space.read_zipper(&mut reader);
+            while let Some(_) = rz.to_next_val() {
+                writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
+            }
+            writer.flush()?;
+            drop(writer);
+            buffer
+        }
+    };
 
     Ok(hyper::body::Bytes::from(buffer))
 }
@@ -309,31 +331,37 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
     Ok(())
 }
 
-enum InputDataType {
-    Metta, Json, Csv
+enum DataFormat {
+    Metta, Json, Csv, Raw,
+}
+
+impl DataFormat {
+    pub fn from_str(fmt_name: &str) -> Option<DataFormat> {
+        let name_string = fmt_name.to_lowercase();
+        match name_string.as_str() {
+            "metta" => Some(DataFormat::Metta),
+            "json" => Some(DataFormat::Json),
+            "csv" => Some(DataFormat::Csv),
+            "raw" => Some(DataFormat::Raw),
+            _ => { None }
+        }
+    }
 }
 
 /// Detects the type of file based on its name and/or contents
-fn detect_file_type(_file_path: &Path, uri: &str) -> Result<InputDataType, CommandError> {
+fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandError> {
     let file_extension_err = || { CommandError::internal(format!("Unrecognized extension on file in url: {:?}", uri)) };
 
     let start_char = uri.len()-6.min(uri.len());
     let extension_start = uri[start_char..].rfind('.').ok_or_else(file_extension_err)? + start_char + 1;
     let extension = &uri[extension_start..];
 
-    match extension {
-        "metta" |
-        "MeTTa" => Ok(InputDataType::Metta),
-        "json" |
-        "JSON" => Ok(InputDataType::Json),
-        "csv" => Ok(InputDataType::Csv),
-        _ => { Err(file_extension_err()) }
-    }
+    DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermission, file_type: InputDataType) -> Result<(), CommandError> {
+fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
     match file_type {
-        InputDataType::Metta => {
+        DataFormat::Metta => {
             //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
             // I'm sure the parser is capable of streaming or chunking but I gotta
             // figure out the right way to chunk the input without corrupting any data
@@ -343,7 +371,7 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from MeTTa S-Expr file: {src_file:?}");
         },
-        InputDataType::Json => {
+        DataFormat::Json => {
             //GOAT, Same applies here about buffering the whole file.  The file-reading code
             // if copy-pasta because it seems likely we'll want to open and stream the file
             // differently depending on the format.  It not, it's easy to refactor.
@@ -353,7 +381,7 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             let count = space.load_json(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from JSON file: {src_file:?}");
         },
-        InputDataType::Csv => {
+        DataFormat::Csv => {
             //GOAT, Same applies here about buffering the whole file
             let mut file_handle = std::fs::File::open(&src_file)?;
             let mut buffer = Vec::new();
@@ -361,6 +389,9 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             let count = space.load_csv(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from CSV file: {src_file:?}");
         },
+        DataFormat::Raw => {
+            println!("Inimplemnted Import from raw format");
+        }
     }
     Ok(())
 }

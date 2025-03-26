@@ -55,6 +55,42 @@ impl CommandDefinition for BusywaitCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// clear
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Clears all data at the specified path
+pub struct ClearCmd;
+
+impl CommandDefinition for ClearCmd {
+    const NAME: &'static str = "clear";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "src_path",
+            desc: "The map path to clear",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
+        let map_path = cmd.args[0].as_path();
+        let writer = ctx.0.space.new_writer(map_path, &())?;
+        Ok(Some(Resources::new(writer)))
+    }
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let mut writer = resources.unwrap().downcast::<WritePermission>();
+        let mut wz = ctx.0.space.write_zipper(&mut writer);
+        wz.remove_branches();
+        wz.remove_value();
+        Ok("ACK. Cleared".into())
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // copy
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 

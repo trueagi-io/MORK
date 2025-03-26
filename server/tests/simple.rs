@@ -394,78 +394,110 @@ async fn copy_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-
-
-
-
-/// Tests the "export" command
+/// Tests the "upload" command
 #[tokio::test]
-async fn id_transform_request_test() -> Result<(), Error> {
-    todo!("WIP");
+async fn upload_request_test() -> Result<(), Error> {
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
-
-
-
-
-    const TRANSFORM_REQUEST_URL: &str = concat!("http://127.0.0.1:8000",
-                                                "/transform",
-                                                "/royals",                          // from_space
-                                                "/royals_id_transform/",            // to_space
-                                                "/", url_percent_encode!("$"), "x", // pattern
-                                                "/", url_percent_encode!("$"), "x", // template
-                                        );
-
+    const UPLOAD_URL: &str = "http://127.0.0.1:8000/upload/royals/";
     const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
-    const EXPORT_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
-
-    const EXPORT_ID_TRANSFORM_URL: &str = "http://127.0.0.1:8000/export/royals_/";
-    const EXPORT_ID_TRANSFORM_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
+    const PAYLOAD: &str = r#"
+        (female Liz)
+        (male Tom)
+        (male Bob)
+        (parent Tom Bob)
+        (parent Tom Liz)
+    "#;
 
     //First import a space from a remote
-    let response = reqwest::get(IMPORT_URL).await?;
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
         println!("Error response: {}", response.text().await?);
         panic!()
     }
-    println!("Import response: {}", response.text().await?);
+    println!("Upload response: {}", response.text().await?);
 
-    // Wait until the server has finished import
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
-    println!("Finished loading space");
-
-
-
-
-    // Export the data in raw form
-    let response = reqwest::get(EXPORT_RAW_URL).await?;
-    if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
-    }
-    println!("Export Raw response:\n{}", response.text().await?);
-
-    // Export the data in MeTTa form
+    // Export the data back out
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
         println!("Error response: {} - {}", response.status(), response.text().await?);
         panic!()
     }
-    println!("Export MeTTa response:\n{}", response.text().await?);
+    println!("Export response:\n{}", response.text().await?);
 
     Ok(())
 }
+
+
+// /// Tests the "export" command
+// #[tokio::test]
+// async fn id_transform_request_test() -> Result<(), Error> {
+//     todo!("WIP");
+
+//     //GOAT: Should host the content on a local server with predictable delays, to cut down
+//     // on spurious failures from external servers behaving erratically.)
+//     const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
+//     const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
+
+
+
+
+//     const TRANSFORM_REQUEST_URL: &str = concat!("http://127.0.0.1:8000",
+//                                                 "/transform",
+//                                                 "/royals",                          // from_space
+//                                                 "/royals_id_transform/",            // to_space
+//                                                 "/", url_percent_encode!("$"), "x", // pattern
+//                                                 "/", url_percent_encode!("$"), "x", // template
+//                                         );
+
+//     const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
+//     const EXPORT_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
+
+//     const EXPORT_ID_TRANSFORM_URL: &str = "http://127.0.0.1:8000/export/royals_/";
+//     const EXPORT_ID_TRANSFORM_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
+
+//     //First import a space from a remote
+//     let response = reqwest::get(IMPORT_URL).await?;
+//     if !response.status().is_success() {
+//         println!("Error response: {}", response.text().await?);
+//         panic!()
+//     }
+//     println!("Import response: {}", response.text().await?);
+
+//     // Wait until the server has finished import
+//     loop {
+//         std::thread::sleep(std::time::Duration::from_millis(10));
+//         let response = reqwest::get(STATUS_URL).await?;
+//         assert!(response.status().is_success());
+//         let response_text = response.text().await?;
+//         println!("Status (polling) response: {}", response_text);
+//         let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+//         if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
+//             break
+//         }
+//     }
+//     println!("Finished loading space");
+
+
+
+
+//     // Export the data in raw form
+//     let response = reqwest::get(EXPORT_RAW_URL).await?;
+//     if !response.status().is_success() {
+//         println!("Error response: {} - {}", response.status(), response.text().await?);
+//         panic!()
+//     }
+//     println!("Export Raw response:\n{}", response.text().await?);
+
+//     // Export the data in MeTTa form
+//     let response = reqwest::get(EXPORT_URL).await?;
+//     if !response.status().is_success() {
+//         println!("Error response: {} - {}", response.status(), response.text().await?);
+//         panic!()
+//     }
+//     println!("Export MeTTa response:\n{}", response.text().await?);
+
+//     Ok(())
+// }
 

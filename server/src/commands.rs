@@ -1,8 +1,7 @@
 
 use core::pin::Pin;
 use std::future::Future;
-use std::os::unix::thread;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::io::{Read, Write};
 
 use mork::Space;
@@ -10,8 +9,10 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
-use hyper::StatusCode;
-use hyper::body::Bytes;
+use bytes::BytesMut;
+use hyper::{Request, StatusCode};
+use hyper::body::{Incoming as IncomingBody, Bytes};
+use http_body_util::BodyExt;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
 use super::status_map::{StatusRecord, FetchError, ParseError};
@@ -40,7 +41,7 @@ impl CommandDefinition for BusywaitCmd {
         }]
     }
     fn properties() -> &'static [PropDef] { &[] }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
     async fn work(_ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
@@ -81,7 +82,7 @@ impl CommandDefinition for CopyCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         let src_path = cmd.args[0].as_path();
         let reader = ctx.0.space.new_reader(src_path, &())?;
         let dst_path = cmd.args[1].as_path();
@@ -124,7 +125,7 @@ impl CommandDefinition for CountCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         let map_path = cmd.args[0].as_path();
         let reader = ctx.0.space.new_reader(map_path, &())?;
         Ok(Some(Resources::new(reader)))
@@ -190,7 +191,7 @@ impl CommandDefinition for ExportCmd {
             }
         ]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
@@ -280,7 +281,7 @@ impl CommandDefinition for ImportCmd {
             required: true
         }]
     }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri).await?;
@@ -361,7 +362,14 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, r
     let map_path = resources.writer.path().to_owned();
     let mut path_writer = resources.writer;
     match tokio::task::spawn_blocking(move || {
-        import_do_parse(&ctx_clone.0.space, file_path, &mut path_writer, file_type)
+        //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
+        // I'm sure the parser is capable of streaming or chunking but I gotta
+        // figure out the right way to chunk the input without corrupting any data
+        let mut file_handle = std::fs::File::open(&file_path)?;
+        let mut buffer = Vec::new();
+        file_handle.read_to_end(&mut buffer)?;
+
+        do_parse(&ctx_clone.0.space, &buffer[..], &mut path_writer, file_type)
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
@@ -409,35 +417,19 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
     match file_type {
         DataFormat::Metta => {
-            //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
-            // I'm sure the parser is capable of streaming or chunking but I gotta
-            // figure out the right way to chunk the input without corrupting any data
-            let mut file_handle = std::fs::File::open(&src_file)?;
-            let mut buffer = Vec::new();
-            file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_sexpr(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from MeTTa S-Expr file: {src_file:?}");
+            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from MeTTa S-Expr");
         },
         DataFormat::Json => {
-            //GOAT, Same applies here about buffering the whole file.  The file-reading code
-            // if copy-pasta because it seems likely we'll want to open and stream the file
-            // differently depending on the format.  It not, it's easy to refactor.
-            let mut file_handle = std::fs::File::open(&src_file)?;
-            let mut buffer = Vec::new();
-            file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_json(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from JSON file: {src_file:?}");
+            let count = space.load_json(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            //GOAT, Same applies here about buffering the whole file
-            let mut file_handle = std::fs::File::open(&src_file)?;
-            let mut buffer = Vec::new();
-            file_handle.read_to_end(&mut buffer)?;
-            let count = space.load_csv(std::str::from_utf8(&buffer[..])?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from CSV file: {src_file:?}");
+            let count = space.load_csv(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
             println!("Inimplemnted Import from raw format");
@@ -468,7 +460,7 @@ impl CommandDefinition for StatusCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
     async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
@@ -496,7 +488,7 @@ impl CommandDefinition for StopCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
     async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
@@ -506,7 +498,7 @@ impl CommandDefinition for StopCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// Transform
+// transform
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
 /// Returns the status associated with a path in the trie
@@ -565,11 +557,11 @@ impl CommandDefinition for TransformCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+    async fn gather(ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         // get path permissions
         let from_space = ctx.0.space.new_reader(_cmd.args[TransformArg::FromSpacePath as usize].as_path(), &())?;
         let to_space = ctx.0.space.new_writer(_cmd.args[TransformArg::ToSpacePath as usize].as_path(), &())?;
-        
+
         Ok(Some(Resources::new(TransformResourses {
                 from_space,
                 to_space,
@@ -589,7 +581,7 @@ impl CommandDefinition for TransformCmd {
             ctx.0.space.transform(&mut reader, &mut writer, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() });
             Ok(())
         }).await;
-        
+
         Ok(Bytes::from("Tranform dispatched"))
     }
 }
@@ -600,6 +592,94 @@ struct TransformResourses {
     template   : mork::OwnedExpr,
 }
 
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// upload
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Upload data directly to the map via a post request
+pub struct UploadCmd;
+
+impl CommandDefinition for UploadCmd {
+    const NAME: &'static str = "upload";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "map_path",
+            desc: "The path in the map at which to put the uploaded data",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[
+            PropDef {
+                arg_type: ArgType::String,
+                name: "format",
+                desc: "The format to expect, default is metta S-Expressions",
+                required: false
+            }
+        ]
+    }
+    async fn gather(ctx: MorkService, cmd: Command, mut req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
+        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
+        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
+
+        //Flag this path in the map as being busy, and therefore off-limits to other operations
+        let map_path = cmd.args[0].as_path();
+        let writer = ctx.0.space.new_writer(map_path, &())?;
+
+        //Read all the data from the post request
+        let mut post_data_buf = BytesMut::with_capacity(4096);
+        while let Some(chunk) = req.frame().await {
+            match chunk {
+                Ok(frame) => {
+                    if let Some(data) = frame.data_ref() {
+                        post_data_buf.extend_from_slice(data);
+                    }
+                }
+                Err(err) => {
+                    return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Error reading POST data: {err}")))
+                }
+            }
+        }
+
+        Ok(Some(Resources::new(UploadCmdResources{
+            format: format,
+            writer,
+            data: post_data_buf.freeze(),
+        })))
+    }
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let resources = resources.unwrap().downcast::<UploadCmdResources>();
+
+        // Do the Parsing
+        //========================
+        let ctx_clone = ctx.clone();
+        let mut path_writer = resources.writer;
+        let src_buf = resources.data;
+        let data_format = resources.format;
+        match tokio::task::spawn_blocking(move || {
+            do_parse(&ctx_clone.0.space, &src_buf[..], &mut path_writer, data_format)
+        }).await.map_err(CommandError::internal)? {
+            Ok(()) => {},
+            Err(err) => {
+                //User-facing error
+                println!("Upload Failed. Parse error: {err:?}"); //GOAT, log this failure
+                return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Failed to parse uploaded data: {err:?}")))
+            }
+        };
+
+        thread.unwrap().finalize().await;
+        Ok("ACK. Upload Successful".into())
+    }
+}
+
+struct UploadCmdResources {
+    format: DataFormat,
+    writer: WritePermission,
+    data: Bytes,
+}
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Command mechanism implementation
@@ -634,7 +714,7 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
     fn properties() -> &'static [PropDef];
 
     /// Function to gather resources needed to execute the command
-    fn gather(ctx: MorkService, cmd: Command) -> impl Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send;
+    fn gather(ctx: MorkService, cmd: Command, req: Request<IncomingBody>) -> impl Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send;
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
@@ -661,7 +741,7 @@ pub trait CmdDefObject: 'static + Send + Sync {
     fn consume_worker(&self) -> bool;
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
-    fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>>;
+    fn gather(&self, ctx: MorkService, cmd: Command, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>>;
     fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>>;
 }
 
@@ -678,8 +758,8 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     // fn properties(&self) -> &'static [PropDef] {
     //     Self::properties()
     // }
-    fn gather(&self, ctx: MorkService, cmd: Command) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>> {
-        Box::pin(Self::gather(ctx, cmd))
+    fn gather(&self, ctx: MorkService, cmd: Command, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<Option<Resources>, CommandError>> + Sync + Send>> {
+        Box::pin(Self::gather(ctx, cmd, req))
     }
     fn work(&self, ctx: MorkService, thread: Option<WorkThreadHandle>, cmd: Command, resources: Option<Resources>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>> {
         Box::pin(Self::work(ctx, thread, cmd, resources))

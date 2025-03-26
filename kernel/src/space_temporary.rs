@@ -539,14 +539,14 @@ pub(crate) fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: E
 
 pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
     where
-    RZ : ZipperAbsolutePath + ZipperIteration<'s, ()>
+    RZ : ZipperIteration<'s, ()>
 {
     let mut i = 0;
     loop {
         match src.to_next_val() {
             None => { break }
             Some(()) => {
-                let path = src.origin_path().unwrap();
+                let path = src.path();
                 let e = Expr { ptr: path.as_ptr().cast_mut() };
                 e.serialize(dst, |s| {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
 use mork::Space;
-use pathmap::zipper::{ZipperAccess, ZipperCreation, ZipperMoving};
+use pathmap::zipper::ZipperMoving;
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -109,6 +109,76 @@ async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, _cmd: &Command, r
     thread.finalize().await;
     println!("Count command successful"); //GOAT Log this!
     Ok(())
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// Export
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// deserialize a map, serve as a file to the client. 
+pub struct ExportCmd;
+
+impl CommandDefinition for ExportCmd {
+    const NAME: &'static str = "export";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "map_path",
+            desc: "The path in the map from which to export",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[
+            //TODO, currently S-expressions are assumed
+            // PropDef {
+            //     arg_type: ArgType::String,
+            //     name: "format",
+            //     desc: "The format to export, default is metta S-Expressions",
+            //     required: false
+            // }
+        ]
+    }
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+
+        //Get the reader for this path in the map, which makes it off-limits to writers
+        let map_path = cmd.args[0].as_path();
+        let reader = ctx.0.space.new_reader(map_path, &())?;
+        Ok(Some(Resources::new(ExportCmdResources{
+            reader
+        })))
+    }
+    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let export_resources = resources.unwrap().downcast::<ExportCmdResources>();
+
+        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+            do_export(&ctx, export_resources)
+        }).await??;
+
+        thread.unwrap().finalize().await;
+        println!("Export command successful"); // TODO log this!
+
+        Ok(out)
+    }
+}
+
+struct ExportCmdResources {
+    reader      : ReadPermission,
+}
+
+/// Do the actual serialization
+fn do_export(ctx: &MorkService, ExportCmdResources { mut reader }: ExportCmdResources) -> Result<Bytes, CommandError> {
+
+    // TODO: Right now we only suport exporting MeTTa sexprs
+    let mut buffer = Vec::with_capacity(4096);
+    let mut writer = std::io::BufWriter::new(&mut buffer);
+    ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+    writer.flush()?;
+    drop(writer);
+
+    Ok(hyper::body::Bytes::from(buffer))
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -292,98 +362,6 @@ fn import_do_parse(space: &ServerSpace, src_file: PathBuf, dst: &mut WritePermis
             println!("Loaded {count} atoms from CSV file: {src_file:?}");
         },
     }
-    Ok(())
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// Export
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// deserialize a map, serve as a file to the client. 
-pub struct ExportCmd;
-
-impl CommandDefinition for ExportCmd {
-    const NAME: &'static str = "export";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "map_path",
-            desc: "The path in the map from which to export",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[PropDef{
-            arg_type: ArgType::String,
-
-            // name: "format",
-            // desc: "The format to export",
-            //GOAT, a uri arg makes no sense, since this command doesn't fetch.  Use a format arg instead, and make it optional
-            name: "uri",
-            desc: "The URI where to serve the file, only http and https schemes are currently supported",
-            required: true
-        }]
-    }
-    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
-        //Make sure we can get a place to save the file to.
-        let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-        let state_count = ctx.0.monotonic_state_counter.increment_state();
-        //GOAT, we don't need this complicated of an identifier.  Tie the resource to the request_id
-        //GOAT, why do we need a file at all?  Unlike import, which needs the disk for journaling reasons,
-        //  export doesn't change the space, so shouldn't need to journal, so no file is needed.
-        let file_handle = ctx.0.resource_store.new_resource(&format!("export_{:0>16X}_to_{file_uri}.metta",state_count)).await?;
-
-        //Flag this path in the map as being busy, and therefore off-limits to writers
-        let map_path = cmd.args[0].as_path();
-        let reader = ctx.0.space.new_reader(map_path, &())?;
-        Ok(Some(Resources::new(ExportCmdResources{
-            file_handle,
-            reader
-        })))
-    }
-    async fn work(ctx: MorkService, thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
-        let export_resources = resources.unwrap().downcast::<ExportCmdResources>();
-        let pathbuf = export_resources.file_handle.path()?.to_owned();
-
-        tokio::task::spawn_blocking(move || async move {
-            match do_export(&ctx, export_resources).await {
-                Ok(()) => {},
-                Err(err) => {
-                    println!("Internal Error occurred during export: {err:?}"); //GOAT Log this error
-                }
-            }
-        }).await?.await;
-
-        let mut out = Vec::with_capacity(4096);
-        std::fs::File::read_to_end(&mut std::fs::File::open(pathbuf)?, &mut out)?;
-
-        thread.unwrap().finalize().await;
-        println!("Export command successful"); // TODO log this!
-
-        Ok(hyper::body::Bytes::from(out))
-    }
-}
-
-struct ExportCmdResources {
-    file_handle : ResourceHandle,
-    reader      : ReadPermission,
-}
-
-async fn do_export(ctx: &MorkService, ExportCmdResources { file_handle, mut reader }: ExportCmdResources) -> Result<(), CommandError> {
-    // Do the deserialization
-    //========================
-    let file_path = file_handle.path()?;
-
-    // right now we only suport exporting MeTTa sexprs
-    '_metta : {
-        let file = std::fs::File::create(&file_path).map_err(CommandError::internal)?;
-        let mut writer = std::io::BufWriter::new(file);
-        ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|_|CommandError::internal(format!("failed to export to {:?}", file_path)))?;
-        writer.flush()?;
-    }
-
     Ok(())
 }
 

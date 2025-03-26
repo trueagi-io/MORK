@@ -185,7 +185,7 @@ async fn import_request_test() -> Result<(), Error> {
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        println!("{}", response.text().await?);
+        println!("Error response: {}", response.text().await?);
         panic!()
     }
     println!("Response: {}", response.text().await?);
@@ -225,7 +225,7 @@ async fn import_request_test() -> Result<(), Error> {
     const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
     let response = reqwest::get(BOGUS_URL).await?;
     if !response.status().is_success() {
-        println!("{}", response.text().await?);
+        println!("Error response: {}", response.text().await?);
         panic!()
     }
     let response_text = response.text().await?;
@@ -245,7 +245,7 @@ async fn import_request_test() -> Result<(), Error> {
     const BAD_FILE_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md";
     let response = reqwest::get(BAD_FILE_URL).await?;
     if !response.status().is_success() {
-        println!("{}", response.text().await?);
+        println!("Error response: {}", response.text().await?);
         panic!()
     }
     let response_text = response.text().await?;
@@ -265,7 +265,7 @@ async fn import_request_test() -> Result<(), Error> {
     // Since the file caching works on a per-resource basis, the second request should be denied
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        println!("{}", response.text().await?);
+        println!("Error response: {}", response.text().await?);
         panic!()
     }
     println!("Response: {}", response.text().await?);
@@ -290,4 +290,46 @@ async fn import_request_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests the "export" command
+#[tokio::test]
+async fn export_request_test() -> Result<(), Error> {
+
+    //GOAT: Should host the content on a local server with predictable delays, to cut down
+    // on spurious failures from external servers behaving erratically.)
+    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
+    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
+    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals";
+
+    //First import a space from a remote
+    let response = reqwest::get(IMPORT_URL).await?;
+    if !response.status().is_success() {
+        println!("Error response: {}", response.text().await?);
+        panic!()
+    }
+    println!("Import response: {}", response.text().await?);
+
+    // Wait until the server has finished import
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response = reqwest::get(STATUS_URL).await?;
+        assert!(response.status().is_success());
+        let response_text = response.text().await?;
+        println!("Status (polling) response: {}", response_text);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
+            break
+        }
+    }
+    println!("Finished loading space");
+
+    // Export the data back out
+    let response = reqwest::get(EXPORT_URL).await?;
+    if !response.status().is_success() {
+        println!("Error response: {} - {}", response.status(), response.text().await?);
+        panic!()
+    }
+    println!("Export response: {}", response.text().await?);
+
+    Ok(())
+}
 

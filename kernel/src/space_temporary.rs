@@ -12,6 +12,7 @@ pub type SExprCount     = usize;
 pub type PathCount      = usize;
 pub type AttributeCount = usize;
 pub type NodeCount      = usize;
+pub type OwnedExpr      = Vec<u8>;
 /// A path in the space, expressed in terms of the space's semantic
 pub type Path = [u8];
 
@@ -80,6 +81,9 @@ pub trait Space {
     fn load_sexpr<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, ParseError> {
         let mut dst = self.write_zipper(dst);
         load_sexpr_impl(self.symbol_table(), src_data, &mut dst).map_err(ParseError)
+    }
+    fn sexpr_to_expr(&self, sexpr :  &str) -> Result<OwnedExpr, ParseError> {
+        sexpr_to_path(self.symbol_table(), sexpr)
     }
 
     fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError> {
@@ -589,7 +593,7 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
     Ok(i)
 }
 
-pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Vec<u8>, ParseError> {
+pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
     let mut it = Context::new(data.as_bytes());
     let mut stack = [0u8; 2048];
     let mut parser = ParDataParser::new(sm);

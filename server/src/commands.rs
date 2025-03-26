@@ -1,6 +1,7 @@
 
 use core::pin::Pin;
 use std::future::Future;
+use std::os::unix::thread;
 use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
@@ -462,52 +463,94 @@ impl CommandDefinition for StopCmd {
 /// Returns the status associated with a path in the trie
 pub struct TransformCmd;
 
+#[repr(usize)]
+enum TransformArg {
+    FromSpacePath,
+    ToSpacePath,
+    Pattern,
+    Template,
+    // keep this the last variant
+    _Len
+}
+
 impl CommandDefinition for TransformCmd {
     const NAME: &'static str = "transform";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
-        &[
-            ArgDef{
-                arg_type: ArgType::Path,
-                name: "from_space_path",
-                desc: "The path in the map to be matched, the `from_space`. It must be disjoint with the `to_space_path`",
-                required: true
-            },
-            ArgDef{
-                arg_type: ArgType::Path,
-                name: "to_space_path",
-                desc: "The path in the map to be be written to, the `to_space`. It must be disjoint with the `from_space_path`",
-                required: true
-            },
-            ArgDef{
-                arg_type: ArgType::String,
-                name: "pattern",
-                desc: "The pattern that the `from_space` expressions must conform to.",
-                required: true
-            },
-            ArgDef{
-                arg_type: ArgType::String,
-                name: "template",
-                desc: "The template that the `to_space` expressions will be derived from.",
-                required: true
-            },
-
-        ]
+        & const {
+            const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
+            let mut args = [ZEROED; TransformArg::_Len as usize];
+            use TransformArg as Arg;
+            args[Arg::FromSpacePath as usize] = 
+                ArgDef{
+                    arg_type: ArgType::Path,
+                    name: "from_space_path",
+                    desc: "The path in the map to be matched, the `from_space`. It must be disjoint with the `to_space_path`",
+                    required: true
+                };
+            args[Arg::ToSpacePath as usize] = 
+                ArgDef{
+                    arg_type: ArgType::Path,
+                    name: "to_space_path",
+                    desc: "The path in the map to be be written to, the `to_space`. It must be disjoint with the `from_space_path`",
+                    required: true
+                };
+            args[Arg::Pattern as usize] = 
+                ArgDef{
+                    arg_type: ArgType::String,
+                    name: "pattern",
+                    desc: "The pattern that the `from_space` expressions must conform to.",
+                    required: true
+                };
+            args[Arg::Template as usize] = 
+                ArgDef{
+                    arg_type: ArgType::String,
+                    name: "template",
+                    desc: "The template that the `to_space` expressions will be derived from.",
+                    required: true
+                };
+            args
+        }
     }
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
-        Ok(None)
+    async fn gather(ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+        // get path permissions
+        let from_space = ctx.0.space.new_reader(_cmd.args[TransformArg::FromSpacePath as usize].as_path(), &())?;
+        let to_space = ctx.0.space.new_writer(_cmd.args[TransformArg::ToSpacePath as usize].as_path(), &())?;
+        
+        Ok(Some(Resources::new(TransformResourses {
+                from_space,
+                to_space,
+                pattern: 
+                    ctx.0.space.sexpr_to_expr(_cmd.args[TransformArg::Pattern as usize].as_str())
+                    .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `pattern` : {e:?}")) )?,
+                template: 
+                    ctx.0.space.sexpr_to_expr(_cmd.args[TransformArg::Pattern as usize].as_str())
+                    .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `template` : {e:?}")) )?,
+            })))
     }
     async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
-        let map_path = cmd.args[0].as_path();
-        let status = ctx.0.space.get_status(map_path);
-        let json_string = serde_json::to_string(&status)?;
-        Ok(json_string.into())
+        let work_thread = _thread.unwrap();
+        let TransformResourses { from_space : mut reader, to_space : mut writer, mut pattern, mut template } = _resources.unwrap().downcast(); 
+
+        work_thread.dispatch_blocking_task(cmd, move |_c| {
+            ctx.0.space.transform(&mut reader, &mut writer, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() });
+            Ok(())
+        }).await;
+        
+        Ok(Bytes::from("Tranform dispatched"))
     }
 }
+struct TransformResourses {
+    from_space : ReadPermission,
+    to_space   : WritePermission,
+    pattern    : mork::OwnedExpr,
+    template   : mork::OwnedExpr,
+}
+
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Command mechanism implementation

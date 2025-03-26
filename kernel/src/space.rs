@@ -26,7 +26,7 @@ pub struct Space {
 #[macro_export]
 macro_rules! expr {
     ($space:ident, $s:literal) => {{
-        let mut src = parse!($s);
+        let mut src = mork_bytestring::parse!($s);
         let q = Expr{ ptr: src.as_mut_ptr() };
         let mut pdp = crate::space_temporary::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
@@ -179,14 +179,14 @@ impl Space {
         // stack.push(patterns.len() as u8);
         // stack.push(ITER_ARITIES);
         let mut compound = Expr{ ptr: compound_vec.as_mut_ptr() };
-        println!("cq {:?}", sexpr!(self, compound));
+        println!("cq {:?}", crate::sexpr!(self, compound));
         stack.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(compound)));
 
         let mut references: Vec<(u32, u32)> = vec![];
         let mut candidate = 0;
         referential_transition(&mut stack, &mut prz, &mut references, &mut |loc| {
             let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            println!("{candidate} {:?}", sexpr!(self, e));
+            println!("{candidate} {:?}", crate::sexpr!(self, e));
             candidate += 1;
         });
     }

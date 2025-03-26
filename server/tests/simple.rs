@@ -299,7 +299,7 @@ async fn export_request_test() -> Result<(), Error> {
     const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
     const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
     const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
-    // const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
+    const EXPORT_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
 
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
@@ -323,13 +323,21 @@ async fn export_request_test() -> Result<(), Error> {
     }
     println!("Finished loading space");
 
-    // Export the data back out
+    // Export the data in raw form
+    let response = reqwest::get(EXPORT_RAW_URL).await?;
+    if !response.status().is_success() {
+        println!("Error response: {} - {}", response.status(), response.text().await?);
+        panic!()
+    }
+    println!("Export Raw response:\n{}", response.text().await?);
+
+    // Export the data in MeTTa form
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
         println!("Error response: {} - {}", response.status(), response.text().await?);
         panic!()
     }
-    println!("Export response:\n{}", response.text().await?);
+    println!("Export MeTTa response:\n{}", response.text().await?);
 
     Ok(())
 }

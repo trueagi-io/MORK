@@ -589,6 +589,28 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
     Ok(i)
 }
 
+pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Vec<u8>, ParseError> {
+    let mut it = Context::new(data.as_bytes());
+    let mut stack = [0u8; 2048];
+    let mut parser = ParDataParser::new(sm);
+    let mut result = None;
+    loop {
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => {
+                if result.is_some() {
+                    return Err(ParseError(format!("Found multiple S-Expressions in: {data}")))
+                }
+                result = Some(stack[..ez.loc].to_vec());
+            }
+            Err(ParserError::InputFinished) => { break }
+            Err(other) => { return Err(ParseError(format!("Internal Parse error: {other:?}"))) }
+        }
+        it.variables.clear();
+    }
+
+    result.ok_or_else(|| ParseError(format!("Failed to parse S-Expression: {data}")))
+}
 
 
 pub(crate) fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Expr, mut effect: F) 

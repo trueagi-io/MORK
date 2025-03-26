@@ -456,6 +456,60 @@ impl CommandDefinition for StopCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// Transform
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Returns the status associated with a path in the trie
+pub struct TransformCmd;
+
+impl CommandDefinition for TransformCmd {
+    const NAME: &'static str = "transform";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[
+            ArgDef{
+                arg_type: ArgType::Path,
+                name: "from_space_path",
+                desc: "The path in the map to be matched, the `from_space`. It must be disjoint with the `to_space_path`",
+                required: true
+            },
+            ArgDef{
+                arg_type: ArgType::Path,
+                name: "to_space_path",
+                desc: "The path in the map to be be written to, the `to_space`. It must be disjoint with the `from_space_path`",
+                required: true
+            },
+            ArgDef{
+                arg_type: ArgType::String,
+                name: "pattern",
+                desc: "The pattern that the `from_space` expressions must conform to.",
+                required: true
+            },
+            ArgDef{
+                arg_type: ArgType::String,
+                name: "template",
+                desc: "The template that the `to_space` expressions will be derived from.",
+                required: true
+            },
+
+        ]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(_ctx: MorkService, _cmd: Command) -> Result<Option<Resources>, CommandError> {
+        Ok(None)
+    }
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let map_path = cmd.args[0].as_path();
+        let status = ctx.0.space.get_status(map_path);
+        let json_string = serde_json::to_string(&status)?;
+        Ok(json_string.into())
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Command mechanism implementation
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 

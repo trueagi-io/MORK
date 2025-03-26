@@ -108,15 +108,6 @@ pub trait Space {
         transform_impl(&mut rz, &mut wz, pattern, template);
     }
 
-    fn transition<'s, 'r, SRZ : SpaceReaderZipper<'s, 'r>, F:  FnMut(&mut SRZ) -> ()>(&self, stack: &mut Vec<u8>, loc: &mut SRZ, f: &mut F) {
-        transition_impl(stack, loc, f)
-    }
-
-    fn query<'s, 'r, F : FnMut(Expr) -> ()>(&'s self, reader : &'r mut Self::Reader<'s>, pattern: Expr, effect: F) {
-        let mut rz = self.read_zipper(reader);
-        query_impl(&mut rz, pattern, effect);
-    }
-
     fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
@@ -587,6 +578,7 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
             Ok(()) => {
                 dst.descend_to(&stack[..ez.loc]);
                 dst.set_value(());
+                dst.reset();
             }
             Err(ParserError::InputFinished) => { break }
             Err(other) => { panic!("{:?}", other) }

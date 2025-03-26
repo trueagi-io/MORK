@@ -298,7 +298,7 @@ async fn export_request_test() -> Result<(), Error> {
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
     const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
-    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals";
+    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
 
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
@@ -328,7 +328,7 @@ async fn export_request_test() -> Result<(), Error> {
         println!("Error response: {} - {}", response.status(), response.text().await?);
         panic!()
     }
-    println!("Export response: {}", response.text().await?);
+    println!("Export response:\n{}", response.text().await?);
 
     Ok(())
 }

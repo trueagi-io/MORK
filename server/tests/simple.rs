@@ -410,7 +410,7 @@ async fn upload_request_test() -> Result<(), Error> {
         (parent Tom Liz)
     "#;
 
-    //First import a space from a remote
+    //Upload the data to the space
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
         println!("Error response: {}", response.text().await?);
@@ -429,6 +429,45 @@ async fn upload_request_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests the "clear" command
+#[tokio::test]
+async fn clear_request_test() -> Result<(), Error> {
+
+    //GOAT: Should host the content on a local server with predictable delays, to cut down
+    // on spurious failures from external servers behaving erratically.)
+    const UPLOAD_URL: &str = "http://127.0.0.1:8000/upload/royals/";
+    const CLEAR_URL: &str = "http://127.0.0.1:8000/clear/royals/";
+    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
+    const PAYLOAD: &str = "(male Bob)";
+
+    //Upload the data so we have something to clear
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
+    if !response.status().is_success() {
+        println!("Error response: {}", response.text().await?);
+        panic!()
+    }
+    println!("Upload response: {}", response.text().await?);
+
+    // Clear the data
+    let response = reqwest::get(CLEAR_URL).await?;
+    if !response.status().is_success() {
+        println!("Error response: {} - {}", response.status(), response.text().await?);
+        panic!()
+    }
+    println!("Clear response:\n{}", response.text().await?);
+
+    // Export the data to confirm nothing is there
+    let response = reqwest::get(EXPORT_URL).await?;
+    if !response.status().is_success() {
+        println!("Error response: {} - {}", response.status(), response.text().await?);
+        panic!()
+    }
+    let response_buf = response.text().await?;
+    println!("Export response:\n{}", response_buf);
+    assert_eq!(response_buf.len(), 0);
+
+    Ok(())
+}
 
 // /// Tests the "export" command
 // #[tokio::test]

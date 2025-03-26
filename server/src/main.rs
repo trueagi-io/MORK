@@ -417,6 +417,12 @@ impl Service<Request<IncomingBody>> for MorkService {
                 })(), bad_request_err);
                 self.dispatch_work(command)
             },
+            (&Method::GET, CopyCmd::NAME) => {
+                let command = fut_err!((|| {
+                    parse_command::<CopyCmd>(remaining, req.uri())
+                })(), bad_request_err);
+                self.dispatch_work(command)
+            },
             (&Method::GET, CountCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<CountCmd>(remaining, req.uri())

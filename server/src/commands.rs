@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 
 use mork::Space;
-use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -51,6 +51,55 @@ impl CommandDefinition for BusywaitCmd {
         }).await;
         Ok("ACK. Waiting".into())
     }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// copy
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Copys (by reference) the contents of `source` to `dest`.  This is PathMap::graft
+pub struct CopyCmd;
+
+impl CommandDefinition for CopyCmd {
+    const NAME: &'static str = "copy";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Path,
+            name: "src_path",
+            desc: "The map path from which to copy",
+            required: true
+        },
+        ArgDef{
+            arg_type: ArgType::Path,
+            name: "dst_path",
+            desc: "The map path to copy into",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(ctx: MorkService, cmd: Command) -> Result<Option<Resources>, CommandError> {
+        let src_path = cmd.args[0].as_path();
+        let reader = ctx.0.space.new_reader(src_path, &())?;
+        let dst_path = cmd.args[1].as_path();
+        let writer = ctx.0.space.new_writer(dst_path, &())?;
+        Ok(Some(Resources::new(CopyCmdResources{reader, writer})))
+    }
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let mut resources = resources.unwrap().downcast::<CopyCmdResources>();
+        let rz = ctx.0.space.read_zipper(&mut resources.reader);
+        let mut wz = ctx.0.space.write_zipper(&mut resources.writer);
+        wz.graft(&rz);
+        Ok("ACK. Copied".into())
+    }
+}
+
+struct CopyCmdResources {
+    reader: ReadPermission,
+    writer: WritePermission,
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -113,7 +162,7 @@ async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, _cmd: &Command, r
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// Export
+// export
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
 /// deserialize a map, serve as a file to the client. 

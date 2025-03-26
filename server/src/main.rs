@@ -140,7 +140,7 @@ impl MorkService {
         Ok(())
     }
     /// Attempts to allocate a worker thread to run `work_f`, and replies with an `ack` or a busy response
-    fn dispatch_work(&self, command: Command) -> <Self as Service<Request<IncomingBody>>>::Future {
+    fn dispatch_work(&self, command: Command, req: Request<IncomingBody>) -> <Self as Service<Request<IncomingBody>>>::Future {
         let work_thread = if command.def.consume_worker() {
             //See if we have a spare worker thread to dedicate to this work
             match self.0.workers.assign_worker() {
@@ -157,7 +157,7 @@ impl MorkService {
         //Acquire the resources (mainly zippers) to perform the operation
         let ctx = self.clone();
         Box::pin(async move {
-            match command.def.gather(ctx.clone(), command.clone()).await {
+            match command.def.gather(ctx.clone(), command.clone(), req).await {
                 Ok(resources) => {
                     println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
 
@@ -415,43 +415,49 @@ impl Service<Request<IncomingBody>> for MorkService {
                 let command = fut_err!((|| {
                     parse_command::<BusywaitCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, CopyCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<CopyCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, CountCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<CountCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, ExportCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<ExportCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, ImportCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<ImportCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, StatusCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<StatusCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
             },
             (&Method::GET, StopCmd::NAME) => {
                 let command = fut_err!((|| {
                     parse_command::<StopCmd>(remaining, req.uri())
                 })(), bad_request_err);
-                self.dispatch_work(command)
+                self.dispatch_work(command, req)
+            },
+            (&Method::POST, UploadCmd::NAME) => {
+                let command = fut_err!((|| {
+                    parse_command::<UploadCmd>(remaining, req.uri())
+                })(), bad_request_err);
+                self.dispatch_work(command, req)
             },
             // Return 404 Not Found for other routes.
             _ => {

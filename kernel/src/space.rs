@@ -163,7 +163,7 @@ fn all_at_depth<Z : ZipperMoving, F>(loc: &mut Z, level: u32, mut action: F) whe
     }
 }
 
-fn transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
+fn transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
     // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
     // println!("label {}", label(*stack.last().unwrap()));
     let last = stack.pop().unwrap();
@@ -320,7 +320,7 @@ fn transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>(stack: &mut
     stack.push(last);
 }
 
-fn referential_transition<Z : ZipperMoving + Zipper<()>, F: FnMut(&mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
     unsafe {
     macro_rules! unroll {
     (ACTION $recursive:expr) => { f(loc); };
@@ -1143,7 +1143,7 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error> {
+    pub fn backup<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
         pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
                                            |v, b| pathmap::serialization::ValueSlice::Read(&[]),
                                            path.as_ref()).map(|_| ())
@@ -1154,12 +1154,12 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup_paths<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_paths<out_dir_path : AsRef<std::path::Path>>(&mut self, path: out_dir_path) -> Result<(usize, usize, usize), std::io::Error> {
+    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }

@@ -465,6 +465,12 @@ impl Service<Request<IncomingBody>> for MorkService {
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
+            (&Method::POST, TransformCmd::NAME) => {
+                let command = fut_err!((|| {
+                    parse_command::<UploadCmd>(remaining, req.uri())
+                })(), bad_request_err);
+                self.dispatch_work(command, req)
+            },
             // Return 404 Not Found for other routes.
             _ => {
                 let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path())).error_response();

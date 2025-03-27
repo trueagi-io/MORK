@@ -606,20 +606,39 @@ async fn id_transform_request_test() -> Result<(), Error> {
 
 
     // Export the data in raw form
-    let response = reqwest::get(EXPORT_RAW_URL).await.unwrap();
-    if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await.unwrap());
+    let response_src_raw = reqwest::get(EXPORT_RAW_URL).await.unwrap();
+    if !response_src_raw.status().is_success() {
+        println!("Error response: {} - {}", response_src_raw.status(), response_src_raw.text().await.unwrap());
         panic!()
     }
-    println!("Export Raw response:\n{}", response.text().await.unwrap());
+    println!("Export Raw response:\n{}", response_src_raw.text().await.unwrap());
 
     // Export the data in MeTTa form
-    let response = reqwest::get(EXPORT_URL).await.unwrap();
-    if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await.unwrap());
+    let response_src = reqwest::get(EXPORT_URL).await.unwrap();
+    if !response_src.status().is_success() {
+        println!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap());
         panic!()
     }
-    println!("Export MeTTa response:\n{}", response.text().await.unwrap());
+    println!("Export MeTTa response:\n{}", response_src.text().await.unwrap());
+
+
+
+
+    // Export the data in raw form
+    let response_src_raw_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_RAW_URL).await.unwrap();
+    if !response_src_raw_id_transform.status().is_success() {
+        println!("Error response: {} - {}", response_src_raw_id_transform.status(), response_src_raw_id_transform.text().await.unwrap());
+        panic!()
+    }
+    println!("Export Raw response:\n{}", response_src_raw_id_transform.text().await.unwrap());
+
+    // Export the data in MeTTa form
+    let response_src_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_URL).await.unwrap();
+    if !response_src_id_transform.status().is_success() {
+        println!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap());
+        panic!()
+    }
+    println!("Export MeTTa response:\n{}", response_src_id_transform.text().await.unwrap());
 
     Ok(())
 }

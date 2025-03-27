@@ -10,7 +10,6 @@ mod tests {
     use std::io::Read;
     use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
-    use mork_bytestring::{Expr, parse, compute_length, ExprZipper};
     use crate::{expr, sexpr};
     use crate::json_parser::{Parser, WriteTranscriber};
     use crate::space::*;

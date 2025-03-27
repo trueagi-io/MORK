@@ -2,7 +2,7 @@
 extern crate alloc;
 use alloc::borrow::Cow;
 
-use bucket_map::{SharedMapping, SharedMappingHandle};
+use bucket_map::{SharedMapping, SharedMappingHandle, WritePermit};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
@@ -28,12 +28,19 @@ pub struct DumpSExprError(String);
 #[allow(unused)]
 #[derive(Debug)]
 pub struct ParseError(String);
+#[cfg(feature="neo4j")]
 #[allow(unused)]
 #[derive(Debug)]
 pub struct LoadNeo4JTriplesError(String);
+#[cfg(feature="neo4j")]
 #[allow(unused)]
 #[derive(Debug)]
 pub struct LoadNeo4JNodePropertiesError(String);
+#[cfg(feature="neo4j")]
+#[allow(unused)]
+#[derive(Debug)]
+pub struct LoadNeo4JNodeLabelsError(String);
+
 
 
 pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
@@ -112,16 +119,25 @@ pub trait Space {
         transform_impl(&mut rz, &mut wz, pattern, template);
     }
 
+    #[cfg(feature="neo4j")]
     fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_triples_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JTriplesError)
     }
 
+    #[cfg(feature="neo4j")]
     fn load_neo4j_node_properties<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodePropertiesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_properties_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodePropertiesError)
+    }
+
+    #[cfg(feature="neo4j")]
+    fn load_neo4j_node_labels<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodeLabelsError> {
+        let sm = self.symbol_table();
+        let mut wz = self.write_zipper(writer);
+        load_neo4j_node_labels_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodeLabelsError)
     }
 }
 
@@ -185,6 +201,8 @@ pub(crate) mod stack_actions {
     pub(crate) const BEGIN_RANGE      : u8 = 12;
     pub(crate) const FINALIZE_RANGE   : u8 = 13;
     pub(crate) const REFER_RANGE      : u8 = 14;
+    #[allow(unused)]
+    pub(crate) const RESERVED         : u8 = 15;
 
     #[allow(unused)]
     pub(crate) fn label(l: u8) -> String {
@@ -207,22 +225,49 @@ pub(crate) mod stack_actions {
 } 
 use stack_actions::*;
 
-pub(crate) struct ParDataParser<'a> { count: u64, buf: [u8; 8], write_permit: bucket_map::WritePermit<'a> }
+pub(crate) struct ParDataParser<'a> { count: u64,
+    #[cfg(feature="interning")]
+    buf: [u8; 8],
+    #[cfg(not(feature="interning"))]
+    buf: [u8; 64],
+    #[cfg(not(feature="interning"))]
+    truncated: u64,
+    #[allow(dead_code)]
+    write_permit: WritePermit<'a> }
 
 impl <'a> Parser for ParDataParser<'a> {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         self.count += 1;
+        #[cfg(feature="interning")]
+        {
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = self.write_permit.get_sym_or_insert(s);
+        self.buf = (self.write_permit.get_sym_or_insert(s) );
         return unsafe { std::mem::transmute(&self.buf[..]) };
+        }
+        #[cfg(not(feature="interning"))]
+        {
+        let mut l = s.len();
+        if l > 63 {
+            self.truncated += 1;
+            // panic!("len greater than 63 bytes {}", std::str::from_utf8(s).unwrap_or(format!("{:?}", s).as_str()))
+            l = 63
+        }
+        self.buf[..l].clone_from_slice(&s[..l]);
+        return unsafe { std::mem::transmute(&self.buf[..l]) };
+        }
     }
 }
 
 impl <'a> ParDataParser<'a> {
-    pub(crate) fn new(handle: &'a SharedMappingHandle) -> Self {
+    pub fn new(handle: &'a SharedMappingHandle) -> Self {
         Self {
             count: 3,
+            #[cfg(feature="interning")]
             buf: (3u64).to_be_bytes(),
+            #[cfg(not(feature="interning"))]
+            buf: [0; 64],
+            #[cfg(not(feature="interning"))]
+            truncated: 0u64,
             write_permit: handle.try_aquire_permission().unwrap()
         }
     }
@@ -305,12 +350,13 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
-            if loc.descend_first_k_path(size as usize) {
-                transition_impl(stack, loc, f);
-                while loc.to_next_k_path(size as usize) {
-                    transition_impl(stack, loc, f);
-                }
-            }
+            all_at_depth(loc, size as _, |loc| transition_impl(stack, loc, f));
+            // if loc.descend_first_k_path(size as usize) {
+            //     transition_impl(stack, loc, f);
+            //     while loc.to_next_k_path(size as usize) {
+            //         transition_impl(stack, loc, f);
+            //     }
+            // }
             stack.push(size);
         }
         ITER_NESTED => {
@@ -541,7 +587,7 @@ pub(crate) fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: E
     });
 }
 
-pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(#[allow(unused_variables)]sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
     where
     RZ : ZipperIteration<'s, ()>
 {
@@ -553,11 +599,15 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(sm : &SharedMapping
                 let path = src.path();
                 let e = Expr { ptr: path.as_ptr().cast_mut() };
                 e.serialize(dst, |s| {
+                    #[cfg(feature="interning")]
+                    {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                    #[cfg(debug_assertions)]
-                    println!("symbol {symbol:?}, bytes {mstr:?}");
+                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                    // println!("symbol {symbol:?}, bytes {mstr:?}");
                     unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+                    }
+                    #[cfg(not(feature="interning"))]
+                    unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
                 });
                 dst.write(&[b'\n']).map_err(|x| x.to_string())?;
                 i += 1;
@@ -572,6 +622,7 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
     WZ : ZipperMoving + ZipperWriting<()>
 {
     let mut it = Context::new(data.as_bytes());
+    let mut submap = BytesTrieMap::new();
 
     let mut i = 0;
     let mut stack = [0u8; 2048];
@@ -580,9 +631,7 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr(&mut it, &mut ez) {
             Ok(()) => {
-                dst.descend_to(&stack[..ez.loc]);
-                dst.set_value(());
-                dst.reset();
+                submap.insert(&stack[..ez.loc], ());
             }
             Err(ParserError::InputFinished) => { break }
             Err(other) => { panic!("{:?}", other) }
@@ -590,6 +639,7 @@ pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str
         i += 1;
         it.variables.clear();
     }
+    dst.graft_map(submap);
     Ok(i)
 }
 
@@ -748,7 +798,7 @@ impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, W
 }
 
 
-
+#[cfg(feature="neo4j")]
 pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
@@ -762,11 +812,11 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
     let mut count = 0;
 
     let mut result = rt.block_on(graph.execute(
-        query("MATCH (s)-[p]->(o) RETURN id(s), id(p), id(o)"))).unwrap();
+        query("MATCH (s)-[p]->(o) RETURN id(s), type(p), id(o)"))).unwrap();
     let spo_symbol = pdp.tokenizer("SPO".as_bytes());
     while let Ok(Some(row)) = rt.block_on(result.next()) {
         let s: i64 = row.get("id(s)").unwrap();
-        let p: i64 = row.get("id(p)").unwrap();
+        let p: String = row.get("type(p)").unwrap();
         let o: i64 = row.get("id(o)").unwrap();
         let mut buf = [0u8; 64];
         let e = Expr{ ptr: buf.as_mut_ptr() };
@@ -783,7 +833,7 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
             ez.loc += internal.len() + 1;
         }
         {
-            let internal = pdp.tokenizer(&p.to_be_bytes());
+            let internal = pdp.tokenizer(&p.as_bytes());
             ez.write_symbol(&internal[..]);
             ez.loc += internal.len() + 1;
         }
@@ -804,7 +854,7 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
 
 
 
-
+#[cfg(feature="neo4j")]
 pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
@@ -830,15 +880,77 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         let internal_s = pdp.tokenizer(&s.to_be_bytes());
         wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
         wz.descend_to(internal_s);
-
+    
         let a: BoltMap = row.get("s").unwrap();
-
+    
         for (bs, bt) in a.value.iter() {
             let internal_k = pdp.tokenizer(bs.value.as_bytes());
             wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_k.len() as _)));
             wz.descend_to(internal_k);
-
+    
             let BoltType::String(bv) = bt else { unreachable!() };
+            if bv.value.starts_with("[") && bv.value.ends_with("]") {
+                for chunk in bv.value[1..bv.value.len()-1].split(", ") {
+                    let c = if chunk.starts_with("\"") && chunk.ends_with("\"") { &chunk[1..chunk.len()-1] } else { chunk };
+                    let internal_v = pdp.tokenizer(c.as_bytes());
+                    wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                    wz.descend_to(internal_v);
+    
+                    wz.set_value(());
+    
+                    wz.ascend(internal_v.len() + 1);
+                }
+            } else {
+                let internal_v = pdp.tokenizer(bv.value.as_bytes());
+                wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                wz.descend_to(internal_v);
+    
+                wz.set_value(());
+    
+                wz.ascend(internal_v.len() + 1);
+            }
+    
+            wz.ascend(internal_k.len() + 1);
+            attributes += 1;
+        }
+    
+        wz.ascend(internal_s.len() + 1);
+        nodes += 1;
+    }
+    Ok((nodes, attributes))
+}
+
+#[cfg(feature="neo4j")]
+pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> 
+    where
+        WZ : Zipper + ZipperMoving + ZipperWriting<()>
+{
+    use neo4rs::*;
+    use mork_bytestring::{Tag, item_byte};
+    let graph = Graph::new(uri, user, pass).unwrap();
+
+    let mut pdp = ParDataParser::new(&sm);
+    let sa_symbol = pdp.tokenizer("NL".as_bytes());
+    let mut nodes = 0;
+    let mut labels = 0;
+
+    wz.descend_to_byte(item_byte(Tag::Arity(3)));
+    wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
+    wz.descend_to(sa_symbol);
+
+    let mut result = rt.block_on(graph.execute(
+        query("MATCH (s) RETURN id(s), labels(s)"))
+    ).unwrap();
+    while let Ok(Some(row)) = rt.block_on(result.next()) {
+        let s: i64 = row.get("id(s)").unwrap();
+        let internal_s = pdp.tokenizer(&s.to_be_bytes());
+        wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
+        wz.descend_to(internal_s);
+
+        let a: BoltList = row.get("labels(s)").unwrap();
+
+        for bl in a.value.iter() {
+            let BoltType::String(bv) = bl else { unreachable!() };
 
             let internal_v = pdp.tokenizer(bv.value.as_bytes());
             wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
@@ -848,15 +960,11 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
 
             wz.ascend(internal_v.len() + 1);
 
-            wz.ascend(internal_k.len() + 1);
-            attributes += 1;
+            labels += 1;
         }
 
         wz.ascend(internal_s.len() + 1);
         nodes += 1;
-        if nodes % 1000000 == 0 {
-            println!("{nodes} {attributes}");
-        }
     }
-    Ok((nodes, attributes))
+    Ok((nodes, labels))
 }

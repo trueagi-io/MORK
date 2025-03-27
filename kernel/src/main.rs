@@ -62,7 +62,8 @@ fn bench_2() {
     println!("restored paths {:?}", s.restore_paths("/dev/shm/combined.paths.gz").unwrap());
     println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
     s.statistics();
-
+    
+    #[cfg(feature="neo4j")]
     #[allow(unused)]
     if TEST_DAG {
 

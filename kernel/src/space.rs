@@ -20,7 +20,7 @@ pub use crate::space_temporary::{
     SExprCount,
 };
 pub struct Space {
-    pub(crate) btm: BytesTrieMap<()>,
+    pub btm: BytesTrieMap<()>,
     pub sm: SharedMappingHandle
 }
 
@@ -30,7 +30,7 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = crate::space_temporary::ParDataParser::new(&$space.sm);
+        let mut pdp = $crate::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| pdp.tokenizer(x));
@@ -67,7 +67,7 @@ macro_rules! prefix {
     ($space:ident, $s:literal) => {{
         let mut src = parse!($s);
         let q = Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = ParDataParser::new(&$space.sm);
+        let mut pdp = $crate::space_temporary::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
         let p = Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
@@ -141,12 +141,12 @@ impl Space {
         crate::space_temporary::load_neo4j_node_labels_impl(&self.sm, &mut self.btm.write_zipper(), &rt, uri, user, pass)
     }
 
-    pub fn load_sexpr(&mut self, r: &str) -> Result<SExprCount, String> {
-        crate::space_temporary::load_sexpr_impl(&self.sm, r, &mut self.btm.write_zipper())
+    pub fn load_sexpr(&mut self, prefix : crate::prefix::Prefix, r: &str) -> Result<SExprCount, String> {
+        crate::space_temporary::load_sexpr_impl(&self.sm, r, &mut self.btm.write_zipper_at_path(prefix.path()))
     }
 
-    pub fn dump_as_sexpr<W : Write>(&self, w: &mut W) -> Result<PathCount, String> {
-        let mut rz = self.btm.read_zipper();
+    pub fn dump_sexpr<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {
+        let mut rz = self.btm.read_zipper_at_path(prefix.path());
         crate::space_temporary::dump_as_sexpr_impl(&self.sm, w, &mut rz)
     }
 
@@ -190,8 +190,8 @@ impl Space {
         pathmap::path_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, |_, _| ())
     }
 
-    pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, effect: F) {
-        let mut rz = self.btm.read_zipper();
+    pub fn query<F : FnMut(Expr) -> ()>(&self, prefix: crate::prefix::Prefix,  pattern: Expr, effect: F) {
+        let mut rz = self.btm.read_zipper_at_path(prefix.path());
         crate::space_temporary::query_impl(&mut rz, pattern, effect)
     }
 

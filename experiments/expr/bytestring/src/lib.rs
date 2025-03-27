@@ -21,7 +21,13 @@ pub enum Tag {
     SymbolSize(u8), // "" "." ".." .. "... x63"
     //                < 64 bytes
     Arity(u8), // [0] ... [63]
+    // U64,
 }
+
+// [2] <u64> '8 0 0 0 1 2
+// [2] shortStr '19 a d a ...
+
+// [2] <u64> '8 0 0 0 1 2
 
 // [2] 64bytes [2] 64bytes [2] ... [2] 64bytes 64bytes
 // [63] 64bytes 64bytes 62x.. 64bytes [63] 64bytes 62x.. 64bytes [63] ... [63] ...

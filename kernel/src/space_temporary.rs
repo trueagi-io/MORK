@@ -225,7 +225,7 @@ pub(crate) mod stack_actions {
 } 
 use stack_actions::*;
 
-pub(crate) struct ParDataParser<'a> { count: u64,
+pub struct ParDataParser<'a> { count: u64,
     #[cfg(feature="interning")]
     buf: [u8; 8],
     #[cfg(not(feature="interning"))]

@@ -257,9 +257,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
     stack.push(last);
 }
 
-#[allow(unused_unsafe)]
-#[allow(unused_mut)]
-#[allow(unused_variables)]
+#[allow(unused_unsafe,unused_mut,unused_variables)]
 fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last: *mut u8, loc: &mut ReadZipperUntracked<()>, references: &mut Vec<(u32, u32)>, f: &mut F) {
     unsafe {
     macro_rules! unroll {
@@ -655,7 +653,7 @@ impl Parser for DataParser {
     }
 }
 
-#[allow(unused_variables)]
+#[allow(unused_variables, unreachable_code)]
 fn main() {
     // SETUP PROCEDURE?
     for size in 1..64 {

@@ -103,7 +103,7 @@ impl StatusRecord {
 }
 
 /// Permission to read from a path
-pub struct ReadPermission(Vec<u8>, ZipperTracker<TrackingRead>);
+pub struct ReadPermission(Vec<u8>, #[allow(dead_code)]ZipperTracker<TrackingRead>);
 
 impl ReadPermission {
     /// Returns the path associated with the permission
@@ -113,7 +113,7 @@ impl ReadPermission {
 }
 
 /// Permission to write to a path
-pub struct WritePermission(Vec<u8>, ZipperTracker<TrackingWrite>);
+pub struct WritePermission(Vec<u8>, #[allow(dead_code)]ZipperTracker<TrackingWrite>);
 
 impl WritePermission {
     /// Returns the path associated with the permission

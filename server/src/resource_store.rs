@@ -117,6 +117,7 @@ impl ResourceStore {
     ///
     /// This method should be called after a server snap-shotted to remove files already integrated
     /// into the frozen version of the database
+    #[allow(unused)]
     pub async fn purge_before_timestamp(&self, threshold_timestamp: u64) -> Result<(), CommandError> {
         let mut dir = fs::read_dir(&self.dir_path).await?;
         while let Some(entry) = dir.next_entry().await? {

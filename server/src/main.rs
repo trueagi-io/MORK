@@ -47,18 +47,8 @@ struct MorkServiceInternals {
     /// The MORK kernel space
     space: ServerSpace,
 
-    //GOAT, come back here
-    monotonic_state_counter : MonotonicStateCounter
-
     //GOAT, need cmd-logger to facilitate replay, and maybe a separate human-readable log
     //GOAT, need permissions model
-}
-
-struct MonotonicStateCounter( core::sync::atomic::AtomicU64);
-impl MonotonicStateCounter {
-    fn increment_state(&self) -> u64 {
-        self.0.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 impl MorkService {
@@ -76,15 +66,12 @@ impl MorkService {
 
         let space = ServerSpace::new();
 
-        let monotonic_state_counter = MonotonicStateCounter( core::sync::atomic::AtomicU64::new(0) );
-
         let internals = MorkServiceInternals {
             stop_cmd: Notify::new(),
             workers: WorkerPool::new(),
             space,
             resource_store,
             http_client,
-            monotonic_state_counter,
         };
         Self(Arc::new(internals))
     }

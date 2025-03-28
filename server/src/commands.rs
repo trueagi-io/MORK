@@ -618,7 +618,7 @@ impl CommandDefinition for TransformCmd {
             Ok(())
         }).await;
 
-        Ok(Bytes::from("Tranform dispatched"))
+        Ok(Bytes::from("ACK. Tranform dispatched"))
     }
 }
 struct TransformResourses {

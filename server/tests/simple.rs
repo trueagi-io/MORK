@@ -1,8 +1,18 @@
 
+//! ===================================================================================
+//! *****************       READ THIS BEFORE ADDING NEW TESTS         *****************
+//! ===================================================================================
+//! The `aaa_start_stop_test` test is responsible for starting and stopping the
+//! server, and the rest of the tests will wait until they confirm the server is alive
+//! ===================================================================================
+
 use std::time::Instant;
 use hyper::StatusCode;
 use tokio::task;
 use reqwest::{Client, Error};
+
+/// Convenience to declare a literal to use like a constant
+macro_rules! decl_lit { ($NAME:ident!() => $LIT:tt) => { macro_rules! $NAME { () => { $LIT }; } }; }
 
 macro_rules! url_percent_encode {
     ("!") => { "%21" };
@@ -25,12 +35,46 @@ macro_rules! url_percent_encode {
     ("]") => { "%5D" };
 }
 
+macro_rules! server_url { () => { "http://127.0.0.1:8000" }; }
 
+/// Waits for the server to become available
+async fn wait_for_server() -> Result<(), Error> {
+    //TODO: Do we want a new command that returns the server status, as opposed to a path status?
+    const URL: &str = concat!(
+        server_url!(),
+        "/", "status",
+        "/", "-"
+    );
+    loop {
+        let response = reqwest::get(URL).await?;
+        if response.status().is_success() {
+            return Ok(())
+        }
+    }
+}
+
+/// Starts the server, and then dispatches a `stop?wait_for_idle` request
+#[tokio::test]
+async fn aaa_start_stop_test() -> Result<(), Error> {
+
+    //Start the server
+    std::process::Command::new(env!("CARGO_BIN_EXE_mork_server")).spawn().unwrap();
+
+    //GOAT, we want to do `stop?wait_for_idle` here instead
+    std::thread::sleep(std::time::Duration::from_millis(60000));
+
+    Ok(())
+}
 
 /// Opens one client request
 #[tokio::test]
 async fn simple_request_test() -> Result<(), Error> {
-    const URL: &str = "http://127.0.0.1:8000/busywait/2000";
+    const URL: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "2000",
+    );
+    wait_for_server().await.unwrap();
 
     let response = reqwest::get(URL).await?;
 
@@ -47,8 +91,13 @@ async fn simple_request_test() -> Result<(), Error> {
 /// Opens many client requests at the same time
 #[tokio::test]
 async fn many_request_instant_test() -> Result<(), Error> {
-    const URL: &str = "http://127.0.0.1:8000/busywait/2000";
+    const URL: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "2000",
+    );
     const NUM_REQUESTS: usize = 100;
+    wait_for_server().await.unwrap();
 
     let client = Client::new();
     let mut handles = vec![];
@@ -87,8 +136,14 @@ async fn many_request_instant_test() -> Result<(), Error> {
 /// Opens many client requests with a short delay between each
 #[tokio::test]
 async fn many_request_delayed_test() -> Result<(), Error> {
-    const URL: &str = "http://127.0.0.1:8000/busywait/2000";
+    const URL: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "2000",
+    );
     const NUM_REQUESTS: usize = 100;
+    wait_for_server().await.unwrap();
+
     let delay = core::time::Duration::from_millis(100);
 
     let mut handles = vec![];
@@ -125,11 +180,23 @@ async fn many_request_delayed_test() -> Result<(), Error> {
 
 /// Saturates the workers and then issues a stop request, and ensures no more connections are received
 /// Also tests that the stop request can get through even if the server is under heavy load
+///
+/// This test must be run explicitly so it doesn't interfere with the other tests
+#[ignore]
 #[tokio::test]
 async fn zzz_stop_request_test() -> Result<(), Error> {
-    const URL: &str = "http://127.0.0.1:8000/busywait/2000";
-    const STOP_URL: &str = "http://127.0.0.1:8000/stop/";
+    const URL: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "2000",
+    );
+    const STOP_URL: &str = concat!( 
+        server_url!(),
+        "/", "stop",
+    );
     const NUM_REQUESTS: usize = 100;
+    wait_for_server().await.unwrap();
+
     let delay_between_requests = core::time::Duration::from_millis(1);
     let delay_after_stop = core::time::Duration::from_millis(10);
 
@@ -200,10 +267,54 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
 /// Tests the "import" command
 #[tokio::test]
 async fn import_request_test() -> Result<(), Error> {
+    decl_lit!{in_path!() => "import_test_royals"}
+    decl_lit!{alt_path!() => "import_test_royal_with_cheese"}
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
+    const IMPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", in_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
+    );
+    const STATUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", in_path!(),
+    );
+    const COUNT_URL: &str = concat!( 
+        server_url!(),
+        "/", "count",
+        "/", in_path!(),
+    );
+    // A file that doesn't exist, fails to fetch
+    const BOGUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", in_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta",
+    );
+    // A file that exists, but fails to parse
+    const BAD_FILE_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", in_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md",
+    );
+    // A different path to import the file into
+    const ALT_PATH_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", alt_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
+    );
+    // Status command for the ALT_PATH
+    const ALT_STATUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", alt_path!(),
+    );
+    wait_for_server().await.unwrap();
 
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
@@ -231,7 +342,6 @@ async fn import_request_test() -> Result<(), Error> {
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
 
     //Finally, check that we got the right data in the path by using the count command
-    const COUNT_URL: &str = "http://127.0.0.1:8000/count/royals/";
     let response = reqwest::get(COUNT_URL).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;
@@ -245,7 +355,6 @@ async fn import_request_test() -> Result<(), Error> {
     assert_eq!(response_json.get("count").unwrap().as_i64().unwrap(), 13);
 
     //2. Now test a bogus URL, to make sure we can get the error back
-    const BOGUS_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta";
     let response = reqwest::get(BOGUS_URL).await?;
     if !response.status().is_success() {
         println!("Error response: {}", response.text().await?);
@@ -265,7 +374,6 @@ async fn import_request_test() -> Result<(), Error> {
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "fetchError");
 
     //3. Try with a file that we don't know how to load
-    const BAD_FILE_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md";
     let response = reqwest::get(BAD_FILE_URL).await?;
     if !response.status().is_success() {
         println!("Error response: {}", response.text().await?);
@@ -294,8 +402,6 @@ async fn import_request_test() -> Result<(), Error> {
     println!("Response: {}", response.text().await?);
 
     //Ensure the second request gets rejected immediately with the right status
-    const ALT_PATH_URL: &str = "http://127.0.0.1:8000/import/royal-with-cheese/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const ALT_STATUS_URL: &str = "http://127.0.0.1:8000/status/royal-with-cheese/";
     let response = reqwest::get(ALT_PATH_URL).await?;
     assert_eq!(response.status(), StatusCode::TOO_EARLY);
 
@@ -316,13 +422,33 @@ async fn import_request_test() -> Result<(), Error> {
 /// Tests the "export" command
 #[tokio::test]
 async fn export_request_test() -> Result<(), Error> {
+    decl_lit!{in_path!() => "export_test_royals"}
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
-    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
-    const EXPORT_RAW_URL: &str = "http://127.0.0.1:8000/export/royals/?format=raw";
+    const IMPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", in_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
+    );
+    const STATUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", in_path!(),
+    );
+    const EXPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "export",
+        "/", in_path!(),
+    );
+    const EXPORT_RAW_URL: &str = concat!( 
+        server_url!(),
+        "/", "export",
+        "/", in_path!(),
+        "/?", "format=raw"
+    );
+    wait_for_server().await.unwrap();
 
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
@@ -368,13 +494,33 @@ async fn export_request_test() -> Result<(), Error> {
 /// Tests the "copy" command
 #[tokio::test]
 async fn copy_request_test() -> Result<(), Error> {
+    decl_lit!{in_path!() => "copy_test_royals"}
+    decl_lit!{alt_path!() => "copy_test_commoners"}
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = "http://127.0.0.1:8000/import/royals/?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta";
-    const STATUS_URL: &str = "http://127.0.0.1:8000/status/royals/";
-    const COPY_URL: &str = "http://127.0.0.1:8000/copy/royals/commoners/";
-    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/commoners/";
+    const IMPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "import",
+        "/", in_path!(),
+        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
+    );
+    const STATUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", in_path!(),
+    );
+    const COPY_URL: &str = concat!( 
+        server_url!(),
+        "/", "copy",
+        "/", alt_path!(),
+    );
+    const EXPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "export",
+        "/", alt_path!(),
+    );
+    wait_for_server().await.unwrap();
 
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
@@ -420,11 +566,18 @@ async fn copy_request_test() -> Result<(), Error> {
 /// Tests the "upload" command
 #[tokio::test]
 async fn upload_request_test() -> Result<(), Error> {
+    decl_lit!{in_path!() => "upload_test_royals"}
 
-    //GOAT: Should host the content on a local server with predictable delays, to cut down
-    // on spurious failures from external servers behaving erratically.)
-    const UPLOAD_URL: &str = "http://127.0.0.1:8000/upload/royals/";
-    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
+    const UPLOAD_URL: &str = concat!( 
+        server_url!(),
+        "/", "upload",
+        "/", in_path!(),
+    );
+    const EXPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "export",
+        "/", in_path!(),
+    );
     const PAYLOAD: &str = r#"
         (female Liz)
         (male Tom)
@@ -432,6 +585,7 @@ async fn upload_request_test() -> Result<(), Error> {
         (parent Tom Bob)
         (parent Tom Liz)
     "#;
+    wait_for_server().await.unwrap();
 
     //Upload the data to the space
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
@@ -455,13 +609,25 @@ async fn upload_request_test() -> Result<(), Error> {
 /// Tests the "clear" command
 #[tokio::test]
 async fn clear_request_test() -> Result<(), Error> {
+    decl_lit!{in_path!() => "clear_test_royals"}
 
-    //GOAT: Should host the content on a local server with predictable delays, to cut down
-    // on spurious failures from external servers behaving erratically.)
-    const UPLOAD_URL: &str = "http://127.0.0.1:8000/upload/royals/";
-    const CLEAR_URL: &str = "http://127.0.0.1:8000/clear/royals/";
-    const EXPORT_URL: &str = "http://127.0.0.1:8000/export/royals/";
+    const UPLOAD_URL: &str = concat!( 
+        server_url!(),
+        "/", "upload",
+        "/", in_path!(),
+    );
+    const CLEAR_URL: &str = concat!( 
+        server_url!(),
+        "/", "clear",
+        "/", in_path!(),
+    );
+    const EXPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "export",
+        "/", in_path!(),
+    );
     const PAYLOAD: &str = "(male Bob)";
+    wait_for_server().await.unwrap();
 
     //Upload the data so we have something to clear
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
@@ -495,32 +661,26 @@ async fn clear_request_test() -> Result<(), Error> {
 /// Tests the "export" command
 #[tokio::test]
 async fn id_transform_request_test() -> Result<(), Error> {
-    //GOAT: Should host the content on a local server with predictable delays, to cut down
-    // on spurious failures from external servers behaving erratically.)
-    macro_rules! local_host { () => { "http://127.0.0.1:8000" }; }
-
-    macro_rules! decl_lit { ($NAME:ident!() => $LIT:tt) => { macro_rules! $NAME { () => { $LIT }; } }; }
-
-    decl_lit!{in_path!() => "royals"}
+    decl_lit!{in_path!() => "transform_test_in_royals"}
     // until we have a length discriminator, the underscore guarantees that the paths are disjoint
-    decl_lit!{out_path!() => "_royals_id_transform"}
+    decl_lit!{out_path!() => "transform_test_out_royals_id_transform"}
 
     const IMPORT_URL: &str =
         concat!( 
-            local_host!(),
+            server_url!(),
             "/", "import",
             "/", in_path!(),
             "/", "?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
         );
     const STATUS_URL: &str =
         concat!(
-            local_host!(),
+            server_url!(),
             "/", "status",
             "/", in_path!(),
         );
     const STATUS_ID_TRANSFORM_URL: &str =
         concat!(
-            local_host!(),
+            server_url!(),
             "/", "status",
             "/", out_path!(),
         );
@@ -529,7 +689,7 @@ async fn id_transform_request_test() -> Result<(), Error> {
     macro_rules! id_sexpr { () => { concat!(url_percent_encode!("$"), "x")}; }
     const TRANSFORM_REQUEST_URL: &str =
         concat!( 
-            local_host!(),
+            server_url!(),
             "/", "transform",
             "/", in_path!(),  // from_space
             "/", out_path!(), // to_space
@@ -538,25 +698,25 @@ async fn id_transform_request_test() -> Result<(), Error> {
         );
     const EXPORT_URL: &str =
         concat!(
-            local_host!(),
+            server_url!(),
             "/", "export",
             "/", in_path!()
         );
     const EXPORT_RAW_URL: &str =
         concat!(
-            local_host!(),
+            server_url!(),
             "/", "export",
             "/", in_path!(),
             "/", "?format=raw",
         );
     const EXPORT_ID_TRANSFORM_URL: &str =
-        concat!( local_host!(),
+        concat!( server_url!(),
             "/", "export",
             "/", out_path!(),
         );
     const EXPORT_ID_TRANSFORM_RAW_URL: &str =
         concat!(
-            local_host!(),
+            server_url!(),
             "/", "export",
             "/", out_path!(),
             "/", "?format=raw",

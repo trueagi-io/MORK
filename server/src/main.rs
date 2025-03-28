@@ -452,9 +452,9 @@ impl Service<Request<IncomingBody>> for MorkService {
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
-            (&Method::POST, TransformCmd::NAME) => {
+            (&Method::GET, TransformCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<UploadCmd>(remaining, req.uri())
+                    parse_command::<TransformCmd>(remaining, req.uri())
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },

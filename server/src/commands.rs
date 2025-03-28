@@ -605,7 +605,7 @@ impl CommandDefinition for TransformCmd {
                     ctx.0.space.sexpr_to_expr(_cmd.args[TransformArg::Pattern as usize].as_str())
                     .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `pattern` : {e:?}")) )?,
                 template: 
-                    ctx.0.space.sexpr_to_expr(_cmd.args[TransformArg::Pattern as usize].as_str())
+                    ctx.0.space.sexpr_to_expr(_cmd.args[TransformArg::Template as usize].as_str())
                     .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `template` : {e:?}")) )?,
             })))
     }

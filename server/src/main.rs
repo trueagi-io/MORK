@@ -1,6 +1,7 @@
 
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
@@ -46,6 +47,8 @@ struct MorkServiceInternals {
     http_client: reqwest::Client,
     /// The MORK kernel space
     space: ServerSpace,
+    /// A monotonically incrementing counter so each request has a unique ID
+    request_counter: AtomicU64,
 
     //GOAT, need cmd-logger to facilitate replay, and maybe a separate human-readable log
     //GOAT, need permissions model
@@ -64,6 +67,9 @@ impl MorkService {
         let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
         resource_store.reset().await.unwrap();
 
+        // GOAT, this needs to come from the backup
+        let request_counter = AtomicU64::new(0);
+
         let space = ServerSpace::new();
 
         let internals = MorkServiceInternals {
@@ -72,6 +78,7 @@ impl MorkService {
             space,
             resource_store,
             http_client,
+            request_counter,
         };
         Self(Arc::new(internals))
     }
@@ -247,7 +254,7 @@ macro_rules! fut_err {
 }
 
 /// Parse a command from a request URI
-fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri) -> Result<Command, BoxedErr> {
+fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri, cmd_id: u64) -> Result<Command, BoxedErr> {
     let args = parse_path(remaining_path, CmdDef::args())?;
     let mut properties = Vec::with_capacity(CmdDef::properties().len());
     for prop_def in CmdDef::properties() {
@@ -264,8 +271,7 @@ fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri) -> 
         properties.push(prop);
     }
 
-    //GOAT, assign the cmd_id as a unique serial number that persists across server starts
-    let command = Command { args, properties, def: CmdDef::CONST_CMD, cmd_id: 0 };
+    let command = Command { args, properties, def: CmdDef::CONST_CMD, cmd_id };
     Ok(command)
 }
 
@@ -393,6 +399,9 @@ impl Service<Request<IncomingBody>> for MorkService {
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
 
+        //Get a new connection_id for the request
+        let cmd_id = self.0.request_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         //Decode the request
         let (command_name, remaining) = split_command(req.uri().path());
         match (req.method(), command_name) {
@@ -400,61 +409,61 @@ impl Service<Request<IncomingBody>> for MorkService {
             //  In fact we could dispatch via the command definition to save one additional indirection (doubtful it matters though)
             (&Method::GET, BusywaitCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<BusywaitCmd>(remaining, req.uri())
+                    parse_command::<BusywaitCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, ClearCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<ClearCmd>(remaining, req.uri())
+                    parse_command::<ClearCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, CopyCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<CopyCmd>(remaining, req.uri())
+                    parse_command::<CopyCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, CountCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<CountCmd>(remaining, req.uri())
+                    parse_command::<CountCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, ExportCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<ExportCmd>(remaining, req.uri())
+                    parse_command::<ExportCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, ImportCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<ImportCmd>(remaining, req.uri())
+                    parse_command::<ImportCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, StatusCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<StatusCmd>(remaining, req.uri())
+                    parse_command::<StatusCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, StopCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<StopCmd>(remaining, req.uri())
+                    parse_command::<StopCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::POST, UploadCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<UploadCmd>(remaining, req.uri())
+                    parse_command::<UploadCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },
             (&Method::GET, TransformCmd::NAME) => {
                 let command = fut_err!((|| {
-                    parse_command::<TransformCmd>(remaining, req.uri())
+                    parse_command::<TransformCmd>(remaining, req.uri(), cmd_id)
                 })(), bad_request_err);
                 self.dispatch_work(command, req)
             },

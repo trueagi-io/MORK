@@ -120,21 +120,21 @@ pub trait Space {
     }
 
     #[cfg(feature="neo4j")]
-    fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
+    fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_triples_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JTriplesError)
     }
 
     #[cfg(feature="neo4j")]
-    fn load_neo4j_node_properties<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodePropertiesError> {
+    fn load_neo4j_node_properties<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodePropertiesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_properties_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodePropertiesError)
     }
 
     #[cfg(feature="neo4j")]
-    fn load_neo4j_node_labels<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodeLabelsError> {
+    fn load_neo4j_node_labels<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), LoadNeo4JNodeLabelsError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_labels_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodeLabelsError)
@@ -799,7 +799,7 @@ impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, W
 
 
 #[cfg(feature="neo4j")]
-pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
+pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -811,6 +811,7 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
 
     let mut count = 0;
 
+    let guard = rt.enter();
     let mut result = rt.block_on(graph.execute(
         query("MATCH (s)-[p]->(o) RETURN id(s), type(p), id(o)"))).unwrap();
     let spo_symbol = pdp.tokenizer("SPO".as_bytes());
@@ -849,13 +850,15 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
         
         count += 1;
     }
+
+    drop(guard);
     Ok(count)
 }
 
 
 
 #[cfg(feature="neo4j")]
-pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
+pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -872,6 +875,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
     wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
     wz.descend_to(sa_symbol);
 
+    let guard = rt.enter();
     let mut result = rt.block_on(graph.execute(
         query("MATCH (s) RETURN id(s), s"))
     ).unwrap();
@@ -917,11 +921,12 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         wz.ascend(internal_s.len() + 1);
         nodes += 1;
     }
+    drop(guard);
     Ok((nodes, attributes))
 }
 
 #[cfg(feature="neo4j")]
-pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Runtime, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> 
+pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -938,6 +943,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
     wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
     wz.descend_to(sa_symbol);
 
+    let guard = rt.enter();
     let mut result = rt.block_on(graph.execute(
         query("MATCH (s) RETURN id(s), labels(s)"))
     ).unwrap();
@@ -966,5 +972,6 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         wz.ascend(internal_s.len() + 1);
         nodes += 1;
     }
+    drop(guard);
     Ok((nodes, labels))
 }

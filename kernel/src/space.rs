@@ -120,7 +120,7 @@ impl Space {
           .enable_io()
           .build()
           .unwrap();
-        crate::space_temporary::load_neo4j_triples_impl(&self.sm, &mut self.btm.write_zipper(), &rt, uri, user, pass)
+        crate::space_temporary::load_neo4j_triples_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
     }
 
     #[cfg(feature="neo4j")]
@@ -129,7 +129,7 @@ impl Space {
           .enable_io()
           .build()
           .unwrap();
-        crate::space_temporary::load_neo4j_node_properties_impl(&self.sm, &mut self.btm.write_zipper(), &rt, uri, user, pass)
+        crate::space_temporary::load_neo4j_node_properties_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
     }
 
         #[cfg(feature="neo4j")]
@@ -138,7 +138,7 @@ impl Space {
           .enable_io()
           .build()
           .unwrap();
-        crate::space_temporary::load_neo4j_node_labels_impl(&self.sm, &mut self.btm.write_zipper(), &rt, uri, user, pass)
+        crate::space_temporary::load_neo4j_node_labels_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
     }
 
     pub fn load_sexpr(&mut self, prefix : crate::prefix::Prefix, r: &str) -> Result<SExprCount, String> {

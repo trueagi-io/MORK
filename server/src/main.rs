@@ -404,75 +404,40 @@ impl Service<Request<IncomingBody>> for MorkService {
 
         //Decode the request
         let (command_name, remaining) = split_command(req.uri().path());
-        match (req.method(), command_name) {
-            //GOAT, we really ought to have a macro here (or elsewhere) to reduce copy-pasta but keep the match statement dispatch.
-            //  In fact we could dispatch via the command definition to save one additional indirection (doubtful it matters though)
-            (&Method::GET, BusywaitCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<BusywaitCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, ClearCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<ClearCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, CopyCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<CopyCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, CountCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<CountCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, ExportCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<ExportCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, ImportCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<ImportCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, StatusCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<StatusCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, StopCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<StopCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::POST, UploadCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<UploadCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            (&Method::GET, TransformCmd::NAME) => {
-                let command = fut_err!((|| {
-                    parse_command::<TransformCmd>(remaining, req.uri(), cmd_id)
-                })(), bad_request_err);
-                self.dispatch_work(command, req)
-            },
-            // Return 404 Not Found for other routes.
-            _ => {
-                let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path())).error_response();
-                return Box::pin(async { Ok(response) })
-            }
+
+        // NOTE ! this macro is making use of lexical scope!
+        macro_rules! dispatch {
+            ($(| $METHOD:tt => $CMD:ty)*) => {
+                match (req.method(), command_name) {$(
+                    
+                    (&Method::$METHOD, <$CMD>::NAME) => {
+                        let command = fut_err!((|| {
+                            parse_command::<$CMD>(remaining, req.uri(), cmd_id)
+                        })(), bad_request_err);
+                        self.dispatch_work(command, req)
+                    },
+                )*
+                    // Return 404 Not Found for other routes.
+                    _ => {
+                        let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path())).error_response();
+                        return Box::pin(async { Ok(response) })
+                    }
+                }
+                
+            };
         }
+        dispatch!(
+            | GET => BusywaitCmd
+            | GET => ClearCmd
+            | GET => CopyCmd
+            | GET => CountCmd
+            | GET => ExportCmd
+            | GET => ImportCmd
+            | GET => StatusCmd
+            | GET => StopCmd
+            | POST => UploadCmd
+            | GET => TransformCmd
+        )
     }
 }
 

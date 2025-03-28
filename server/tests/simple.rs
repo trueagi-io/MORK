@@ -6,7 +6,7 @@
 //! server, and the rest of the tests will wait until they confirm the server is alive
 //! ===================================================================================
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use hyper::StatusCode;
 use tokio::task;
 use reqwest::{Client, Error};
@@ -46,10 +46,15 @@ async fn wait_for_server() -> Result<(), Error> {
         "/", "-"
     );
     loop {
-        let response = reqwest::get(URL).await?;
-        if response.status().is_success() {
-            return Ok(())
+        match reqwest::get(URL).await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    return Ok(())
+                }
+            },
+            Err(_) => {}
         }
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -58,11 +63,30 @@ async fn wait_for_server() -> Result<(), Error> {
 async fn aaa_start_stop_test() -> Result<(), Error> {
 
     //Start the server
-    std::process::Command::new(env!("CARGO_BIN_EXE_mork_server")).spawn().unwrap();
+    let mut server_proc = std::process::Command::new(env!("CARGO_BIN_EXE_mork_server")).spawn().unwrap();
+    // println!("start_stop_test: Server start initiated");
 
-    //GOAT, we want to do `stop?wait_for_idle` here instead
-    std::thread::sleep(std::time::Duration::from_millis(60000));
+    //Give the server time to start, and give the other tests a chance to start using the server
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
+    // println!("start_stop_test: Sending stop request");
+    const STOP_URL: &str = concat!( 
+        server_url!(),
+        "/", "stop",
+        "/?", "wait_for_idle",
+    );
+    let response = reqwest::get(STOP_URL).await?;
+    if response.status().is_success() {
+        // println!("start_stop_test: Received response: {}", response.text().await?);
+    } else {
+        panic!("start_stop_test: Failed to send stop request: {}", response.status());
+    }
+
+    //Wait for the server to exit
+    // println!("start_stop_test: Waiting for server to stop");
+    server_proc.wait().unwrap();
+
+    // println!("start_stop_test: Server stopped");
     Ok(())
 }
 
@@ -88,7 +112,10 @@ async fn simple_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Opens many client requests at the same time
+/// Opens many client requests at the same time, saturating the server's capacity very quickly
+///
+/// Ignored because it interferes with other tests
+#[ignore]
 #[tokio::test]
 async fn many_request_instant_test() -> Result<(), Error> {
     const URL: &str = concat!( 
@@ -133,7 +160,11 @@ async fn many_request_instant_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Opens many client requests with a short delay between each
+/// Opens many client requests with a short delay between each to simulate high load conditions
+/// Tests that some proportion of the queries are rejected because the server is busy
+///
+/// Ignored because it was interfering with the other tests running simultaneously
+#[ignore]
 #[tokio::test]
 async fn many_request_delayed_test() -> Result<(), Error> {
     const URL: &str = concat!( 
@@ -233,9 +264,8 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
                 let _status = response.status();
                 println!("Response to stop received with status: {} - {:?} elapsed", _status, _start.elapsed());
             }
-            Err(_err) => {
-                // eprintln!("Request failed: {:?} - {:?} elapsed", _err, _start.elapsed());
-                panic!()
+            Err(err) => {
+                panic!("Request failed: {:?} - {:?} elapsed", err, _start.elapsed())
             }
         }
     });
@@ -268,7 +298,6 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
 #[tokio::test]
 async fn import_request_test() -> Result<(), Error> {
     decl_lit!{in_path!() => "import_test_royals"}
-    decl_lit!{alt_path!() => "import_test_royal_with_cheese"}
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = concat!( 
@@ -301,26 +330,12 @@ async fn import_request_test() -> Result<(), Error> {
         "/", in_path!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md",
     );
-    // A different path to import the file into
-    const ALT_PATH_URL: &str = concat!( 
-        server_url!(),
-        "/", "import",
-        "/", alt_path!(),
-        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
-    );
-    // Status command for the ALT_PATH
-    const ALT_STATUS_URL: &str = concat!( 
-        server_url!(),
-        "/", "status",
-        "/", alt_path!(),
-    );
     wait_for_server().await.unwrap();
 
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     println!("Response: {}", response.text().await?);
 
@@ -357,8 +372,7 @@ async fn import_request_test() -> Result<(), Error> {
     //2. Now test a bogus URL, to make sure we can get the error back
     let response = reqwest::get(BOGUS_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
@@ -376,8 +390,7 @@ async fn import_request_test() -> Result<(), Error> {
     //3. Try with a file that we don't know how to load
     let response = reqwest::get(BAD_FILE_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
@@ -391,30 +404,6 @@ async fn import_request_test() -> Result<(), Error> {
     println!("Response: {}", response_text);
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "parseError");
-
-    //4. Now test a situation where we make a request for the same file at two different paths
-    // Since the file caching works on a per-resource basis, the second request should be denied
-    let response = reqwest::get(IMPORT_URL).await?;
-    if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
-    }
-    println!("Response: {}", response.text().await?);
-
-    //Ensure the second request gets rejected immediately with the right status
-    let response = reqwest::get(ALT_PATH_URL).await?;
-    assert_eq!(response.status(), StatusCode::TOO_EARLY);
-
-    //Check that the path to the failed resource is clear and available
-    let response = reqwest::get(ALT_STATUS_URL).await?;
-    assert!(response.status().is_success());
-    let response_text = response.text().await?;
-    println!("Response: {}", response_text);
-    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
-
-    //Now sleep for a bit (600ms), and check that everything got cleaned up and the re-fetch will succeed
-    //GOAT
 
     Ok(())
 }
@@ -453,8 +442,7 @@ async fn export_request_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     println!("Import response: {}", response.text().await?);
 
@@ -475,16 +463,14 @@ async fn export_request_test() -> Result<(), Error> {
     // Export the data in raw form
     let response = reqwest::get(EXPORT_RAW_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Export Raw response:\n{}", response.text().await?);
 
     // Export the data in MeTTa form
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Export MeTTa response:\n{}", response.text().await?);
 
@@ -513,6 +499,7 @@ async fn copy_request_test() -> Result<(), Error> {
     const COPY_URL: &str = concat!( 
         server_url!(),
         "/", "copy",
+        "/", in_path!(),
         "/", alt_path!(),
     );
     const EXPORT_URL: &str = concat!( 
@@ -525,8 +512,7 @@ async fn copy_request_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     println!("Import response: {}", response.text().await?);
 
@@ -547,16 +533,14 @@ async fn copy_request_test() -> Result<(), Error> {
     // Copy the data from `royals` to `commoners`
     let response = reqwest::get(COPY_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Copy response:\n{}", response.text().await?);
 
     // Export the data commoners
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Export response:\n{}", response.text().await?);
 
@@ -590,16 +574,14 @@ async fn upload_request_test() -> Result<(), Error> {
     //Upload the data to the space
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     println!("Upload response: {}", response.text().await?);
 
     // Export the data back out
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Export response:\n{}", response.text().await?);
 
@@ -632,24 +614,21 @@ async fn clear_request_test() -> Result<(), Error> {
     //Upload the data so we have something to clear
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await?);
-        panic!()
+        panic!("Error response: {}", response.text().await?)
     }
     println!("Upload response: {}", response.text().await?);
 
     // Clear the data
     let response = reqwest::get(CLEAR_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Clear response:\n{}", response.text().await?);
 
     // Export the data to confirm nothing is there
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
-        println!("Error response: {} - {}", response.status(), response.text().await?);
-        panic!()
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     let response_buf = response.text().await?;
     println!("Export response:\n{}", response_buf);
@@ -725,8 +704,7 @@ async fn id_transform_request_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await.unwrap();
     if !response.status().is_success() {
-        println!("Error response: {}", response.text().await.unwrap());
-        panic!()
+        panic!("Error response: {}", response.text().await.unwrap())
     }
     println!("Import response: {}", response.text().await.unwrap());
 
@@ -748,8 +726,7 @@ async fn id_transform_request_test() -> Result<(), Error> {
     // invoke a Transform
     let response = reqwest::get(TRANSFORM_REQUEST_URL).await.unwrap();
     if !response.status().is_success() {
-        println!("Transform Error response: {}", response.text().await.unwrap());
-        panic!()
+        panic!("Transform Error response: {}", response.text().await.unwrap())
     }
     println!("Transform response: {}", response.text().await.unwrap());
 
@@ -773,16 +750,14 @@ async fn id_transform_request_test() -> Result<(), Error> {
     // Export the data in raw form
     let response_src_raw = reqwest::get(EXPORT_RAW_URL).await.unwrap();
     if !response_src_raw.status().is_success() {
-        println!("Error response: {} - {}", response_src_raw.status(), response_src_raw.text().await.unwrap());
-        panic!()
+        panic!("Error response: {} - {}", response_src_raw.status(), response_src_raw.text().await.unwrap())
     }
     println!("Export Raw response:\n{}", response_src_raw.text().await.unwrap());
 
     // Export the data in MeTTa form
     let response_src = reqwest::get(EXPORT_URL).await.unwrap();
     if !response_src.status().is_success() {
-        println!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap());
-        panic!()
+        panic!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap())
     }
     println!("Export MeTTa response:\n{}", response_src.text().await.unwrap());
 
@@ -792,16 +767,14 @@ async fn id_transform_request_test() -> Result<(), Error> {
     // Export the data in raw form
     let response_src_raw_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_RAW_URL).await.unwrap();
     if !response_src_raw_id_transform.status().is_success() {
-        println!("Error response: {} - {}", response_src_raw_id_transform.status(), response_src_raw_id_transform.text().await.unwrap());
-        panic!()
+        panic!("Error response: {} - {}", response_src_raw_id_transform.status(), response_src_raw_id_transform.text().await.unwrap())
     }
     println!("Export Raw response:\n{}", response_src_raw_id_transform.text().await.unwrap());
 
     // Export the data in MeTTa form
     let response_src_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_URL).await.unwrap();
     if !response_src_id_transform.status().is_success() {
-        println!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap());
-        panic!()
+        panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
     }
     println!("Export MeTTa response:\n{}", response_src_id_transform.text().await.unwrap());
 

@@ -68,7 +68,7 @@ impl CommandDefinition for ClearCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "src_path",
+            name: "path",
             desc: "The map path to clear",
             required: true
         }]
@@ -153,7 +153,7 @@ impl CommandDefinition for CountCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "map_path",
+            name: "path",
             desc: "The path in the map from which to count the values",
             required: true
         }]
@@ -212,7 +212,7 @@ impl CommandDefinition for ExportCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "map_path",
+            name: "src_path",
             desc: "The path in the map from which to export",
             required: true
         }]
@@ -304,7 +304,7 @@ impl CommandDefinition for ImportCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "map_path",
+            name: "dst_path",
             desc: "The path in the map at which to import the file",
             required: true
         }]
@@ -552,7 +552,7 @@ impl CommandDefinition for StatusCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "map_path",
+            name: "path",
             desc: "The path in the map for which to check the status",
             required: true
         }]
@@ -586,14 +586,48 @@ impl CommandDefinition for StopCmd {
         &[]
     }
     fn properties() -> &'static [PropDef] {
-        &[]
+        &[
+            PropDef {
+                arg_type: ArgType::Flag,
+                name: "wait_for_idle",
+                desc: "A flag instructing the server to wait for an idle state before initiating shutdown",
+                required: false
+            }
+        ]
     }
     async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         Ok(None)
     }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, _cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
-        ctx.0.stop_cmd.notify_waiters();
-        Ok("ACK. Initiating Shutdown.  Connections will not longer be accepted".into())
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        const IDLE_TIME_MS: u128 = 1000; //The server must be idle for 1s before shutdown will begin from a `wait_for_idle` request
+        let wait_for_idle = cmd.properties[0].is_some();
+
+        if wait_for_idle {
+            tokio::task::spawn(async move {
+                //This loop runs until the server has gone `IDLE_TIME_MS` without taking any new work
+                let mut last_busy_time = std::time::Instant::now();
+                let mut last_job_count = ctx.0.workers.job_counter();
+                loop {
+                    ctx.0.workers.wait_for_worker_completion().await;
+                    let cur_job_count = ctx.0.workers.job_counter();
+                    if last_job_count != cur_job_count {
+                        last_busy_time = std::time::Instant::now();
+                        last_job_count = cur_job_count;
+                    }
+                    if std::time::Instant::now().duration_since(last_busy_time).as_millis() > IDLE_TIME_MS {
+                        break
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                ctx.0.stop_cmd.notify_waiters();
+            });
+            println!("Processed `stop?wait_for_idle` request"); //GOAT log this
+            Ok("ACK. Shutdown will occur when server activity stops".into())
+        } else {
+            ctx.0.stop_cmd.notify_waiters();
+            println!("Processed `stop` request"); //GOAT log this
+            Ok("ACK. Initiating Shutdown.  Connections will not longer be accepted".into())
+        }
     }
 }
 
@@ -706,7 +740,7 @@ impl CommandDefinition for UploadCmd {
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
             arg_type: ArgType::Path,
-            name: "map_path",
+            name: "dst_path",
             desc: "The path in the map at which to put the uploaded data",
             required: true
         }]
@@ -927,13 +961,14 @@ impl<E: core::error::Error + Send + Sync + 'static> From<E> for CommandError {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ArgType {
-    Int, UInt, Path, String
+    Flag, Int, UInt, Path, String
 }
 
 #[derive(Clone, Debug, Default)]
 pub enum ArgVal {
     #[default]
     None,
+    Flag,
     Int(i64),
     UInt(u64),
     Path(Vec<u8>),

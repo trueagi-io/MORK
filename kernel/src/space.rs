@@ -764,7 +764,7 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = mork::space::ParDataParser::new(&$space.sm);
+        let mut pdp = $crate::space::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| pdp.tokenizer(x));

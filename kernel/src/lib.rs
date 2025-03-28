@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(16, s.load_sexpr(Prefix::NONE, SEXPRS0.as_bytes()).unwrap());
 
         let mut i = 0;
-        s.query(expr!(s, "[2] children [2] $ $"), |e| {
+        s.query(Prefix::NONE, expr!(s, "[2] children [2] $ $"), |e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(children (0 Catherine))") }
                 1 => { assert_eq!(sexpr!(s, e), "(children (1 Thomas))") }
@@ -125,7 +125,7 @@ mod tests {
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
-        s.query(expr!(s, "[2] child_results $"), |e| {
+        s.query(Prefix::NONE, expr!(s, "[2] child_results $"), |e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
                 1 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
@@ -178,8 +178,8 @@ mod tests {
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |e| c_in += 1);
-        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |e| c_out += 1);
+        let mut c_in = 0; s.query(Prefix::NONE, expr!(s, "[2] axiom [3] = $ $"), |e| c_in += 1);
+        let mut c_out = 0; s.query(Prefix::NONE, expr!(s, "[2] flip [3] = $ $"), |e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();
@@ -202,7 +202,7 @@ mod tests {
         // s.query(expr!(s, "[2] axiom [3] = $ $"), |e| { println!("> {}", sexpr!(s, e)) });
         let t0 = Instant::now();
         let mut k = 0;
-        s.query(expr!(s, "$x"), |e| {
+        s.query(Prefix::NONE, expr!(s, "$x"), |e| {
             k += 1;
             std::hint::black_box(e);
             // println!("> {}", sexpr!(s, e))

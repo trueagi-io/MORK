@@ -499,24 +499,30 @@ async fn id_transform_request_test() -> Result<(), Error> {
     // on spurious failures from external servers behaving erratically.)
     macro_rules! local_host { () => { "http://127.0.0.1:8000" }; }
 
+    macro_rules! decl_lit { ($NAME:ident!() => $LIT:tt) => { macro_rules! $NAME { () => { $LIT }; } }; }
+
+    decl_lit!{in_path!() => "royals"}
+    // until we have a length discriminator, the underscore guarantees that the paths are disjoint
+    decl_lit!{out_path!() => "_royals_id_transform"}
+
     const IMPORT_URL: &str =
         concat!( 
             local_host!(),
             "/", "import",
-            "/", "royals",
+            "/", in_path!(),
             "/", "?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
         );
     const STATUS_URL: &str =
         concat!(
             local_host!(),
             "/", "status",
-            "/", "royals",
+            "/", in_path!(),
         );
     const STATUS_ID_TRANSFORM_URL: &str =
         concat!(
             local_host!(),
             "/", "status",
-            "/", "royals_id_tranform",
+            "/", out_path!(),
         );
 
 
@@ -525,34 +531,34 @@ async fn id_transform_request_test() -> Result<(), Error> {
         concat!( 
             local_host!(),
             "/", "transform",
-            "/", "royals",              // from_space
-            "/", "royals_id_transform", // to_space
-            "/", id_sexpr!(),           // pattern
-            "/", id_sexpr!(),           // template
+            "/", in_path!(),  // from_space
+            "/", out_path!(), // to_space
+            "/", id_sexpr!(), // pattern
+            "/", id_sexpr!(), // template
         );
     const EXPORT_URL: &str =
         concat!(
             local_host!(),
             "/", "export",
-            "/", "royals"
+            "/", in_path!()
         );
     const EXPORT_RAW_URL: &str =
         concat!(
             local_host!(),
             "/", "export",
-            "/", "royals",
+            "/", in_path!(),
             "/", "?format=raw",
         );
     const EXPORT_ID_TRANSFORM_URL: &str =
         concat!( local_host!(),
             "/", "export",
-            "/", "royals_id_transform"
+            "/", out_path!(),
         );
     const EXPORT_ID_TRANSFORM_RAW_URL: &str =
         concat!(
             local_host!(),
             "/", "export",
-            "/", "royals_id_transform",
+            "/", out_path!(),
             "/", "?format=raw",
         );
 
@@ -581,7 +587,6 @@ async fn id_transform_request_test() -> Result<(), Error> {
 
     // invoke a Transform
     let response = reqwest::get(TRANSFORM_REQUEST_URL).await.unwrap();
-    assert!(response.status().is_success());
     if !response.status().is_success() {
         println!("Transform Error response: {}", response.text().await.unwrap());
         panic!()

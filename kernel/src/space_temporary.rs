@@ -241,7 +241,7 @@ impl <'a> Parser for ParDataParser<'a> {
         #[cfg(feature="interning")]
         {
         // FIXME hack until either the parser is rewritten or we can take a pointer of the symbol
-        self.buf = (self.write_permit.get_sym_or_insert(s) );
+        self.buf = self.write_permit.get_sym_or_insert(s);
         return unsafe { std::mem::transmute(&self.buf[..]) };
         }
         #[cfg(not(feature="interning"))]
@@ -602,8 +602,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(#[allow(unused_vari
                     #[cfg(feature="interning")]
                     {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                    // println!("symbol {symbol:?}, bytes {mstr:?}");
+                    let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
                     unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                     }
                     #[cfg(not(feature="interning"))]

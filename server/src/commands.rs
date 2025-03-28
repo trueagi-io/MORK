@@ -474,6 +474,70 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file
     Ok(())
 }
 
+#[cfg(feature="neo4j")]
+mod neo4j_commands {
+use crate::commands::*;
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// LoadNeo4jTriples
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+pub struct LoadNeo4jTriplesCmd;
+#[allow(unused)]
+#[repr(usize)]
+enum LoadNeo4jArg {
+    OutputPath,
+    Neo4jUri,
+    Neo4jUser,
+    // TODO! can we make this more secure?
+    Neo4jPassword,
+    /// this needs to remain the last variant
+    _Len,
+}
+
+impl CommandDefinition for LoadNeo4jTriplesCmd {
+    const NAME: &'static str = "status";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        & const {
+            use LoadNeo4jArg as Arg;
+            const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
+            let mut args = [ZEROED; Arg::_Len as usize];
+        
+
+            args[Arg::OutputPath as usize] = 
+                ArgDef{
+                    arg_type: ArgType::Path,
+                    name: "output_path",
+                    desc: "the path where the loaded data will be stored",
+                    required: true
+                };
+
+
+            args
+        }
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
+        Ok(None)
+    }
+    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        let map_path = cmd.args[0].as_path();
+        let status = ctx.0.space.get_status(map_path);
+        let json_string = serde_json::to_string(&status)?;
+        Ok(json_string.into())
+    }
+}
+
+
+}
+#[cfg(feature="neo4j")]
+#[allow(unused)]
+pub use neo4j_commands::*;
+
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // status
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

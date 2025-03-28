@@ -281,6 +281,7 @@ fn parse_path(in_str: &str, arg_types: &[ArgDef]) -> Result<Vec<ArgVal>, BoxedEr
     let mut vals = Vec::with_capacity(arg_types.len());
     for (i, arg) in arg_types.iter().enumerate() {
         match arg.arg_type {
+            ArgType::Flag => { unreachable!() }, //Flags only make sense as optional properties
             ArgType::Int => {
                 let (val, rem) = split_int(remaining)?;
                 remaining = rem;
@@ -367,24 +368,58 @@ fn get_query_key_raw<'a>(in_str: &'a str, key: &str) -> Option<&'a str> {
                 let (val_str, _) = after_key.split_once('&').unwrap_or((after_key, ""));
                 return Some(val_str)
             }
+        } else {
+            return Some("")
         }
     }
     None
 }
 
+/// Checks `key` in a URI query string, returning `ArgVal::Flag` if it's there
+fn get_query_key_flag<'a>(in_str: &'a str, key: &str) -> Option<ArgVal> {
+    match get_query_key_raw(in_str, key) {
+        Some(query_str) => {
+            //QUESTION, do we want to allow "flag=yes" or "flag=no"?
+            //Right now, we just go by the absence of presence of "flag"
+            debug_assert_eq!(query_str, "");
+            Some(ArgVal::Flag)
+        },
+        None => None
+    }
+}
+
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
 fn get_query_key_bytes<'a>(in_str: &'a str, key: &str) -> Option<Cow<'a, [u8]>> {
-    get_query_key_raw(in_str, key).map(|val_str| urlencoding::decode_binary(val_str.as_bytes()))
+    match get_query_key_raw(in_str, key) {
+        Some(val_str) => {
+            if val_str.len() > 0 {
+                Some(urlencoding::decode_binary(val_str.as_bytes()))
+            } else {
+                None
+            }
+        },
+        None => None
+    }
 }
 
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
 fn get_query_key_str<'a>(in_str: &'a str, key: &str) -> Option<Cow<'a, str>> {
-    get_query_key_raw(in_str, key).and_then(|val_str| urlencoding::decode(val_str).ok())
+    match get_query_key_raw(in_str, key) {
+        Some(val_str) => {
+            if val_str.len() > 0 {
+                urlencoding::decode(val_str).ok()
+            } else {
+                None
+            }
+        },
+        None => None
+    }
 }
 
 /// Parses a single property out of a query string.  Does not respect `PropDef::required == false`
 fn parse_property(in_str: &str, prop_def: &PropDef) -> Option<ArgVal> {
     match prop_def.arg_type {
+        ArgType::Flag => get_query_key_flag(in_str, prop_def.name),
         ArgType::Int |
         ArgType::UInt => { unimplemented!() },
         ArgType::Path => get_query_key_bytes(in_str, prop_def.name).map(|val| ArgVal::Path(val.to_vec())),
@@ -409,7 +444,6 @@ impl Service<Request<IncomingBody>> for MorkService {
         macro_rules! dispatch {
             ($(| $METHOD:tt => $CMD:ty)*) => {
                 match (req.method(), command_name) {$(
-                    
                     (&Method::$METHOD, <$CMD>::NAME) => {
                         let command = fut_err!((|| {
                             parse_command::<$CMD>(remaining, req.uri(), cmd_id)
@@ -423,7 +457,6 @@ impl Service<Request<IncomingBody>> for MorkService {
                         return Box::pin(async { Ok(response) })
                     }
                 }
-                
             };
         }
         dispatch!(
@@ -443,7 +476,7 @@ impl Service<Request<IncomingBody>> for MorkService {
 
 #[cfg(feature = "tokio_workers")]
 mod worker_pool {
-    use std::sync::Arc;
+    use std::sync::{atomic::AtomicU64, Arc};
     use super::{BoxedErr, Command};
 
     pub struct WorkerPool {
@@ -452,6 +485,7 @@ mod worker_pool {
         /// `Arc` inside `WorkThreadHandle` is private and `WorkThreadHandle` is `!Clone`, we can use
         /// this as an atomic counter
         thread_counter: Arc<()>,
+        job_counter: AtomicU64,
     }
 
     #[allow(dead_code)] //The inner Arc is just to keep an atomic count so we don't ever access it
@@ -494,6 +528,7 @@ mod worker_pool {
             Self {
                 thread_count,
                 thread_counter: Arc::new(()),
+                job_counter: AtomicU64::new(0),
             }
         }
         /// Returns the total number of worker threads
@@ -506,6 +541,8 @@ mod worker_pool {
         }
         /// Returns `Some` if a worker is available, otherwise returns `None`
         pub fn assign_worker(&self) -> Option<WorkThreadHandle> {
+            self.job_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
             //ATOMICITY NOTE: by doing the clone first and then the check, we could end up in a situation
             // where two tasks attempt to get the last worker, do this clone, and both see too many threads
             // are taken so fail.  I.e there is a small chance we report busy when there was one thread
@@ -528,9 +565,19 @@ mod worker_pool {
         ///
         /// NOTE: this polling loop is a little cheezy, should probably do a cond_var or something
         pub async fn wait_for_worker_completion(&self) {
-            while self.available_workers() < self.thread_count {
+            while !self.is_idle() {
                 tokio::time::sleep(core::time::Duration::from_millis(5)).await;
             }
+        }
+
+        /// Returns `true` if no work is currently in progress on any worker threads
+        pub fn is_idle(&self) -> bool {
+            self.available_workers() == self.thread_count
+        }
+
+        /// Returns the monotonically incrementing job counter for the worker pool
+        pub fn job_counter(&self) -> u64 {
+            self.job_counter.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 }

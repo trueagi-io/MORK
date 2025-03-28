@@ -343,18 +343,18 @@ pub(crate) const VARS: [u64; 4] = {
     ret
 };
 
-pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
+pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
     use mork_bytestring::{Tag, byte_item, item_byte};
     let last = stack.pop().unwrap();
     match last {
         ACTION => { f(loc) }
         ITER_AT_DEPTH => {
             let size = stack.pop().unwrap();
-            all_at_depth(loc, size as _, |loc| transition_impl(stack, loc, f));
+            all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
             // if loc.descend_first_k_path(size as usize) {
-            //     transition_impl(stack, loc, f);
+            //     transition(stack, loc, f);
             //     while loc.to_next_k_path(size as usize) {
-            //         transition_impl(stack, loc, f);
+            //         transition(stack, loc, f);
             //     }
             // }
             stack.push(size);
@@ -363,7 +363,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             let arity = stack.pop().unwrap();
             let l = stack.len();
             for _ in 0..arity { stack.push(ITER_EXPR); }
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.truncate(l);
             stack.push(arity)
         }
@@ -378,7 +378,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
                         let last = stack.pop().unwrap();
                         stack.push(s);
                         stack.push(last);
-                        transition_impl(stack, loc, f);
+                        transition(stack, loc, f);
                         stack.pop();
                         stack.pop();
                         stack.push(last);
@@ -392,7 +392,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
         ITER_SYMBOLS => {
             stack.push(ITER_AT_DEPTH);
             stack.push(ITER_SYMBOL_SIZE);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
             stack.pop();
         }
@@ -403,7 +403,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             while let Some(b) = it.next() {
                 let buf = [b];
                 if loc.descend_to(buf) {
-                    transition_impl(stack, loc, f);
+                    transition(stack, loc, f);
                 }
                 loc.ascend(1);
             }
@@ -419,7 +419,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
                         let last = stack.pop().unwrap();
                         stack.push(a);
                         stack.push(last);
-                        transition_impl(stack, loc, f);
+                        transition(stack, loc, f);
                         stack.pop();
                         stack.pop();
                         stack.push(last);
@@ -432,16 +432,16 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
         }
         ITER_EXPR => {
             stack.push(ITER_VARIABLES);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
 
             stack.push(ITER_SYMBOLS);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
 
             stack.push(ITER_NESTED);
             stack.push(ITER_ARITIES);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
             stack.pop();
         }
@@ -451,7 +451,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             for _ in 0..size { v.push(stack.pop().unwrap()) }
             loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             loc.ascend(size as usize);
             loc.ascend(1);
             for _ in 0..size { stack.push(v.pop().unwrap()) }
@@ -463,12 +463,12 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             for _ in 0..size { v.push(stack.pop().unwrap()) }
 
             stack.push(ITER_VARIABLES);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
 
             loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
             loc.descend_to(&v[..]);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             loc.ascend(size as usize);
             loc.ascend(1);
             for _ in 0..size { stack.push(v.pop().unwrap()) }
@@ -477,7 +477,7 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
             loc.descend_to(&[item_byte(Tag::Arity(arity))]);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
         }
@@ -485,11 +485,11 @@ pub(crate) fn transition_impl<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z)
             let arity = stack.pop().unwrap();
 
             stack.push(ITER_VARIABLES);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             stack.pop();
 
             loc.descend_to(&[item_byte(Tag::Arity(arity))]);
-            transition_impl(stack, loc, f);
+            transition(stack, loc, f);
             loc.ascend(1);
             stack.push(arity);
         }
@@ -555,7 +555,7 @@ pub(crate) fn transform_impl<'r, RZ, WZ>(rz : &mut RZ, wz : &mut WZ , pattern: E
     // todo generate matching from dynamic postfix
     stack.extend(indiscriminate_bidirectional_matching_stack(&mut pz));
     // todo transition should gather pattern bindings
-    transition_impl(&mut stack, rz, &mut |loc| {
+    transition(&mut stack, rz, &mut |loc| {
         // todo split Readable and Writeable Expr
         let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
@@ -674,7 +674,7 @@ pub(crate) fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Ex
     let mut pz = ExprZipper::new(pattern);
     let mut stack = vec![ACTION];
     stack.extend(indiscriminate_bidirectional_matching_stack(&mut pz));
-    transition_impl(&mut stack, rz, &mut |loc| {
+    transition(&mut stack, rz, &mut |loc| {
         let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
         effect(e);
     });

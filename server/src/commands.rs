@@ -320,7 +320,7 @@ impl CommandDefinition for ImportCmd {
     async fn gather(ctx: MorkService, cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
-        let file_handle = ctx.0.resource_store.new_resource(file_uri).await?;
+        let file_handle = ctx.0.resource_store.new_resource(file_uri, cmd.cmd_id).await?;
 
         //Flag this path in the map as being busy, and therefore off-limits to other operations
         let map_path = cmd.args[0].as_path();

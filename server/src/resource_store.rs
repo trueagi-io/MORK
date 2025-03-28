@@ -25,6 +25,7 @@ pub struct ResourceStore {
 
 /// Represents a resource that is in-use by a command
 pub struct ResourceHandle {
+    cmd_id: u64,
     identifier: String,
     path: Option<PathBuf>,
 }
@@ -54,7 +55,7 @@ impl ResourceHandle {
     /// This method should be called when the parsing and loading of a resource has finished
     pub async fn finalize(&mut self, new_timestamp: u64) -> Result<(), CommandError> {
         let old_path = self.path.as_ref().ok_or_else(|| self.resource_err())?;
-        let new_file_name = format!("{new_timestamp:0>16x}-{:16x}", gxhash::gxhash64(self.identifier.as_bytes(), HASH_SEED));
+        let new_file_name = format!("{new_timestamp:0>16x}-{:16x}-{:16x}", self.cmd_id, gxhash::gxhash64(self.identifier.as_bytes(), HASH_SEED));
         let dir_path: &Path = old_path.parent().ok_or_else(|| self.resource_err())?;
         let new_path: PathBuf = dir_path.join(Path::new(&new_file_name));
         fs::rename(old_path, new_path).await?;
@@ -63,8 +64,8 @@ impl ResourceHandle {
     }
 
     /// Internal method to make a `ResourceHandle` from an existing file
-    fn new(path: PathBuf, identifier: impl Into<String>) -> Self {
-        Self { path: Some(path), identifier: identifier.into() }
+    fn new(path: PathBuf, identifier: impl Into<String>, cmd_id: u64) -> Self {
+        Self { cmd_id, path: Some(path), identifier: identifier.into() }
     }
 
     /// Internal method to compose an internal resource error
@@ -93,8 +94,8 @@ impl ResourceStore {
     /// a zero-length file at the path so the same file isn't downloaded multiple times in parallel 
     ///
     /// Returns an error if the file already exists
-    pub async fn new_resource(&self, res_identifier: &str) -> Result<ResourceHandle, CommandError> {
-        let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
+    pub async fn new_resource(&self, res_identifier: &str, cmd_id: u64) -> Result<ResourceHandle, CommandError> {
+        let file_name = format!("{IN_PROGRESS_TIMESTAMP}-{cmd_id:16x}-{:16x}", gxhash::gxhash64(res_identifier.as_bytes(), HASH_SEED));
         let path: PathBuf = self.dir_path.join(Path::new(&file_name));
         let _file = File::create_new(&path).await.map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
@@ -103,7 +104,7 @@ impl ResourceStore {
                 err.into() //Another (Internal) Errror
             }
         })?;
-        Ok(ResourceHandle::new(path, res_identifier))
+        Ok(ResourceHandle::new(path, res_identifier, cmd_id))
     }
     /// Removes all files in the store
     ///
@@ -113,6 +114,8 @@ impl ResourceStore {
         fs::create_dir_all(&self.dir_path).await?;
         Ok(())
     }
+    //GOAT, working but currently unused.  WILL BE USED after restoring from a backup
+    #[allow(unused)]
     /// Removes all files in the store that are time-stamped before the specified value
     ///
     /// This method should be called after a server snap-shotted to remove files already integrated

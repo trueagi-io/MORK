@@ -7,7 +7,6 @@
 //! ===================================================================================
 
 use std::time::{Duration, Instant};
-use hyper::StatusCode;
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -99,6 +98,9 @@ async fn simple_request_test() -> Result<(), Error> {
         "/", "2000",
     );
     wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let response = reqwest::get(URL).await?;
 
@@ -332,6 +334,9 @@ async fn import_request_test() -> Result<(), Error> {
     );
     wait_for_server().await.unwrap();
 
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
@@ -439,6 +444,9 @@ async fn export_request_test() -> Result<(), Error> {
     );
     wait_for_server().await.unwrap();
 
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
@@ -509,6 +517,9 @@ async fn copy_request_test() -> Result<(), Error> {
     );
     wait_for_server().await.unwrap();
 
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
@@ -571,6 +582,9 @@ async fn upload_request_test() -> Result<(), Error> {
     "#;
     wait_for_server().await.unwrap();
 
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     //Upload the data to the space
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
@@ -610,6 +624,9 @@ async fn clear_request_test() -> Result<(), Error> {
     );
     const PAYLOAD: &str = "(male Bob)";
     wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(600)).await;
 
     //Upload the data so we have something to clear
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;

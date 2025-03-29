@@ -66,7 +66,7 @@ impl Space for ServerSpace {
         let path = path_as_bytes(path);
         self.status_map.get_write_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
         unsafe{ self.primary_map.read_zipper_at_borrowed_path_unchecked(reader.path()) }
     }
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {

@@ -7,7 +7,7 @@ impl<'a> core::ops::Drop for WritePermit<'a> {
   fn drop(&mut self) {
     let permits = LIVE_PERMIT_HANDLES.get()-1;
     LIVE_PERMIT_HANDLES.set(permits);
-
+    
     if permits == 0 {
       self.permissions[MAPPING_THREAD_INDEX.get().unwrap() as usize].0.thread_id.store(0, atomic::Ordering::Release);
     }
@@ -84,13 +84,13 @@ impl<'a> WritePermit<'a> {
         }
       };
       let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed).to_be_bytes();
-
+      
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
-
+        
         let old_thin = bytes_guard.insert(new_sym.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
-
+        
       }
       let old_sym = sym_guard.insert(bytes, new_sym);
       core::debug_assert!(matches!(old_sym, Option::None));

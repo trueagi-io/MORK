@@ -143,22 +143,25 @@ fn same_sym2() {
 
   const WRITER_THREADS : u8 = 16;
 
-  let mut threads = Vec::new();
+  let mut thread_join_handles = Vec::new();
+
   for thread_id in 0..WRITER_THREADS {
     let handle_ = handle.clone();
-    threads.push(std::thread::spawn(move || {
+    thread_join_handles.push(std::thread::spawn(move || {
       let mut keys = Vec::with_capacity(BYTES.len());
-      let write_permit = handle_.try_aquire_permission().unwrap();
-
-      for idx in 0..BYTES.len() {
-        let sym = if thread_id % 2 == 0 {
-          &BYTES[idx]
-        } else {
-          &BYTES[BYTES.len()-idx-1]
-        };
-        let key = write_permit.get_sym_or_insert(&sym[..]);
-        keys.push(key);
+      {
+        let write_permit = handle_.try_aquire_permission().unwrap();
         std::thread::sleep(core::time::Duration::from_millis(50));
+        for idx in 0..BYTES.len() {
+          let sym = if thread_id % 2 == 0 {
+            &BYTES[idx]
+          } else {
+            &BYTES[BYTES.len()-idx-1]
+          };
+          let key = write_permit.get_sym_or_insert(&sym[..]);
+          keys.push(key);
+          std::thread::sleep(core::time::Duration::from_millis(50));
+        }
       }
 
       for (idx, key) in keys.iter().enumerate() {
@@ -167,6 +170,8 @@ fn same_sym2() {
       }
     }));
   }
+
+  thread_join_handles.into_iter().for_each(|t| t.join().unwrap())
 }
 
 #[test]

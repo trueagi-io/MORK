@@ -107,36 +107,68 @@ fn same_sym() {
   /// this ammount makes it tractable to test with miri
   const WRITER_THREADS : u8 = 16;
 
-
   for bytes in BYTES {
     READY.store(0, core::sync::atomic::Ordering::Release);
     RACE.store(false, core::sync::atomic::Ordering::Release);
-
-
 
     let mut threads = Vec::new();
     for _ in 0..WRITER_THREADS {
       let handle_ = handle.clone();
       threads.push(std::thread::spawn(move || {
         let write_permit = handle_.try_aquire_permission().unwrap();
-  
+
         READY.fetch_add(1, core::sync::atomic::Ordering::Release);
         while !RACE.load(core::sync::atomic::Ordering::Relaxed) {}
-        
+
         write_permit.get_sym_or_insert(&bytes[..])
       }));
     }
 
     while WRITER_THREADS != READY.load(core::sync::atomic::Ordering::Acquire) {}
     RACE.store(true, core::sync::atomic::Ordering::Release);
-    
+
     let mut in_par = threads.into_iter().map(|t|t.join());
-        
+
     let first = in_par.next().unwrap().unwrap();
     for each in in_par {
       core::assert_eq!(first, each.unwrap());
     }
   }
+}
+
+#[test]
+fn same_sym2() {
+  let handle = SharedMapping::new();
+  const BYTES : &[&[u8;3]] = [b"abc", b"def", b"efg", b"hij"].as_slice();
+
+  const WRITER_THREADS: u64 = 16;
+
+  let mut thread_join_handles = Vec::new();
+
+  for _thread_idx in 0..WRITER_THREADS {
+    let handle_ = handle.clone();
+    thread_join_handles.push(std::thread::spawn(move || {
+      //NOTE - Uncomment this line, which forces the threads to run one-at-a-time, and the test passes
+      // std::thread::sleep(core::time::Duration::from_millis(100 * _thread_idx));
+
+      let mut keys = Vec::with_capacity(BYTES.len());
+      {
+        let write_permit = handle_.try_aquire_permission().unwrap();
+        for idx in 0..BYTES.len() {
+          let sym = &BYTES[idx];
+          let key = write_permit.get_sym_or_insert(&sym[..]);
+          keys.push(key);
+        }
+      }
+
+      for (idx, key) in keys.iter().enumerate() {
+        let sym = handle_.get_bytes(*key).unwrap();
+        core::assert_eq!(sym, BYTES[idx]);
+      }
+    }));
+  }
+
+  thread_join_handles.into_iter().for_each(|t| t.join().unwrap())
 }
 
 #[test]

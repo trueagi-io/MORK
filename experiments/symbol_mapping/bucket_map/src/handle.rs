@@ -23,6 +23,9 @@ impl<'a> core::ops::Deref for WritePermit<'a> {
 
 impl<'a> WritePermit<'a> {
   pub fn get_sym_or_insert(&self, bytes : &[u8]) -> Symbol {
+    const LOAD_ORDER  : atomic::Ordering = atomic::Ordering::Relaxed;
+    const STORE_ORDER : atomic::Ordering = atomic::Ordering::Relaxed;
+
     // the ordering of most of the atomics here use Relaxed, when one would expect Release.
     // the reason is that these atomics are not under contention, once a thread has a permission it is the only one allowed to change those atomic fields.
     // the alternative is to mutate under an `UnsafeCell`, but atomics already do that.
@@ -40,9 +43,9 @@ impl<'a> WritePermit<'a> {
     // our eager write.
     let mut eager_and_recovery : Option<(ThinBytes, (*mut Slab, Slab))> = None;
 
-    let mut slab_ptr = thread_permission.symbol_table_last.load(atomic::Ordering::Relaxed);
+    let mut slab_ptr = thread_permission.symbol_table_last.load(LOAD_ORDER);
 
-    if !thread_permission.symbol_table_start.load(atomic::Ordering::Relaxed).is_null() {      
+    if !thread_permission.symbol_table_start.load(LOAD_ORDER).is_null() {      
       unsafe {  
         if (*slab_ptr).slab_len-(*slab_ptr).write_pos >= bytes.len() + U64_BYTES {
           let recovery = (slab_ptr, *slab_ptr);
@@ -56,7 +59,6 @@ impl<'a> WritePermit<'a> {
     // as minimal as it might be, we want the critical section as small as posible, so we index first
     let sym_table_lock = &self.to_symbol[hash as usize % MAX_WRITER_THREADS].0;
     let bytes_guard_lock = &self.to_bytes[MAPPING_THREAD_INDEX.get().unwrap() as usize].0;
-
     let sym = 'lock_scope_sym : {
       let mut sym_guard = sym_table_lock.write().unwrap();
       // try once more to see if we need to make the symbol
@@ -73,8 +75,8 @@ impl<'a> WritePermit<'a> {
         // We need to hold the lock while allocating, otherwise our allocation goes to waste.
         if slab_ptr.is_null() {
           let allocation = unsafe {Slab::allocate((bytes.len() + U64_BYTES) as u64)};
-          thread_permission.symbol_table_start.store(allocation, atomic::Ordering::Relaxed);
-          thread_permission.symbol_table_last.store(allocation, atomic::Ordering::Relaxed);
+          thread_permission.symbol_table_start.store(allocation, STORE_ORDER);
+          thread_permission.symbol_table_last.store(allocation, STORE_ORDER);
           slab_ptr = allocation;
         }
         unsafe {
@@ -83,16 +85,15 @@ impl<'a> WritePermit<'a> {
       };
       let new_sym = thread_permission.next_symbol.fetch_add(1, atomic::Ordering::Relaxed).to_be_bytes();
       
-      let old_sym = sym_guard.insert(bytes, new_sym);
-      core::debug_assert!(matches!(old_sym, Option::None));
-
-      let sym_bytes = new_sym;
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
-
-        let old_thin = bytes_guard.insert(sym_bytes.as_slice(), thin_bytes_ptr);
+        
+        let old_thin = bytes_guard.insert(new_sym.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
-        }
+        
+      }
+      let old_sym = sym_guard.insert(bytes, new_sym);
+      core::debug_assert!(matches!(old_sym, Option::None));
 
       new_sym
     };
@@ -101,7 +102,7 @@ impl<'a> WritePermit<'a> {
     if !slab_ptr.is_null() {
       let next = unsafe {(*slab_ptr).next};
       if !next.is_null() {
-        thread_permission.symbol_table_last.store(next, atomic::Ordering::Release);
+        thread_permission.symbol_table_last.store(next, STORE_ORDER);
       }
     }
 

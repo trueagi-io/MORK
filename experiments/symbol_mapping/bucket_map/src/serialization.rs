@@ -1,7 +1,7 @@
 use std::{io::{Read, Write}, path::Path};
 use pathmap::{morphisms::Catamorphism, trie_map::BytesTrieMap};
 use zip::ZipArchive;
-use crate::{bounded_pearson_hash, SharedMapping, SharedMappingHandle, Slab, Symbol, ThinBytes, MAX_WRITER_THREADS, SYM_LEN};
+use crate::{bounded_pearson_hash, SharedMapping, SharedMappingHandle, Slab, Symbol, ThinBytes, MAX_WRITER_THREADS, SYMBOL_THREAD_PERMIT_BYTE_POS, SYM_LEN};
 
 macro_rules! file_sizes_meta_filename {() => { "FileSizes.meta" }; }
 const FILE_SIZES_META_FILENAME : &'static str = file_sizes_meta_filename!();
@@ -149,8 +149,8 @@ impl SharedMapping {
       
         
       
-        while let Some((sym_bytes, to_parse_0)) = to_parse.split_at_checked(SYM_LEN-2) {
-          let [s0,s1,s2,s3,s4,s5] = (sym_bytes.as_ptr() as *const [u8;SYM_LEN-2]).read();
+        while let Some((sym_bytes, to_parse_0)) = to_parse.split_at_checked(SYM_LEN-SYMBOL_THREAD_PERMIT_BYTE_POS) {
+          let [s0,s1,s2,s3,s4,s5] = (sym_bytes.as_ptr() as *const [u8;SYM_LEN-SYMBOL_THREAD_PERMIT_BYTE_POS]).read();
           let sym : Symbol = [0,0,s0,s1,s2,s3,s4,s5];
           if u64::from_be_bytes(sym) == 0 {
             break

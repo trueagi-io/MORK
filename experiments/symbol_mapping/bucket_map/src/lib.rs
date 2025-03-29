@@ -25,6 +25,7 @@ pub const SYM_LEN : usize = 8;
 const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
 #[doc(hidden)]
 pub const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
+const SYMBOL_THREAD_PERMIT_BYTE_POS : usize = 2;
 
 /// We don't want locks to implicitly cause chache misses because they are too close together.
 #[repr(align(64 /* bytes; cache line */))]
@@ -82,10 +83,10 @@ impl SharedMapping {
 
   /// Aquire the bytes associated with a [`Symbol`]
   pub fn get_bytes(&self, sym: Symbol)-> Option<&[u8]> {
-    if sym[SYM_LEN-1] > i8::MIN as u8 {
+    if sym[SYMBOL_THREAD_PERMIT_BYTE_POS] > i8::MIN as u8 {
       return None;
     }
-    let bucket = sym[SYM_LEN-3];
+    let bucket = sym[SYMBOL_THREAD_PERMIT_BYTE_POS];
 
     '_lock_scope : {
       self.to_bytes[bucket as usize].0.read().unwrap().get(sym)
@@ -115,6 +116,7 @@ impl SharedMapping {
     }    
   }
 }
+
 
 impl core::ops::Drop for SharedMapping {
   fn drop(&mut self) {

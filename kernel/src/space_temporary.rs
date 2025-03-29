@@ -5,7 +5,7 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle, WritePermit};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
-use pathmap::{trie_map::BytesTrieMap, zipper::{ReadZipperTracked, WriteZipperTracked, Zipper, ZipperAbsolutePath, ZipperCreation, ZipperHeadOwned, ZipperIteration, ZipperMoving, ZipperReadOnly, ZipperWriting}};
+use pathmap::{trie_map::BytesTrieMap, zipper::*};
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
 pub type SExprCount     = usize;
@@ -43,8 +43,8 @@ pub struct LoadNeo4JNodeLabelsError(String);
 
 
 
-pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
-impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
+pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
+impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {}
 
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space {
@@ -171,7 +171,7 @@ impl Space for DefaultSpace {
         let path = path_as_bytes(path);
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnly<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration<'s, ()> + ZipperAbsolutePath + 'r {
         reader.reset();
         reader
     }

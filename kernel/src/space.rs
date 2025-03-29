@@ -3,7 +3,7 @@ use mork_bytestring::{Expr, ExprZipper, item_byte, byte_item, Tag, ExtractFailur
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
     trie_map::BytesTrieMap, 
-    zipper::{WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperMoving, ZipperWriting},
+    zipper::*,
     utils::ByteMaskIter,
 };
 use std::ptr;
@@ -208,7 +208,7 @@ impl Space {
         let mut arity_hack = BytesTrieMap::new();
         arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
         let rz = arity_hack.read_zipper();
-        let mut prz = pathmap::experimental::ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
+        let mut prz = ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
 
         let mut buffer = [0u8; 512];
         let mut stack = vec![0; 4096];

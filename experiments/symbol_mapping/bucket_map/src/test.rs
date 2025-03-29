@@ -141,26 +141,23 @@ fn same_sym2() {
   let handle = SharedMapping::new();
   const BYTES : &[&[u8;3]] = [b"abc", b"def", b"efg", b"hij"].as_slice();
 
-  const WRITER_THREADS : u8 = 16;
+  const WRITER_THREADS: u64 = 16;
 
   let mut thread_join_handles = Vec::new();
 
-  for thread_id in 0..WRITER_THREADS {
+  for _thread_idx in 0..WRITER_THREADS {
     let handle_ = handle.clone();
     thread_join_handles.push(std::thread::spawn(move || {
+      //NOTE - Uncomment this line, which forces the threads to run one-at-a-time, and the test passes
+      // std::thread::sleep(core::time::Duration::from_millis(100 * _thread_idx));
+
       let mut keys = Vec::with_capacity(BYTES.len());
       {
         let write_permit = handle_.try_aquire_permission().unwrap();
-        std::thread::sleep(core::time::Duration::from_millis(50));
         for idx in 0..BYTES.len() {
-          let sym = if thread_id % 2 == 0 {
-            &BYTES[idx]
-          } else {
-            &BYTES[BYTES.len()-idx-1]
-          };
+          let sym = &BYTES[idx];
           let key = write_permit.get_sym_or_insert(&sym[..]);
           keys.push(key);
-          std::thread::sleep(core::time::Duration::from_millis(50));
         }
       }
 

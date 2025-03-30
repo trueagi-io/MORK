@@ -352,14 +352,19 @@ async fn import_request_test() -> Result<(), Error> {
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary");
 
-    //Now sleep for a bit (600ms), and then check that we can inspect the path.
-    std::thread::sleep(std::time::Duration::from_millis(600)); //GOAT, put this back to 600ms
-    let response = reqwest::get(STATUS_URL).await?;
-    assert!(response.status().is_success());
-    let response_text = response.text().await?;
-    println!("Response: {}", response_text);
-    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
+    //Now spin until we get a "pathClear" status
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response = reqwest::get(STATUS_URL).await?;
+        assert!(response.status().is_success());
+        let response_text = response.text().await?;
+        println!("Status (polling) response: {}", response_text);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
+            break
+        }
+    }
+    println!("Finished loading space");
 
     //Finally, check that we got the right data in the path by using the count command
     let response = reqwest::get(COUNT_URL).await?;
@@ -383,8 +388,20 @@ async fn import_request_test() -> Result<(), Error> {
     println!("Response: {}", response_text);
     assert!(response_text.starts_with("ACK"));
 
-    //Now sleep for a bit (600ms), and check that the path contains the correct error
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    //Spin until the status isn't "pathForbiddenTemporary".  Ie. the operation is complete
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response = reqwest::get(STATUS_URL).await?;
+        assert!(response.status().is_success());
+        let response_text = response.text().await?;
+        println!("Status (polling) response: {}", response_text);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        if response_json.get("status").unwrap().as_str().unwrap() != "pathForbiddenTemporary" {
+            break
+        }
+    }
+
+    //And check that the path contains the correct error
     let response = reqwest::get(STATUS_URL).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;
@@ -401,8 +418,20 @@ async fn import_request_test() -> Result<(), Error> {
     println!("Response: {}", response_text);
     assert!(response_text.starts_with("ACK"));
 
-    //Now sleep for a bit (600ms), and check that the path contains the correct error
-    std::thread::sleep(std::time::Duration::from_millis(600));
+    //Spin until the status isn't "pathForbiddenTemporary".  Ie. the operation is complete
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response = reqwest::get(STATUS_URL).await?;
+        assert!(response.status().is_success());
+        let response_text = response.text().await?;
+        println!("Status (polling) response: {}", response_text);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        if response_json.get("status").unwrap().as_str().unwrap() != "pathForbiddenTemporary" {
+            break
+        }
+    }
+
+    //And check that the path contains the correct error
     let response = reqwest::get(STATUS_URL).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;

@@ -2,13 +2,12 @@ use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::fs::File;
 use std::time::Instant;
-use pathmap::experimental::ProductZipper;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::ByteMaskIter;
-use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
+use pathmap::zipper::{ProductZipper, ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 
@@ -1223,7 +1222,7 @@ impl Space {
         let mut arity_hack = BytesTrieMap::new();
         arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
         let rz = arity_hack.read_zipper();
-        let mut prz = pathmap::experimental::ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
+        let mut prz = ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
 
         let mut buffer = [0u8; 512];
         let mut stack = vec![0; 4096];

@@ -2,7 +2,7 @@ use std::io::Read;
 use std::time::Instant;
 use std::usize;
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ZipperAccess, ZipperMoving, ZipperWriting, ZipperCreation};
+use pathmap::zipper::{Zipper, ZipperValues, ZipperMoving, ZipperWriting, ZipperCreation};
 use num::BigInt;
 
 

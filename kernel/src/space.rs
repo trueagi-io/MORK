@@ -2,12 +2,13 @@ use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::fs::File;
 use std::time::Instant;
+use pathmap::zipper::ProductZipper;
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::utils::ByteMaskIter;
-use pathmap::zipper::{ProductZipper, ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
+use pathmap::utils::{ByteMaskIter, ByteMask};
+use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 
@@ -49,46 +50,6 @@ const VARS: [u64; 4] = {
     ret
 };
 
-struct CfIter<'a> {
-    i: u8,
-    w: u64,
-    mask: &'a [u64; 4]
-}
-
-impl <'a> CfIter<'a> {
-    fn new(mask: &'a [u64; 4]) -> Self {
-        Self {
-            i: 0,
-            w: mask[0],
-            mask: mask
-        }
-    }
-}
-
-impl <'a> Iterator for CfIter<'a> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<u8> {
-        loop {
-            if self.w != 0 {
-                let wi = self.w.trailing_zeros() as u8;
-                self.w ^= 1u64 << wi;
-                let index = self.i*64 + wi;
-                return Some(index)
-            } else if self.i < 3 {
-                self.i += 1;
-                self.w = *unsafe{ self.mask.get_unchecked(self.i as usize) };
-            } else {
-                return None
-            }
-        }
-    }
-}
-
-fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
-    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
 const ITER_AT_DEPTH: u8 = 0;
 const ITER_SYMBOL_SIZE: u8 = 1;
 const ITER_SYMBOLS: u8 = 2;
@@ -124,205 +85,10 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
-fn all_at_depth<Z : ZipperMoving, F>(loc: &mut Z, level: u32, mut action: F) where F: FnMut(&mut Z) -> () {
-    assert!(level > 0);
-    let mut i = 0;
-    while i < level {
-        if loc.descend_first_byte() {
-            i += 1
-        } else if loc.to_next_sibling_byte() {
-        } else if loc.ascend_byte() {
-            i -= 1
-        } else {
-            return;
-        }
-    }
-
-    while i > 0 {
-        if i == level {
-            action(loc);
-            if loc.to_next_sibling_byte() {
-            } else {
-                assert!(loc.ascend_byte());
-                i -= 1;
-            }
-        } else if i < level {
-            if loc.to_next_sibling_byte() {
-                while i < level && loc.descend_first_byte() {
-                    i += 1;
-                }
-            } else {
-                if loc.ascend_byte() {
-                    i -= 1;
-                } else {
-                    unreachable!();
-                }
-            }
-        }
-    }
-}
-
-fn transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(stack: &mut Vec<u8>, loc: &mut Z, f: &mut F) {
-    // println!("stack {}", stack.iter().map(|x| label(*x)).reduce(|x, y| format!("{} {}", x, y)).unwrap_or("empty".to_string()));
-    // println!("label {}", label(*stack.last().unwrap()));
-    let last = stack.pop().unwrap();
-    match last {
-        ACTION => { f(loc) }
-        ITER_AT_DEPTH => {
-            let size = stack.pop().unwrap();
-
-            all_at_depth(loc, size as _, |loc| transition(stack, loc, f));
-            // if loc.descend_first_k_path(size as usize) {
-            //     transition(stack, loc, f);
-            //     while loc.to_next_k_path(size as usize) {
-            //         transition(stack, loc, f);
-            //     }
-            // }
-            stack.push(size);
-        }
-        ITER_NESTED => {
-            let arity = stack.pop().unwrap();
-            let l = stack.len();
-            for _ in 0..arity { stack.push(ITER_EXPR); }
-            transition(stack, loc, f);
-            stack.truncate(l);
-            stack.push(arity)
-        }
-        ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), SIZES);
-            let mut it = CfIter::new(&m);
-
-            while let Some(b) = it.next() {
-                if let Tag::SymbolSize(s) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
-                        let last = stack.pop().unwrap();
-                        stack.push(s);
-                        stack.push(last);
-                        transition(stack, loc, f);
-                        stack.pop();
-                        stack.pop();
-                        stack.push(last);
-                    }
-                    loc.ascend(1);
-                } else {
-                    unreachable!()
-                }
-            }
-        }
-        ITER_SYMBOLS => {
-            stack.push(ITER_AT_DEPTH);
-            stack.push(ITER_SYMBOL_SIZE);
-            transition(stack, loc, f);
-            stack.pop();
-            stack.pop();
-        }
-        ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), VARS);
-            let mut it = CfIter::new(&m);
-
-            while let Some(b) = it.next() {
-                let buf = [b];
-                if loc.descend_to(buf) {
-                    transition(stack, loc, f);
-                }
-                loc.ascend(1);
-            }
-        }
-        ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), ARITIES);
-            let mut it = CfIter::new(&m);
-
-            while let Some(b) = it.next() {
-                if let Tag::Arity(a) = byte_item(b) {
-                    let buf = [b];
-                    if loc.descend_to(buf) {
-                        let last = stack.pop().unwrap();
-                        stack.push(a);
-                        stack.push(last);
-                        transition(stack, loc, f);
-                        stack.pop();
-                        stack.pop();
-                        stack.push(last);
-                    }
-                    loc.ascend(1);
-                } else {
-                    unreachable!()
-                }
-            }
-        }
-        ITER_EXPR => {
-            stack.push(ITER_VARIABLES);
-            transition(stack, loc, f);
-            stack.pop();
-
-            stack.push(ITER_SYMBOLS);
-            transition(stack, loc, f);
-            stack.pop();
-
-            stack.push(ITER_NESTED);
-            stack.push(ITER_ARITIES);
-            transition(stack, loc, f);
-            stack.pop();
-            stack.pop();
-        }
-        ITER_SYMBOL => {
-            let size = stack.pop().unwrap();
-            let mut v = vec![];
-            for _ in 0..size { v.push(stack.pop().unwrap()) }
-            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
-            loc.descend_to(&v[..]);
-            transition(stack, loc, f);
-            loc.ascend(size as usize);
-            loc.ascend(1);
-            for _ in 0..size { stack.push(v.pop().unwrap()) }
-            stack.push(size)
-        }
-        ITER_VAR_SYMBOL => {
-            let size = stack.pop().unwrap();
-            let mut v = vec![];
-            for _ in 0..size { v.push(stack.pop().unwrap()) }
-
-            stack.push(ITER_VARIABLES);
-            transition(stack, loc, f);
-            stack.pop();
-
-            loc.descend_to(&[item_byte(Tag::SymbolSize(size))]);
-            loc.descend_to(&v[..]);
-            transition(stack, loc, f);
-            loc.ascend(size as usize);
-            loc.ascend(1);
-            for _ in 0..size { stack.push(v.pop().unwrap()) }
-            stack.push(size)
-        }
-        ITER_ARITY => {
-            let arity = stack.pop().unwrap();
-            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
-            transition(stack, loc, f);
-            loc.ascend(1);
-            stack.push(arity);
-        }
-        ITER_VAR_ARITY => {
-            let arity = stack.pop().unwrap();
-
-            stack.push(ITER_VARIABLES);
-            transition(stack, loc, f);
-            stack.pop();
-
-            loc.descend_to(&[item_byte(Tag::Arity(arity))]);
-            transition(stack, loc, f);
-            loc.ascend(1);
-            stack.push(arity);
-        }
-        _ => { unreachable!() }
-    }
-    stack.push(last);
-}
-
-fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<(u32, u32)>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
     unsafe {
     macro_rules! unroll {
-    (ACTION $recursive:expr) => { f(loc); };
+    (ACTION $recursive:expr) => { f(&references[..], loc); };
     (ITER_AT_DEPTH $recursive:expr) => {
         let level = *last; last = last.offset(-1);
 
@@ -377,8 +143,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         last = last.offset(1); *last = arity;
     };
     (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { SIZES });
-        let mut it = ByteMaskIter::new(m);
+        let m = ByteMask(loc.child_mask()).and(&ByteMask(SIZES));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::SymbolSize(s) = byte_item(b) {
@@ -406,8 +172,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
          last = last.offset(-1);
     };
     (ITER_VARIABLES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { VARS });
-        let mut it = ByteMaskIter::new(m);
+        let m = ByteMask(loc.child_mask()).and(&ByteMask(VARS));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             let buf = [b];
@@ -418,8 +184,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         }
     };
     (ITER_ARITIES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { ARITIES });
-        let mut it = ByteMaskIter::new(m);
+        let m = ByteMask(loc.child_mask()).and(&ByteMask(ARITIES));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::Arity(a) = byte_item(b) {
@@ -502,19 +268,20 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         last = last.offset(1); *last = arity;
     };
     (BEGIN_RANGE $recursive:expr) => {
-        references.push((loc.path().len() as u32, 0));
+        // references.push((loc.path().len() as u32, 0));
+        let p = loc.path();
+        references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
         $recursive;
         references.pop();
     };
     (FINALIZE_RANGE $recursive:expr) => {
-        references.last_mut().unwrap().1 = loc.path().len() as u32;
+        // references.last_mut().unwrap().1 = loc.path().len() as u32;
         $recursive;
-        references.last_mut().unwrap().1 = 0;
+        // references.last_mut().unwrap().1 = 0;
     };
     (REFER_RANGE $recursive:expr) => {
         let index = *last; last = last.offset(-1);
-        let (begin, end) = references[index as usize];
-        let subexpr = Expr { ptr: loc.path()[begin as usize..end as usize].as_ptr().cast_mut() };
+        let subexpr = references[index as usize];
         let mut ez = ExprZipper::new(subexpr);
         let mut v0 = last;
         loop {
@@ -763,7 +530,7 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = $crate::space::ParDataParser::new(&$space.sm);
+        let mut pdp = mork::space::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| pdp.tokenizer(x));
@@ -806,6 +573,10 @@ impl Space {
 
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
+    }
+
+    fn write_zipper_at_unchecked<'a, 'b>(&'a self, path: &'b [u8]) -> WriteZipperUntracked<'a, 'b, ()> {
+        unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
     }
 
     /*
@@ -1163,66 +934,86 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query<F : FnMut(Expr) -> ()>(&self, prefix: Prefix, pattern: Expr, mut effect: F) {
-        let mut rz = self.btm.read_zipper_at_path(prefix.path());
+    pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
+        let mut rz = self.btm.read_zipper();
+        rz.descend_to(&[0; 1024]);
+        rz.reset();
         let mut pz = ExprZipper::new(pattern);
-        let mut stack = vec![ACTION];
-        stack.extend(indiscriminate_bidirectional_matching_stack(&mut pz));
-        transition(&mut stack, &mut rz, &mut |loc| {
+        // let mut refexprs = [Expr{ ptr: null_mut() }; 64];
+        let mut references: Vec<Expr> = vec![];
+        let mut stack = vec![0; 4096];
+        stack[0] = ACTION;
+        let v = referential_bidirectional_matching_stack(&mut pz);
+        stack[1..1+v.len()].copy_from_slice(&v[..]);
+        referential_transition(&mut stack[v.len()], &mut rz, &mut references, &mut |refs, loc| {
             let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            effect(e);
+            effect(e)
         });
     }
 
     pub fn transform(&mut self, pattern: Expr, template: Expr) {
+        let constant_out_prefix = unsafe { template.prefix().unwrap_or_else(|x| x).as_ref().unwrap() };
+        let mut wz = self.write_zipper_at_unchecked(constant_out_prefix);
+        let mut buffer = [0u8; 512];
+
+
         // todo take read zipper at static pattern prefix
         let mut rz = self.btm.read_zipper();
-        // todo take write zipper at static template prefix
-        let mut wz = self.write_zipper_unchecked();
+        rz.descend_to(&[0; 1024]);
+        rz.reset();
+        // todo specialize to existence check if template is constant
         let mut pz = ExprZipper::new(pattern);
         // todo create feedback signal from ExprZipper to buffer size
-        let mut buffer = [0u8; 512];
-        let mut stack = vec![ACTION];
-        // todo generate matching from dynamic postfix
-        stack.extend(indiscriminate_bidirectional_matching_stack(&mut pz));
-        // todo transition should gather pattern bindings
-        transition(&mut stack, &mut rz, &mut |loc| {
+        // let mut refexprs = [Expr{ ptr: null_mut() }; 64];
+        let mut references: Vec<Expr> = vec![];
+        let mut stack = vec![0; 4096];
+        stack[0] = ACTION;
+        let v = referential_bidirectional_matching_stack(&mut pz);
+        stack[1..1+v.len()].copy_from_slice(&v[..]);
+        referential_transition(&mut stack[v.len()], &mut rz, &mut references, &mut |refs, loc| {
             // todo split Readable and Writeable Expr
-            let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            // todo generate transform(Data) functions outside of transition
-            match e.transformData(pattern, template, &mut oz) {
-                Ok(()) => {
-                    // todo (here and below) descend to dynamic path and reset/ascend to static prefix
-                    // println!("{}", sexpr!(self, oz.root));
-                    wz.descend_to(&buffer[..oz.loc]);
-                    wz.set_value(());
-                    wz.reset()
-                }
-                Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
-                    // upgrade to full unification
-                    // println!("full unification");
-                    match e.transform(pattern, template) {
-                        Ok(e) => {
-                            wz.descend_to(unsafe { &*e.span() });
-                            wz.set_value(());
-                            wz.reset()
-                        }
-                        _ => {
 
-                        }
-                    }
-                }
-                _ => {}
-            }
+            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+            template.substitute(refs, &mut oz);
+            wz.descend_to(&buffer[constant_out_prefix.len()..oz.loc]);
+            wz.set_value(());
+            wz.reset()
+            // match e.transformData(pattern, template, &mut oz) {
+            //     Ok(()) => {
+            //         // todo (here and below) descend to dynamic path and reset/ascend to static prefix
+            //         // println!("{}", sexpr!(self, oz.root));
+            //         wz.descend_to(&buffer[..oz.loc]);
+            //         wz.set_value(());
+            //         wz.reset()
+            //     }
+            //     Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
+            //         // upgrade to full unification
+            //         // println!("full unification");
+            //         match e.transform(pattern, template) {
+            //             Ok(e) => {
+            //                 wz.descend_to(unsafe { &*e.span() });
+            //                 wz.set_value(());
+            //                 wz.reset()
+            //             }
+            //             _ => {
+            //
+            //             }
+            //         }
+            //     }
+            //     _ => {}
+            // }
         });
     }
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
         let mut arity_hack = BytesTrieMap::new();
         arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
-        let rz = arity_hack.read_zipper();
+        let mut rz = arity_hack.read_zipper();
+        rz.descend_to(&[0; 4096]);
+        rz.reset();
         let mut prz = ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
+        prz.descend_to(&[0; 4096]);
+        prz.reset();
 
         let mut buffer = [0u8; 512];
         let mut stack = vec![0; 4096];
@@ -1237,23 +1028,25 @@ impl Space {
         let v = referential_bidirectional_matching_stack(&mut ExprZipper::new(compound));
         stack[1..1+v.len()].copy_from_slice(&v[..]);
         let mut btm = BytesTrieMap::new();
-        let mut references: Vec<(u32, u32)> = vec![];
+        let mut references: Vec<Expr> = vec![];
         let mut candidate = 0;
-        referential_transition(&mut stack[v.len()], &mut prz, &mut references, &mut |loc| {
+        referential_transition(&mut stack[v.len()], &mut prz, &mut references, &mut |refs, loc| {
             let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
             // println!("{}", sexpr!(self, e));
-            match e.transformData(compound, template, &mut oz) {
-                Ok(()) => {
-                    btm.insert(&buffer[..oz.loc], ());
-                }
-                Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
-                    todo!()
-                }
-                Err(other) => {
-                    println!("err {:?}", other);
-                }
-            }
+            template.substitute(refs, &mut oz);
+            btm.insert(&buffer[..oz.loc], ());
+            // match e.transformData(compound, template, &mut oz) {
+            //     Ok(()) => {
+            //         btm.insert(&buffer[..oz.loc], ());
+            //     }
+            //     Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
+            //         todo!()
+            //     }
+            //     Err(other) => {
+            //         println!("err {:?}", other);
+            //     }
+            // }
             candidate += 1;
         });
         drop(prz);

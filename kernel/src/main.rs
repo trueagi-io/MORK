@@ -42,7 +42,7 @@ use mork_bytestring::{item_byte, Tag};
 fn work(s: &mut Space) {
     let add_gene_name_index_start = Instant::now();
     s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
-    println!("add gene name index took {}", add_gene_name_index_start.elapsed().as_secs());
+    println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
     s.statistics();
 
     let all_related_to_gene_start = Instant::now();
@@ -53,7 +53,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[4] res0 _1 _2 _3"));
     println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[4] res0 $ $ $"), |e| {
+    s.query(expr!(s, "[4] res0 $ $ $"), |e| {
         println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -78,7 +78,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[5] res1 _1 _2 _3 _4"));
     println!("transitive_chr1 {}", transitive_chr1_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[5] res1 $ $ $ $"), |e| {
+    s.query(expr!(s, "[5] res1 $ $ $ $"), |e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -94,7 +94,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[6] res2 _1 _2 _3 _4 _5"));
     println!("q0 {}", q0_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[6] res2 $ $ $ $ $"), |e| {
+    s.query( expr!(s, "[6] res2 $ $ $ $ $"), |e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });

@@ -19,8 +19,10 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 const SERVER_ADDR_ENV_VAR: &str = "MORK_SERVER_ADDR";
+const SERVER_PORT_ENV_VAR: &str = "MORK_SERVER_PORT";
 const RESOURCE_DIR_ENV_VAR: &str = "MORK_SERVER_DIR";
-const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8000";
+const DEFAULT_SERVER_ADDR: &str = "127.0.0.1";
+const DEFAULT_SERVER_PORT: &str = "8000";
 const DEFAULT_RESOURCE_DIR: &str = "/tmp/mork_server_files";
 
 mod commands;
@@ -37,7 +39,17 @@ type BoxedErr = Box<dyn std::error::Error + Send + Sync>;
 
 fn server_addr() -> SocketAddr {
     let addr_str = std::env::var(SERVER_ADDR_ENV_VAR).unwrap_or(DEFAULT_SERVER_ADDR.to_string());
-    addr_str.parse().expect("Invalid Server Address Format")
+    let port_str = std::env::var(SERVER_PORT_ENV_VAR).unwrap_or(DEFAULT_SERVER_PORT.to_string());
+
+    //First try to parse the address with a port included.  This will also accept IPV6 addresses
+    match addr_str.parse() {
+        Ok(socket_addr) => return socket_addr,
+        Err(_) => {
+            //If that failed, parse the address as a separate IPV4 address with a separate port
+            let addr = addr_str.parse::<std::net::Ipv4Addr>().expect("Invalid IPV4 Address Format");
+            return SocketAddr::new(addr.into(), port_str.parse().expect("Invalid Port Format"))
+        }
+    }
 }
 
 fn resource_dir() -> PathBuf {

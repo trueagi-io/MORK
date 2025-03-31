@@ -41,13 +41,13 @@ fn server_addr() -> SocketAddr {
     let addr_str = std::env::var(SERVER_ADDR_ENV_VAR).unwrap_or(DEFAULT_SERVER_ADDR.to_string());
     let port_str = std::env::var(SERVER_PORT_ENV_VAR).unwrap_or(DEFAULT_SERVER_PORT.to_string());
 
-    //First try to parse the address with a port included.  This will also accept IPV6 addresses
+    //First try to parse the address with a port included
     match addr_str.parse() {
         Ok(socket_addr) => return socket_addr,
         Err(_) => {
-            //If that failed, parse the address as a separate IPV4 address with a separate port
-            let addr = addr_str.parse::<std::net::Ipv4Addr>().expect("Invalid IPV4 Address Format");
-            return SocketAddr::new(addr.into(), port_str.parse().expect("Invalid Port Format"))
+            //If that failed, parse the address as a stand-alone IP address with a separate port
+            let addr = addr_str.parse::<std::net::IpAddr>().expect("Invalid IP Address Format");
+            return SocketAddr::new(addr, port_str.parse().expect("Invalid Port Format"))
         }
     }
 }

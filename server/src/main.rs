@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
+use std::path::PathBuf;
 
 use tokio::sync::Notify;
 
@@ -17,9 +18,10 @@ use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-//GOAT, get this from a cfg file or cmd_line arg (or both)
-const SERVER_ADDR: &str = "127.0.0.1:8000";
-const RESOURCE_DIR: &str = "/tmp/mork_server_files";
+const SERVER_ADDR_ENV_VAR: &str = "MORK_SERVER_ADDR";
+const RESOURCE_DIR_ENV_VAR: &str = "MORK_SERVER_DIR";
+const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8000";
+const DEFAULT_RESOURCE_DIR: &str = "/tmp/mork_server_files";
 
 mod commands;
 use commands::*;
@@ -32,6 +34,16 @@ mod resource_store;
 use resource_store::*;
 
 type BoxedErr = Box<dyn std::error::Error + Send + Sync>;
+
+fn server_addr() -> SocketAddr {
+    let addr_str = std::env::var(SERVER_ADDR_ENV_VAR).unwrap_or(DEFAULT_SERVER_ADDR.to_string());
+    addr_str.parse().expect("Invalid Server Address Format")
+}
+
+fn resource_dir() -> PathBuf {
+    let path_str = std::env::var(RESOURCE_DIR_ENV_VAR).unwrap_or(DEFAULT_RESOURCE_DIR.to_string());
+    PathBuf::from(path_str)
+}
 
 #[derive(Clone)]
 pub struct MorkService(Arc<MorkServiceInternals>);
@@ -64,7 +76,7 @@ impl MorkService {
                 .build().unwrap();
 
         // Init the ResourceStore
-        let resource_store = ResourceStore::new_with_dir_path(std::path::Path::new(RESOURCE_DIR)).await.unwrap();
+        let resource_store = ResourceStore::new_with_dir_path(&resource_dir()).await.unwrap();
         resource_store.reset().await.unwrap();
 
         // GOAT, this needs to come from the backup
@@ -631,13 +643,12 @@ impl WorkerPool {
 #[tokio::main(flavor = "multi_thread")]
 // #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr: SocketAddr = SERVER_ADDR.parse().expect("Invalid Server Address Format");
 
     //Init the Mork network service
     let service = MorkService::new().await;
 
     //Run the Mork service
-    service.run(addr).await?;
+    service.run(server_addr()).await?;
 
     Ok(())
 }

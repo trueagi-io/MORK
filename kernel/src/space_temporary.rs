@@ -120,7 +120,7 @@ pub trait Space {
     }
 
     #[cfg(feature="neo4j")]
-    fn load_neo4j_triples<'s>(&'s mut self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
+    fn load_neo4j_triples<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_triples_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JTriplesError)

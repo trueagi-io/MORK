@@ -478,11 +478,8 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file
 mod neo4j_commands {
 use crate::commands::*;
 
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// LoadNeo4jTriples
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-pub struct LoadNeo4jTriplesCmd;
+/// makes initializing arrays easier
+const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
 #[allow(unused)]
 #[repr(usize)]
 enum LoadNeo4jArg {
@@ -494,44 +491,101 @@ enum LoadNeo4jArg {
     /// this needs to remain the last variant
     _Len,
 }
+struct LoadNeo4JResources { output : WritePermission }
 
-impl CommandDefinition for LoadNeo4jTriplesCmd {
-    const NAME: &'static str = "status";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        & const {
-            use LoadNeo4jArg as Arg;
-            const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
-            let mut args = [ZEROED; Arg::_Len as usize];
+macro_rules! load_neo4j {
+    (struct $COMMAND:ident; const NAME = $NAME:literal; fn $METHOD:ident) => {
+        pub struct $COMMAND;
+        impl CommandDefinition for $COMMAND {
+            const NAME: &'static str = $NAME;
+            const CONST_CMD: &'static Self = &Self;
+            const CONSUME_WORKER: bool = true;
+            fn args() -> &'static [ArgDef] {
+                & const {
+                    use LoadNeo4jArg as Arg;
+                    let mut args = [ZEROED; Arg::_Len as usize];
+                
         
-
-            args[Arg::OutputPath as usize] = 
-                ArgDef{
-                    arg_type: ArgType::Path,
-                    name: "output_path",
-                    desc: "the path where the loaded data will be stored",
-                    required: true
-                };
-
-
-            args
+                    args[Arg::OutputPath as usize] = 
+                        ArgDef{
+                            arg_type : ArgType::Path,
+                            name     : "output_path",
+                            desc     : "the path where the loaded data will be stored",
+                            required : true
+                        };
+        
+                    args[Arg::Neo4jUri as usize] = 
+                        ArgDef{
+                            arg_type : ArgType::String,
+                            name     : "neo4j_uri",
+                            desc     : "the uri to the Neo4j instance",
+                            required : true
+                        };
+        
+                    args[Arg::Neo4jUser as usize] = 
+                        ArgDef{
+                            arg_type : ArgType::String,
+                            name     : "neo4j_user",
+                            desc     : "the username for accessing the Neo4j instance",
+                            required : true
+                        };
+        
+                    args[Arg::Neo4jUser as usize] = 
+                        ArgDef{
+                            arg_type : ArgType::String,
+                            name     : "neo4j_password",
+                            desc     : "the password for accessing the Neo4j instance",
+                            required : true
+                        };
+        
+                    args
+                }
+            }
+            fn properties() -> &'static [PropDef] {
+                &[]
+            }
+            async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
+                let write_permission = _ctx.0.space.new_writer(_cmd.args[LoadNeo4jArg::OutputPath as usize].as_path(), &())?;
+                Ok(Some(Resources::new(LoadNeo4JResources{ output : write_permission})))
+            }
+            async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
+        
+                let LoadNeo4JResources { mut output } = _resources.unwrap().downcast();
+                let thread = _thread.unwrap();
+        
+                thread.dispatch_blocking_task(cmd, move |cmd| {
+                    ctx.0.space.$METHOD(
+                        &mut output,
+                        &tokio::runtime::Handle::current(),
+                        cmd.args[LoadNeo4jArg::Neo4jUri as usize].as_str(),
+                        cmd.args[LoadNeo4jArg::Neo4jUser as usize].as_str(),
+                        cmd.args[LoadNeo4jArg::Neo4jPassword as usize].as_str(),
+                    ).map(|_|{}).map_err(|e| {
+                        let e_ : Box<(dyn std::error::Error + Send + Sync + 'static)> = Box::new( std::io::Error::other(format!("{e:?}")));
+                        e_
+                    })
+                }).await;
+                
+                Ok(Bytes::from("Load Neo4j Triples query sent"))
+            }
         }
-    }
-    fn properties() -> &'static [PropDef] {
-        &[]
-    }
-    async fn gather(_ctx: MorkService, _cmd: Command, _req: Request<IncomingBody>) -> Result<Option<Resources>, CommandError> {
-        Ok(None)
-    }
-    async fn work(ctx: MorkService, _thread: Option<WorkThreadHandle>, cmd: Command, _resources: Option<Resources>) -> Result<Bytes, CommandError> {
-        let map_path = cmd.args[0].as_path();
-        let status = ctx.0.space.get_status(map_path);
-        let json_string = serde_json::to_string(&status)?;
-        Ok(json_string.into())
-    }
+    };
 }
 
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// LoadNeo4jTriples
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+load_neo4j!{struct LoadNeo4jTriplesCmd; const NAME = "load_neo4j_triples"; fn load_neo4j_triples}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// LoadNeo4jNodeProperties
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+load_neo4j!{struct LoadNeo4jNodePropertiesCmd; const NAME = "load_neo4j_node_properties"; fn load_neo4j_node_properties}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// LoadNeo4jNodeProperties
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+load_neo4j!{struct LoadNeo4jNodeLabelsCmd; const NAME = "load_neo4j_node_labels"; fn load_neo4j_node_labels}
 
 }
 #[cfg(feature="neo4j")]

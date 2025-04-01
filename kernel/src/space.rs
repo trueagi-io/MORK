@@ -4,13 +4,12 @@ use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
     trie_map::BytesTrieMap, 
     zipper::*,
-    utils::ByteMaskIter,
+    utils::*,
 };
 use std::ptr;
 
 use crate::space_temporary::{
     SIZES, ARITIES, VARS,
-    mask_and,
     stack_actions::*
 };
 pub use crate::space_temporary::{
@@ -349,8 +348,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         last = last.offset(1); *last = arity;
     };
     (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { SIZES });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask().and(&ByteMask(SIZES));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::SymbolSize(s) = byte_item(b) {
@@ -378,8 +377,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
          last = last.offset(-1);
     };
     (ITER_VARIABLES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { VARS });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask().and(&ByteMask(VARS));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             let buf = [b];
@@ -390,8 +389,8 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         }
     };
     (ITER_ARITIES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { ARITIES });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask().and(&ByteMask(ARITIES));
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::Arity(a) = byte_item(b) {

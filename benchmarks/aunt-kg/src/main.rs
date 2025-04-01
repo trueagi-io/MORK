@@ -39,49 +39,9 @@ impl Parser for DataParser {
 
 static mut SIZES: [u64; 4] = [0u64; 4];
 
-struct CfIter<'a> {
-    i: u8,
-    w: u64,
-    mask: &'a [u64; 4]
-}
-
-impl <'a> CfIter<'a> {
-    fn new(mask: &'a [u64; 4]) -> Self {
-        Self {
-            i: 0,
-            w: mask[0],
-            mask: mask
-        }
-    }
-}
-
-impl <'a> Iterator for CfIter<'a> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<u8> {
-        loop {
-            if self.w != 0 {
-                let wi = self.w.trailing_zeros() as u8;
-                self.w ^= 1u64 << wi;
-                let index = self.i*64 + wi;
-                return Some(index)
-            } else if self.i < 3 {
-                self.i += 1;
-                self.w = *unsafe{ self.mask.get_unchecked(self.i as usize) };
-            } else {
-                return None
-            }
-        }
-    }
-}
-
-fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
-    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
 fn drop_symbol_head_2<Z: Zipper + ZipperMoving + ZipperWriting<()>>(loc: &mut Z) {
-    let m = mask_and(loc.child_mask(), unsafe { SIZES });
-    let mut it = CfIter::new(&m);
+    let m = loc.child_mask() & unsafe { SIZES }.into();
+    let mut it = m.iter();
 
     let p = loc.path().to_vec();
     while let Some(b) = it.next() {

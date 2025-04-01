@@ -16,10 +16,6 @@ static mut SIZES: [u64; 4] = [0u64; 4];
 static mut ARITIES: [u64; 4] = [0u64; 4];
 static mut VARS: [u64; 4] = [0u64; 4];
 
-fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
-    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
 
 const ITER_AT_DEPTH: u8 = 0;
 const ITER_SYMBOL_SIZE: u8 = 1;
@@ -125,8 +121,8 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), unsafe { SIZES });
-            let mut it = ByteMaskIter::new(m);
+            let m = loc.child_mask() & unsafe { SIZES }.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 if let Tag::SymbolSize(s) = byte_item(b) {
@@ -153,8 +149,8 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), unsafe { VARS });
-            let mut it = ByteMaskIter::new(m);
+            let m = loc.child_mask() & unsafe { VARS }.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 if loc.descend_to_byte(b) {
@@ -164,8 +160,8 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), unsafe { ARITIES });
-            let mut it = ByteMaskIter::new(m);
+            let m = loc.child_mask() & unsafe { ARITIES }.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 if let Tag::Arity(a) = byte_item(b) {
@@ -318,8 +314,8 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         last = last.offset(1); *last = arity;
     };
     (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { SIZES });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask() & SIZES.into();
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::SymbolSize(s) = byte_item(b) {
@@ -347,8 +343,8 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
          last = last.offset(-1);
     };
     (ITER_VARIABLES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { VARS });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask() & VARS.into();
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             let buf = [b];
@@ -359,8 +355,8 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         }
     };
     (ITER_ARITIES $recursive:expr) => {
-        let m = mask_and(loc.child_mask(), unsafe { ARITIES });
-        let mut it = ByteMaskIter::new(m);
+        let m = loc.child_mask() & ARITIES.into();
+        let mut it = m.iter();
 
         while let Some(b) = it.next() {
             if let Tag::Arity(a) = byte_item(b) {
@@ -458,8 +454,8 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         let subexpr = Expr { ptr: loc.path()[begin as usize..end as usize].as_ptr().cast_mut() };
 
         let mut ez = ExprZipper::new(subexpr);
-        let mut v0 = last;
-        let substack_len = loop {
+        let v0 = last;
+        loop {
             match ez.item() {
                 Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
                     last = last.offset(1); *last = ITER_EXPR;

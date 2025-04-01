@@ -7,7 +7,7 @@ use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, pa
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::utils::{ByteMaskIter, ByteMask};
+use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
@@ -143,7 +143,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -
         last = last.offset(1); *last = arity;
     };
     (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(SIZES));
+        let m = loc.child_mask().and(&ByteMask(SIZES));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
@@ -172,7 +172,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -
          last = last.offset(-1);
     };
     (ITER_VARIABLES $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(VARS));
+        let m = loc.child_mask().and(&ByteMask(VARS));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
@@ -184,7 +184,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -
         }
     };
     (ITER_ARITIES $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(ARITIES));
+        let m = loc.child_mask().and(&ByteMask(ARITIES));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {

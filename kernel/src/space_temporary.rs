@@ -300,10 +300,6 @@ pub(crate) fn indiscriminate_bidirectional_matching_stack(ez: &mut mork_bytestri
     }
 }
 
-pub(crate) fn mask_and(l: [u64; 4], r: [u64; 4]) -> [u64; 4] {
-    [l[0] & r[0], l[1] & r[1], l[2] & r[2], l[3] & r[3]]
-}
-
 pub(crate) const SIZES: [u64; 4] = {
     use mork_bytestring::{item_byte, Tag};
 
@@ -368,8 +364,8 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = mask_and(loc.child_mask(), SIZES);
-            let mut it = pathmap::utils::ByteMaskIter::new(m);
+            let m = loc.child_mask() & SIZES.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 if let Tag::SymbolSize(s) = byte_item(b) {
@@ -397,8 +393,8 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = mask_and(loc.child_mask(), VARS);
-            let mut it = pathmap::utils::ByteMaskIter::new(m);
+            let m = loc.child_mask() & VARS.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 let buf = [b];
@@ -409,8 +405,8 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             }
         }
         ITER_ARITIES => {
-            let m = mask_and(loc.child_mask(), ARITIES);
-            let mut it = pathmap::utils::ByteMaskIter::new(m);
+            let m = loc.child_mask() & ARITIES.into();
+            let mut it = m.iter();
 
             while let Some(b) = it.next() {
                 if let Tag::Arity(a) = byte_item(b) {

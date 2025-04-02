@@ -175,20 +175,10 @@ impl MorkService {
         //Acquire the resources (mainly zippers) to perform the operation
         let ctx = self.clone();
         Box::pin(async move {
-            match command.def.gather(ctx.clone(), command.clone(), req).await {
-                Ok(resources) => {
-                    println!("Successful Dispatch: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
-
-                    let work_result = command.def.work(ctx, work_thread, command.clone(), resources).await;
-                    match work_result {
-                        Ok(response_bytes) => {
-                            Ok(ok_response(response_bytes))
-                        },
-                        Err(err) => {
-                            let response = MorkServerError::cmd_err(err, &command).error_response();
-                            Ok(response)
-                        }
-                    }
+            println!("Processing: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
+            match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
+                Ok(response_bytes) => {
+                    Ok(ok_response(response_bytes))
                 },
                 Err(err) => {
                     let response = MorkServerError::cmd_err(err, &command).error_response();

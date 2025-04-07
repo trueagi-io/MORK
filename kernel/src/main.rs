@@ -76,7 +76,7 @@ fn work(s: &mut Space) {
         expr!(s, "[4] SPO _2 translates_to $"),
         expr!(s, "[4] OPS _3 interacts_with $"),
     ], expr!(s, "[5] res1 _1 _2 _3 _4"));
-    println!("transitive_chr1 {}", transitive_chr1_start.elapsed().as_micros());
+    println!("transitive_chr1 {} ms", transitive_chr1_start.elapsed().as_millis());
     let mut count = 0;
     s.query(expr!(s, "[5] res1 $ $ $ $"), |e| {
         // println!("{}", sexpr!(s, e));
@@ -179,3 +179,22 @@ fn main() {
     // s.backup("/dev/shm/combined.remydag");
     // println!("backup took {}", backup_start.elapsed().as_secs());
 }
+
+/*
+restored paths DeserializationStats { bytes_in: 4061021063, bytes_out: 34621879507, path_count: 978700221 }
+paths restore took 135
+val count 978700221
+add gene name index took 8637 ms
+val count 979015756
+all_related_to_gene_start 193 µs
+res0 count 142
+add exon chr index took 32 s
+val count 1054962128
+add ops index took 91 s
+val count 1386253656
+transitive_chr1 7691 ms
+res1 count 40172978
+q0 33295 µs
+res2 count 151956
+
+ */

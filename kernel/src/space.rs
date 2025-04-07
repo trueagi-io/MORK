@@ -1,9 +1,10 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::fs::File;
+use std::ptr::addr_of;
 use std::time::Instant;
-use pathmap::zipper::ProductZipper;
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag};
+use pathmap::zipper::{ProductZipper, ZipperSubtries};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -407,6 +408,65 @@ fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
         }
     }
 }
+
+// fn referential_bidirectional_matching_stack_traverse(e: Expr, limit: usize) -> Vec<u8> {
+//     let mut v = traverseh!((), (), Vec<u8>, e, vec![],
+//         |v: &mut Vec<u8>, o| {
+//             v.push(BEGIN_RANGE);
+//             v.push(ITER_EXPR);
+//             v.push(FINALIZE_RANGE);
+//         },
+//         |v: &mut Vec<u8>, o, i| {
+//             v.push(REFER_RANGE);
+//             v.push(i);
+//         },
+//         |v: &mut Vec<u8>, o, s: &[u8]| {
+//             v.push(ITER_VAR_SYMBOL);
+//             v.push(s.len() as u8);
+//             v.extend(s);
+//         },
+//         |v: &mut Vec<u8>, o, a| {
+//             v.push(ITER_VAR_ARITY);
+//             v.push(a);
+//         },
+//         |v, o, r, s| {},
+//         |v, o, r| {}
+//     ).0;
+//     v.reverse();
+//     v
+// }
+
+fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Vec<u8> {
+    let mut v = traverseh!((), (), (Vec<u8>, usize), e, (vec![], from),
+        |(v, from): &mut (Vec<u8>, usize), o| {
+            if o < *from { return }
+            v.push(BEGIN_RANGE);
+            v.push(ITER_EXPR);
+            v.push(FINALIZE_RANGE);
+        },
+        |(v, from): &mut (Vec<u8>, usize), o, i| {
+            if o < *from { return }
+            v.push(REFER_RANGE);
+            v.push(i);
+        },
+        |(v, from): &mut (Vec<u8>, usize), o, s: &[u8]| {
+            if o < *from { return }
+            v.push(ITER_VAR_SYMBOL);
+            v.push(s.len() as u8);
+            v.extend(s);
+        },
+        |(v, from): &mut (Vec<u8>, usize), o, a| {
+            if o < *from { return }
+            v.push(ITER_VAR_ARITY);
+            v.push(a);
+        },
+        |v, o, r, s| {},
+        |v, o, r| {}
+    ).0.0;
+    v.reverse();
+    v
+}
+
 pub struct ParDataParser<'a> { count: u64,
     #[cfg(feature="interning")]
     buf: [u8; 8],
@@ -952,23 +1012,23 @@ impl Space {
     }
 
     pub fn transform(&mut self, pattern: Expr, template: Expr) {
-        let constant_out_prefix = unsafe { template.prefix().unwrap_or_else(|x| x).as_ref().unwrap() };
+        let constant_in_prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+
+        let constant_out_prefix = unsafe { template.prefix().unwrap_or_else(|x| template.span()).as_ref().unwrap() };
         let mut wz = self.write_zipper_at_unchecked(constant_out_prefix);
         let mut buffer = [0u8; 512];
 
 
-        // todo take read zipper at static pattern prefix
-        let mut rz = self.btm.read_zipper();
+        let mut rz = self.btm.read_zipper_at_path(constant_in_prefix);
         rz.descend_to(&[0; 1024]);
         rz.reset();
         // todo specialize to existence check if template is constant
-        let mut pz = ExprZipper::new(pattern);
         // todo create feedback signal from ExprZipper to buffer size
         // let mut refexprs = [Expr{ ptr: null_mut() }; 64];
         let mut references: Vec<Expr> = vec![];
         let mut stack = vec![0; 4096];
         stack[0] = ACTION;
-        let v = referential_bidirectional_matching_stack(&mut pz);
+        let v = referential_bidirectional_matching_stack_traverse(pattern, constant_in_prefix.len());
         stack[1..1+v.len()].copy_from_slice(&v[..]);
         referential_transition(&mut stack[v.len()], &mut rz, &mut references, &mut |refs, loc| {
             // todo split Readable and Writeable Expr
@@ -1006,31 +1066,41 @@ impl Space {
     }
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
-        let mut arity_hack = BytesTrieMap::new();
-        arity_hack.write_zipper_at_path(&[item_byte(Tag::Arity(patterns.len() as _))]).graft(&self.btm.read_zipper());
-        let mut rz = arity_hack.read_zipper();
+        let mut first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
+        let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
+        let mut tmp_maps = vec![];
+        for p in patterns[1..].iter() {
+            tmp_maps.push(BytesTrieMap::new());
+            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
+            tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(&self.btm.read_zipper_at_path(prefix));
+        }
         rz.descend_to(&[0; 4096]);
         rz.reset();
-        let mut prz = ProductZipper::new(rz, patterns[1..].iter().map(|_| self.btm.read_zipper()));
+        let mut prz = ProductZipper::new(rz, patterns[1..].iter().enumerate().map(|(i, p)| {
+            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
+            tmp_maps[i].read_zipper_at_path(prefix)
+        }));
         prz.descend_to(&[0; 4096]);
         prz.reset();
 
         let mut buffer = [0u8; 512];
-        let mut stack = vec![0; 4096];
+        let mut stack = vec![0; 1];
         stack[0] = ACTION;
 
-        let mut compound_vec = vec![item_byte(Tag::Arity(patterns.len() as _))];
-        for pattern in patterns.iter() {
-            compound_vec.extend_from_slice(unsafe { &*pattern.span() });
+        for pattern in patterns.iter().rev() {
+            let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+            stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
         }
+        stack.reserve(4096);
 
-        let mut compound = Expr{ ptr: compound_vec.as_mut_ptr() };
-        let v = referential_bidirectional_matching_stack(&mut ExprZipper::new(compound));
-        stack[1..1+v.len()].copy_from_slice(&v[..]);
+        // let mut compound = Expr{ ptr: compound_vec.as_mut_ptr() };
+        // let v = referential_bidirectional_matching_stack(&mut ExprZipper::new(compound));
+        // assert_eq!(v, referential_bidirectional_matching_stack_traverse(compound, 0));
+        // stack[1..1+v.len()].copy_from_slice(&v[..]);
         let mut btm = BytesTrieMap::new();
         let mut references: Vec<Expr> = vec![];
         let mut candidate = 0;
-        referential_transition(&mut stack[v.len()], &mut prz, &mut references, &mut |refs, loc| {
+        referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
             let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
             // println!("{}", sexpr!(self, e));
@@ -1050,7 +1120,7 @@ impl Space {
             candidate += 1;
         });
         drop(prz);
-        drop(arity_hack);
+        // drop(arity_hack);
         self.btm = self.btm.join(&btm);
     }
 

@@ -136,6 +136,7 @@ pub enum ExtractFailure {
 }
 use ExtractFailure::*;
 
+#[macro_export]
 macro_rules! traverse {
     ($t1:ty, $t2:ty, $x:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
         struct AnonTraversal {}
@@ -152,10 +153,11 @@ macro_rules! traverse {
     }};
 }
 
+#[macro_export]
 macro_rules! traverseh {
     ($t1:ty, $t2:ty, $t3:ty, $x:expr, $v0:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
         struct AnonTraversal{ v: $t3 }
-        impl Traversal<$t1, $t2> for AnonTraversal {
+        impl $crate::Traversal<$t1, $t2> for AnonTraversal {
             #[inline(always)] fn new_var(&mut self, offset: usize) -> $t2 { ($new_var)(&mut self.v, offset) }
             #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> $t2 { ($var_ref)(&mut self.v, offset, i) }
             #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> $t2 { ($symbol)(&mut self.v, offset, s) }
@@ -165,7 +167,7 @@ macro_rules! traverseh {
         }
 
         let mut traversal = AnonTraversal{ v: $v0 };
-        let result = execute_loop(&mut traversal, $x, 0).1;
+        let result = $crate::execute_loop(&mut traversal, $x, 0).1;
         (traversal.v, result)
     }};
 }
@@ -846,7 +848,7 @@ impl Expr {
     }
 }
 
-trait Traversal<A, R> {
+pub trait Traversal<A, R> {
     fn new_var(&mut self, offset: usize) -> R;
     fn var_ref(&mut self, offset: usize, i: u8) -> R;
     fn symbol(&mut self, offset: usize, s: &[u8]) -> R;
@@ -876,7 +878,7 @@ fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R
     }
 }
 
-fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
+pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
     // example run with e = [3] a [2] x y [2] p q
     // 3 zero()
     // value = symbol(a); 2 add(zero(), symbol(a))

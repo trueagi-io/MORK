@@ -473,7 +473,8 @@ impl Service<Request<IncomingBody>> for MorkService {
                 }
             };
         }
-        dispatch!(
+        #[cfg(not(feature="neo4j"))]
+        dispatch!{
             | GET => BusywaitCmd
             | GET => ClearCmd
             | GET => CopyCmd
@@ -484,7 +485,34 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => StopCmd
             | POST => UploadCmd
             | GET => TransformCmd
-        )
+
+
+            | POST => ClearDerivedPrefixCmd
+            | POST => UploadDerivedPrefixCmd
+            | GET => ExportDerivedPrefixCmd
+        }
+        #[cfg(feature="neo4j")]
+        dispatch!{
+            | GET => BusywaitCmd
+            | GET => ClearCmd
+            | GET => CopyCmd
+            | GET => CountCmd
+            | GET => ExportCmd
+            | GET => ImportCmd
+            | GET => StatusCmd
+            | GET => StopCmd
+            | POST => UploadCmd
+            | GET => TransformCmd
+            // neo4j
+            | GET => LoadNeo4jTriplesCmd
+            | GET => LoadNeo4jNodePropertiesCmd
+            | GET => LoadNeo4jNodeLabelsCmd
+
+
+            | POST => ClearDerivedPrefixCmd
+            | POST => UploadDerivedPrefixCmd
+            | GET => ExportDerivedPrefixCmd
+        }
     }
 }
 

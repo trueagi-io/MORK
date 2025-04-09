@@ -84,6 +84,7 @@ impl CommandDefinition for ClearCmd {
     }
 }
 
+
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // copy
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -524,17 +525,17 @@ mod neo4j_commands {
     }
 
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-    // LoadNeo4jTriples
+    // load_neo4j_triples
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
     load_neo4j!{struct LoadNeo4jTriplesCmd; const NAME = "load_neo4j_triples"; fn load_neo4j_triples}
 
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-    // LoadNeo4jNodeProperties
+    // load_neo4j_node_properties
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
     load_neo4j!{struct LoadNeo4jNodePropertiesCmd; const NAME = "load_neo4j_node_properties"; fn load_neo4j_node_properties}
 
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-    // LoadNeo4jNodeProperties
+    // load_neo4j_node_labels
     // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
     load_neo4j!{struct LoadNeo4jNodeLabelsCmd; const NAME = "load_neo4j_node_labels"; fn load_neo4j_node_labels}
 
@@ -749,20 +750,7 @@ impl CommandDefinition for UploadCmd {
         let writer = ctx.0.space.new_writer(map_path, &())?;
 
         //Read all the data from the post request
-        let mut post_data_buf = BytesMut::with_capacity(4096);
-        while let Some(chunk) = req.frame().await {
-            match chunk {
-                Ok(frame) => {
-                    if let Some(data) = frame.data_ref() {
-                        post_data_buf.extend_from_slice(data);
-                    }
-                }
-                Err(err) => {
-                    return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Error reading POST data: {err}")))
-                }
-            }
-        }
-        let data = post_data_buf.freeze();
+        let data = get_all_post_frame_bytes(&mut req).await;
 
         // Do the Parsing
         //========================
@@ -771,7 +759,7 @@ impl CommandDefinition for UploadCmd {
         let src_buf = data;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf[..], &mut path_writer, data_format)
+            do_parse(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {
@@ -785,6 +773,25 @@ impl CommandDefinition for UploadCmd {
         Ok("ACK. Upload Successful".into())
     }
 }
+        
+/// Read all the data from the post request
+async fn get_all_post_frame_bytes(req : &mut Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    let mut post_data_buf = BytesMut::with_capacity(4096);
+    while let Some(chunk) = req.frame().await {
+        match chunk {
+            Ok(frame) => {
+                if let Some(data) = frame.data_ref() {
+                    post_data_buf.extend_from_slice(data);
+                }
+            }
+            Err(err) => {
+                return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Error reading POST data: {err}")))
+            }
+        }
+    }
+    Ok(post_data_buf.freeze())
+}
+
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Command mechanism implementation
@@ -949,5 +956,278 @@ impl ArgVal {
             Self::String(string) => &*string,
             _ => unreachable!()
         }
+    }
+}
+
+
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// upload_derived_prefix
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Upload data directly to the map via a post request
+pub struct UploadDerivedPrefixCmd;
+
+impl CommandDefinition for UploadDerivedPrefixCmd {
+    const NAME: &'static str = "upload_derived_prefix";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::String,
+            name: "prefix_sexpr",
+            desc: "Sexpr to derive a prefix to upload to, it must only contain constants, \
+                   the last constant will be replaced with the data ie: sexpr `(a (b c) (d e f))` => prefix `(a (b c) (d e _))`",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[
+            PropDef {
+                arg_type: ArgType::String,
+                name: "format",
+                desc: "The format to expect, default is metta S-Expressions",
+                required: false
+            }
+        ]
+    }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
+        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
+
+        let sexpr = cmd.args[0].as_str();
+        for each in sexpr.chars() {
+            if matches!(each, '$') {return Err(CommandError::external(StatusCode::EXPECTATION_FAILED, "`prefix_sexpr` must not have any variables (`$`)"));}
+        }
+        let expr = ctx.0.space.sexpr_to_expr(sexpr).map_err(|_| CommandError::external(StatusCode::EXPECTATION_FAILED, "invalid `prefix_sexpr`, not a valid metta S-Expression"))?;
+
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+
+
+        let writer = ctx.0.space.new_writer(prefix, &())?;
+
+        //Read all the data from the post request
+        let data = get_all_post_frame_bytes(&mut req).await;
+
+        // Do the Parsing
+        //========================
+        let ctx_clone = ctx.clone();
+        let mut path_writer = writer;
+        let src_buf = data;
+        let data_format = format;
+        match tokio::task::spawn_blocking(move || {
+            do_parse(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
+        }).await.map_err(CommandError::internal)? {
+            Ok(()) => {},
+            Err(err) => {
+                //User-facing error
+                println!("Upload Failed. Parse error: {err:?}"); //GOAT, log this failure
+                return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Failed to parse uploaded data: {err:?}")))
+            }
+        };
+
+        thread.unwrap().finalize().await;
+        Ok("ACK. Upload Successful".into())
+    }
+}
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// clear_derived_prefix
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Clears all data below a derived prefix
+pub struct ClearDerivedPrefixCmd;
+impl CommandDefinition for ClearDerivedPrefixCmd {
+    const NAME: &'static str = "clear_derived_prefix";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, _cmd: Command, _thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
+
+        let bytes = post_bytes.bytes().collect::<Result<Vec<u8>, std::io::Error>>()?;
+        let sexpr = String::from_utf8_lossy(&bytes);
+        let expr = ctx.0.space.sexpr_to_expr(&sexpr).map_err(|e|CommandError::internal(format!("failed to parse MeTTa S-Expressions from in POST request: {e:?}")))?;
+
+        let prefix = derive_prefix_from_expr_slice(&expr);
+        let mut writer = ctx.0.space.new_writer(prefix.till_constant_to_full(), &())?;
+
+        let mut wz = ctx.0.space.write_zipper(&mut writer);
+        wz.remove_branches();
+        wz.remove_value();
+        Ok("ACK. Cleared at derived prefix".into())
+    }
+}
+
+type ExprPrefixSlice<'a> = &'a [u8];
+#[derive(Clone, Copy, Debug)]
+enum DerivedPrefix<'a> {
+    TillVar(ExprPrefixSlice<'a>),
+    TillConst{ full : ExprPrefixSlice<'a>, till_last_constant : ExprPrefixSlice<'a>},
+}
+impl<'a> DerivedPrefix<'a> {
+    /// the [`Self::TillConstant`] variant will be collapsed to the `full` field, and the [`Self::TillVar`] variant to it's inner value
+    fn till_constant_to_full(self)-> ExprPrefixSlice<'a> {
+        match self {
+            DerivedPrefix::TillVar(items) => items,
+            DerivedPrefix::TillConst { full, .. } => full,
+        }
+    }
+    #[allow(unused)]
+    /// the [`Self::TillConstant`] variant will be collapsed to the `till_last_constant` field, and the [`Self::TillVar`] variant to it's inner value
+    fn till_constant_to_till_last_constant(self) -> ExprPrefixSlice<'a> {
+        match self {
+            DerivedPrefix::TillVar(items) => items,
+            DerivedPrefix::TillConst { till_last_constant, .. } => till_last_constant,
+        }
+    }
+}
+
+// wrapper for [`mork_bytestring::Expr::prefix`] to make the interface more straight-forward
+fn derive_prefix_from_expr_slice(expr_slice : &[u8]) -> DerivedPrefix<'_>{
+    unsafe {
+      match (mork_bytestring::Expr{
+          ptr : expr_slice.as_ptr() as *mut _
+      })
+      .prefix()
+      {
+        Ok(pre) => DerivedPrefix::TillVar(&*pre),
+        Err(till_last) => DerivedPrefix::TillConst {
+            full               : expr_slice, 
+            till_last_constant : &*till_last,
+        },
+      }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn prefix_assertions() {
+    let space = ServerSpace::new();
+
+    macro_rules! prefix_to_var { ($EXPR:ident :expr ; $PREFIX:ident : prefix ; $SEXPR:literal) => {
+        let se      = $SEXPR;
+        let $EXPR   = space.sexpr_to_expr(se).unwrap();
+        let $PREFIX = derive_prefix_from_expr_slice(& $EXPR);
+    }; }
+
+    prefix_to_var!(e1 : expr ; pe1 : prefix ; "a");
+    core::assert_eq!{e1, pe1.till_constant_to_full()};
+
+    prefix_to_var!(e2 : expr; pe2 : prefix; "$a");
+    core::assert_ne!{e2, pe2.till_constant_to_full()};
+    core::assert_eq!(pe2.till_constant_to_full(), pe1.till_constant_to_till_last_constant());
+
+    // ----
+
+    prefix_to_var!(e3 : expr; pe3 : prefix; "(a)");
+    core::assert_eq!{e3, pe3.till_constant_to_full()};
+
+    prefix_to_var!(e4 : expr; pe4 : prefix; "($a)");
+    core::assert_ne!{e4, pe4.till_constant_to_full()};
+    core::assert_eq!(pe4.till_constant_to_full(), pe3.till_constant_to_till_last_constant());
+
+    // ----
+
+    prefix_to_var!(e5 : expr; pe5 : prefix; "(a b)");
+    core::assert_eq!{e5, pe5.till_constant_to_full()};
+
+    prefix_to_var!(e6 : expr; pe6 : prefix; "(a $b)");
+    core::assert_ne!{e6, pe6.till_constant_to_full()};
+    core::assert_eq!{pe6.till_constant_to_full(), pe5.till_constant_to_till_last_constant()};
+
+    // ----
+
+    prefix_to_var!(e7 : expr; pe7 : prefix; "($a b)");
+    core::assert_ne!{e7, pe7.till_constant_to_full()};
+    core::assert_ne!{pe7.till_constant_to_full(), pe6.till_constant_to_full()};
+
+    prefix_to_var!(e8 : expr; pe8 : prefix; "($a (b c))");
+    core::assert_ne!{e8, pe8.till_constant_to_full()};
+    core::assert_eq!{pe8.till_constant_to_full(), pe7.till_constant_to_full()};
+
+    prefix_to_var!(e9 : expr; pe9 : prefix; "($a $b)");
+    core::assert_ne!{e9, pe9.till_constant_to_full()};
+    core::assert_eq!{pe9.till_constant_to_full(), pe7.till_constant_to_full()};
+
+    // ----
+
+    prefix_to_var!(e10 : expr; pe10 : prefix; "($a ($b c))");
+    core::assert_ne!{e10, pe10.till_constant_to_full()};
+    core::assert_eq!{pe10.till_constant_to_full(), pe7.till_constant_to_full()};
+
+    prefix_to_var!(e11 : expr; pe11 : prefix; "($a ($b $c))");
+    core::assert_ne!{e11, pe11.till_constant_to_full()};
+    core::assert_eq!{pe11.till_constant_to_full(), pe7.till_constant_to_full()};
+}
+
+
+
+
+
+
+
+
+
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// export_derived_prefix
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// deserialize a map, serve as a file to the client. 
+pub struct ExportDerivedPrefixCmd;
+
+impl CommandDefinition for ExportDerivedPrefixCmd {
+    const NAME: &'static str = "export_derived_prefix";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::String,
+            name: "prefix_sexpr",
+            desc: "Sexpr to derive a prefix to upload to, it must only contain constants, \
+                   the last constant will be replaced with the data ie: sexpr `(a (b c) (d e f))` => prefix `(a (b c) (d e _))`",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[
+            PropDef {
+                arg_type: ArgType::String,
+                name: "format",
+                desc: "The format to export, default is metta S-Expressions",
+                required: false
+            }
+        ]
+    }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        println!("HERE");
+        
+        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
+        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
+
+        //Get the reader for this path in the map, which makes it off-limits to writers
+        let sexpr = cmd.args[0].as_str();
+        for each in sexpr.chars() {
+            if matches!(each, '$') {return Err(CommandError::external(StatusCode::EXPECTATION_FAILED, "`prefix_sexpr` must not have any variables (`$`)"));}
+        }
+        let expr = ctx.0.space.sexpr_to_expr(sexpr).map_err(|_| CommandError::external(StatusCode::EXPECTATION_FAILED, "invalid `prefix_sexpr`, not a valid metta S-Expression"))?;
+
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+
+        let reader = ctx.0.space.new_reader(prefix, &())?;
+
+        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+            do_export(&ctx, reader, format)
+        }).await??;
+
+        thread.unwrap().finalize().await;
+        println!("ExportDerivedPrefix command successful"); // TODO log this!
+
+        Ok(out)
     }
 }

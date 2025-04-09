@@ -683,7 +683,74 @@ async fn clear_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Tests the "export" command
+/// Tests the "clear_derived_prefix" command
+#[tokio::test]
+async fn clear_derived_prefix_request_test() -> Result<(), Error> {
+    decl_lit!{in_path_head!() => "clear_derived_prefix_test_royals"}
+    // macro_rules! in_path {($HOLE:literal) => {concat!(
+    //     url_percent_encode!("("),
+    //                          in_path_head!(),    
+    //                          " ",
+    //         url_percent_encode!("("),
+    //                               "assign ", $HOLE, 
+    //         url_percent_encode!(")"),
+    //     url_percent_encode!(")")
+    // )};}
+
+    macro_rules! in_path {($HOLE:literal) => {concat!(
+        "(", in_path_head!()," (assign ", $HOLE, "))"
+    )};}
+
+    const _IN_PATH_DBG : &str = in_path!("$HOLE");
+
+    const UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload_derived_prefix",
+        "/", in_path!("here"),
+    );
+    const CLEAR_URL: &str = concat!( 
+        server_url!(),
+        "/", "clear_derived_prefix",
+    );
+    const EXPORT_URL: &str = concat!( 
+        server_url!(),
+        "/", "export_derived_prefix",
+        "/", in_path!("here"),
+    );
+    const PAYLOAD: &str = "(male Bob)";
+    wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    //Upload the data so we have something to clear
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {}", response.text().await?)
+    }
+    println!("Upload response: {}", response.text().await?);
+
+    // Clear the data
+    let response = reqwest::Client::new().post(CLEAR_URL).body(in_path!("$x")).send().await?;
+    // let response = reqwest::get(CLEAR_URL).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    println!("Clear response:\n{}", response.text().await?);
+
+    // Export the data to confirm nothing is there
+    let response = reqwest::get(EXPORT_URL).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_buf = response.text().await?;
+    println!("Export response:\n{}", response_buf);
+    assert_eq!(response_buf.len(), 0);
+
+    Ok(())
+}
+
+/// Tests the "transform" command
 #[tokio::test]
 async fn id_transform_request_test() -> Result<(), Error> {
     decl_lit!{in_path!() => "transform_test_in_royals"}

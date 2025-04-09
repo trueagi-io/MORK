@@ -348,7 +348,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         last = last.offset(1); *last = arity;
     };
     (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(SIZES));
+        let m = loc.child_mask().and(&ByteMask(SIZES));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
@@ -377,7 +377,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
          last = last.offset(-1);
     };
     (ITER_VARIABLES $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(VARS));
+        let m = loc.child_mask().and(&ByteMask(VARS));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
@@ -389,7 +389,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&mut Z) -> ()>(mut
         }
     };
     (ITER_ARITIES $recursive:expr) => {
-        let m = ByteMask(loc.child_mask()).and(&ByteMask(ARITIES));
+        let m = loc.child_mask().and(&ByteMask(ARITIES));
         let mut it = m.iter();
 
         while let Some(b) = it.next() {

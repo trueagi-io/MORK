@@ -5,7 +5,7 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle, WritePermit};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
-use pathmap::{trie_map::BytesTrieMap, utils::BitMask, zipper::*};
+use pathmap::{trie_map::BytesTrieMap, utils::ByteMask, utils::BitMask, zipper::*};
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
 pub type SExprCount     = usize;
@@ -364,7 +364,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-            let m = pathmap::utils::ByteMask(loc.child_mask()).and(&pathmap::utils::ByteMask(SIZES));
+            let m = loc.child_mask().and(&ByteMask(SIZES));
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
@@ -393,7 +393,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.pop();
         }
         ITER_VARIABLES => {
-            let m = pathmap::utils::ByteMask(loc.child_mask()).and(&pathmap::utils::ByteMask(VARS));
+            let m = loc.child_mask().and(&ByteMask(VARS));
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
@@ -405,7 +405,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             }
         }
         ITER_ARITIES => {
-            let m = pathmap::utils::ByteMask(loc.child_mask()).and(&pathmap::utils::ByteMask(ARITIES));
+            let m = loc.child_mask().and(&ByteMask(ARITIES));
             let mut it = m.iter();
 
             while let Some(b) = it.next() {

@@ -53,7 +53,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[4] res0 _1 _2 _3"));
     println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(expr!(s, "[4] res0 $ $ $"), |e| {
+    s.query(expr!(s, "[4] res0 $ $ $"), |_, e| {
         println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -78,7 +78,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[5] res1 _1 _2 _3 _4"));
     println!("transitive_chr1 {} ms", transitive_chr1_start.elapsed().as_millis());
     let mut count = 0;
-    s.query(expr!(s, "[5] res1 $ $ $ $"), |e| {
+    s.query(expr!(s, "[5] res1 $ $ $ $"), |_, e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -94,7 +94,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[6] res2 _1 _2 _3 _4 _5"));
     println!("q0 {}", q0_start.elapsed().as_micros());
     let mut count = 0;
-    s.query( expr!(s, "[6] res2 $ $ $ $ $"), |e| {
+    s.query( expr!(s, "[6] res2 $ $ $ $ $"), |_, e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });

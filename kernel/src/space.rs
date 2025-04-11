@@ -994,78 +994,7 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
-        let mut rz = self.btm.read_zipper();
-        rz.descend_to(&[0; 1024]);
-        rz.reset();
-        let mut pz = ExprZipper::new(pattern);
-        // let mut refexprs = [Expr{ ptr: null_mut() }; 64];
-        let mut references: Vec<Expr> = vec![];
-        let mut stack = vec![0; 4096];
-        stack[0] = ACTION;
-        let v = referential_bidirectional_matching_stack(&mut pz);
-        stack[1..1+v.len()].copy_from_slice(&v[..]);
-        referential_transition(&mut stack[v.len()], &mut rz, &mut references, &mut |refs, loc| {
-            let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            effect(e)
-        });
-    }
-
-    pub fn transform(&mut self, pattern: Expr, template: Expr) {
-        let constant_in_prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
-
-        let constant_out_prefix = unsafe { template.prefix().unwrap_or_else(|x| template.span()).as_ref().unwrap() };
-        let mut wz = self.write_zipper_at_unchecked(constant_out_prefix);
-        let mut buffer = [0u8; 512];
-
-
-        let mut rz = self.btm.read_zipper_at_path(constant_in_prefix);
-        rz.descend_to(&[0; 1024]);
-        rz.reset();
-        // todo specialize to existence check if template is constant
-        // todo create feedback signal from ExprZipper to buffer size
-        // let mut refexprs = [Expr{ ptr: null_mut() }; 64];
-        let mut references: Vec<Expr> = vec![];
-        let mut stack = vec![0; 4096];
-        stack[0] = ACTION;
-        let v = referential_bidirectional_matching_stack_traverse(pattern, constant_in_prefix.len());
-        stack[1..1+v.len()].copy_from_slice(&v[..]);
-        referential_transition(&mut stack[v.len()], &mut rz, &mut references, &mut |refs, loc| {
-            // todo split Readable and Writeable Expr
-
-            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            template.substitute(refs, &mut oz);
-            wz.descend_to(&buffer[constant_out_prefix.len()..oz.loc]);
-            wz.set_value(());
-            wz.reset()
-            // match e.transformData(pattern, template, &mut oz) {
-            //     Ok(()) => {
-            //         // todo (here and below) descend to dynamic path and reset/ascend to static prefix
-            //         // println!("{}", sexpr!(self, oz.root));
-            //         wz.descend_to(&buffer[..oz.loc]);
-            //         wz.set_value(());
-            //         wz.reset()
-            //     }
-            //     Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
-            //         // upgrade to full unification
-            //         // println!("full unification");
-            //         match e.transform(pattern, template) {
-            //             Ok(e) => {
-            //                 wz.descend_to(unsafe { &*e.span() });
-            //                 wz.set_value(());
-            //                 wz.reset()
-            //             }
-            //             _ => {
-            //
-            //             }
-            //         }
-            //     }
-            //     _ => {}
-            // }
-        });
-    }
-
-    pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
+    pub fn query_multi<F : FnMut(&[Expr], Expr) -> ()>(&self, patterns: &[Expr], mut effect: F) {
         let mut first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
         let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
         let mut tmp_maps = vec![];
@@ -1083,7 +1012,6 @@ impl Space {
         prz.descend_to(&[0; 4096]);
         prz.reset();
 
-        let mut buffer = [0u8; 512];
         let mut stack = vec![0; 1];
         stack[0] = ACTION;
 
@@ -1093,35 +1021,42 @@ impl Space {
         }
         stack.reserve(4096);
 
-        // let mut compound = Expr{ ptr: compound_vec.as_mut_ptr() };
-        // let v = referential_bidirectional_matching_stack(&mut ExprZipper::new(compound));
-        // assert_eq!(v, referential_bidirectional_matching_stack_traverse(compound, 0));
-        // stack[1..1+v.len()].copy_from_slice(&v[..]);
-        let mut btm = BytesTrieMap::new();
         let mut references: Vec<Expr> = vec![];
         let mut candidate = 0;
         referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
             let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            // println!("{}", sexpr!(self, e));
-            template.substitute(refs, &mut oz);
-            btm.insert(&buffer[..oz.loc], ());
-            // match e.transformData(compound, template, &mut oz) {
-            //     Ok(()) => {
-            //         btm.insert(&buffer[..oz.loc], ());
-            //     }
-            //     Err(ExtractFailure::IntroducedVar()) | Err(ExtractFailure::RecurrentVar(_)) => {
-            //         todo!()
-            //     }
-            //     Err(other) => {
-            //         println!("err {:?}", other);
-            //     }
-            // }
+            effect(refs, e);
             candidate += 1;
         });
-        drop(prz);
-        // drop(arity_hack);
-        self.btm = self.btm.join(&btm);
+    }
+
+    pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) {
+        let mut buffer = [0u8; 512];
+        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
+        let mut template_wzs: Vec<_> = template_prefixes.iter().map(|p| self.write_zipper_at_unchecked(p)).collect();
+
+        self.query_multi(patterns, |refs, loc| {
+            for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes.iter()).zip(templates.iter()) {
+                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+                template.substitute(refs, &mut oz);
+                wz.descend_to(&buffer[prefix.len()..oz.loc]);
+                wz.set_value(());
+                wz.reset();
+            }
+        });
+        drop(template_prefixes)
+    }
+
+    pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {
+        self.transform_multi_multi(patterns, &[template])
+    }
+
+    pub fn transform(&mut self, pattern: Expr, template: Expr) {
+        self.transform_multi_multi(&[pattern], &[template])
+    }
+
+    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
+        self.query_multi(&[pattern], effect)
     }
 
     pub fn done(self) -> ! {

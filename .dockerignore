@@ -1,0 +1,17 @@
+target
+notes
+.git
+.gitignore
+.dockerignore
+Dockerfile
+
+.env
+.env.local
+server/.env
+server/.env.local
+
+
+PathMap/target
+PathMap/.gitignore
+PathMap/notes
+PathMap/pathmap-book

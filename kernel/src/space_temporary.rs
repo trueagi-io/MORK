@@ -364,11 +364,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.push(arity)
         }
         ITER_SYMBOL_SIZE => {
-<<<<<<< HEAD
-            let m = loc.child_mask().and(&ByteMask(SIZES));
-=======
             let m = loc.child_mask().and(&pathmap::utils::ByteMask(SIZES));
->>>>>>> 4da5072 (first step to sexpr prefix.)
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
@@ -397,11 +393,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             stack.pop();
         }
         ITER_VARIABLES => {
-<<<<<<< HEAD
-            let m = loc.child_mask().and(&ByteMask(VARS));
-=======
             let m = loc.child_mask().and(&pathmap::utils::ByteMask(VARS));
->>>>>>> 4da5072 (first step to sexpr prefix.)
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
@@ -413,11 +405,7 @@ pub(crate) fn transition<'s, Z : ZipperIteration<'s, ()>, F:  FnMut(&mut Z) -> (
             }
         }
         ITER_ARITIES => {
-<<<<<<< HEAD
-            let m = loc.child_mask().and(&ByteMask(ARITIES));
-=======
             let m = loc.child_mask().and(&pathmap::utils::ByteMask(ARITIES));
->>>>>>> 4da5072 (first step to sexpr prefix.)
             let mut it = m.iter();
 
             while let Some(b) = it.next() {

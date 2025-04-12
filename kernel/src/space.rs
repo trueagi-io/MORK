@@ -680,7 +680,12 @@ impl Space {
     }
      */
 
-    pub fn load_csv(&mut self, r: &[u8]) -> Result<usize, String> {
+
+    pub fn load_csv(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+        let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+        let mut buf = [0u8; 2048];
+
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut pdp = ParDataParser::new(&self.sm);
@@ -699,7 +704,14 @@ impl Space {
             let total = ez.loc;
             ez.reset();
             ez.write_arity(a);
-            self.btm.insert(&stack[..total], ());
+
+            let data = &stack[..total];
+            let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
+            Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz);
+            let new_data = &buf[..oz.loc];
+            wz.descend_to(&new_data[constant_template_prefix.len()..]);
+            wz.set_value(());
+            wz.reset();
             i += 1;
         }
 

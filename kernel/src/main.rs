@@ -103,6 +103,18 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
+    let csv_contents = r#"1,2
+10,20"#;
+
+    let mut s = Space::new();
+    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] my precious _2")).unwrap();
+
+    let mut v = vec![];
+    s.dump_sexpr(Prefix::NONE, &mut v).unwrap();
+
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
+
     // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
     //
     // return;

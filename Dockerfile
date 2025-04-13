@@ -1,37 +1,32 @@
-FROM rust:1.86 as builder
-
-RUN apt-get update && apt-get install -y \
-    cmake \
-    pkg-config \
-    libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+FROM rust:1.86-alpine AS builder
 
 WORKDIR /mork
 
 COPY . .
 
 # TODO: follow up with release and remove this when needed
-# building the image requires PathMap to be present in the MORK project root folder, until PathMap is released
 COPY ./PathMap /PathMap
+
+RUN apk add --no-cache \
+    build-base \
+    musl-dev \
+    g++ \
+    pkgconfig \
+    cmake \
+    openssl-dev \ 
+    openssl-libs-static
+
+RUN rustup target add x86_64-unknown-linux-musl
 
 # needed to compile gxhash
 ENV RUSTFLAGS="-C target-cpu=native"
 
-RUN cargo build --release --bin mork_server
+RUN cargo build --release --bin mork_server --target x86_64-unknown-linux-musl
 
-FROM debian:bookworm-slim
+FROM alpine:3.19
 
-RUN apt-get update && apt-get install -y \
-    libssl3 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /mork/target/x86_64-unknown-linux-musl/release/mork_server /usr/local/bin/
 
-COPY --from=builder /mork/target/release/mork_server /usr/local/bin/
+RUN rm -rf /var/cache/apk/* /tmp/* /mork
 
 ENTRYPOINT ["/usr/local/bin/mork_server"]
-
-# mork_server ENV vars:
-# MORK_SERVER_ADDR
-# MORK_SERVER_PORT
-

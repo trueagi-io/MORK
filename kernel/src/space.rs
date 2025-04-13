@@ -707,7 +707,10 @@ impl Space {
 
             let data = &stack[..total];
             let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
-            Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz);
+            match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+                Ok(()) => {}
+                Err(e) => { continue }
+            }
             let new_data = &buf[..oz.loc];
             wz.descend_to(&new_data[constant_template_prefix.len()..]);
             wz.set_value(());

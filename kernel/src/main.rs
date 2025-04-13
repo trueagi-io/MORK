@@ -104,10 +104,12 @@ fn work(s: &mut Space) {
 
 fn main() {
     let csv_contents = r#"1,2
-10,20"#;
+10,20
+10,30"#;
 
     let mut s = Space::new();
-    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] my precious _2")).unwrap();
+    // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
+    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
 
     let mut v = vec![];
     s.dump_sexpr(Prefix::NONE, &mut v).unwrap();

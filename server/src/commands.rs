@@ -1011,10 +1011,10 @@ impl CommandDefinition for UploadDerivedPrefixCmd {
 
         // Do the Parsing
         //========================
-        let ctx_clone = ctx.clone();
+        let ctx_clone       = ctx.clone();
         let mut path_writer = writer;
-        let src_buf = data;
-        let data_format = format;
+        let src_buf         = data;
+        let data_format     = format;
         match tokio::task::spawn_blocking(move || {
             do_parse(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
         }).await.map_err(CommandError::internal)? {
@@ -1046,6 +1046,13 @@ impl CommandDefinition for ClearDerivedPrefixCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
+    /*
+    (a (b $c) ($d e))
+
+    (a (b $c) _)
+    
+    (a (b c) (d _))
+     */
     async fn work(ctx: MorkService, _cmd: Command, _thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
 
@@ -1222,4 +1229,52 @@ impl CommandDefinition for ExportDerivedPrefixCmd {
 
         Ok(out)
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn get_first_subexpr() {
+    use mork_bytestring::Tag;
+
+    let space = ServerSpace::new();
+
+    let input = "((a b) 
+                  ((c d e)
+                   (f g h)
+                   (i j k)
+                  )
+                 )";
+
+    let mut expr = space.sexpr_to_expr(input).unwrap();
+    let expr_ = 
+        mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
+    let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
+
+
+    expr_z.next_child();
+    let start = expr_z.subexpr();
+    println!("{:?}",unsafe{&*start.span()});
+
+    expr_z.next_child();
+    let end = expr_z.subexpr();
+    println!("{:?}",unsafe{&*end.span()});
+
+
+    let mut end_z = mork_bytestring::ExprZipper::new(end.clone());
+    match end_z.item() {
+        Ok(Tag::Arity(arity)) => {
+            println!("END_Z");
+            for _ in 0..arity {
+                end_z.next_child();
+                let sub = end_z.subexpr();
+                println!("{:?}",unsafe{&*sub.span()});
+            }
+        }
+        _ => panic!()
+    }
+
+
+
+    panic!();
 }

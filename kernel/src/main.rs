@@ -56,7 +56,7 @@ fn bench_1() {
 fn work(s: &mut Space) {
     let add_gene_name_index_start = Instant::now();
     s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
-    println!("add gene name index took {}", add_gene_name_index_start.elapsed().as_secs());
+    println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
     s.statistics();
 
     let all_related_to_gene_start = Instant::now();
@@ -67,7 +67,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[4] res0 _1 _2 _3"));
     println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[4] res0 $ $ $"), |e| {
+    s.query(expr!(s, "[4] res0 $ $ $"), |_, e| {
         println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -90,9 +90,9 @@ fn work(s: &mut Space) {
         expr!(s, "[4] SPO _2 translates_to $"),
         expr!(s, "[4] OPS _3 interacts_with $"),
     ], expr!(s, "[5] res1 _1 _2 _3 _4"));
-    println!("transitive_chr1 {}", transitive_chr1_start.elapsed().as_micros());
+    println!("transitive_chr1 {} ms", transitive_chr1_start.elapsed().as_millis());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[5] res1 $ $ $ $"), |_| {
+    s.query(expr!(s, "[5] res1 $ $ $ $"), |_, e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -108,7 +108,7 @@ fn work(s: &mut Space) {
     ], expr!(s, "[6] res2 _1 _2 _3 _4 _5"));
     println!("q0 {}", q0_start.elapsed().as_micros());
     let mut count = 0;
-    s.query(Prefix::NONE, expr!(s, "[6] res2 $ $ $ $ $"), |_| {
+    s.query( expr!(s, "[6] res2 $ $ $ $ $"), |_, e| {
         // println!("{}", sexpr!(s, e));
         count += 1
     });
@@ -204,6 +204,23 @@ fn bench_2() {
         println!("symbols backup took {}", backup_symbols_start.elapsed().as_secs());
     }
     work(&mut s);
+}
+
+
+fn load_csv_with_pat() {
+    let csv_contents = r#"1,2
+10,20
+10,30"#;
+
+    let mut s = Space::new();
+    // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
+    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
+
+    let mut v = vec![];
+    s.dump_sexpr(Prefix::NONE, &mut v).unwrap();
+
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
 }
 
 #[allow(unused_variables)]

@@ -102,7 +102,7 @@ pub trait Space {
     fn load_csv<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(dst);
-        load_csv_impl(sm, &mut wz, src_data).map_err(ParseError)
+        load_csv_old_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
 
     fn load_json<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
@@ -678,7 +678,7 @@ pub(crate) fn query_impl<'r, RZ,F : FnMut(Expr) -> ()>(rz : &mut RZ, pattern: Ex
 
 
 
-pub(crate) fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
+pub(crate) fn load_csv_old_impl<WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -713,6 +713,49 @@ pub(crate) fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: 
     Ok(i)
 }
 
+pub fn load_csv_impl<'s, WZ>(sm : &SharedMappingHandle, wz_fn : impl FnOnce(&[u8]) -> Result<&'s mut WZ, String> + 's, r: &str, pattern: Expr, template: Expr) -> Result<crate::space::PathCount, String>
+    where
+        WZ : Zipper + ZipperMoving + ZipperWriting<()>
+{
+    let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+    let mut wz = wz_fn(constant_template_prefix)?;
+
+    let mut buf = [0u8; 2048];
+
+    let mut i = 0;
+    let mut stack = [0u8; 2048];
+    let mut pdp = ParDataParser::new(&self.sm);
+    for sv in r.as_bytes().split(|&x| x == b'\n') {
+        if sv.len() == 0 { continue }
+        let mut a = 0;
+        let e = Expr{ ptr: stack.as_mut_ptr() };
+        let mut ez = ExprZipper::new(e);
+        ez.loc += 1;
+        for symbol in sv.split(|&x| x == b',') {
+            let internal = pdp.tokenizer(symbol);
+            ez.write_symbol(&internal[..]);
+            ez.loc += internal.len() + 1;
+            a += 1;
+        }
+        let total = ez.loc;
+        ez.reset();
+        ez.write_arity(a);
+
+        let data = &stack[..total];
+        let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
+        match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+            Ok(()) => {}
+            Err(e) => { continue }
+        }
+        let new_data = &buf[..oz.loc];
+        wz.descend_to(&new_data[constant_template_prefix.len()..]);
+        wz.set_value(());
+        wz.reset();
+        i += 1;
+    }
+
+    Ok(i)
+}
 
 
 

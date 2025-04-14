@@ -339,7 +339,8 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
 }
 
 fn main() {
-    let filepath = "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3/kg_properties_aggregated.metta";
+    // let filepath = "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3/kg_properties_aggregated.metta";
+    let filepath = "/home/adam/Projects/MORK/frontend/resources/edges67458171.metta";
     let file = std::fs::File::open(filepath)
         .expect("Should have been able to read the file");
     let slice = unsafe { memmap2::Mmap::map(&file).unwrap() };

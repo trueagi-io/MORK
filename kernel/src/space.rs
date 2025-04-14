@@ -1,7 +1,9 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
+use std::any::Any;
 use std::fs::File;
-use std::ptr::addr_of;
+use std::mem::MaybeUninit;
+use std::ptr::{addr_of, null_mut};
 use std::time::Instant;
 use pathmap::zipper::{ProductZipper, ZipperSubtries};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
@@ -86,7 +88,7 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
-fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
     unsafe {
     macro_rules! unroll {
     (ACTION $recursive:expr) => { f(&references[..], loc); };
@@ -270,7 +272,7 @@ fn referential_transition<Z : ZipperMoving + Zipper, F: FnMut(&[Expr], &mut Z) -
     };
     (BEGIN_RANGE $recursive:expr) => {
         // references.push((loc.path().len() as u32, 0));
-        let p = loc.path();
+        let p = loc.origin_path().unwrap();
         references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
         $recursive;
         references.pop();
@@ -465,6 +467,11 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
     ).0.0;
     v.reverse();
     v
+}
+
+unsafe extern "C" {
+    fn longjmp(env: &mut [u64; 64], status: i32);
+    fn setjmp(env: &mut [u64; 64]) -> i32;
 }
 
 pub struct ParDataParser<'a> { count: u64,
@@ -912,19 +919,28 @@ impl Space {
         Ok((nodes, labels))
     }
 
-    pub fn load_sexpr(&mut self, prefix: Prefix, r: &[u8]) -> Result<usize, String> {
+    pub fn load_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+        let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+        let mut buffer = [0u8; 4096];
         let mut it = Context::new(r);
-        let mut submap = BytesTrieMap::new();
-        let t0 = Instant::now();
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(&self.sm);
-        println!("pp {:?}", prefix.path());
         loop {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
-                    submap.insert(&stack[..ez.loc], ());
+                    let data = &stack[..ez.loc];
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_ptr().cast_mut() });
+                    match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+                        Ok(()) => {}
+                        Err(e) => { continue }
+                    }
+                    let new_data = &buffer[..oz.loc];
+                    wz.descend_to(&new_data[constant_template_prefix.len()..]);
+                    wz.set_value(());
+                    wz.reset();
                 }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
@@ -932,41 +948,34 @@ impl Space {
             i += 1;
             it.variables.clear();
         }
-        self.btm.write_zipper_at_path(prefix.path()).graft_map(submap);
-        println!("loading took {} ms", t0.elapsed().as_millis());
         Ok(i)
     }
 
-    pub fn dump_sexpr<W : Write>(&self, prefix: Prefix, w: &mut W) -> Result<usize, String> {
-        let mut rz = self.btm.read_zipper_at_path(prefix.path());
+    pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
+        let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
 
-        let t0 = Instant::now();
-        let mut i = 0;
-        loop {
-            match rz.to_next_val() {
-                None => { break }
-                Some(()) => {
-                    let path = rz.path();
-                    let e = Expr { ptr: path.as_ptr().cast_mut() };
+        let mut buffer = [0u8; 4096];
 
-                    e.serialize(w, |s| {
-                        #[cfg(feature="interning")]
-                        {
-                        let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                        let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                        // println!("symbol {symbol:?}, bytes {mstr:?}");
-                        unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-                        }
-                        #[cfg(not(feature="interning"))]
-                        unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-                    });
-                    w.write(&[b'\n']).map_err(|x| x.to_string())?;
-                    i += 1;
+        self.query_multi(&[pattern], |refs, loc| {
+            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+            template.substitute(refs, &mut oz);
+
+            // &buffer[constant_template_prefix.len()..oz.loc]
+            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
+                #[cfg(feature="interning")]
+                {
+                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                    // println!("symbol {symbol:?}, bytes {mstr:?}");
+                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                 }
-            }
-        }
-        println!("dumping took {} ms", t0.elapsed().as_millis());
-        Ok(i)
+                #[cfg(not(feature="interning"))]
+                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+            });
+            w.write(&[b'\n']).map_err(|x| x.to_string())?;
+
+            Ok(())
+        })
     }
 
     pub fn backup_symbols<out_dir_path : AsRef<std::path::Path>>(&self, path: out_dir_path) -> Result<(), std::io::Error>  {
@@ -1009,8 +1018,8 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<F : FnMut(&[Expr], Expr) -> ()>(&self, patterns: &[Expr], mut effect: F) {
-        let mut first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
+    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
+        let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
         let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
@@ -1038,11 +1047,37 @@ impl Space {
 
         let mut references: Vec<Expr> = vec![];
         let mut candidate = 0;
-        referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
-            let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-            effect(refs, e);
-            candidate += 1;
+        thread_local! {
+            static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
+            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(null_mut()) };
+        }
+
+        BREAK.with_borrow_mut(|a| {
+            if unsafe { setjmp(a) == 0 } {
+                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
+                    let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+                    match effect(refs, e) {
+                        Ok(()) => {}
+                        Err(t) => {
+                            let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<T>()) };
+                            unsafe { std::ptr::write(t_ptr as *mut T, t) };
+                            RET.set(t_ptr);
+                            unsafe { longjmp(a, 1) }
+                        }
+                    }
+                    unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+                })
+            }
         });
+        RET.with(|mptr| {
+            if mptr.get().is_null() { Ok(candidate) }
+            else {
+                let tref = unsafe { mptr.get() };
+                let t = unsafe { std::ptr::read(tref as _) };
+                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<T>()) };
+                Err(t)
+            }
+        })
     }
 
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) {
@@ -1058,7 +1093,8 @@ impl Space {
                 wz.set_value(());
                 wz.reset();
             }
-        });
+            Ok::<(), ()>(())
+        }).unwrap();
         drop(template_prefixes)
     }
 
@@ -1071,7 +1107,7 @@ impl Space {
     }
 
     pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
-        self.query_multi(&[pattern], effect)
+        self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 
     pub fn done(self) -> ! {

@@ -103,16 +103,21 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
-    let csv_contents = r#"1,2
+    const csv_contents: &str = r#"1,2
 10,20
 10,30"#;
 
+    const sexpr_contents: &str = r#"(useful (Foo 1))
+(useless ((- o -) (- o -)))"#;
+
     let mut s = Space::new();
     // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
-    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
+    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] data [2] mycsv [3] my precious _1")).unwrap();
+
+    s.load_sexpr(sexpr_contents.as_bytes(), expr!(s, "[2] useful $"), expr!(s, "[2] data [2] mysexpr _1")).unwrap();
 
     let mut v = vec![];
-    s.dump_sexpr(Prefix::NONE, &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
     println!("{}", String::from_utf8(v).unwrap());
     return;

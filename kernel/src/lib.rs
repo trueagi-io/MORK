@@ -1,19 +1,19 @@
 pub mod space;
-mod space_temporary;
-pub use space_temporary::*;
-
 mod json_parser;
 pub mod prefix;
+mod space_temporary;
+pub use space_temporary::*;
 
 #[cfg(test)]
 mod tests {
     use std::fs::File;
     use std::io::Read;
+    use std::str::from_utf8_unchecked;
     use std::time::Instant;
     use mork_frontend::bytestring_parser::Parser as SExprParser;
-    use mork_bytestring::{Expr, parse, ExprZipper};
+    use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
     use crate::{expr, sexpr, prefix};
-    use crate::json_parser::{Parser, WriteTranscriber};
+    use crate::json_parser::{Parser, DebugTranscriber, WriteTranscriber};
     use crate::prefix::Prefix;
     use crate::space::*;
 
@@ -110,7 +110,7 @@ mod tests {
         assert_eq!(16, s.load_sexpr(Prefix::NONE, SEXPRS0).unwrap());
 
         let mut i = 0;
-        s.query(Prefix::NONE, expr!(s, "[2] children [2] $ $"), |e| {
+        s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(children (0 Catherine))") }
                 1 => { assert_eq!(sexpr!(s, e), "(children (1 Thomas))") }
@@ -128,7 +128,7 @@ mod tests {
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
-        s.query(Prefix::NONE, expr!(s, "[2] child_results $"), |e| {
+        s.query(expr!(s, "[2] child_results $"), |_, e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
                 1 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
@@ -143,8 +143,8 @@ mod tests {
     fn transform_multi() {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
-        let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
-        s.load_sexpr(Prefix::NONE, unsafe {std::str::from_utf8_unchecked(fileb.as_slice())} ).unwrap();
+        let mut fileb = vec![]; file.read_to_end(&mut fileb);
+        s.load_sexpr(Prefix::NONE, std::str::from_utf8(&fileb).unwrap()).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -181,8 +181,8 @@ mod tests {
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(Prefix::NONE, expr!(s, "[2] axiom [3] = $ $"), |e| c_in += 1);
-        let mut c_out = 0; s.query(Prefix::NONE, expr!(s, "[2] flip [3] = $ $"), |e| c_out += 1);
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_, e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_, e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();
@@ -195,9 +195,9 @@ mod tests {
         let mut s = Space::new();
         let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta")
           .expect("Should have been able to read the file");
-        let mut buf = String::new();
-        file.read_to_string(&mut buf).unwrap();
-        s.load_sexpr(Prefix::NONE, &buf[..]).unwrap();
+        let mut buf = vec![];
+        file.read_to_end(&mut buf).unwrap();
+        s.load_sexpr(Prefix::NONE, unsafe { from_utf8_unchecked(&buf[..]) }).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
@@ -205,7 +205,7 @@ mod tests {
         // s.query(expr!(s, "[2] axiom [3] = $ $"), |e| { println!("> {}", sexpr!(s, e)) });
         let t0 = Instant::now();
         let mut k = 0;
-        s.query(Prefix::NONE, expr!(s, "$x"), |e| {
+        s.query(expr!(s, "$x"), |_, e| {
             k += 1;
             std::hint::black_box(e);
             // println!("> {}", sexpr!(s, e))

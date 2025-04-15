@@ -419,11 +419,11 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file
             println!("Loaded {count} atoms from MeTTa S-Expr");
         },
         DataFormat::Json => {
-            let count = space.load_json(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_json_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            let count = space.load_csv(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_csv_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
@@ -640,8 +640,8 @@ pub struct TransformCmd;
 
 #[repr(usize)]
 enum TransformArg {
-    FromSpacePath,
-    ToSpacePath,
+    // FromSpacePath,
+    // ToSpacePath,
     Pattern,
     Template,
     // keep this the last variant
@@ -657,20 +657,6 @@ impl CommandDefinition for TransformCmd {
             const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
             let mut args = [ZEROED; TransformArg::_Len as usize];
             use TransformArg as Arg;
-            args[Arg::FromSpacePath as usize] = 
-                ArgDef{
-                    arg_type: ArgType::Path,
-                    name: "from_space_path",
-                    desc: "The path in the map to be matched, the `from_space`. It must be disjoint with the `to_space_path`",
-                    required: true
-                };
-            args[Arg::ToSpacePath as usize] = 
-                ArgDef{
-                    arg_type: ArgType::Path,
-                    name: "to_space_path",
-                    desc: "The path in the map to be be written to, the `to_space`. It must be disjoint with the `from_space_path`",
-                    required: true
-                };
             args[Arg::Pattern as usize] = 
                 ArgDef{
                     arg_type: ArgType::String,
@@ -692,10 +678,6 @@ impl CommandDefinition for TransformCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        // get path permissions
-        let mut from_space = ctx.0.space.new_reader(cmd.args[TransformArg::FromSpacePath as usize].as_path(), &())?;
-        let mut to_space = ctx.0.space.new_writer(cmd.args[TransformArg::ToSpacePath as usize].as_path(), &())?;
-
         let mut pattern = ctx.0.space.sexpr_to_expr(cmd.args[TransformArg::Pattern as usize].as_str())
                     .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `pattern` : {e:?}")) )?;
 
@@ -704,7 +686,8 @@ impl CommandDefinition for TransformCmd {
 
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
-            ctx.0.space.transform(&mut from_space, &mut to_space, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() });
+            ctx.0.space.transform(mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, ())
+                .map_err(|e| format!("Tranform failed {:?}", e))?;
             Ok(())
         }).await;
 
@@ -791,6 +774,7 @@ async fn get_all_post_frame_bytes(req : &mut Request<IncomingBody>) -> Result<By
     }
     Ok(post_data_buf.freeze())
 }
+
 
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

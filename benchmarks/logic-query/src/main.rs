@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::hint::black_box;
 use std::io::Read;
 use std::ptr;
@@ -8,7 +9,7 @@ use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
-use pathmap::utils::ByteMaskIter;
+use pathmap::utils::{ByteMaskIter, ByteMask};
 
 
 static mut SIZES: [u64; 4] = [0u64; 4];
@@ -253,7 +254,6 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
     stack.push(last);
 }
 
-#[allow(unused_unsafe,unused_mut,unused_variables)]
 fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last: *mut u8, loc: &mut ReadZipperUntracked<()>, references: &mut Vec<(u32, u32)>, f: &mut F) {
     unsafe {
     macro_rules! unroll {
@@ -521,7 +521,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
     }
 }
 
-#[allow(dead_code)]
+
 fn indiscriminate_bidirectional_matching_stack(v0: *mut u8, ez: &mut ExprZipper) -> usize {
     unsafe {
     let mut v = v0;
@@ -552,7 +552,6 @@ fn indiscriminate_bidirectional_matching_stack(v0: *mut u8, ez: &mut ExprZipper)
     }
 }
 
-#[allow(dead_code)]
 fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     let mut v = vec![];
     loop {
@@ -633,7 +632,6 @@ impl DataParser {
     const EMPTY: &'static [u8] = &[];
 }
 
-#[allow(unreachable_code)]
 impl Parser for DataParser {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         return unsafe { std::mem::transmute(s) };
@@ -649,7 +647,7 @@ impl Parser for DataParser {
     }
 }
 
-#[allow(unused_variables, unreachable_code)]
+
 fn main() {
     // SETUP PROCEDURE?
     for size in 1..64 {

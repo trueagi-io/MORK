@@ -1202,11 +1202,12 @@ const fn digit_value(b: u8) -> u8 {
     b - b'0'
 }
 
+
 #[macro_export]
 macro_rules! parse {
     ($s:literal) => {{
-        const N: usize = $crate::compute_length($s);
-        const ARR: [u8; N] = $crate::parse::<N>($s);
+        const N: usize = mork_bytestring::compute_length($s);
+        const ARR: [u8; N] = mork_bytestring::parse::<N>($s);
         ARR
     }};
 }
@@ -1335,7 +1336,6 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
 
     arr
 }
-
 
 
 pub fn serialize(bytes: &[u8]) -> String {

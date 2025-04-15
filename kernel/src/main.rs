@@ -68,7 +68,7 @@ fn work(s: &mut Space) {
     println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
     let mut count = 0;
     s.query(expr!(s, "[4] res0 $ $ $"), |_, e| {
-        println!("{}", sexpr!(s, e));
+        // println!("{}", sexpr!(s, e));
         count += 1
     });
     println!("res0 count {}", count);
@@ -214,7 +214,7 @@ fn load_csv_with_pat() {
 
     let mut s = Space::new();
     // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
-    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
+    s.load_csv(csv_contents, expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
 
     let mut v = vec![];
     s.dump_sexpr(Prefix::NONE, &mut v).unwrap();

@@ -753,6 +753,7 @@ async fn clear_derived_prefix_request_test() -> Result<(), Error> {
 /// Tests the "transform" command
 #[tokio::test]
 async fn id_transform_request_test() -> Result<(), Error> {
+    // decl_lit!{in_path!() => "transform_test_in_royals"}
     decl_lit!{in_path!() => "transform_test_in_royals"}
     // until we have a length discriminator, the underscore guarantees that the paths are disjoint
     decl_lit!{out_path!() => "transform_test_out_royals_id_transform"}
@@ -778,15 +779,15 @@ async fn id_transform_request_test() -> Result<(), Error> {
         );
 
 
-    macro_rules! id_sexpr { () => { concat!(url_percent_encode!("$"), "x")}; }
+    // macro_rules! id_sexpr { () => { concat!(url_percent_encode!("$"), "x")}; }
     const TRANSFORM_REQUEST_URL: &str =
         concat!( 
             server_url!(),
             "/", "transform",
-            "/", in_path!(),  // from_space
-            "/", out_path!(), // to_space
-            "/", id_sexpr!(), // pattern
-            "/", id_sexpr!(), // template
+            // "/", in_path!(),  // from_space
+            // "/", out_path!(), // to_space
+            "/", "$", // pattern
+            "/", "_1", // template
         );
     const EXPORT_URL: &str =
         concat!(
@@ -890,6 +891,8 @@ async fn id_transform_request_test() -> Result<(), Error> {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
     }
     println!("Export MeTTa response:\n{}", response_src_id_transform.text().await.unwrap());
+
+
 
     Ok(())
 }

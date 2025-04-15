@@ -1110,6 +1110,41 @@ impl Space {
         self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 
+    // (exec <loc> (, <src1> <src2> <srcn>)
+    //             (, <dst1> <dst2> <dstm>))
+    pub fn interpret(&mut self, rt: Expr) {
+        let mut rtz = ExprZipper::new(rt);
+        println!("{:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
+        assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
+        assert!(rtz.next());
+        assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
+        assert!(rtz.next());
+        let loc = rtz.subexpr();
+
+        assert!(rtz.next_child());
+        let mut srcz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
+        let mut srcs = Vec::with_capacity(n as usize - 1);
+        srcz.next();
+        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for i in 0..n as usize - 1 {
+            srcz.next_child();
+            srcs.push(srcz.subexpr());
+        }
+        assert!(rtz.next_child());
+        let mut dstz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+        let mut dsts = Vec::with_capacity(m as usize - 1);
+        dstz.next();
+        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for j in 0..m as usize - 1 {
+            dstz.next_child();
+            dsts.push(dstz.subexpr());
+        }
+
+        self.transform_multi_multi(&srcs[..], &dsts[..]);
+    }
+
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();

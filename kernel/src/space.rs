@@ -1,4 +1,5 @@
 use std::{fs::File, io::Write};
+use futures::future::Either;
 use mork_bytestring::Expr;
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
@@ -6,6 +7,7 @@ use pathmap::{
     zipper::*,
 };
 
+use crate::space_temporary;
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -134,7 +136,7 @@ impl Space {
 
     pub fn dump_sexpr<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {
         let mut rz = self.btm.read_zipper_at_path(prefix.path());
-        crate::space_temporary::dump_as_sexpr_impl(&self.sm, w, &mut rz)
+        crate::space_temporary::dump_as_sexpr_old_impl(&self.sm, w, &mut rz)
     }
 
     pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, #[allow(unused_variables)]path: OutFilePath) -> Result<(), std::io::Error>  {
@@ -178,11 +180,16 @@ impl Space {
     }
 
 
-    pub fn query_multi<F : FnMut(&[Expr], Expr) -> ()>(&self, patterns: &[Expr], effect: F) {
+    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], effect: F) -> Result<(), T> {
         // this is ugly and the zipper head branch should not merge this, but we need to conserve behavior
         let mut clone = self.btm.clone();
         let zh = clone.zipper_head();
-        let _ = crate::space_temporary::query_multi_impl(&zh,patterns, |_|Result::<_,()>::Ok(()), effect);
+        let x = crate::space_temporary::query_multi_impl(&zh,patterns, |_|Result::<(),T>::Ok(()), effect);
+        match x {
+            Ok(_)                                         => Ok(()),
+            Err(space_temporary::Either::Left(_conflict)) => Ok(()),
+            Err(space_temporary::Either::Right(t))        => Err(t),
+        }
     }
 
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) {
@@ -198,7 +205,7 @@ impl Space {
         self.transform_multi_multi(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, effect: F) {
-        self.query_multi(&[pattern], effect)
+    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
+        let _ = self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 }

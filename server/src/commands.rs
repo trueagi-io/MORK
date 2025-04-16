@@ -237,7 +237,7 @@ fn do_export(ctx: &MorkService, mut reader: ReadPermission, format: DataFormat) 
         DataFormat::Metta => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            ctx.0.space.dump_as_sexpr(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            ctx.0.space.dump_as_sexpr_old(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
             writer.flush()?;
             drop(writer);
             buffer
@@ -1188,7 +1188,6 @@ impl CommandDefinition for ExportDerivedPrefixCmd {
         ]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        println!("HERE");
         
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;

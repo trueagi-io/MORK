@@ -95,10 +95,23 @@ pub trait Space {
         sexpr_to_path(self.symbol_table(), sexpr)
     }
 
-    fn dump_as_sexpr<'s, W : std::io::Write>(&'s self, dst: &mut W, src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError> {
+
+    fn dump_as_sexpr<'s, W : std::io::Write>(
+        &self,
+        writer   : &mut W,
+        pattern  : Expr,
+        template : Expr,
+        auth     : Self::Auth,
+    )  -> Result<PathCount, Either<std::io::Error, Either<Conflict, Self::PermissionErr>>> {
+        dump_as_sexpr_impl(self.root(), self.symbol_table(), pattern, template, writer, self.reader_hook(&auth))
+    }
+
+    #[deprecated]
+    fn dump_as_sexpr_old<'s, W : std::io::Write>(&'s self, dst: &mut W,src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError>
+    {
         let mut rz = self.read_zipper(src);
         let sm = self.symbol_table();
-        dump_as_sexpr_impl(sm, dst, &mut rz).map_err(DumpSExprError)
+        dump_as_sexpr_old_impl(sm, dst, &mut rz).map_err(DumpSExprError)
     }
 
     fn load_csv_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
@@ -197,6 +210,11 @@ impl Space for DefaultSpace {
     fn root<'a>(&'a self) -> &'a impl ZipperCreation<'static, ()> {
         &self.map
     }
+}
+
+unsafe extern "C" {
+    fn longjmp(env: &mut [u64; 64], status: i32);
+    fn setjmp(env: &mut [u64; 64]) -> i32;
 }
 
 // this module exists purely to make glob importing it easier
@@ -636,18 +654,19 @@ pub(crate) fn transform_multi_multi_impl<'s, Z, HookError>(
                 wz.set_value(());
                 wz.reset();
             }
+            Ok(())
         })?;
         drop(template_prefixes);
         Ok(())
 }
 
-pub(crate) fn query_multi_impl<'a, Z, HookError, F : FnMut(&[Expr], Expr) -> ()>
+pub(crate) fn query_multi_impl<'a, Z, HookError, F : FnMut(&[Expr], Expr) -> Result<(), HookError>>
 (
     s          : &Z,
     patterns   : &[Expr],
     mut reader_hook : impl FnMut(&Path) -> Result<(), HookError>,
     mut effect : F,
-) -> Result<(), Either<Conflict, HookError>>
+) -> Result<usize, Either<Conflict, HookError>>
 where
     Z : ZipperCreation<'a, ()>
 {
@@ -688,12 +707,45 @@ where
 
     let mut references: Vec<Expr> = vec![];
     let mut candidate = 0;
-    referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
-        let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-        effect(refs, e);
-        candidate += 1;
+    // referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
+    //     let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+    //     effect(refs, e);
+    //     candidate += 1;
+    // });
+    // Ok(())
+    
+
+    thread_local! {
+        static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
+        static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    }
+    
+    BREAK.with_borrow_mut(|a| {
+        if unsafe { setjmp(a) == 0 } {
+            referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
+                let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
+                match effect(refs, e) {
+                    Ok(()) => {}
+                    Err(t) => {
+                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<HookError>()) };
+                        unsafe { std::ptr::write(t_ptr as *mut HookError, t) };
+                        RET.set(t_ptr);
+                        unsafe { longjmp(a, 1) }
+                    }
+                }
+                unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+            })
+        }
     });
-    Ok(())
+    RET.with(|mptr| {
+        if mptr.get().is_null() { Ok(candidate) }
+        else {
+            let tref = unsafe { mptr.get() };
+            let t = unsafe { std::ptr::read(tref as _) };
+            unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<HookError>()) };
+            Err(t)
+        }
+    })
 }
 
 
@@ -729,14 +781,54 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
 }
 
 
-
 // /////////
 // SEXPR //
 // ///////
 
 
+pub(crate) fn dump_as_sexpr_impl<'s, Z, W : std::io::Write, HookError>(
+    s           : &Z,
+    sm          : &SharedMapping,
+    pattern     : Expr,
+    template    : Expr, 
+    w           : &mut W,
+    mut reader_hook : impl FnMut(&Path) -> Result<(), HookError>,
+) -> Result<usize, Either<std::io::Error, Either<Conflict, HookError>>>
+    where
+    Z : ZipperCreation<'s, ()>
+{
+    let mut buffer = [0u8; 4096];
 
-pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(#[allow(unused_variables)]sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
+    let q = query_multi_impl(s, &[pattern], |p| reader_hook(p).map_err(Either::Right), |refs, _loc| {
+        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+        template.substitute(refs, &mut oz);
+
+        // &buffer[constant_template_prefix.len()..oz.loc]
+        Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
+            #[cfg(feature="interning")]
+            {
+                let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                // println!("symbol {symbol:?}, bytes {mstr:?}");
+                unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+            }
+            #[cfg(not(feature="interning"))]
+            unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+        });
+        w.write(&[b'\n']).map_err(Either::Left)?;
+
+        Ok(())
+    });
+    q.map_err(|e| { type E<L,R> = Either<L,R>; match e {
+        E::Left(conflict)                         => E::Right(E::Left(conflict)),
+        E::Right(E::Left(E::Left(io)))            => E::Left(io),
+          E::Right(E::Right(hook_error)) 
+        | E::Right(E::Left(E::Right(hook_error))) => E::Right(E::Right(hook_error)),
+    }})
+}
+
+
+pub(crate) fn dump_as_sexpr_old_impl<'s, RZ, W : std::io::Write>(#[allow(unused_variables)]sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
     where
     RZ : ZipperIteration<'s, ()>
 {
@@ -764,6 +856,8 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write>(#[allow(unused_vari
     }
     Ok(i)
 }
+
+
 
 pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
     where

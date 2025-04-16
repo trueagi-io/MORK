@@ -7,6 +7,7 @@
 //! ===================================================================================
 
 use std::time::{Duration, Instant};
+use hyper::Request;
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -752,90 +753,65 @@ async fn clear_derived_prefix_request_test() -> Result<(), Error> {
 
 /// Tests the "transform" command
 #[tokio::test]
-async fn id_transform_request_test() -> Result<(), Error> {
-    // decl_lit!{in_path!() => "transform_test_in_royals"}
-    decl_lit!{in_path!() => "transform_test_in_royals"}
-    // until we have a length discriminator, the underscore guarantees that the paths are disjoint
-    decl_lit!{out_path!() => "transform_test_out_royals_id_transform"}
+async fn transform_basic_request_test() -> Result<(), Error> {
+    decl_lit!(in_path!()  => "(in val)");
+    decl_lit!(out_path!() => "(out val)");
 
-    const IMPORT_URL: &str =
-        concat!( 
-            server_url!(),
-            "/", "import",
-            "/", in_path!(),
-            "/", "?uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
-        );
-    const STATUS_URL: &str =
-        concat!(
-            server_url!(),
-            "/", "status",
-            "/", in_path!(),
-        );
-    const STATUS_ID_TRANSFORM_URL: &str =
-        concat!(
-            server_url!(),
-            "/", "status",
-            "/", out_path!(),
-        );
+    const UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload_derived_prefix",
+        "/", in_path!(),
+    );
 
+    const PAYLOAD : &str = "\
+                           \n(a b)\
+                           \n(x (y z))\
+                           \n";
 
-    // macro_rules! id_sexpr { () => { concat!(url_percent_encode!("$"), "x")}; }
     const TRANSFORM_REQUEST_URL: &str =
         concat!( 
             server_url!(),
             "/", "transform",
-            // "/", in_path!(),  // from_space
-            // "/", out_path!(), // to_space
-            "/", "$", // pattern
-            "/", "_1", // template
+            "/", "(in $x)", // pattern
+            "/", "(out $x)", // template
         );
     const EXPORT_URL: &str =
         concat!(
             server_url!(),
-            "/", "export",
+            "/", "export_derived_prefix",
             "/", in_path!()
         );
     const EXPORT_RAW_URL: &str =
         concat!(
             server_url!(),
-            "/", "export",
+            "/", "export_derived_prefix",
             "/", in_path!(),
             "/", "?format=raw",
         );
     const EXPORT_ID_TRANSFORM_URL: &str =
         concat!( server_url!(),
-            "/", "export",
+            "/", "export_derived_prefix",
             "/", out_path!(),
         );
     const EXPORT_ID_TRANSFORM_RAW_URL: &str =
         concat!(
             server_url!(),
-            "/", "export",
+            "/", "export_derived_prefix",
             "/", out_path!(),
             "/", "?format=raw",
         );
+    const CLEAR : &str =
+        concat!(
+            server_url!(),
+            "/", "clear_derived_prefix",
+        );
 
     //First import a space from a remote
-    let response = reqwest::get(IMPORT_URL).await.unwrap();
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await.unwrap();
     if !response.status().is_success() {
         panic!("Error response: {}", response.text().await.unwrap())
     }
     println!("Import response: {}", response.text().await.unwrap());
-
-    // Wait until the server has finished import
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await.unwrap();
-        assert!(response.status().is_success());
-        let response_text = response.text().await.unwrap();
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
-    println!("Finished loading space");
-
 
     // invoke a Transform
     let response = reqwest::get(TRANSFORM_REQUEST_URL).await.unwrap();
@@ -845,35 +821,20 @@ async fn id_transform_request_test() -> Result<(), Error> {
     println!("Transform response: {}", response.text().await.unwrap());
 
 
-    // Wait until the server has finished import
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_ID_TRANSFORM_URL).await.unwrap();
-        assert!(response.status().is_success());
-        let response_text = response.text().await.unwrap();
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
-    println!("Finished Transform");
-
-
-
     // Export the data in raw form
     let response_src_raw = reqwest::get(EXPORT_RAW_URL).await.unwrap();
     if !response_src_raw.status().is_success() {
         panic!("Error response: {} - {}", response_src_raw.status(), response_src_raw.text().await.unwrap())
     }
-    println!("Export Raw response:\n{}", response_src_raw.text().await.unwrap());
+    println!("(in ?) Export Raw response:\n{}", response_src_raw.text().await.unwrap());
 
     // Export the data in MeTTa form
     let response_src = reqwest::get(EXPORT_URL).await.unwrap();
     if !response_src.status().is_success() {
         panic!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap())
     }
-    println!("Export MeTTa response:\n{}", response_src.text().await.unwrap());
+    let response_src_text = response_src.text().await.unwrap();
+    println!("(in ?) Export MeTTa response:\n{}", response_src_text);
 
 
 
@@ -883,15 +844,21 @@ async fn id_transform_request_test() -> Result<(), Error> {
     if !response_src_raw_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_raw_id_transform.status(), response_src_raw_id_transform.text().await.unwrap())
     }
-    println!("Export Raw response:\n{}", response_src_raw_id_transform.text().await.unwrap());
+    println!("(out ?) Export Raw response:\n{}", response_src_raw_id_transform.text().await.unwrap());
 
     // Export the data in MeTTa form
     let response_src_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_URL).await.unwrap();
     if !response_src_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
     }
-    println!("Export MeTTa response:\n{}", response_src_id_transform.text().await.unwrap());
+    let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
+    println!("(out ?) Export MeTTa response:\n{}", response_src_id_transform_text);
 
+
+    core::assert_eq!(response_src_text, response_src_id_transform_text);
+
+    reqwest::Client::new().post(CLEAR).body(in_path!()).send().await.unwrap();
+    reqwest::Client::new().post(CLEAR).body(out_path!()).send().await.unwrap();
 
 
     Ok(())

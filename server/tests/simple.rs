@@ -446,30 +446,39 @@ async fn import_request_test() -> Result<(), Error> {
 /// Tests the "export" command
 #[tokio::test]
 async fn export_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "export_test_royals"}
+    decl_lit!{space_expr!() => "(data $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
-    //GOAT: Should host the content on a local server with predictable delays, to cut down
-    // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = concat!( 
+    decl_lit!{in_path!() => "(data goat)"}
+
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
-        "/", "import",
+        "/", "upload_derived_prefix",
         "/", in_path!(),
-        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
+    const PAYLOAD: &str = r#"
+        (female Liz)
+        (male Tom)
+        (male Bob)
+        (parent Tom Bob)
+        (parent Tom Liz)
+    "#;
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
-    const EXPORT_URL: &str = concat!( 
+    const EXPORT_URL: &str = concat!(
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
     );
-    const EXPORT_RAW_URL: &str = concat!( 
+    const EXPORT_RAW_URL: &str = concat!(
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
         "/?", "format=raw"
     );
     wait_for_server().await.unwrap();
@@ -477,12 +486,12 @@ async fn export_request_test() -> Result<(), Error> {
     #[cfg(feature = "serialize_tests")]
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    //First import a space from a remote
-    let response = reqwest::get(IMPORT_URL).await?;
+    //First upload a space
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
         panic!("Error response: {}", response.text().await?)
     }
-    println!("Import response: {}", response.text().await?);
+    println!("Upload response: {}", response.text().await?);
 
     // Wait until the server has finished import
     loop {
@@ -707,7 +716,7 @@ async fn clear_derived_prefix_request_test() -> Result<(), Error> {
     const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload_derived_prefix",
-        "/", in_path!("here"),
+        "/", in_path!(""),
     );
     const CLEAR_URL: &str = concat!( 
         server_url!(),

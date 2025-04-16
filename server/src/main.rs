@@ -31,6 +31,7 @@ use commands::*;
 mod status_map;
 mod server_space;
 use server_space::*;
+use mork::Space;
 
 mod resource_store;
 use resource_store::*;
@@ -268,11 +269,11 @@ macro_rules! fut_err {
 }
 
 /// Parse a command from a request URI
-fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri, cmd_id: u64) -> Result<Command, BoxedErr> {
-    let args = parse_path(remaining_path, CmdDef::args())?;
+fn parse_command<CmdDef: CommandDefinition>(space: &ServerSpace, remaining_path: &str, uri: &Uri, cmd_id: u64) -> Result<Command, BoxedErr> {
+    let args = parse_path(space, remaining_path, CmdDef::args())?;
     let mut properties = Vec::with_capacity(CmdDef::properties().len());
     for prop_def in CmdDef::properties() {
-        let prop = match parse_property(uri.query().unwrap_or(""), prop_def) {
+        let prop = match parse_property(space, uri.query().unwrap_or(""), prop_def)? {
             Some(prop) => Some(prop),
             None => {
                 if prop_def.required {
@@ -290,11 +291,21 @@ fn parse_command<CmdDef: CommandDefinition>(remaining_path: &str, uri: &Uri, cmd
 }
 
 /// Parse command arguments separated by '/' in the request path
-fn parse_path(in_str: &str, arg_types: &[ArgDef]) -> Result<Vec<ArgVal>, BoxedErr> {
+fn parse_path(space: &ServerSpace, in_str: &str, arg_types: &[ArgDef]) -> Result<Vec<ArgVal>, BoxedErr> {
     let mut remaining = in_str;
     let mut vals = Vec::with_capacity(arg_types.len());
     for (i, arg) in arg_types.iter().enumerate() {
         match arg.arg_type {
+            ArgType::Expr => {
+                let (expr_str, rem) = split_str(remaining)?;
+                if expr_str.len() == 0 {
+                    return Err(format!("missing argument `{}` at position {i}", arg.name).into())
+                }
+                remaining = rem;
+                let expr = space.sexpr_to_expr(&expr_str)
+                    .map_err(|e| BoxedErr::from(format!("Failed to parse expression: {e:?}")))?;
+                vals.push(ArgVal::Expr(expr));
+            },
             ArgType::Flag => { unreachable!() }, //Flags only make sense as optional properties
             ArgType::Int => {
                 let (val, rem) = split_int(remaining)?;
@@ -403,41 +414,56 @@ fn get_query_key_flag<'a>(in_str: &'a str, key: &str) -> Option<ArgVal> {
 }
 
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
-fn get_query_key_bytes<'a>(in_str: &'a str, key: &str) -> Option<Cow<'a, [u8]>> {
+fn get_query_key_bytes<'a>(in_str: &'a str, key: &str) -> Result<Option<Cow<'a, [u8]>>, BoxedErr> {
     match get_query_key_raw(in_str, key) {
         Some(val_str) => {
             if val_str.len() > 0 {
-                Some(urlencoding::decode_binary(val_str.as_bytes()))
+                Ok(Some(urlencoding::decode_binary(val_str.as_bytes())))
             } else {
-                None
+                Ok(None)
             }
         },
-        None => None
+        None => Ok(None)
     }
 }
 
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
-fn get_query_key_str<'a>(in_str: &'a str, key: &str) -> Option<Cow<'a, str>> {
+fn get_query_key_str<'a>(in_str: &'a str, key: &str) -> Result<Option<Cow<'a, str>>, BoxedErr> {
     match get_query_key_raw(in_str, key) {
         Some(val_str) => {
             if val_str.len() > 0 {
-                urlencoding::decode(val_str).ok()
+                urlencoding::decode(val_str)
+                    .map(|the_str| Some(the_str))
+                    .map_err(|decode_err| BoxedErr::from(format!("Failed to decode string in {key}: {decode_err:?}")))
             } else {
-                None
+                Ok(None)
             }
         },
-        None => None
+        None => Ok(None)
+    }
+}
+
+/// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
+fn get_query_key_expr<'a>(space: &ServerSpace, in_str: &'a str, key: &str) -> Result<Option<Vec<u8>>, BoxedErr> {
+    match get_query_key_str(in_str, key)? {
+        Some(expr_str) => {
+            space.sexpr_to_expr(&expr_str)
+                .map(|expr| Some(expr))
+                .map_err(|e| BoxedErr::from(format!("Failed to parse expression '{key}': {e:?}")))
+        },
+        None => Ok(None)
     }
 }
 
 /// Parses a single property out of a query string.  Does not respect `PropDef::required == false`
-fn parse_property(in_str: &str, prop_def: &PropDef) -> Option<ArgVal> {
+fn parse_property(space: &ServerSpace, in_str: &str, prop_def: &PropDef) -> Result<Option<ArgVal>, BoxedErr> {
     match prop_def.arg_type {
-        ArgType::Flag => get_query_key_flag(in_str, prop_def.name),
+        ArgType::Flag => Ok(get_query_key_flag(in_str, prop_def.name)),
         ArgType::Int |
         ArgType::UInt => { unimplemented!() },
-        ArgType::Path => get_query_key_bytes(in_str, prop_def.name).map(|val| ArgVal::Path(val.to_vec())),
-        ArgType::String => get_query_key_str(in_str, prop_def.name).map(|val| ArgVal::String(val.to_string())),
+        ArgType::Path => Ok(get_query_key_bytes(in_str, prop_def.name)?.map(|val| ArgVal::Path(val.to_vec()))),
+        ArgType::Expr => Ok(get_query_key_expr(space, in_str, prop_def.name)?.map(|expr| ArgVal::Expr(expr))),
+        ArgType::String => Ok(get_query_key_str(in_str, prop_def.name)?.map(|val| ArgVal::String(val.to_string()))),
     }
 }
 
@@ -460,7 +486,7 @@ impl Service<Request<IncomingBody>> for MorkService {
                 match (req.method(), command_name) {$(
                     (&Method::$METHOD, <$CMD>::NAME) => {
                         let command = fut_err!((|| {
-                            parse_command::<$CMD>(remaining, req.uri(), cmd_id)
+                            parse_command::<$CMD>(&self.0.space, remaining, req.uri(), cmd_id)
                         })(), bad_request_err);
                         self.dispatch_work(command, req)
                     },
@@ -509,6 +535,7 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => LoadNeo4jNodeLabelsCmd
 
 
+            | GET => StatusOldCmd
             | POST => ClearDerivedPrefixCmd
             | POST => UploadDerivedPrefixCmd
             | GET => ExportDerivedPrefixCmd

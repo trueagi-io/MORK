@@ -195,9 +195,15 @@ impl CommandDefinition for ExportCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "src_path",
-            desc: "The path in the map from which to export",
+            arg_type: ArgType::Expr,
+            name: "pattern",
+            desc: "The pattern to specify the expressions to export from the space",
+            required: true
+        },
+        ArgDef{
+            arg_type: ArgType::Expr,
+            name: "template",
+            desc: "The template to specify the form of the expressions in the exported data",
             required: true
         }]
     }
@@ -212,15 +218,14 @@ impl CommandDefinition for ExportCmd {
         ]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let pattern = cmd.args[0].as_expr().to_vec();
+        let template = cmd.args[1].as_expr().to_vec();
+
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
-        //Get the reader for this path in the map, which makes it off-limits to writers
-        let map_path = cmd.args[0].as_path();
-        let reader = ctx.0.space.new_reader(map_path, &())?;
-
         let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_export(&ctx, reader, format)
+            do_export(&ctx, pattern, template, format)
         }).await??;
 
         thread.unwrap().finalize().await;
@@ -231,13 +236,13 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, mut reader: ReadPermission, format: DataFormat) -> Result<Bytes, CommandError> {
+fn do_export(ctx: &MorkService, mut pattern: Vec<u8>, mut template: Vec<u8>, format: DataFormat) -> Result<Bytes, CommandError> {
 
     let buffer = match format {
         DataFormat::Metta => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            ctx.0.space.dump_as_sexpr_old(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            ctx.0.space.dump_as_sexpr(&mut writer, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, ()).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
             writer.flush()?;
             drop(writer);
             buffer
@@ -249,6 +254,8 @@ fn do_export(ctx: &MorkService, mut reader: ReadPermission, format: DataFormat) 
         DataFormat::Raw => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
+            let prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
+            let mut reader = ctx.0.space.new_reader(&prefix, &())?;
             let mut rz = ctx.0.space.read_zipper(&mut reader);
             while let Some(_) = rz.to_next_val() {
                 writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
@@ -557,6 +564,38 @@ impl CommandDefinition for StatusCmd {
     const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression on which to return the status.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let expr = cmd.args[0].as_expr();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+
+        let status = ctx.0.space.get_status(&prefix);
+        let json_string = serde_json::to_string(&status)?;
+        Ok(json_string.into())
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// status_old
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Returns the status associated with a path in the trie
+pub struct StatusOldCmd;
+
+impl CommandDefinition for StatusOldCmd {
+    const NAME: &'static str = "status_old";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
             arg_type: ArgType::Path,
             name: "path",
             desc: "The path in the map for which to check the status",
@@ -756,7 +795,7 @@ impl CommandDefinition for UploadCmd {
         Ok("ACK. Upload Successful".into())
     }
 }
-        
+
 /// Read all the data from the post request
 async fn get_all_post_frame_bytes(req : &mut Request<IncomingBody>) -> Result<Bytes, CommandError> {
     let mut post_data_buf = BytesMut::with_capacity(4096);
@@ -902,7 +941,7 @@ impl<E: core::error::Error + Send + Sync + 'static> From<E> for CommandError {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ArgType {
-    Flag, Int, UInt, Path, String
+    Expr, Flag, Int, UInt, Path, String
 }
 
 #[derive(Clone, Debug, Default)]
@@ -912,6 +951,7 @@ pub enum ArgVal {
     Flag,
     Int(i64),
     UInt(u64),
+    Expr(Vec<u8>),
     Path(Vec<u8>),
     String(String),
 }
@@ -938,6 +978,12 @@ impl ArgVal {
     pub fn as_str(&self) -> &str {
         match self {
             Self::String(string) => &*string,
+            _ => unreachable!()
+        }
+    }
+    pub fn as_expr(&self) -> &[u8] {
+        match self {
+            Self::Expr(expr) => &*expr,
             _ => unreachable!()
         }
     }
@@ -1014,6 +1060,7 @@ impl CommandDefinition for UploadDerivedPrefixCmd {
         Ok("ACK. Upload Successful".into())
     }
 }
+
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // clear_derived_prefix
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -1188,7 +1235,7 @@ impl CommandDefinition for ExportDerivedPrefixCmd {
         ]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        
+
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
@@ -1204,7 +1251,7 @@ impl CommandDefinition for ExportDerivedPrefixCmd {
         let reader = ctx.0.space.new_reader(prefix, &())?;
 
         let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_export(&ctx, reader, format)
+            do_export_old(&ctx, reader, format)
         }).await??;
 
         thread.unwrap().finalize().await;
@@ -1214,6 +1261,36 @@ impl CommandDefinition for ExportDerivedPrefixCmd {
     }
 }
 
+fn do_export_old(ctx: &MorkService, mut reader: ReadPermission, format: DataFormat) -> Result<Bytes, CommandError> {
+
+    let buffer = match format {
+        DataFormat::Metta => {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut writer = std::io::BufWriter::new(&mut buffer);
+            ctx.0.space.dump_as_sexpr_old(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            writer.flush()?;
+            drop(writer);
+            buffer
+        },
+        DataFormat::Csv |
+        DataFormat::Json => {
+            b"Export Error: Unimplemented Export Format".to_vec()
+        },
+        DataFormat::Raw => {
+            let mut buffer = Vec::with_capacity(4096);
+            let mut writer = std::io::BufWriter::new(&mut buffer);
+            let mut rz = ctx.0.space.read_zipper(&mut reader);
+            while let Some(_) = rz.to_next_val() {
+                writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
+            }
+            writer.flush()?;
+            drop(writer);
+            buffer
+        }
+    };
+
+    Ok(hyper::body::Bytes::from(buffer))
+}
 
 #[cfg(test)]
 #[test]

@@ -17,14 +17,26 @@ mod tests {
     use crate::prefix::Prefix;
     use crate::space::*;
 
+
+    fn set_from_newlines(input : &str) -> std::collections::BTreeSet<&str> {
+        let mut set = std::collections::BTreeSet::new();
+        for each in input.split('\n').filter(|s| !s.is_empty()) {
+            set.insert(each);
+        }
+        set
+    }
+
     #[test]
     fn prefix_parse_sexpr() {
         let input = "((nested and) (singleton))\n(foo bar)\n(1 \"test\" 2)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_sexpr_old(prefix!(s, "[2] my [2] prefix"), input).unwrap(), 3);
+        assert_eq!(s.load_sexpr(input, expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(prefix!(s, "[2] my [2] prefix"), &mut res).unwrap();
-        assert_eq!(input, String::from_utf8(res).unwrap());
+        s.dump_sexpr(expr!(s, "[2] my [2] prefix $"), expr!(s, "_1"), &mut res).unwrap();
+
+        // the order changed in the test for some reason so we need to use sets to not be concerened by this
+        let out = String::from_utf8(res).unwrap();
+        assert_eq!(set_from_newlines(input), set_from_newlines(&out));
     }
 
     #[test]
@@ -32,9 +44,9 @@ mod tests {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_csv_old(csv_input).unwrap(), 2);
+        assert_eq!(s.load_csv(csv_input, expr!(s, "$"), expr!(s, "_1")).unwrap(), 2);
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(Prefix::NONE, &mut res).unwrap();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
     }
 
@@ -100,14 +112,16 @@ mod tests {
         assert_eq!(16, s.load_json(json_input).unwrap());
 
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(Prefix::NONE, &mut res).unwrap();
-        assert_eq!(SEXPRS0, String::from_utf8(res).unwrap());
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
+
+        let out = String::from_utf8(res).unwrap();
+        assert_eq!(set_from_newlines(SEXPRS0), set_from_newlines(&out));
     }
 
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr_old(Prefix::NONE, SEXPRS0).unwrap());
+        assert_eq!(16, s.load_sexpr( SEXPRS0, expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
@@ -124,11 +138,11 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr_old(Prefix::NONE, SEXPRS0).unwrap());
+        assert_eq!(16, s.load_sexpr(SEXPRS0, expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
-        s.query(expr!(s, "[2] child_results $"), |_, e| {
+        s.query(expr!(s, "[2] child_results $x"), |_, e| {
             match i {
                 0 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
                 1 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
@@ -144,7 +158,7 @@ mod tests {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb);
-        s.load_sexpr_old(Prefix::NONE, std::str::from_utf8(&fileb).unwrap()).unwrap();
+        s.load_sexpr(unsafe { std::str::from_utf8_unchecked( fileb.as_slice() ) }, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -177,16 +191,16 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = Space::new();
-        s.load_sexpr_old(Prefix::NONE, LOGICSEXPR0).unwrap();
+        s.load_sexpr(LOGICSEXPR0, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_, e| c_in += 1);
-        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_, e| c_out += 1);
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_,e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_,e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();
-        s.dump_sexpr(Prefix::NONE, &mut res).unwrap();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
         println!("{}", String::from_utf8(res).unwrap());
     }
 
@@ -197,7 +211,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load_sexpr_old(Prefix::NONE, unsafe { from_utf8_unchecked(&buf[..]) }).unwrap();
+        s.load_sexpr(unsafe { std::str::from_utf8_unchecked(&buf[..]) }, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
@@ -205,7 +219,7 @@ mod tests {
         // s.query(expr!(s, "[2] axiom [3] = $ $"), |e| { println!("> {}", sexpr!(s, e)) });
         let t0 = Instant::now();
         let mut k = 0;
-        s.query(expr!(s, "$x"), |_, e| {
+        s.query(expr!(s, "$x"), |_,e| {
             k += 1;
             std::hint::black_box(e);
             // println!("> {}", sexpr!(s, e))

@@ -6,7 +6,7 @@ use pathmap::{
     zipper::*,
 };
 
-use crate::{load_sexpr_impl, space_temporary};
+use crate::{dump_as_sexpr_impl, load_sexpr_impl, space_temporary};
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -140,7 +140,14 @@ impl Space {
         crate::space_temporary::load_sexpr_old_impl(&self.sm, r, &mut self.btm.write_zipper_at_path(prefix.path()))
     }
 
-    pub fn dump_sexpr<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {
+    pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
+        let mut c = self.btm.clone();
+        let z = c.zipper_head();
+        dump_as_sexpr_impl(&z, &self.sm, pattern, template, w, |_|Result::<_,()>::Ok(())).map_err(|e| format!("{:?}", e))
+    }
+
+    #[deprecated]
+    pub fn dump_sexpr_<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {
         let mut rz = self.btm.read_zipper_at_path(prefix.path());
         crate::space_temporary::dump_as_sexpr_old_impl(&self.sm, w, &mut rz)
     }

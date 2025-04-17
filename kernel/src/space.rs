@@ -597,10 +597,11 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = $crate::space::ParDataParser::new(&$space.sm);
+        let table = $space.sym_table();
+        let mut pdp = $crate::space::ParDataParser::new(&table);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
-        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| pdp.tokenizer(x));
+        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
         unsafe {
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
@@ -618,7 +619,7 @@ macro_rules! sexpr {
             #[cfg(feature="interning")]
             {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-            let mstr = $space.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+            let mstr = $space.sym_table().get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
             // println!("symbol {symbol:?}, bytes {mstr:?}");
             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
             }
@@ -632,6 +633,12 @@ macro_rules! sexpr {
 impl Space {
     pub fn new() -> Self {
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
+    }
+
+    /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving acces directly to the field
+    #[doc(hidden)]
+    pub fn sym_table(&self)->SharedMappingHandle{
+        self.sm.clone()
     }
 
     pub fn statistics(&self) {
@@ -730,6 +737,16 @@ impl Space {
 
     pub fn load_json(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut wz = self.write_zipper_unchecked();
+        let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        p.parse(&mut st).unwrap();
+        Ok(st.count)
+    }
+
+    pub fn load_json_(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+        let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
         let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         p.parse(&mut st).unwrap();

@@ -2,6 +2,7 @@
 mod tests {
   use std::{collections::BTreeMap, fs::create_dir_all, io::Read, path::PathBuf};
   use bucket_map::{SharedMappingHandle, SharedMapping};
+use mork::{expr, sexpr};
 
   #[test]
   fn logic_query_small() {
@@ -12,8 +13,8 @@ mod tests {
     small_metta.read_to_string(&mut s).unwrap();
 
     let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(mork::prefix::Prefix::NONE, s.as_bytes()).unwrap();
-    let sm : SharedMappingHandle = space.sm.clone();
+    space.load_sexpr(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
+    let sm : SharedMappingHandle = space.sym_table();
 
     let zip_file = "logic_query_small.zip";
 
@@ -28,7 +29,7 @@ mod tests {
     big_metta.read_to_string(&mut s).unwrap();
 
     let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(mork::prefix::Prefix::NONE, s.as_bytes()).unwrap();
+    space.load_sexpr(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
     let sm : SharedMappingHandle = space.sm.clone();
 
     let zip_file = "logic_query_small.zip";

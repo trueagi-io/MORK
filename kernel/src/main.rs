@@ -217,7 +217,7 @@ fn load_csv_with_pat() {
     s.load_csv(csv_contents, expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
 
     let mut v = vec![];
-    s.dump_sexpr(Prefix::NONE, &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
     println!("{}", String::from_utf8(v).unwrap());
     return;

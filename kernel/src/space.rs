@@ -6,7 +6,7 @@ use pathmap::{
     zipper::*,
 };
 
-use crate::{load_sexpr_impl, space_temporary};
+use crate::{dump_as_sexpr_impl, load_sexpr_impl, space_temporary};
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -24,10 +24,11 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = $crate::ParDataParser::new(&$space.sm);
+        let table = $space.sym_table();
+        let mut pdp = $crate::ParDataParser::new(&table);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
-        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| pdp.tokenizer(x));
+        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
         unsafe {
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
@@ -45,7 +46,8 @@ macro_rules! sexpr {
             #[cfg(feature="interning")]
             {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-            let mstr = $space.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+            let table = $space.sym_table();
+            let mstr = table.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
             // println!("symbol {symbol:?}, bytes {mstr:?}");
             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
             }
@@ -79,6 +81,12 @@ impl Space {
         Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
     }
 
+    /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving access directly to the field
+    #[doc(hidden)]
+    pub fn sym_table(&self)->SharedMappingHandle{
+        self.sm.clone()
+    }
+
     pub fn statistics(&self) {
         println!("val count {}", self.btm.val_count());
     }
@@ -89,11 +97,6 @@ impl Space {
 
     fn write_zipper_at_unchecked<'a, 'b>(&'a self, path: &'b [u8]) -> WriteZipperUntracked<'a, 'b, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
-    }
-
-    #[deprecated]
-    pub fn load_csv_old(&mut self, r: &str) -> Result<PathCount, String> {
-        crate::space_temporary::load_csv_old_impl(&self.sm, &mut self.btm.write_zipper(), r)
     }
 
     pub fn load_csv(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
@@ -135,14 +138,10 @@ impl Space {
         load_sexpr_impl(self, &self.sm, |s, p| Result::<_,Either<_,()>>::Ok(s.write_zipper_at_unchecked(p)), r, pattern, template).map_err(|e| format!("{:?}", e))
     }
 
-    #[deprecated]
-    pub fn load_sexpr_old(&mut self, prefix : crate::prefix::Prefix, r: &str) -> Result<SExprCount, String> {
-        crate::space_temporary::load_sexpr_old_impl(&self.sm, r, &mut self.btm.write_zipper_at_path(prefix.path()))
-    }
-
-    pub fn dump_sexpr<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {
-        let mut rz = self.btm.read_zipper_at_path(prefix.path());
-        crate::space_temporary::dump_as_sexpr_old_impl(&self.sm, w, &mut rz)
+    pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
+        let mut c = self.btm.clone();
+        let z = c.zipper_head();
+        dump_as_sexpr_impl(&z, &self.sm, pattern, template, w, |_|Result::<_,()>::Ok(())).map_err(|e| format!("{:?}", e))
     }
 
     pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, #[allow(unused_variables)]path: OutFilePath) -> Result<(), std::io::Error>  {

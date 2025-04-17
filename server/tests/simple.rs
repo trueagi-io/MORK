@@ -7,7 +7,6 @@
 //! ===================================================================================
 
 use std::time::{Duration, Instant};
-use hyper::Request;
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -300,37 +299,42 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
 /// Tests the "import" command
 #[tokio::test]
 async fn import_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "import_test_royals"}
+    decl_lit!{space_expr!() => "(import_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
+
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     const COUNT_URL: &str = concat!( 
         server_url!(),
         "/", "count",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     // A file that doesn't exist, fails to fetch
     const BOGUS_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta",
     );
     // A file that exists, but fails to parse
     const BAD_FILE_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md",
     );
     wait_for_server().await.unwrap();
@@ -443,18 +447,17 @@ async fn import_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Tests the "export" command
+/// Tests both the "upload" and the "export" command
 #[tokio::test]
 async fn export_request_test() -> Result<(), Error> {
-    decl_lit!{space_expr!() => "(data $v)"}
+    decl_lit!{space_expr!() => "(export_test $v)"}
     decl_lit!{file_expr!() => "$v"}
-
-    decl_lit!{in_path!() => "(data goat)"}
 
     const UPLOAD_URL: &str = concat!(
         server_url!(),
-        "/", "upload_derived_prefix",
-        "/", in_path!(),
+        "/", "upload",
+        "/", file_expr!(),
+        "/", space_expr!(),
     );
     const PAYLOAD: &str = r#"
         (female Liz)
@@ -588,50 +591,6 @@ async fn copy_request_test() -> Result<(), Error> {
     println!("Copy response:\n{}", response.text().await?);
 
     // Export the data commoners
-    let response = reqwest::get(EXPORT_URL).await?;
-    if !response.status().is_success() {
-        panic!("Error response: {} - {}", response.status(), response.text().await?)
-    }
-    println!("Export response:\n{}", response.text().await?);
-
-    Ok(())
-}
-
-/// Tests the "upload" command
-#[tokio::test]
-async fn upload_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "upload_test_royals"}
-
-    const UPLOAD_URL: &str = concat!( 
-        server_url!(),
-        "/", "upload",
-        "/", in_path!(),
-    );
-    const EXPORT_URL: &str = concat!( 
-        server_url!(),
-        "/", "export",
-        "/", in_path!(),
-    );
-    const PAYLOAD: &str = r#"
-        (female Liz)
-        (male Tom)
-        (male Bob)
-        (parent Tom Bob)
-        (parent Tom Liz)
-    "#;
-    wait_for_server().await.unwrap();
-
-    #[cfg(feature = "serialize_tests")]
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    //Upload the data to the space
-    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
-    if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
-    }
-    println!("Upload response: {}", response.text().await?);
-
-    // Export the data back out
     let response = reqwest::get(EXPORT_URL).await?;
     if !response.status().is_success() {
         panic!("Error response: {} - {}", response.status(), response.text().await?)

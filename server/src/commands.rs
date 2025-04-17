@@ -282,9 +282,15 @@ impl CommandDefinition for ImportCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "dst_path",
-            desc: "The path in the map at which to import the file",
+            arg_type: ArgType::Expr,
+            name: "pattern",
+            desc: "The pattern to specify the expression to import from the data",
+            required: true
+        },
+        ArgDef{
+            arg_type: ArgType::Expr,
+            name: "template",
+            desc: "The template to specify the form of the expressions in the space",
             required: true
         }]
     }
@@ -301,18 +307,11 @@ impl CommandDefinition for ImportCmd {
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri, cmd.cmd_id).await?;
 
-        //Flag this path in the map as being busy, and therefore off-limits to other operations
-        let map_path = cmd.args[0].as_path();
-        let writer = ctx.0.space.new_writer(map_path, &())?;
-
-        //QUESTION: Should we let the fetch run for a small amount of time (like 300ms) to see if
-        // it fails straight away, so we can report that failure immediately?
-        //My thinking is no, because the caller needs to write code to handle the case when the
-        // fetch takes too long.  So it we always return success, and then caller has one fewer
-        // case to worry about.
+        let pattern = cmd.args[0].as_expr().to_vec();
+        let template = cmd.args[1].as_expr().to_vec();
 
         tokio::task::spawn(async move {
-            match do_import(&ctx, thread.unwrap(), &cmd, writer, file_handle).await {
+            match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, file_handle).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during import: {err:?}"); //GOAT Log this error
@@ -324,8 +323,10 @@ impl CommandDefinition for ImportCmd {
     }
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: Vec<u8>, template: Vec<u8>, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+
+    let space_prefix = derive_prefix_from_expr_slice(&template).till_constant_to_till_last_constant().to_owned();
 
     // Do the remote fetching
     //========================
@@ -334,7 +335,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, w
         //User-facing error
         println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
         let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
-        return ctx.0.space.set_user_status(writer.path(), StatusRecord::FetchError(fetch_err))
+        return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
     }
 
     let mut file_writer = BufWriter::new(File::create(file_resource.path()?).await?);
@@ -356,13 +357,11 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, w
             //User-facing error
             println!("Import Failed. Unrecognized file type: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to recognize file format: {err:?}"));
-            return ctx.0.space.set_user_status(writer.path(), StatusRecord::ParseError(parse_err))
+            return ctx.0.space.set_user_status(space_prefix, StatusRecord::ParseError(parse_err))
         }
     };
 
     let ctx_clone = ctx.clone();
-    let map_path = writer.path().to_owned();
-    let mut path_writer = writer;
     match tokio::task::spawn_blocking(move || {
         //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
         // I'm sure the parser is capable of streaming or chunking but I gotta
@@ -371,14 +370,14 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, w
         let mut buffer = Vec::new();
         file_handle.read_to_end(&mut buffer)?;
 
-        do_parse(&ctx_clone.0.space, &buffer[..], &mut path_writer, file_type)
+        do_parse(&ctx_clone.0.space, &buffer[..], pattern, template, file_type)
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
             //User-facing error
             println!("Import Failed. Parse error: {err:?}"); //GOAT, log this failure
             let parse_err = ParseError::new(format!("Failed to parse file: {err:?}"));
-            return ctx.0.space.set_user_status(map_path, StatusRecord::ParseError(parse_err))
+            return ctx.0.space.set_user_status(space_prefix, StatusRecord::ParseError(parse_err))
         }
     };
 
@@ -419,7 +418,30 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut template: Vec<u8>, file_type: DataFormat) -> Result<(), CommandError> {
+    match file_type {
+        DataFormat::Metta => {
+            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, &()).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from MeTTa S-Expr");
+        },
+        DataFormat::Json => {
+            unimplemented!();//GOAT
+            // let count = space.load_json_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            // println!("Loaded {count} atoms from JSON");
+        },
+        DataFormat::Csv => {
+            unimplemented!();//GOAT
+            // let count = space.load_csv_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            // println!("Loaded {count} atoms from CSV");
+        },
+        DataFormat::Raw => {
+            println!("Inimplemnted Import from raw format");
+        }
+    }
+    Ok(())
+}
+
+fn do_parse_old(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
     match file_type {
         DataFormat::Metta => {
             let count = space.load_sexpr_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
@@ -747,9 +769,15 @@ impl CommandDefinition for UploadCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "dst_path",
-            desc: "The path in the map at which to put the uploaded data",
+            arg_type: ArgType::Expr,
+            name: "pattern",
+            desc: "The pattern to specify the expression to import from the data",
+            required: true
+        },
+        ArgDef{
+            arg_type: ArgType::Expr,
+            name: "template",
+            desc: "The template to specify the form of the expressions in the space",
             required: true
         }]
     }
@@ -767,9 +795,8 @@ impl CommandDefinition for UploadCmd {
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
-        //Flag this path in the map as being busy, and therefore off-limits to other operations
-        let map_path = cmd.args[0].as_path();
-        let writer = ctx.0.space.new_writer(map_path, &())?;
+        let pattern = cmd.args[0].as_expr().to_vec();
+        let template = cmd.args[1].as_expr().to_vec();
 
         //Read all the data from the post request
         let data = get_all_post_frame_bytes(&mut req).await;
@@ -777,11 +804,10 @@ impl CommandDefinition for UploadCmd {
         // Do the Parsing
         //========================
         let ctx_clone = ctx.clone();
-        let mut path_writer = writer;
         let src_buf = data;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
+            do_parse(&ctx_clone.0.space, &src_buf?[..], pattern, template, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {
@@ -813,8 +839,6 @@ async fn get_all_post_frame_bytes(req : &mut Request<IncomingBody>) -> Result<By
     }
     Ok(post_data_buf.freeze())
 }
-
-
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // Command mechanism implementation
@@ -1046,7 +1070,7 @@ impl CommandDefinition for UploadDerivedPrefixCmd {
         let src_buf         = data;
         let data_format     = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
+            do_parse_old(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {

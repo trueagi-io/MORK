@@ -422,7 +422,7 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
 fn do_parse(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
     match file_type {
         DataFormat::Metta => {
-            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_sexpr_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from MeTTa S-Expr");
         },
         DataFormat::Json => {

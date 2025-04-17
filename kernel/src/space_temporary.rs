@@ -87,10 +87,39 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, ParseError> {
-        let mut dst = self.write_zipper(dst);
-        load_sexpr_impl(self.symbol_table(), src_data, &mut dst).map_err(ParseError)
+    fn load_sexpr(
+        &self,
+        src_data : &str,
+        pattern  : Expr,
+        template : Expr,
+        auth     : &Self::Auth,
+    ) -> Result<PathCount, Either<ParseError, Either<Conflict, Self::PermissionErr>>> {
+        let mut writer_hook = self.writer_hook(auth);
+        load_sexpr_impl(
+            self,
+            &self.symbol_table(),
+            |_,p|{
+                writer_hook(p).map_err(Either::Right)?;
+                self.root().write_zipper_at_exclusive_path(p).map_err(Either::Left)
+            },
+            src_data,
+            pattern,
+            template).map_err( |e| match e {
+                Either::Left(p) => Either::Left(ParseError(format!("{:?}",p))),
+                Either::Right(r) => Either::Right(r),
+        })
     }
+
+    #[deprecated]
+    /// Parses and loads a buffer of S-Expressions into the `Space`
+    ///
+    /// Returns the number of expressions loaded into the space
+    fn load_sexpr_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, ParseError> {
+        let mut dst = self.write_zipper(dst);
+        load_sexpr_old_impl(self.symbol_table(), src_data, &mut dst).map_err(ParseError)
+    }
+
+
     fn sexpr_to_expr(&self, sexpr :  &str) -> Result<OwnedExpr, ParseError> {
         sexpr_to_path(self.symbol_table(), sexpr)
     }
@@ -114,6 +143,28 @@ pub trait Space {
         dump_as_sexpr_old_impl(sm, dst, &mut rz).map_err(DumpSExprError)
     }
 
+    fn load_csv(
+        &self,
+        src_data : &str,
+        pattern  : Expr,
+        template : Expr,
+        auth     : &Self::Auth,
+    ) -> Result<PathCount, Either<ParseError, Either<Conflict, Self::PermissionErr>>> {
+        let mut writer_hook = self.writer_hook(auth);
+        load_csv_impl(
+            self, 
+            &self.symbol_table(), 
+                        |_,p|{
+                writer_hook(p).map_err(Either::Right)?;
+                self.root().write_zipper_at_exclusive_path(p).map_err(Either::Left)
+            },
+            src_data,
+            pattern,
+            template,
+        ).map_err(Either::Right)
+    }
+
+    #[deprecated]
     fn load_csv_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(dst);
@@ -827,7 +878,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, Z, W : std::io::Write, HookError>(
     }})
 }
 
-
+#[deprecated]
 pub(crate) fn dump_as_sexpr_old_impl<'s, RZ, W : std::io::Write>(#[allow(unused_variables)]sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
     where
     RZ : ZipperIteration<'s, ()>
@@ -859,7 +910,53 @@ pub(crate) fn dump_as_sexpr_old_impl<'s, RZ, W : std::io::Write>(#[allow(unused_
 
 
 
-pub(crate) fn load_sexpr_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
+pub(crate) fn load_sexpr_impl<'s, S : ?Sized, WZ, HookError>(
+    s        : &'s S,
+    sm       : &SharedMappingHandle,
+    wz_fn    : impl FnOnce(&'s S, &'s [u8]) -> Result<WZ, Either<Conflict, HookError>>,
+    r: &str,
+    pattern  : Expr,
+    template : Expr,
+) -> Result<usize, Either<ParserError, Either<Conflict, HookError>>>
+where
+        WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's
+{
+    let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+
+    let mut wz = wz_fn(s, constant_template_prefix).map_err(Either::Right)?;
+ 
+    #[allow(unused_mut)]
+    let mut buffer = [0u8; 4096];
+    let mut it = Context::new(r.as_bytes());
+    let mut i = 0;
+    let mut stack = [0u8; 2048];
+    let mut parser = ParDataParser::new(sm);
+    loop {
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => {
+                let data = &stack[..ez.loc];
+                let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_ptr().cast_mut() });
+                match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+                    Ok(()) => {}
+                    Err(_e) => { continue }
+                }
+                let new_data = &buffer[..oz.loc];
+                wz.descend_to(&new_data[constant_template_prefix.len()..]);
+                wz.set_value(());
+                wz.reset();
+            }
+            Err(ParserError::InputFinished) => { break }
+            Err(other) => { return Err(Either::Left(other)) }
+        }
+        i += 1;
+        it.variables.clear();
+    }
+    Ok(i)
+}
+
+#[deprecated]
+pub(crate) fn load_sexpr_old_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
     where
     WZ : ZipperMoving + ZipperWriting<()>
 {
@@ -912,6 +1009,7 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
 // CSV //
 // /////
 
+#[deprecated]
 pub(crate) fn load_csv_old_impl<WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
@@ -947,11 +1045,19 @@ pub(crate) fn load_csv_old_impl<WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: 
     Ok(i)
 }
 
-pub fn load_csv_impl<'s,S, WZ>(s : &'s S, sm : &SharedMappingHandle, wz_fn : impl FnOnce(&'s S, &'s [u8]) -> Result<WZ, String>, r: &str, pattern: Expr, template: Expr) -> Result<crate::space::PathCount, String>
+pub(crate) fn load_csv_impl<'s,S:?Sized, WZ, HookError>(
+    s        : &'s S, 
+    sm       : &SharedMappingHandle,
+    wz_fn    : impl FnOnce(&'s S, &'s [u8]) -> Result<WZ, Either<Conflict, HookError>>,
+    r        : &str,
+    pattern  : Expr,
+    template : Expr,
+) -> Result<crate::space::PathCount, Either<Conflict, HookError>>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's
 {
     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+    
     let mut wz = wz_fn(s, constant_template_prefix)?;
 
     #[allow(unused_mut)]

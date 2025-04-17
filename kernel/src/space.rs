@@ -1,5 +1,4 @@
 use std::{fs::File, io::Write};
-use futures::future::Either;
 use mork_bytestring::Expr;
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use pathmap::{
@@ -7,12 +6,13 @@ use pathmap::{
     zipper::*,
 };
 
-use crate::space_temporary;
+use crate::{load_sexpr_impl, space_temporary};
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
     AttributeCount,
     SExprCount,
+    Either,
 };
 pub struct Space {
     pub btm: BytesTrieMap<()>,
@@ -91,12 +91,13 @@ impl Space {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
     }
 
+    #[deprecated]
     pub fn load_csv_old(&mut self, r: &str) -> Result<PathCount, String> {
         crate::space_temporary::load_csv_old_impl(&self.sm, &mut self.btm.write_zipper(), r)
     }
 
     pub fn load_csv(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
-        crate::space_temporary::load_csv_impl(self, &self.sm.clone(), |s, p| Ok(s.write_zipper_at_unchecked(p)), r, pattern, template)
+        crate::space_temporary::load_csv_impl(self, &self.sm.clone(), |s, p| Result::<_,Either<_,()>>::Ok(s.write_zipper_at_unchecked(p)), r, pattern, template).map_err(|e| format!("{:?}",e))
     }
 
     pub fn load_json(&mut self, r: &str) -> Result<PathCount, String> {
@@ -121,7 +122,7 @@ impl Space {
         crate::space_temporary::load_neo4j_node_properties_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
     }
 
-        #[cfg(feature="neo4j")]
+    #[cfg(feature="neo4j")]
     pub fn load_neo4j_node_lables(&mut self, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
@@ -130,8 +131,13 @@ impl Space {
         crate::space_temporary::load_neo4j_node_labels_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
     }
 
-    pub fn load_sexpr(&mut self, prefix : crate::prefix::Prefix, r: &str) -> Result<SExprCount, String> {
-        crate::space_temporary::load_sexpr_impl(&self.sm, r, &mut self.btm.write_zipper_at_path(prefix.path()))
+    pub fn load_sexpr(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
+        load_sexpr_impl(self, &self.sm, |s, p| Result::<_,Either<_,()>>::Ok(s.write_zipper_at_unchecked(p)), r, pattern, template).map_err(|e| format!("{:?}", e))
+    }
+
+    #[deprecated]
+    pub fn load_sexpr_old(&mut self, prefix : crate::prefix::Prefix, r: &str) -> Result<SExprCount, String> {
+        crate::space_temporary::load_sexpr_old_impl(&self.sm, r, &mut self.btm.write_zipper_at_path(prefix.path()))
     }
 
     pub fn dump_sexpr<W : Write>(&self, prefix : crate::prefix::Prefix, w: &mut W) -> Result<PathCount, String> {

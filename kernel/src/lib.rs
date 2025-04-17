@@ -21,7 +21,7 @@ mod tests {
     fn prefix_parse_sexpr() {
         let input = "((nested and) (singleton))\n(foo bar)\n(1 \"test\" 2)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_sexpr(prefix!(s, "[2] my [2] prefix"), input).unwrap(), 3);
+        assert_eq!(s.load_sexpr_old(prefix!(s, "[2] my [2] prefix"), input).unwrap(), 3);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(prefix!(s, "[2] my [2] prefix"), &mut res).unwrap();
         assert_eq!(input, String::from_utf8(res).unwrap());
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr(Prefix::NONE, SEXPRS0).unwrap());
+        assert_eq!(16, s.load_sexpr_old(Prefix::NONE, SEXPRS0).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr(Prefix::NONE, SEXPRS0).unwrap());
+        assert_eq!(16, s.load_sexpr_old(Prefix::NONE, SEXPRS0).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
@@ -144,7 +144,7 @@ mod tests {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb);
-        s.load_sexpr(Prefix::NONE, std::str::from_utf8(&fileb).unwrap()).unwrap();
+        s.load_sexpr_old(Prefix::NONE, std::str::from_utf8(&fileb).unwrap()).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = Space::new();
-        s.load_sexpr(Prefix::NONE, LOGICSEXPR0).unwrap();
+        s.load_sexpr_old(Prefix::NONE, LOGICSEXPR0).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
@@ -197,7 +197,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load_sexpr(Prefix::NONE, unsafe { from_utf8_unchecked(&buf[..]) }).unwrap();
+        s.load_sexpr_old(Prefix::NONE, unsafe { from_utf8_unchecked(&buf[..]) }).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));

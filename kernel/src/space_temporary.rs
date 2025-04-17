@@ -791,6 +791,7 @@ where
     RET.with(|mptr| {
         if mptr.get().is_null() { Ok(candidate) }
         else {
+            #[allow(unused_unsafe)]
             let tref = unsafe { mptr.get() };
             let t = unsafe { std::ptr::read(tref as _) };
             unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<HookError>()) };
@@ -799,7 +800,7 @@ where
     })
 }
 
-
+#[allow(unused_variables)]
 fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Vec<u8> {
     let mut v = mork_bytestring::traverseh!((), (), (Vec<u8>, usize), e, (vec![], from),
         |(v, from): &mut (Vec<u8>, usize), o| {
@@ -1086,7 +1087,7 @@ pub(crate) fn load_csv_impl<'s,S:?Sized, WZ, HookError>(
         let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
         match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
             Ok(()) => {}
-            Err(e) => { continue }
+            Err(_e) => { continue }
         }
         let new_data = &buf[..oz.loc];
         wz.descend_to(&new_data[constant_template_prefix.len()..]);

@@ -8,3 +8,4 @@ mork = {workspace = true}
 pathmap = {workspace = true}
 mork-frontend = {workspace = true}
 bucket_map = {workspace = true}
+mork-bytestring ={workspace = true}

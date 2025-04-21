@@ -75,8 +75,5 @@ impl Space for ServerSpace {
     fn symbol_table(&self) -> &bucket_map::SharedMappingHandle {
         &self.global_symbol_table
     }
-    fn root<'a>(&'a self) -> &'a impl ZipperCreation<'static, ()> {
-        &self.primary_map
-    }
 
 }

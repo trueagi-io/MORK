@@ -6,13 +6,12 @@ use pathmap::{
     zipper::*,
 };
 
-use crate::{dump_as_sexpr_impl, load_sexpr_impl, space_temporary};
+use crate::{dump_as_sexpr_impl, load_sexpr_impl};
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
     AttributeCount,
     SExprCount,
-    Either,
 };
 pub struct Space {
     pub btm: BytesTrieMap<()>,
@@ -91,6 +90,7 @@ impl Space {
         println!("val count {}", self.btm.val_count());
     }
 
+    #[allow(unused)]
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
         unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
@@ -100,7 +100,7 @@ impl Space {
     }
 
     pub fn load_csv(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
-        crate::space_temporary::load_csv_impl(self, &self.sm.clone(), |s, p| Result::<_,Either<_,()>>::Ok(s.write_zipper_at_unchecked(p)), r, pattern, template).map_err(|e| format!("{:?}",e))
+        crate::space_temporary::load_csv_impl(&self.sm.clone(), r, pattern, template, self.write_zipper_at_unchecked(unsafe { &*template.prefix().unwrap_or(template.span()) })).map_err(|e| format!("{:?}",e))
     }
 
     pub fn load_json(&mut self, r: &str) -> Result<PathCount, String> {

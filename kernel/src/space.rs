@@ -135,7 +135,7 @@ impl Space {
     }
 
     pub fn load_sexpr(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
-        load_sexpr_impl(self, &self.sm, |s, p| Result::<_,Either<_,()>>::Ok(s.write_zipper_at_unchecked(p)), r, pattern, template).map_err(|e| format!("{:?}", e))
+        load_sexpr_impl(&self.sm, r, pattern, template, self.btm.write_zipper_at_path(unsafe { &*template.prefix().unwrap_or(template.span()) })).map_err(|e| format!("{:?}", e))
     }
 
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {

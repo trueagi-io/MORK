@@ -189,7 +189,7 @@ impl Space {
         // this is ugly and the zipper head branch should not merge this, but we need to conserve behavior
         let mut clone = self.btm.clone();
         let zh = clone.zipper_head();
-        let x = crate::space_temporary::query_multi_impl(&zh,patterns, |_|Result::<(),T>::Ok(()), effect);
+        let x = crate::space_temporary::query_multi_impl(&zh,patterns, effect);
         match x {
             Ok(_)                                         => Ok(()),
             Err(space_temporary::Either::Left(_conflict)) => Ok(()),

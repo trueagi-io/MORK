@@ -697,7 +697,7 @@ pub(crate) fn transform_multi_multi_impl<'s, Z, HookError>(
             template_wzs.push(each?)
         }
 
-        query_multi_impl(s, patterns, reader_hook,|refs, _loc| {
+        query_multi_impl(s, patterns, |refs, _loc| {
             for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes.iter()).zip(templates.iter()) {
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
                 template.substitute(refs, &mut oz);
@@ -715,7 +715,6 @@ pub(crate) fn query_multi_impl<'a, Z, HookError, F : FnMut(&[Expr], Expr) -> Res
 (
     s          : &Z,
     patterns   : &[Expr],
-    mut reader_hook : impl FnMut(&Path) -> Result<(), HookError>,
     mut effect : F,
 ) -> Result<usize, Either<Conflict, HookError>>
 where
@@ -723,7 +722,6 @@ where
 {
     let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|_| patterns[0].span()).as_ref().unwrap() };
     
-    reader_hook(first_pattern_prefix).map_err(Either::Right)?;
     let mut rz = s.read_zipper_at_path(first_pattern_prefix)?;
 
     let mut tmp_maps = vec![];
@@ -850,7 +848,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, Z, W : std::io::Write, HookError>(
 {
     let mut buffer = [0u8; 4096];
 
-    let q = query_multi_impl(s, &[pattern], |p| reader_hook(p).map_err(Either::Right), |refs, _loc| {
+    let q = query_multi_impl(s, &[pattern], |refs, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
         template.substitute(refs, &mut oz);
 

@@ -684,10 +684,16 @@ impl CommandDefinition for TransformCmd {
         let mut template = ctx.0.space.sexpr_to_expr(cmd.args[TransformArg::Template as usize].as_str())
                     .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `template` : {e:?}")) )?;
 
+        let mut reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(&pattern).till_constant_to_full(), &())?;
+        let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
+        
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
-            ctx.0.space.transform(mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, ())
-                .map_err(|e| format!("Tranform failed {:?}", e))?;
+
+            let pat = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
+            let templ =  mork_bytestring::Expr { ptr: template.as_mut_ptr() };
+        
+            ctx.0.space.transform(pat, &mut reader, templ, &mut writer);
             Ok(())
         }).await;
 

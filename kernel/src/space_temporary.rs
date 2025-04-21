@@ -126,13 +126,14 @@ pub trait Space {
 
 
     fn dump_as_sexpr<'s, W : std::io::Write>(
-        &self,
+        &'s self,
         writer   : &mut W,
-        pattern  : Expr,
+        (prefix_reader, pattern)  : (&mut Self::Reader<'s>, Expr),
         template : Expr,
-        auth     : Self::Auth,
-    )  -> Result<PathCount, Either<std::io::Error, Either<Conflict, Self::PermissionErr>>> {
-        dump_as_sexpr_impl(self.root(), self.symbol_table(), pattern, template, writer, self.reader_hook(&auth))
+    )  -> Result<PathCount, DumpSExprError> {
+        dump_as_sexpr_impl(self.symbol_table(), pattern, self.read_zipper(prefix_reader), template, writer, 
+        || "IO Write Error")
+        .map_err(|e| DumpSExprError( e.to_string() ))
     }
 
     #[deprecated]
@@ -185,14 +186,39 @@ pub trait Space {
         let mut writer_permissions = Vec::new();
         move |p| self.new_writer(p, &auth).map(|w| {writer_permissions.push(w);} )
     }
-    fn transform_multi_multi(&self, patterns : &[Expr], templates : &[Expr], auth : Self::Auth) -> Result<(), Either<Conflict, Self::PermissionErr>> {
-        transform_multi_multi_impl(self.root(), patterns, templates, self.writer_hook(&auth), self.reader_hook(&auth) )
+    fn transform_multi_multi<'s>(
+        &'s self,
+        patterns : &[Expr],
+        pattern_readers : &'s mut[Self::Reader<'s>],
+        template : &[Expr],
+        template_writer : &mut [Self::Writer<'s>],
+
+    ) {
+        let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
+        let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
+        let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
+
+        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
     }
-    fn transform_multi(&self, patterns : &[Expr], template: Expr, auth : Self::Auth) -> Result<(), Either<Conflict, Self::PermissionErr>> {
-        self.transform_multi_multi(patterns, &[template], auth)
+    fn transform_multi<'s>(
+        &'s self,
+        patterns         : &[Expr],
+        pattern_readers  : &'s mut[Self::Reader<'s>],
+        templates        : Expr,
+        template_writers : &mut Self::Writer<'s>,
+
+    ) {
+        self.transform_multi_multi(patterns, pattern_readers, &[templates], std::array::from_mut(template_writers));
     }
-    fn transform(&self, pattern : Expr, template: Expr, auth : Self::Auth) -> Result<(), Either<Conflict, Self::PermissionErr>> {
-        self.transform_multi_multi(&[pattern], &[template], auth)
+    fn transform<'s>(
+        &'s self,
+        pattern         : Expr,
+        pattern_reader  : &'s mut Self::Reader<'s>,
+        template        : Expr,
+        template_writer : &mut Self::Writer<'s>,
+
+    ) {
+        self.transform_multi_multi(&[pattern], std::array::from_mut(pattern_reader), &[template], std::array::from_mut(template_writer));
     }
 
     #[cfg(feature="neo4j")]
@@ -677,67 +703,73 @@ impl<L,R> From<L> for Either<L,R> {
     }
 }
 
-pub(crate) fn transform_multi_multi_impl<'s, Z, HookError>(
-    s          : &Z,
-    patterns   : &[Expr],
-    templates  : &[Expr],
-    mut writer_hook : impl FnMut(&Path) -> Result<(), HookError>,
-    reader_hook     : impl FnMut(&Path) -> Result<(), HookError>,
-) -> Result<(), Either<Conflict, HookError>>
-    where 
-        Z : ZipperCreation<'s, ()>
+pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
+    patterns          : &[Expr],
+    pattern_rzs       : &[RZ],
+    templates         : &[Expr],
+    template_prefixes : &[&[u8]],
+    template_wzs      : &mut [WZ]
+)
+    where
+    RZ : ZipperMoving 
+       + ZipperReadOnlySubtries<'s, ()> 
+       + ZipperAbsolutePath,
+    WZ : ZipperMoving
+       + ZipperWriting<()>
 {
-
         let mut buffer = [0u8; 512];
-        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
-        
-        let mut template_wzs: Vec<_> = Vec::new();
-        for (hook, each) in template_prefixes.iter().map(|p| { (writer_hook(p), s.write_zipper_at_exclusive_path(p))}) {
-            hook.map_err(Either::Right)?;
-            template_wzs.push(each?)
-        }
 
-        query_multi_impl(s, patterns, |refs, _loc| {
-            for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes.iter()).zip(templates.iter()) {
+        let _ = query_multi_impl(patterns, pattern_rzs, |refs, _loc| {
+            for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes).zip(templates) {
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
                 template.substitute(refs, &mut oz);
                 wz.descend_to(&buffer[prefix.len()..oz.loc]);
                 wz.set_value(());
                 wz.reset();
             }
-            Ok(())
-        })?;
-        drop(template_prefixes);
-        Ok(())
+            Result::<(),()>::Ok(())
+        });
 }
 
-pub(crate) fn query_multi_impl<'a, Z, HookError, F : FnMut(&[Expr], Expr) -> Result<(), HookError>>
+pub(crate) fn query_multi_impl<'s, RZ, E: Copy, F: FnMut(&[Expr], Expr) -> Result<(), E>>
 (
-    s          : &Z,
-    patterns   : &[Expr],
-    mut effect : F,
-) -> Result<usize, Either<Conflict, HookError>>
+    patterns    : &[Expr],
+    pattern_rzs : &[RZ],
+    mut effect  : F,
+) -> Result<usize, E>
 where
-    Z : ZipperCreation<'a, ()>
+    RZ : 
+         ZipperMoving 
+       + ZipperReadOnlySubtries<'s, ()> 
+       + ZipperAbsolutePath
 {
-    let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|_| patterns[0].span()).as_ref().unwrap() };
-    
-    let mut rz = s.read_zipper_at_path(first_pattern_prefix)?;
+    core::debug_assert_eq!(patterns.len(), pattern_rzs.len());
 
-    let mut tmp_maps = vec![];
-    for p in patterns[1..].iter() {
-        tmp_maps.push(BytesTrieMap::new());
-        let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
-        
-        tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(
+    let first_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|_| patterns[0].span()).as_ref().unwrap() };
 
-            &s.read_zipper_at_path(prefix)?
-
+    #[cfg(debug_assertions)]
+    for i in 0..patterns.len() {
+        core::debug_assert_eq!( 
+            unsafe { patterns[i].prefix().unwrap_or_else(|_| patterns[i].span()).as_ref().unwrap() },
+            pattern_rzs[i].origin_path().unwrap()
         );
     }
-    rz.descend_to(&[0; 4096]);
-    rz.reset();
-    let mut prz = ProductZipper::new(rz, patterns[1..].iter().enumerate().map(|(i, p)| {
+
+    //Graft all the remaining read zippers into temporary maps in order to work around the
+    // fact that product zippers can't handle factor zippers beginning in the middle of nodes
+    // Also, we need to preserve the original origin path
+    //TODO: this can be simplified when prefix zippers can handle factors that start in the
+    // middle of nodes and we have the ability to supply a prefix (origin) path on a product
+    // zipper factor
+    let mut tmp_maps = vec![];
+    for idx in 0..patterns.len() {
+        tmp_maps.push(BytesTrieMap::new());
+        let prefix = unsafe { patterns[idx].prefix().unwrap_or_else(|_| patterns[idx].span()).as_ref().unwrap() };
+        debug_assert_eq!(prefix, pattern_rzs[idx].origin_path().unwrap());
+
+        tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(&pattern_rzs[idx]);
+    }
+    let mut prz = ProductZipper::new(tmp_maps[0].read_zipper_at_path(first_prefix), patterns[1..].iter().enumerate().map(|(i, p)| {
         let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
         tmp_maps[i].read_zipper_at_path(prefix)
     }));
@@ -761,13 +793,12 @@ where
     //     candidate += 1;
     // });
     // Ok(())
-    
 
     thread_local! {
         static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
         static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     }
-    
+
     BREAK.with_borrow_mut(|a| {
         if unsafe { setjmp(a) == 0 } {
             referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
@@ -775,8 +806,8 @@ where
                 match effect(refs, e) {
                     Ok(()) => {}
                     Err(t) => {
-                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<HookError>()) };
-                        unsafe { std::ptr::write(t_ptr as *mut HookError, t) };
+                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
+                        unsafe { std::ptr::write(t_ptr as *mut E, t) };
                         RET.set(t_ptr);
                         unsafe { longjmp(a, 1) }
                     }
@@ -791,7 +822,7 @@ where
             #[allow(unused_unsafe)]
             let tref = unsafe { mptr.get() };
             let t = unsafe { std::ptr::read(tref as _) };
-            unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<HookError>()) };
+            unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<E>()) };
             Err(t)
         }
     })
@@ -835,20 +866,22 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
 // ///////
 
 
-pub(crate) fn dump_as_sexpr_impl<'s, Z, W : std::io::Write, HookError>(
-    s           : &Z,
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy>(
     sm          : &SharedMapping,
     pattern     : Expr,
-    template    : Expr, 
+    pattern_rz  : RZ,
+    template    : Expr,
     w           : &mut W,
-    mut reader_hook : impl FnMut(&Path) -> Result<(), HookError>,
-) -> Result<usize, Either<std::io::Error, Either<Conflict, HookError>>>
+    f           : impl Fn()->IoWriteError, 
+) -> Result<usize, IoWriteError>
     where
-    Z : ZipperCreation<'s, ()>
+    RZ : ZipperMoving 
+       + ZipperReadOnlySubtries<'s, ()> 
+       + ZipperAbsolutePath
 {
     let mut buffer = [0u8; 4096];
 
-    let q = query_multi_impl(s, &[pattern], |refs, _loc| {
+    query_multi_impl(&[pattern], &[pattern_rz],|refs, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
         template.substitute(refs, &mut oz);
 
@@ -864,16 +897,10 @@ pub(crate) fn dump_as_sexpr_impl<'s, Z, W : std::io::Write, HookError>(
             #[cfg(not(feature="interning"))]
             unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
         });
-        w.write(&[b'\n']).map_err(Either::Left)?;
+        w.write(&[b'\n']).map_err(|_| f())?;
 
         Ok(())
-    });
-    q.map_err(|e| { type E<L,R> = Either<L,R>; match e {
-        E::Left(conflict)                         => E::Right(E::Left(conflict)),
-        E::Right(E::Left(E::Left(io)))            => E::Left(io),
-          E::Right(E::Right(hook_error)) 
-        | E::Right(E::Left(E::Right(hook_error))) => E::Right(E::Right(hook_error)),
-    }})
+    })
 }
 
 #[deprecated]

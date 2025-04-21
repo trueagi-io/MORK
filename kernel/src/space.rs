@@ -139,9 +139,14 @@ impl Space {
     }
 
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
-        let mut c = self.btm.clone();
-        let z = c.zipper_head();
-        dump_as_sexpr_impl(&z, &self.sm, pattern, template, w, |_|Result::<_,()>::Ok(())).map_err(|e| format!("{:?}", e))
+        dump_as_sexpr_impl(
+            &self.sm,
+            pattern,
+            self.btm.read_zipper_at_path(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }),
+            template,
+            w, 
+            || "IoWriteError"
+        ).map_err(|e| format!("{:?}", e))
     }
 
     pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, #[allow(unused_variables)]path: OutFilePath) -> Result<(), std::io::Error>  {
@@ -185,21 +190,25 @@ impl Space {
     }
 
 
-    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], effect: F) -> Result<(), T> {
-        // this is ugly and the zipper head branch should not merge this, but we need to conserve behavior
-        let mut clone = self.btm.clone();
-        let zh = clone.zipper_head();
-        let x = crate::space_temporary::query_multi_impl(&zh,patterns, effect);
-        match x {
-            Ok(_)                                         => Ok(()),
-            Err(space_temporary::Either::Left(_conflict)) => Ok(()),
-            Err(space_temporary::Either::Right(t))        => Err(t),
-        }
+    pub fn query_multi<T : Copy, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], effect: F) -> Result<usize, T> {
+        let rzs = patterns.iter().map(
+            |p| self.btm.read_zipper_at_path(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() })
+        ).collect::<Vec<_>>();
+
+        crate::space_temporary::query_multi_impl(patterns,&rzs , effect)
     }
 
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) {
-        // this is ugly and the zipper head branch should not merge this, but we need to conserve behavior
-        let _ = crate::space_temporary::transform_multi_multi_impl(&self.btm.zipper_head(),patterns, templates, |_|Result::<_,()>::Ok(()), |_|Ok(()));
+
+        let readers = patterns.iter().map(|e| 
+            self.btm.read_zipper_at_path(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() })
+        ).collect::<Vec<_>>();
+
+        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
+        let mut template_wzs: Vec<_> = template_prefixes.iter().map(|p| self.write_zipper_at_unchecked(p)).collect();
+
+
+        crate::space_temporary::transform_multi_multi_impl(patterns, &readers, templates, &template_prefixes, &mut template_wzs)
     }
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) {

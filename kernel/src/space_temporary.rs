@@ -77,7 +77,7 @@ pub trait Space {
     ///
     /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
     /// not conceptually have mutable state
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w;
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
@@ -87,27 +87,20 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr(
-        &self,
-        src_data : &str,
-        pattern  : Expr,
-        template : Expr,
-        auth     : &Self::Auth,
-    ) -> Result<PathCount, Either<ParseError, Either<Conflict, Self::PermissionErr>>> {
-        let mut writer_hook = self.writer_hook(auth);
+    fn load_sexpr<'s>(
+        &'s self,
+        src_data        : &str,
+        pattern         : Expr,
+        template        : Expr,
+        template_writer : &mut Self::Writer<'s>,
+    ) -> Result<PathCount, ParseError> {
         load_sexpr_impl(
-            self,
             &self.symbol_table(),
-            |_,p|{
-                writer_hook(p).map_err(Either::Right)?;
-                self.root().write_zipper_at_exclusive_path(p).map_err(Either::Left)
-            },
             src_data,
             pattern,
-            template).map_err( |e| match e {
-                Either::Left(p) => Either::Left(ParseError(format!("{:?}",p))),
-                Either::Right(r) => Either::Right(r),
-        })
+            template,
+            self.write_zipper(template_writer)
+        ).map_err(|e|ParseError(format!("{e:?}")))
     }
 
     #[deprecated]
@@ -277,7 +270,7 @@ impl Space for DefaultSpace {
         reader.reset();
         reader
     }
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w {
         writer.reset();
         writer
     }
@@ -935,20 +928,20 @@ pub(crate) fn dump_as_sexpr_old_impl<'s, RZ, W : std::io::Write>(#[allow(unused_
 
 
 
-pub(crate) fn load_sexpr_impl<'s, S : ?Sized, WZ, HookError>(
-    s        : &'s S,
+pub(crate) fn load_sexpr_impl<'s, WZ>(
     sm       : &SharedMappingHandle,
-    wz_fn    : impl FnOnce(&'s S, &'s [u8]) -> Result<WZ, Either<Conflict, HookError>>,
-    r: &str,
+    r        : &str,
     pattern  : Expr,
     template : Expr,
-) -> Result<usize, Either<ParserError, Either<Conflict, HookError>>>
+    mut wz   : WZ,
+) -> Result<usize, ParserError>
 where
-        WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's
+        WZ : Zipper + ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 's
 {
     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
 
-    let mut wz = wz_fn(s, constant_template_prefix).map_err(Either::Right)?;
+    core::debug_assert_eq!(unsafe { &*template.span() }, constant_template_prefix);
+    // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
  
     #[allow(unused_mut)]
     let mut buffer = [0u8; 4096];
@@ -972,7 +965,7 @@ where
                 wz.reset();
             }
             Err(ParserError::InputFinished) => { break }
-            Err(other) => { return Err(Either::Left(other)) }
+            Err(other) => { return Err(other) }
         }
         i += 1;
         it.variables.clear();

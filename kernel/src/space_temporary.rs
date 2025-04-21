@@ -731,10 +731,9 @@ where
         tmp_maps.push(BytesTrieMap::new());
         let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
         
-        reader_hook(first_pattern_prefix).map_err(Either::Right)?;
         tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(
 
-            &s.read_zipper_at_path(first_pattern_prefix)?
+            &s.read_zipper_at_path(prefix)?
 
         );
     }

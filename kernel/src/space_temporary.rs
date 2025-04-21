@@ -5,7 +5,7 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle, WritePermit};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper, Tag, byte_item, item_byte};
-use pathmap::{trie_map::BytesTrieMap, utils::{BitMask, ByteMask}, zipper::*, zipper_tracking::Conflict};
+use pathmap::{trie_map::BytesTrieMap, utils::{BitMask, ByteMask}, zipper::*};
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
 pub type SExprCount     = usize;
@@ -82,8 +82,6 @@ pub trait Space {
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
 
-    fn root<'a>(&'a self) -> &'a impl ZipperCreation<'static, ()>;
-
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
@@ -137,25 +135,20 @@ pub trait Space {
         dump_as_sexpr_old_impl(sm, dst, &mut rz).map_err(DumpSExprError)
     }
 
-    fn load_csv(
-        &self,
-        src_data : &str,
-        pattern  : Expr,
-        template : Expr,
-        auth     : &Self::Auth,
-    ) -> Result<PathCount, Either<ParseError, Either<Conflict, Self::PermissionErr>>> {
-        let mut writer_hook = self.writer_hook(auth);
+    fn load_csv<'s>(
+        &'s self,
+        src_data        : &str,
+        pattern         : Expr,
+        template        : Expr,
+        template_writer : &mut Self::Writer<'s>,
+    ) -> Result<PathCount, ParseError> {
         load_csv_impl(
-            self, 
             &self.symbol_table(), 
-                        |_,p|{
-                writer_hook(p).map_err(Either::Right)?;
-                self.root().write_zipper_at_exclusive_path(p).map_err(Either::Left)
-            },
             src_data,
             pattern,
             template,
-        ).map_err(Either::Right)
+            self.write_zipper(template_writer)
+        ).map_err(|_| ParseError("UnexpectedParseError".to_string()))
     }
 
     #[deprecated]
@@ -171,14 +164,6 @@ pub trait Space {
         load_json_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
 
-    fn reader_hook<'a>(&'a self, auth : &'a Self::Auth) -> impl FnMut(&Path)-> Result<(), Self::PermissionErr> + 'a {
-        let mut reader_permissions = Vec::new();
-        move |p| self.new_reader(p, &auth).map(|w| {reader_permissions.push(w);} )
-    }
-    fn writer_hook<'a>(&'a self, auth : &'a Self::Auth) -> impl FnMut(&Path)-> Result<(), Self::PermissionErr> + 'a {
-        let mut writer_permissions = Vec::new();
-        move |p| self.new_writer(p, &auth).map(|w| {writer_permissions.push(w);} )
-    }
     fn transform_multi_multi<'s>(
         &'s self,
         patterns : &[Expr],
@@ -276,9 +261,6 @@ impl Space for DefaultSpace {
     }
     fn symbol_table(&self) -> &SharedMappingHandle {
         &self.sm
-    }
-    fn root<'a>(&'a self) -> &'a impl ZipperCreation<'static, ()> {
-        &self.map
     }
 }
 
@@ -685,17 +667,6 @@ pub(crate) const VARS: [u64; 4] = {
 };
 
 
-#[derive(Debug, Clone, Copy)]
-pub enum Either<Left, Right> {
-    Left(Left),
-    Right(Right),
-}
-impl<L,R> From<L> for Either<L,R> {
-    fn from(value: L) -> Self {
-        Either::Left(value)
-    }
-}
-
 pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
     patterns          : &[Expr],
     pattern_rzs       : &[RZ],
@@ -1063,20 +1034,18 @@ pub(crate) fn load_csv_old_impl<WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: 
     Ok(i)
 }
 
-pub(crate) fn load_csv_impl<'s,S:?Sized, WZ, HookError>(
-    s        : &'s S, 
+pub(crate) fn load_csv_impl<'s, WZ>(
     sm       : &SharedMappingHandle,
-    wz_fn    : impl FnOnce(&'s S, &'s [u8]) -> Result<WZ, Either<Conflict, HookError>>,
     r        : &str,
     pattern  : Expr,
     template : Expr,
-) -> Result<crate::space::PathCount, Either<Conflict, HookError>>
+    mut wz   : WZ,
+) -> Result<crate::space::PathCount, ()>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's
 {
     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
     
-    let mut wz = wz_fn(s, constant_template_prefix)?;
 
     #[allow(unused_mut)]
     let mut buf = [0u8; 2048];

@@ -910,8 +910,6 @@ where
         WZ : Zipper + ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 's
 {
     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-
-    core::debug_assert_eq!(unsafe { &*template.span() }, constant_template_prefix);
     // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
  
     #[allow(unused_mut)]

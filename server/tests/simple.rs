@@ -7,7 +7,6 @@
 //! ===================================================================================
 
 use std::time::{Duration, Instant};
-use hyper::Request;
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -300,37 +299,42 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
 /// Tests the "import" command
 #[tokio::test]
 async fn import_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "import_test_royals"}
+    decl_lit!{space_expr!() => "(import_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
+
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     const COUNT_URL: &str = concat!( 
         server_url!(),
         "/", "count",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     // A file that doesn't exist, fails to fetch
     const BOGUS_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta",
     );
     // A file that exists, but fails to parse
     const BAD_FILE_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/README.md",
     );
     wait_for_server().await.unwrap();
@@ -443,33 +447,41 @@ async fn import_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Tests the "export" command
+/// Tests both the "upload" and the "export" command
 #[tokio::test]
 async fn export_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "export_test_royals"}
+    decl_lit!{space_expr!() => "(export_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
-    //GOAT: Should host the content on a local server with predictable delays, to cut down
-    // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = concat!( 
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
-        "/", "import",
-        "/", in_path!(),
-        "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
+        "/", "upload",
+        "/", file_expr!(),
+        "/", space_expr!(),
     );
+    const PAYLOAD: &str = r#"
+        (female Liz)
+        (male Tom)
+        (male Bob)
+        (parent Tom Bob)
+        (parent Tom Liz)
+    "#;
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
-    const EXPORT_URL: &str = concat!( 
+    const EXPORT_URL: &str = concat!(
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
     );
-    const EXPORT_RAW_URL: &str = concat!( 
+    const EXPORT_RAW_URL: &str = concat!(
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
         "/?", "format=raw"
     );
     wait_for_server().await.unwrap();
@@ -477,12 +489,12 @@ async fn export_request_test() -> Result<(), Error> {
     #[cfg(feature = "serialize_tests")]
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    //First import a space from a remote
-    let response = reqwest::get(IMPORT_URL).await?;
+    //First upload a space
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
         panic!("Error response: {}", response.text().await?)
     }
-    println!("Import response: {}", response.text().await?);
+    println!("Upload response: {}", response.text().await?);
 
     // Wait until the server has finished import
     loop {
@@ -518,32 +530,35 @@ async fn export_request_test() -> Result<(), Error> {
 /// Tests the "copy" command
 #[tokio::test]
 async fn copy_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "copy_test_royals"}
-    decl_lit!{alt_path!() => "copy_test_commoners"}
+    decl_lit!{in_expr!() => "(copy_test_royals $v)"}
+    decl_lit!{alt_expr!() => "(copy_test_commoners $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", in_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", in_expr!(),
     );
     const COPY_URL: &str = concat!( 
         server_url!(),
         "/", "copy",
-        "/", in_path!(),
-        "/", alt_path!(),
+        "/", in_expr!(),
+        "/", alt_expr!(),
     );
     const EXPORT_URL: &str = concat!( 
         server_url!(),
         "/", "export",
-        "/", alt_path!(),
+        "/", alt_expr!(),
+        "/", file_expr!(),
     );
     wait_for_server().await.unwrap();
 
@@ -588,69 +603,28 @@ async fn copy_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Tests the "upload" command
-#[tokio::test]
-async fn upload_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "upload_test_royals"}
-
-    const UPLOAD_URL: &str = concat!( 
-        server_url!(),
-        "/", "upload",
-        "/", in_path!(),
-    );
-    const EXPORT_URL: &str = concat!( 
-        server_url!(),
-        "/", "export",
-        "/", in_path!(),
-    );
-    const PAYLOAD: &str = r#"
-        (female Liz)
-        (male Tom)
-        (male Bob)
-        (parent Tom Bob)
-        (parent Tom Liz)
-    "#;
-    wait_for_server().await.unwrap();
-
-    #[cfg(feature = "serialize_tests")]
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    //Upload the data to the space
-    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
-    if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
-    }
-    println!("Upload response: {}", response.text().await?);
-
-    // Export the data back out
-    let response = reqwest::get(EXPORT_URL).await?;
-    if !response.status().is_success() {
-        panic!("Error response: {} - {}", response.status(), response.text().await?)
-    }
-    println!("Export response:\n{}", response.text().await?);
-
-    Ok(())
-}
-
 /// Tests the "clear" command
 #[tokio::test]
 async fn clear_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "clear_test_royals"}
+    decl_lit!{space_expr!() => "(clear_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
     const UPLOAD_URL: &str = concat!( 
         server_url!(),
         "/", "upload",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
     );
     const CLEAR_URL: &str = concat!( 
         server_url!(),
         "/", "clear",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     const EXPORT_URL: &str = concat!( 
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
     );
     const PAYLOAD: &str = "(male Bob)";
     wait_for_server().await.unwrap();
@@ -707,7 +681,7 @@ async fn clear_derived_prefix_request_test() -> Result<(), Error> {
     const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload_derived_prefix",
-        "/", in_path!("here"),
+        "/", in_path!(""),
     );
     const CLEAR_URL: &str = concat!( 
         server_url!(),
@@ -754,15 +728,16 @@ async fn clear_derived_prefix_request_test() -> Result<(), Error> {
 /// Tests the "transform" command
 #[tokio::test]
 async fn transform_basic_request_test() -> Result<(), Error> {
-    decl_lit!(in_path!()  => "(in val)");
-    decl_lit!(out_path!() => "(out val)");
+    decl_lit!{space_in_expr!() => "(transform_basic_test in $v)"}
+    decl_lit!{space_out_expr!() => "(transform_basic_test out $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
-    const UPLOAD_URL: &str = concat!(
+    const UPLOAD_URL: &str = concat!( 
         server_url!(),
-        "/", "upload_derived_prefix",
-        "/", in_path!(),
+        "/", "upload",
+        "/", file_expr!(),
+        "/", space_in_expr!(),
     );
-
     const PAYLOAD : &str = "\
                            \n(a b)\
                            \n(x (y z))\
@@ -772,42 +747,27 @@ async fn transform_basic_request_test() -> Result<(), Error> {
         concat!( 
             server_url!(),
             "/", "transform",
-            "/", "(in $x)", // pattern
-            "/", "(out $x)", // template
+            "/", space_in_expr!(), // pattern
+            "/", space_out_expr!(), // template
         );
-    const EXPORT_URL: &str =
+    const EXPORT_ORIGINAL_URL: &str =
         concat!(
             server_url!(),
-            "/", "export_derived_prefix",
-            "/", in_path!()
+            "/", "export",
+            "/", space_in_expr!(),
+            "/", file_expr!(),
         );
-    const EXPORT_RAW_URL: &str =
+    const EXPORT_TRANSFORMED_URL: &str =
         concat!(
             server_url!(),
-            "/", "export_derived_prefix",
-            "/", in_path!(),
-            "/", "?format=raw",
+            "/", "export",
+            "/", space_out_expr!(),
+            "/", file_expr!(),
         );
-    const EXPORT_ID_TRANSFORM_URL: &str =
-        concat!( server_url!(),
-            "/", "export_derived_prefix",
-            "/", out_path!(),
-        );
-    const EXPORT_ID_TRANSFORM_RAW_URL: &str =
-        concat!(
-            server_url!(),
-            "/", "export_derived_prefix",
-            "/", out_path!(),
-            "/", "?format=raw",
-        );
-    const CLEAR : &str =
-        concat!(
-            server_url!(),
-            "/", "clear_derived_prefix",
-        );
+    wait_for_server().await.unwrap();
 
     //First import a space from a remote
-    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await.unwrap();
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
         panic!("Error response: {}", response.text().await.unwrap())
     }
@@ -820,46 +780,23 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     }
     println!("Transform response: {}", response.text().await.unwrap());
 
-
-    // Export the data in raw form
-    let response_src_raw = reqwest::get(EXPORT_RAW_URL).await.unwrap();
-    if !response_src_raw.status().is_success() {
-        panic!("Error response: {} - {}", response_src_raw.status(), response_src_raw.text().await.unwrap())
-    }
-    println!("(in ?) Export Raw response:\n{}", response_src_raw.text().await.unwrap());
-
-    // Export the data in MeTTa form
-    let response_src = reqwest::get(EXPORT_URL).await.unwrap();
+    // Export the pre-transformed data in MeTTa form
+    let response_src = reqwest::get(EXPORT_ORIGINAL_URL).await.unwrap();
     if !response_src.status().is_success() {
         panic!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap())
     }
     let response_src_text = response_src.text().await.unwrap();
-    println!("(in ?) Export MeTTa response:\n{}", response_src_text);
+    println!("(out ?) Pre-transformed response:\n{}", response_src_text);
 
-
-
-
-    // Export the data in raw form
-    let response_src_raw_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_RAW_URL).await.unwrap();
-    if !response_src_raw_id_transform.status().is_success() {
-        panic!("Error response: {} - {}", response_src_raw_id_transform.status(), response_src_raw_id_transform.text().await.unwrap())
-    }
-    println!("(out ?) Export Raw response:\n{}", response_src_raw_id_transform.text().await.unwrap());
-
-    // Export the data in MeTTa form
-    let response_src_id_transform = reqwest::get(EXPORT_ID_TRANSFORM_URL).await.unwrap();
+    // Export the pre-transformed data in MeTTa form
+    let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL).await.unwrap();
     if !response_src_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
     }
     let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
-    println!("(out ?) Export MeTTa response:\n{}", response_src_id_transform_text);
-
+    println!("(out ?) Post-transformed response:\n{}", response_src_id_transform_text);
 
     core::assert_eq!(response_src_text, response_src_id_transform_text);
-
-    reqwest::Client::new().post(CLEAR).body(in_path!()).send().await.unwrap();
-    reqwest::Client::new().post(CLEAR).body(out_path!()).send().await.unwrap();
-
 
     Ok(())
 }

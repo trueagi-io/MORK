@@ -64,9 +64,9 @@ impl CommandDefinition for ClearCmd {
     const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "path",
-            desc: "The map path to clear",
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression defining a subspace from which to clear.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
         }]
     }
@@ -74,8 +74,9 @@ impl CommandDefinition for ClearCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let map_path = cmd.args[0].as_path();
-        let mut writer = ctx.0.space.new_writer(map_path, &())?;
+        let expr = cmd.args[0].as_expr();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let mut writer = ctx.0.space.new_writer(prefix, &())?;
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches();
@@ -97,15 +98,15 @@ impl CommandDefinition for CopyCmd {
     const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "src_path",
-            desc: "The map path from which to copy",
+            arg_type: ArgType::Expr,
+            name: "src_expr",
+            desc: "The expression defining a subspacespace from which to copy.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
         },
         ArgDef{
-            arg_type: ArgType::Path,
-            name: "dst_path",
-            desc: "The map path to copy into",
+            arg_type: ArgType::Expr,
+            name: "dst_expr",
+            desc: "The expression defining a destination subspacespace into which to copy.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
         }]
     }
@@ -113,10 +114,13 @@ impl CommandDefinition for CopyCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let src_path = cmd.args[0].as_path();
-        let mut reader = ctx.0.space.new_reader(src_path, &())?;
-        let dst_path = cmd.args[1].as_path();
-        let mut writer = ctx.0.space.new_writer(dst_path, &())?;
+        let src_expr = cmd.args[0].as_expr();
+        let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_till_last_constant();
+        let mut reader = ctx.0.space.new_reader(src_prefix, &())?;
+
+        let dst_expr = cmd.args[1].as_expr();
+        let dst_prefix = derive_prefix_from_expr_slice(&dst_expr).till_constant_to_till_last_constant();
+        let mut writer = ctx.0.space.new_writer(dst_prefix, &())?;
 
         let rz = ctx.0.space.read_zipper(&mut reader);
         let mut wz = ctx.0.space.write_zipper(&mut writer);
@@ -1346,7 +1350,6 @@ fn get_first_subexpr() {
         mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
     let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
 
-
     expr_z.next_child();
     let start = expr_z.subexpr();
     println!("{:?}",unsafe{&*start.span()});
@@ -1354,7 +1357,6 @@ fn get_first_subexpr() {
     expr_z.next_child();
     let end = expr_z.subexpr();
     println!("{:?}",unsafe{&*end.span()});
-
 
     let mut end_z = mork_bytestring::ExprZipper::new(end.clone());
     match end_z.item() {
@@ -1368,8 +1370,4 @@ fn get_first_subexpr() {
         }
         _ => panic!()
     }
-
-
-
-    panic!();
 }

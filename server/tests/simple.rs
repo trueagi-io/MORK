@@ -530,32 +530,35 @@ async fn export_request_test() -> Result<(), Error> {
 /// Tests the "copy" command
 #[tokio::test]
 async fn copy_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "copy_test_royals"}
-    decl_lit!{alt_path!() => "copy_test_commoners"}
+    decl_lit!{in_expr!() => "(copy_test_royals $v)"}
+    decl_lit!{alt_expr!() => "(copy_test_commoners $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
     const IMPORT_URL: &str = concat!( 
         server_url!(),
         "/", "import",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", in_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
-        "/", in_path!(),
+        "/", in_expr!(),
     );
     const COPY_URL: &str = concat!( 
         server_url!(),
         "/", "copy",
-        "/", in_path!(),
-        "/", alt_path!(),
+        "/", in_expr!(),
+        "/", alt_expr!(),
     );
     const EXPORT_URL: &str = concat!( 
         server_url!(),
         "/", "export",
-        "/", alt_path!(),
+        "/", alt_expr!(),
+        "/", file_expr!(),
     );
     wait_for_server().await.unwrap();
 
@@ -603,22 +606,25 @@ async fn copy_request_test() -> Result<(), Error> {
 /// Tests the "clear" command
 #[tokio::test]
 async fn clear_request_test() -> Result<(), Error> {
-    decl_lit!{in_path!() => "clear_test_royals"}
+    decl_lit!{space_expr!() => "(clear_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
 
     const UPLOAD_URL: &str = concat!( 
         server_url!(),
         "/", "upload",
-        "/", in_path!(),
+        "/", file_expr!(),
+        "/", space_expr!(),
     );
     const CLEAR_URL: &str = concat!( 
         server_url!(),
         "/", "clear",
-        "/", in_path!(),
+        "/", space_expr!(),
     );
     const EXPORT_URL: &str = concat!( 
         server_url!(),
         "/", "export",
-        "/", in_path!(),
+        "/", space_expr!(),
+        "/", file_expr!(),
     );
     const PAYLOAD: &str = "(male Bob)";
     wait_for_server().await.unwrap();

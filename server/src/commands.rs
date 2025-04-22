@@ -242,7 +242,9 @@ fn do_export(ctx: &MorkService, mut pattern: Vec<u8>, mut template: Vec<u8>, for
         DataFormat::Metta => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            ctx.0.space.dump_as_sexpr(&mut writer, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, ()).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            let pat_prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
+            let mut reader = ctx.0.space.new_reader(&pat_prefix, &())?;
+            ctx.0.space.dump_as_sexpr(&mut writer, (&mut reader, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }), mork_bytestring::Expr { ptr: template.as_mut_ptr() }).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
             writer.flush()?;
             drop(writer);
             buffer
@@ -309,9 +311,10 @@ impl CommandDefinition for ImportCmd {
 
         let pattern = cmd.args[0].as_expr().to_vec();
         let template = cmd.args[1].as_expr().to_vec();
+        let writer = ctx.0.space.new_writer(&template, &())?;
 
         tokio::task::spawn(async move {
-            match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, file_handle).await {
+            match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during import: {err:?}"); //GOAT Log this error
@@ -323,7 +326,7 @@ impl CommandDefinition for ImportCmd {
     }
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: Vec<u8>, template: Vec<u8>, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: Vec<u8>, template: Vec<u8>, mut writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
 
     let space_prefix = derive_prefix_from_expr_slice(&template).till_constant_to_till_last_constant().to_owned();
@@ -370,7 +373,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
         let mut buffer = Vec::new();
         file_handle.read_to_end(&mut buffer)?;
 
-        do_parse(&ctx_clone.0.space, &buffer[..], pattern, template, file_type)
+        do_parse(&ctx_clone.0.space, &buffer[..], pattern, template, &mut writer, file_type)
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
@@ -418,10 +421,12 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut template: Vec<u8>, file_type: DataFormat) -> Result<(), CommandError> {
+fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut template: Vec<u8>, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+    let pattern_expr = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
+    let template_expr = mork_bytestring::Expr { ptr: template.as_mut_ptr() };
     match file_type {
         DataFormat::Metta => {
-            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }, mork_bytestring::Expr { ptr: template.as_mut_ptr() }, &()).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from MeTTa S-Expr");
         },
         DataFormat::Json => {
@@ -430,9 +435,8 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut templ
             // println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            unimplemented!();//GOAT
-            // let count = space.load_csv_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            // println!("Loaded {count} atoms from CSV");
+            let count = space.load_csv(std::str::from_utf8(src_buf)?, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
             println!("Inimplemnted Import from raw format");
@@ -747,13 +751,13 @@ impl CommandDefinition for TransformCmd {
 
         let mut reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(&pattern).till_constant_to_full(), &())?;
         let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
-        
+
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
 
             let pat = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
             let templ =  mork_bytestring::Expr { ptr: template.as_mut_ptr() };
-        
+
             ctx.0.space.transform(pat, &mut reader, templ, &mut writer);
             Ok(())
         }).await;
@@ -803,6 +807,7 @@ impl CommandDefinition for UploadCmd {
 
         let pattern = cmd.args[0].as_expr().to_vec();
         let template = cmd.args[1].as_expr().to_vec();
+        let mut writer = ctx.0.space.new_writer(&template, &())?;
 
         //Read all the data from the post request
         let data = get_all_post_frame_bytes(&mut req).await;
@@ -813,7 +818,7 @@ impl CommandDefinition for UploadCmd {
         let src_buf = data;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf?[..], pattern, template, data_format)
+            do_parse(&ctx_clone.0.space, &src_buf?[..], pattern, template, &mut writer, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {

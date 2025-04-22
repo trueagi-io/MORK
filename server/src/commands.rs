@@ -84,7 +84,6 @@ impl CommandDefinition for ClearCmd {
     }
 }
 
-
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // copy
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -139,9 +138,9 @@ impl CommandDefinition for CountCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "path",
-            desc: "The path in the map from which to count the values",
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression in the map at which to count the values.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
         }]
     }
@@ -149,8 +148,9 @@ impl CommandDefinition for CountCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let map_path = cmd.args[0].as_path();
-        let reader = ctx.0.space.new_reader(map_path, &())?;
+        let expr = cmd.args[0].as_expr();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let reader = ctx.0.space.new_reader(prefix, &())?;
 
         tokio::task::spawn(async move {
             match do_count(&ctx, thread.unwrap(), &cmd, reader).await {

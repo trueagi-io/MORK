@@ -225,11 +225,14 @@ impl CommandDefinition for ExportCmd {
         let pattern = cmd.args[0].as_expr().to_vec();
         let template = cmd.args[1].as_expr().to_vec();
 
+        let pat_prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
+        let pat_reader = ctx.0.space.new_reader(&pat_prefix, &())?;
+
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
         let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_export(&ctx, pattern, template, format)
+            do_export(&ctx, (pat_reader, pattern), template, format)
         }).await??;
 
         thread.unwrap().finalize().await;
@@ -240,14 +243,12 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, mut pattern: Vec<u8>, mut template: Vec<u8>, format: DataFormat) -> Result<Bytes, CommandError> {
+fn do_export(ctx: &MorkService, (mut reader, mut pattern): (ReadPermission, Vec<u8>), mut template: Vec<u8>, format: DataFormat) -> Result<Bytes, CommandError> {
 
     let buffer = match format {
         DataFormat::Metta => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            let pat_prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
-            let mut reader = ctx.0.space.new_reader(&pat_prefix, &())?;
             ctx.0.space.dump_as_sexpr(&mut writer, (&mut reader, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }), mork_bytestring::Expr { ptr: template.as_mut_ptr() }).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
             writer.flush()?;
             drop(writer);
@@ -260,8 +261,6 @@ fn do_export(ctx: &MorkService, mut pattern: Vec<u8>, mut template: Vec<u8>, for
         DataFormat::Raw => {
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            let prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
-            let mut reader = ctx.0.space.new_reader(&prefix, &())?;
             let mut rz = ctx.0.space.read_zipper(&mut reader);
             while let Some(_) = rz.to_next_val() {
                 writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;

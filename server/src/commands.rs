@@ -1424,13 +1424,13 @@ fn transform_multi_multi_testbed() {
     match patterns_z.item() {
         Ok(Tag::Arity(arity)) => {
             core::assert!(arity > 1);
-            
+
             patterns_z.next_child();
             let comma = patterns_z.subexpr();
             let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };
             core::assert!(span.len()>0);
             core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b",".as_slice()));
-            
+
             for _ in 0..arity-1 {
                 patterns_z.next_child();
                 let sub = patterns_z.subexpr();
@@ -1447,7 +1447,7 @@ fn transform_multi_multi_testbed() {
     match templates_z.item() {
         Ok(Tag::Arity(arity)) => {
             core::assert!(arity > 1);
-            
+
             templates_z.next_child();
             let comma = templates_z.subexpr();
             let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };

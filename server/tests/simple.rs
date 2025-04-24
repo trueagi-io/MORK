@@ -459,13 +459,12 @@ async fn export_request_test() -> Result<(), Error> {
         "/", file_expr!(),
         "/", space_expr!(),
     );
-    const PAYLOAD: &str = r#"
-        (female Liz)
-        (male Tom)
-        (male Bob)
-        (parent Tom Bob)
-        (parent Tom Liz)
-    "#;
+    const PAYLOAD: &str = "(female Liz)\
+                            \n(male Tom)\
+                            \n(male Bob)\
+                            \n(parent Tom Liz)\
+                            \n(parent Tom Bob)\
+    \n";
     const STATUS_URL: &str = concat!( 
         server_url!(),
         "/", "status",
@@ -522,7 +521,9 @@ async fn export_request_test() -> Result<(), Error> {
     if !response.status().is_success() {
         panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
-    println!("Export MeTTa response:\n{}", response.text().await?);
+    let response_text = response.text().await?;
+    println!("Export MeTTa response:\n{}", response_text);
+    core::assert_eq!(response_text, PAYLOAD);
 
     Ok(())
 }
@@ -738,8 +739,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
         "/", file_expr!(),
         "/", space_in_expr!(),
     );
-    const PAYLOAD : &str = "\
-                           \n(a b)\
+    const PAYLOAD : &str = "(a b)\
                            \n(x (y z))\
                            \n";
 
@@ -750,7 +750,6 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             "/", space_in_expr!(), // pattern
             "/", space_out_expr!(), // template
         );
-    
 
     const EXPORT_ORIGINAL_RAW: &str =
         concat!(
@@ -767,7 +766,6 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             "/", space_in_expr!(),
             "/", file_expr!(),
         );
-    
 
     const EXPORT_TRANSFORMED_URL_RAW: &str =
         concat!(
@@ -800,7 +798,6 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     }
     println!("Transform response: {}", response.text().await.unwrap());
 
-    
     // Export the pre-transformed data in RAW form
     let response_src = reqwest::get(EXPORT_ORIGINAL_RAW).await.unwrap();
     if !response_src.status().is_success() {
@@ -813,22 +810,17 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     let response_src = reqwest::get(EXPORT_ORIGINAL_URL).await.unwrap();    
     if !response_src.status().is_success() {
         panic!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap())
-    }    
+    }
     let response_src_text = response_src.text().await.unwrap();
     println!("(out ?) Pre-transformed response:\n{}", response_src_text);
 
-
-
-
-        // Export the pre-transformed data in RAW form
+    // Export the pre-transformed data in RAW form
     let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL_RAW).await.unwrap();
     if !response_src_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
     }
     let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
     println!("(out ?) Post-transformed response:\n{}", response_src_id_transform_text);
-
-
 
     // Export the pre-transformed data in MeTTa form
     let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL).await.unwrap();
@@ -838,10 +830,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
     println!("(out ?) Post-transformed response:\n{}", response_src_id_transform_text);
 
-
-
-
-
+    core::assert_eq!(response_src_text, PAYLOAD);
     core::assert_eq!(response_src_text, response_src_id_transform_text);
 
     Ok(())

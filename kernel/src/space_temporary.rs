@@ -310,6 +310,8 @@ pub(crate) mod stack_actions {
 } 
 use stack_actions::*;
 
+use crate::prefix;
+
 pub struct ParDataParser<'a> { count: u64,
     #[cfg(feature="interning")]
     buf: [u8; 8],
@@ -707,14 +709,13 @@ where
        + ZipperReadOnlySubtries<'s, ()> 
        + ZipperAbsolutePath
 {
+    let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
     core::debug_assert_eq!(patterns.len(), pattern_rzs.len());
-
-    let first_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|_| patterns[0].span()).as_ref().unwrap() };
-
     #[cfg(debug_assertions)]
     for i in 0..patterns.len() {
-        core::debug_assert_eq!( 
-            unsafe { patterns[i].prefix().unwrap_or_else(|_| patterns[i].span()).as_ref().unwrap() },
+        core::debug_assert_eq!(
+            make_prefix(&patterns[i]),
             pattern_rzs[i].origin_path().unwrap()
         );
     }
@@ -726,17 +727,23 @@ where
     // middle of nodes and we have the ability to supply a prefix (origin) path on a product
     // zipper factor
     let mut tmp_maps = vec![];
-    for idx in 0..patterns.len() {
-        tmp_maps.push(BytesTrieMap::new());
-        let prefix = unsafe { patterns[idx].prefix().unwrap_or_else(|_| patterns[idx].span()).as_ref().unwrap() };
-        debug_assert_eq!(prefix, pattern_rzs[idx].origin_path().unwrap());
-
-        tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(&pattern_rzs[idx]);
+    for each_rz in pattern_rzs {
+        let mut btm = BytesTrieMap::new();
+        btm.write_zipper_at_path(each_rz.origin_path().unwrap()).graft(each_rz);
+        tmp_maps.push(btm);
     }
-    let mut prz = ProductZipper::new(tmp_maps[0].read_zipper_at_path(first_prefix), patterns[1..].iter().enumerate().map(|(i, p)| {
-        let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
-        tmp_maps[i].read_zipper_at_path(prefix)
-    }));
+
+    let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
+    let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
+
+    let mut prz = ProductZipper::new(
+        tmp_0.read_zipper_at_path(make_prefix(pat_0)), 
+        tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
+            // let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
+            tmp_m.read_zipper_at_path(make_prefix(p))
+        }
+    ));
+
     prz.descend_to(&[0; 4096]);
     prz.reset();
 
@@ -751,18 +758,11 @@ where
 
     let mut references: Vec<Expr> = vec![];
     let mut candidate = 0;
-    // referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
-    //     let e = Expr { ptr: loc.origin_path().unwrap().as_ptr().cast_mut() };
-    //     effect(refs, e);
-    //     candidate += 1;
-    // });
-    // Ok(())
 
     thread_local! {
         static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
         static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     }
-
     BREAK.with_borrow_mut(|a| {
         if unsafe { setjmp(a) == 0 } {
             referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {

@@ -771,6 +771,48 @@ impl CommandDefinition for TransformCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// transform_mult
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/*
+(transform
+  (, (pattern0 ...)
+     (pattern1 ...)
+     ...
+  )
+  (, (template0 ...)
+     (template1 ...)
+     ...
+  )
+)
+*/
+
+/// Returns the status associated with a path in the trie
+pub struct TransformMultiMultiCmd;
+
+impl CommandDefinition for TransformMultiMultiCmd {
+    const NAME: &'static str = "transform_multi_multi";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+
+
+        let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
+
+
+        todo!();
+
+        Ok(Bytes::from("ACK. Tranform dispatched"))
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // upload
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
@@ -819,10 +861,10 @@ impl CommandDefinition for UploadCmd {
         // Do the Parsing
         //========================
         let ctx_clone = ctx.clone();
-        let src_buf = data;
+        let src_buf = data?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf?[..], pattern, template, &mut writer, data_format)
+            do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {
@@ -1333,41 +1375,95 @@ fn do_export_old(ctx: &MorkService, mut reader: ReadPermission, format: DataForm
 
 #[cfg(test)]
 #[test]
-fn get_first_subexpr() {
+fn transform_multi_multi_testbed() {
     use mork_bytestring::Tag;
 
     let space = ServerSpace::new();
 
-    let input = "((a b) 
-                  ((c d e)
-                   (f g h)
-                   (i j k)
-                  )
-                 )";
+    // let input = "((a b) 
+    //               ((c d e)
+    //                (f g h)
+    //                (i j k)
+    //               )
+    //              )";
+    let input ="\
+               \n(transform\
+               \n  (, (pattern0 a)\
+               \n     (pattern1 b)\
+               \n     (pattern1 b d e $f)\
+               \n  )\
+               \n  (, (template0 c)\
+               \n     (template1 d)\
+               \n  )\
+               \n)\
+               \n\
+    ";
 
     let mut expr = space.sexpr_to_expr(input).unwrap();
     let expr_ = 
         mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
     let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
 
-    expr_z.next_child();
-    let start = expr_z.subexpr();
-    println!("{:?}",unsafe{&*start.span()});
+
 
     expr_z.next_child();
-    let end = expr_z.subexpr();
-    println!("{:?}",unsafe{&*end.span()});
+    let transform_header = expr_z.subexpr();
+    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { panic!("expected sym!") };
+    core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b"transform".as_slice()));
+    // println!("{:?}",unsafe{&*transform_header.span()});
 
-    let mut end_z = mork_bytestring::ExprZipper::new(end.clone());
-    match end_z.item() {
+    expr_z.next_child();
+    let paterns = expr_z.subexpr();
+    // println!("{:?}",unsafe{&*paterns.span()});
+
+    expr_z.next_child();
+    let templates = expr_z.subexpr();
+    // println!("{:?}",unsafe{&*templates.span()});
+
+    let mut out_paterns = Vec::new();
+    let mut patterns_z = mork_bytestring::ExprZipper::new(paterns.clone());
+    match patterns_z.item() {
         Ok(Tag::Arity(arity)) => {
-            println!("END_Z");
-            for _ in 0..arity {
-                end_z.next_child();
-                let sub = end_z.subexpr();
-                println!("{:?}",unsafe{&*sub.span()});
+            core::assert!(arity > 1);
+            
+            patterns_z.next_child();
+            let comma = patterns_z.subexpr();
+            let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };
+            core::assert!(span.len()>0);
+            core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b",".as_slice()));
+            
+            for _ in 0..arity-1 {
+                patterns_z.next_child();
+                let sub = patterns_z.subexpr();
+                // println!("{:?}",unsafe{&*sub.span()});
+                out_paterns.push(unsafe { &*sub.span() }.to_vec())
             }
         }
         _ => panic!()
     }
+
+
+    let mut out_templates = Vec::new();
+    let mut templates_z = mork_bytestring::ExprZipper::new(templates.clone());
+    match templates_z.item() {
+        Ok(Tag::Arity(arity)) => {
+            core::assert!(arity > 1);
+            
+            templates_z.next_child();
+            let comma = templates_z.subexpr();
+            let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };
+            core::assert!(span.len()>0);
+            core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b",".as_slice()));
+            for _ in 0..arity-1 {
+                templates_z.next_child();
+                let sub = templates_z.subexpr();
+                // println!("{:?}",unsafe{&*sub.span()});
+                out_templates.push(unsafe { &*sub.span() }.to_vec())
+            }
+        }
+        _ => panic!()
+    }
+
+    println!("PATERNS   : {out_paterns:?}\
+            \nTEMPLATES : {out_templates:?}")
 }

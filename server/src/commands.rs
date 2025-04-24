@@ -314,7 +314,7 @@ impl CommandDefinition for ImportCmd {
 
         let pattern = cmd.args[0].as_expr().to_vec();
         let template = cmd.args[1].as_expr().to_vec();
-        let writer = ctx.0.space.new_writer(&template, &())?;
+        let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
 
         tokio::task::spawn(async move {
             match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
@@ -852,7 +852,7 @@ impl CommandDefinition for UploadCmd {
 
         let pattern = cmd.args[0].as_expr().to_vec();
         let template = cmd.args[1].as_expr().to_vec();
-        let mut writer = ctx.0.space.new_writer(&template, &())?;
+        let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
 
         //Read all the data from the post request
         let data = get_all_post_frame_bytes(&mut req).await;

@@ -739,7 +739,6 @@ where
     let mut prz = ProductZipper::new(
         tmp_0.read_zipper_at_path(make_prefix(pat_0)), 
         tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
-            // let prefix = unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() };
             tmp_m.read_zipper_at_path(make_prefix(p))
         }
     ));

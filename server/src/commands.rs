@@ -703,7 +703,7 @@ impl CommandDefinition for StopCmd {
 // transform
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
-/// Returns the status associated with a path in the trie
+
 pub struct TransformCmd;
 
 #[repr(usize)]
@@ -773,20 +773,20 @@ impl CommandDefinition for TransformCmd {
 // transform_mult
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
-/*
-(transform
-  (, (pattern0 ...)
-     (pattern1 ...)
-     ...
-  )
-  (, (template0 ...)
-     (template1 ...)
-     ...
-  )
-)
-*/
+/// expects the post body to be of this form os sexpr
+/// ```ignore
+/// (transform
+///   (, (pattern0 ...)
+///      (pattern1 ...)
+///      ...
+///   )
+///   (, (template0 ...)
+///      (template1 ...)
+///      ...
+///   )
+/// )
+/// ```
 
-/// Returns the status associated with a path in the trie
 pub struct TransformMultiMultiCmd;
 
 impl CommandDefinition for TransformMultiMultiCmd {
@@ -801,15 +801,143 @@ impl CommandDefinition for TransformMultiMultiCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
 
-
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
+        let (patterns, templates) = transform_multi_multi_get_args(
+            &ctx.0.space, core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?
+        ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
 
-        todo!();
+        let mut readers = Vec::with_capacity(patterns.len());
+        for pattern in &patterns {
+            let reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(pattern).till_constant_to_full(), &())?;
+            readers.push(reader);
+        }
+        
+        let mut writers = Vec::with_capacity(templates.len());
+        for template in &templates {
+            let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(template).till_constant_to_full(), &())?;
+            writers.push(writer);
+        }
 
-        Ok(Bytes::from("ACK. Tranform dispatched"))
+
+        let work_thread = thread.unwrap();
+        work_thread.dispatch_blocking_task(cmd, move |_c| {
+
+            // these exprs are made here because to avoid passing pointers between threades
+
+            let mut pattern_exprs = Vec::with_capacity(patterns.len());
+            for pattern in &patterns {
+                pattern_exprs.push(mork_bytestring::Expr { ptr : pattern.as_ptr() as *mut _ });
+            }
+            
+            let mut template_exprs = Vec::with_capacity(templates.len());
+            for template in &templates {
+                template_exprs.push(mork_bytestring::Expr { ptr : template.as_ptr() as *mut _ });
+            }
+
+            ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);
+            Ok(())
+        }).await;
+
+
+        Ok(Bytes::from("ACK. TranformMultiMulti dispatched"))
     }
 }
+
+
+#[cfg(test)]
+#[test]
+fn transform_multi_multi_basic_arg_check() {
+    let space = ServerSpace::new();
+
+    let input ="\
+               \n(transform\
+               \n  (, (pattern0 a)\
+               \n     (pattern1 b)\
+               \n     (pattern1 b d e $f)\
+               \n  )\
+               \n  (, (template0 c)\
+               \n     (template1 d)\
+               \n  )\
+               \n)\
+               \n\
+    ";
+
+    let (out_paterns, out_templates) = transform_multi_multi_get_args(&space, input).unwrap();
+
+    println!("PATERNS   : {out_paterns:?}\
+            \nTEMPLATES : {out_templates:?}")
+}
+
+
+#[derive(Debug)]
+enum TransformMultiMultiError {
+    ExpectedTrasformSym,
+    ExpectedPatternList,
+    ExpectedTemplateList,
+    ExpectedArity3AsFirstByte,
+}
+fn transform_multi_multi_get_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
+    use mork_bytestring::Tag;
+
+
+    let mut expr = space.sexpr_to_expr(input).unwrap();
+    let expr_ = 
+        mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
+    let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
+
+
+    let Ok(Tag::Arity(3)) = expr_z.item() else { return  Err(TransformMultiMultiError::ExpectedArity3AsFirstByte);};
+
+    expr_z.next_child();
+    let transform_header = expr_z.subexpr();
+    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { return Err(TransformMultiMultiError::ExpectedTrasformSym); };
+    if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b"transform".as_slice()) {
+        return Err(TransformMultiMultiError::ExpectedTrasformSym)
+    }
+
+    expr_z.next_child();
+    let paterns = expr_z.subexpr();
+    let Ok(out_paterns) = comma_list_expr(&space, paterns) else { return Err(TransformMultiMultiError::ExpectedPatternList); };
+
+    expr_z.next_child();
+    let templates = expr_z.subexpr();
+    let Ok(out_templates) = comma_list_expr(&space, templates) else { return Err(TransformMultiMultiError::ExpectedTemplateList); };
+
+
+    Ok((out_paterns,out_templates))
+}
+
+/// Remy: I don't like my use of reading the raw bytes, this will likely need to be changed in the future once Expr is extended.
+fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result<Vec<Vec<u8>>, &'static str> {
+
+    let mut out = Vec::new();
+    let mut z = mork_bytestring::ExprZipper::new(expr);
+    match z.item() {
+        Ok(mork_bytestring::Tag::Arity(arity)) => {
+            
+            z.next_child();
+            let comma = z.subexpr();
+            
+            const SYM_BYTE : u8 = 200;
+            let [SYM_BYTE , span @ ..] = (unsafe{&*comma.span()}) else { return Err("expected sym"); };
+            if span.len() < bucket_map::SYM_LEN { return Err("expected byte slice for sym") }
+            if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b",".as_slice()) {
+                return Err("expected comma")
+            }
+            for _ in 0..arity-1 {
+                z.next_child();
+                let sub = z.subexpr();
+                out.push(unsafe { &*sub.span() }.to_vec())
+            }
+            Ok(out)
+        }
+        _ => Err("expected arity byte")
+    }
+}
+
+
+
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // upload

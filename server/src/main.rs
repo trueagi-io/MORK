@@ -513,9 +513,12 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => TransformCmd
 
 
+            | GET => StatusOldCmd
             | POST => ClearDerivedPrefixCmd
             | POST => UploadDerivedPrefixCmd
             | GET => ExportDerivedPrefixCmd
+
+            | POST => TransformMultiMultiCmd
         }
         #[cfg(feature="neo4j")]
         dispatch!{
@@ -539,6 +542,9 @@ impl Service<Request<IncomingBody>> for MorkService {
             | POST => ClearDerivedPrefixCmd
             | POST => UploadDerivedPrefixCmd
             | GET => ExportDerivedPrefixCmd
+            
+
+            | POST => TransformMultiMultiCmd
         }
     }
 }

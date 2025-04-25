@@ -770,7 +770,7 @@ impl CommandDefinition for TransformCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// transform_mult
+// transform_multi_multi
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
 /// expects the post body to be of this form os sexpr
@@ -1498,99 +1498,4 @@ fn do_export_old(ctx: &MorkService, mut reader: ReadPermission, format: DataForm
     };
 
     Ok(hyper::body::Bytes::from(buffer))
-}
-
-#[cfg(test)]
-#[test]
-fn transform_multi_multi_testbed() {
-    use mork_bytestring::Tag;
-
-    let space = ServerSpace::new();
-
-    // let input = "((a b) 
-    //               ((c d e)
-    //                (f g h)
-    //                (i j k)
-    //               )
-    //              )";
-    let input ="\
-               \n(transform\
-               \n  (, (pattern0 a)\
-               \n     (pattern1 b)\
-               \n     (pattern1 b d e $f)\
-               \n  )\
-               \n  (, (template0 c)\
-               \n     (template1 d)\
-               \n  )\
-               \n)\
-               \n\
-    ";
-
-    let mut expr = space.sexpr_to_expr(input).unwrap();
-    let expr_ = 
-        mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
-    let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
-
-
-
-    expr_z.next_child();
-    let transform_header = expr_z.subexpr();
-    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { panic!("expected sym!") };
-    core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b"transform".as_slice()));
-    // println!("{:?}",unsafe{&*transform_header.span()});
-
-    expr_z.next_child();
-    let paterns = expr_z.subexpr();
-    // println!("{:?}",unsafe{&*paterns.span()});
-
-    expr_z.next_child();
-    let templates = expr_z.subexpr();
-    // println!("{:?}",unsafe{&*templates.span()});
-
-    let mut out_paterns = Vec::new();
-    let mut patterns_z = mork_bytestring::ExprZipper::new(paterns.clone());
-    match patterns_z.item() {
-        Ok(Tag::Arity(arity)) => {
-            core::assert!(arity > 1);
-
-            patterns_z.next_child();
-            let comma = patterns_z.subexpr();
-            let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };
-            core::assert!(span.len()>0);
-            core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b",".as_slice()));
-
-            for _ in 0..arity-1 {
-                patterns_z.next_child();
-                let sub = patterns_z.subexpr();
-                // println!("{:?}",unsafe{&*sub.span()});
-                out_paterns.push(unsafe { &*sub.span() }.to_vec())
-            }
-        }
-        _ => panic!()
-    }
-
-
-    let mut out_templates = Vec::new();
-    let mut templates_z = mork_bytestring::ExprZipper::new(templates.clone());
-    match templates_z.item() {
-        Ok(Tag::Arity(arity)) => {
-            core::assert!(arity > 1);
-
-            templates_z.next_child();
-            let comma = templates_z.subexpr();
-            let [_ , span @ ..] = (unsafe{&*comma.span()}) else { panic!("expected sym!") };
-            core::assert!(span.len()>0);
-            core::assert_eq!(space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }), Some(b",".as_slice()));
-            for _ in 0..arity-1 {
-                templates_z.next_child();
-                let sub = templates_z.subexpr();
-                // println!("{:?}",unsafe{&*sub.span()});
-                out_templates.push(unsafe { &*sub.span() }.to_vec())
-            }
-        }
-        _ => panic!()
-    }
-
-    println!("PATERNS   : {out_paterns:?}\
-            \nTEMPLATES : {out_templates:?}")
 }

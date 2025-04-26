@@ -232,4 +232,31 @@ mod tests {
         // s.dump(&mut res).unwrap();
         // println!("{}", String::from_utf8(res).unwrap());
     }
+
+    #[test]
+    fn simple_transform_multi_multi_test0() {
+        const SEXPR_CONTENTS: &str = r#"(Duck Quack)
+            (Human BlaBla)"#;
+
+        let mut s = Space::new();
+
+        s.load_sexpr(SEXPR_CONTENTS,
+                     expr!(s, "[2] $ $"),
+                     expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
+
+        s.transform_multi_multi(
+            // &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
+            &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
+            &[expr!(s, "$v")],
+        );
+
+        let mut output = Vec::new();
+        s.dump_sexpr(expr!(s, "$v"), expr!(s, "$v"), &mut output).unwrap();
+        let out_string = String::from_utf8_lossy(&output);
+        //println!("{out_string}");
+        assert_eq!(
+            "(root (Sound (Sound (Duck Quack))))\n(root (Sound (Sound (Human BlaBla))))\n",
+            out_string
+        );
+    }
 }

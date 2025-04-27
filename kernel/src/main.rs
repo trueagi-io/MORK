@@ -103,12 +103,19 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
+    const sexpr_contents: &str = r#"(Duck Quack)
+(Human BlaBla)"#;
+
     let mut s = Space::new();
-    const csv_contents: &str = "x,1\nx,2\ny,10\ny,20\ny,30";
 
-    s.load_csv(csv_contents.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.load_sexpr(sexpr_contents.as_bytes(),
+                 expr!(s, "[2] $ $"),
+                 expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
 
-    s.interpret(expr!(s, "[4] exec [2] 0 0 [3] , [2] x $ [2] y $ [2] , [2] foo [3] Point2D _1 _2"));
+    s.transform_multi_multi(
+        &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
+        &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
+    );
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();

@@ -903,8 +903,8 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
                 v
             }
             Tag::Arity(a) => {
-                j += 1;
                 let acc = t.zero(j, a);
+                j += 1;
                 stack.push(State{ iter: a, payload: acc });
                 continue 'putting;
             }

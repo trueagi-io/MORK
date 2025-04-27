@@ -84,8 +84,19 @@ fn label(l: u8) -> String {
         ITER_VAR_SYMBOL => { "ITER_VAR_SYMBOL" }
         ITER_VAR_ARITY => { "ITER_VAR_ARITY" }
         ACTION => { "ACTION" }
+        BEGIN_RANGE => { "BEGIN_RANGE" }
+        FINALIZE_RANGE => { "FINALIZE_RANGE" }
+        REFER_RANGE => { "REFER_RANGE" }
         _ => { return l.to_string() }
     }.to_string()
+}
+
+fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
+    s.as_ref().iter().copied().map(label).reduce(|mut x, y| {
+        x.push(' ');
+        x.push_str(y.as_str());
+        x
+    }).unwrap()
 }
 
 fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {

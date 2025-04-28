@@ -199,13 +199,13 @@ impl CommandDefinition for ExportCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "pattern",
             desc: "The pattern to specify the expressions to export from the space",
             required: true
         },
         ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "template",
             desc: "The template to specify the form of the expressions in the exported data",
             required: true
@@ -222,11 +222,11 @@ impl CommandDefinition for ExportCmd {
         ]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let pattern = cmd.args[0].as_expr().to_vec();
-        let template = cmd.args[1].as_expr().to_vec();
 
-        let pat_prefix = derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant();
-        let pat_reader = ctx.0.space.new_reader(&pat_prefix, &())?;
+        let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
+        .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
+        let pat_reader = ctx.0.space.new_reader(&derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant(), &())?;
 
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
@@ -287,13 +287,13 @@ impl CommandDefinition for ImportCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "pattern",
             desc: "The pattern to specify the expression to import from the data",
             required: true
         },
         ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "template",
             desc: "The template to specify the form of the expressions in the space",
             required: true
@@ -312,10 +312,11 @@ impl CommandDefinition for ImportCmd {
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri, cmd.cmd_id).await?;
 
-        let pattern = cmd.args[0].as_expr().to_vec();
-        let template = cmd.args[1].as_expr().to_vec();
-        let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
+        let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
+        .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
+        let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
+        
         tokio::task::spawn(async move {
             match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
                 Ok(()) => {},
@@ -805,7 +806,7 @@ impl PatternTemplateArgs {
 
 
 fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<PatternTemplateArgs, CommandError> {
-        let (patterns, templates) = transform_multi_multi_get_args(
+        let (patterns, templates) = pattern_template_args(
             &ctx.0.space, src
         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
@@ -854,7 +855,7 @@ fn transform_multi_multi_basic_arg_check() {
                \n\
     ";
 
-    let (out_paterns, out_templates) = transform_multi_multi_get_args(&space, input).unwrap();
+    let (out_paterns, out_templates) = pattern_template_args(&space, input).unwrap();
 
     println!("PATERNS   : {out_paterns:?}\
             \nTEMPLATES : {out_templates:?}")
@@ -863,13 +864,23 @@ fn transform_multi_multi_basic_arg_check() {
 
 #[derive(Debug)]
 enum TransformMultiMultiError {
-    ExpectedTrasformSym,
+    ExpectedTransformSym,
     ExpectedPatternList,
     ExpectedTemplateList,
     ExpectedArity3AsFirstByte,
     ParseError
 }
-fn transform_multi_multi_get_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
+fn pattern_template_from_sexpr_pair(space : &ServerSpace, pattern : &str, template : &str)->Result<(Vec<u8>, Vec<u8>), TransformMultiMultiError> {
+        let formatted = format!(
+            "(transform (, {}) (, {}) )",
+            pattern, 
+            template,
+        );
+        let (mut patterns, mut templates) = pattern_template_args(&space, &formatted)?;
+        Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
+        
+}
+fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
     use mork_bytestring::Tag;
 
 
@@ -883,9 +894,9 @@ fn transform_multi_multi_get_args(space : &ServerSpace,input : &str)->Result<(Ve
 
     expr_z.next_child();
     let transform_header = expr_z.subexpr();
-    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { return Err(TransformMultiMultiError::ExpectedTrasformSym); };
+    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { return Err(TransformMultiMultiError::ExpectedTransformSym); };
     if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b"transform".as_slice()) {
-        return Err(TransformMultiMultiError::ExpectedTrasformSym)
+        return Err(TransformMultiMultiError::ExpectedTransformSym)
     }
 
     expr_z.next_child();
@@ -949,13 +960,13 @@ impl CommandDefinition for UploadCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "pattern",
             desc: "The pattern to specify the expression to import from the data",
             required: true
         },
         ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "template",
             desc: "The template to specify the form of the expressions in the space",
             required: true
@@ -975,17 +986,17 @@ impl CommandDefinition for UploadCmd {
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
-        let pattern = cmd.args[0].as_expr().to_vec();
-        let template = cmd.args[1].as_expr().to_vec();
+        let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
+            .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
         let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
 
         //Read all the data from the post request
-        let data = get_all_post_frame_bytes(&mut req).await;
 
         // Do the Parsing
         //========================
-        let ctx_clone = ctx.clone();
-        let src_buf = data?;
+        let ctx_clone   = ctx.clone();
+        let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
             do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)

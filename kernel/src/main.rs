@@ -4,7 +4,6 @@ use std::time::Instant;
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, sexpr};
-use mork::prefix::Prefix;
 use mork::space::Space;
 use mork_bytestring::{item_byte, Tag};
 

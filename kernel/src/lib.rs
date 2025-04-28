@@ -8,13 +8,9 @@ pub use space_temporary::*;
 mod tests {
     use std::fs::File;
     use std::io::Read;
-    use std::str::from_utf8_unchecked;
     use std::time::Instant;
-    use mork_frontend::bytestring_parser::Parser as SExprParser;
-    use mork_bytestring::{Expr, parse, compute_length, ExprZipper, serialize};
-    use crate::{expr, sexpr, prefix};
-    use crate::json_parser::{Parser, DebugTranscriber, WriteTranscriber};
-    use crate::prefix::Prefix;
+    use crate::{expr, sexpr};
+    use crate::json_parser::{Parser, WriteTranscriber};
     use crate::space::*;
 
 

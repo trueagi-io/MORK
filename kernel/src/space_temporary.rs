@@ -101,15 +101,6 @@ pub trait Space {
         ).map_err(|e|ParseError(format!("{e:?}")))
     }
 
-    #[deprecated]
-    /// Parses and loads a buffer of S-Expressions into the `Space`
-    ///
-    /// Returns the number of expressions loaded into the space
-    fn load_sexpr_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<SExprCount, ParseError> {
-        let mut dst = self.write_zipper(dst);
-        load_sexpr_old_impl(self.symbol_table(), src_data, &mut dst).map_err(ParseError)
-    }
-
 
     fn sexpr_to_expr(&self, sexpr :  &str) -> Result<OwnedExpr, ParseError> {
         sexpr_to_path(self.symbol_table(), sexpr)
@@ -127,14 +118,6 @@ pub trait Space {
         .map_err(|e| DumpSExprError( e.to_string() ))
     }
 
-    #[deprecated]
-    fn dump_as_sexpr_old<'s, W : std::io::Write>(&'s self, dst: &mut W,src: &mut Self::Reader<'s>) -> Result<PathCount, DumpSExprError>
-    {
-        let mut rz = self.read_zipper(src);
-        let sm = self.symbol_table();
-        dump_as_sexpr_old_impl(sm, dst, &mut rz).map_err(DumpSExprError)
-    }
-
     fn load_csv<'s>(
         &'s self,
         src_data        : &str,
@@ -149,13 +132,6 @@ pub trait Space {
             template,
             self.write_zipper(template_writer)
         ).map_err(|_| ParseError("UnexpectedParseError".to_string()))
-    }
-
-    #[deprecated]
-    fn load_csv_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
-        let sm = self.symbol_table();
-        let mut wz = self.write_zipper(dst);
-        load_csv_old_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
 
     fn load_json_old<'s>(&'s self, src_data: &str, dst: &mut Self::Writer<'s>) -> Result<PathCount, ParseError> {
@@ -290,7 +266,6 @@ pub(crate) mod stack_actions {
 } 
 use stack_actions::*;
 
-use crate::prefix;
 
 pub struct ParDataParser<'a> { count: u64,
     #[cfg(feature="interning")]
@@ -810,6 +785,7 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
 
 
 pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy>(
+    #[allow(unused_variables)]
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
@@ -846,35 +822,6 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
     })
 }
 
-#[deprecated]
-pub(crate) fn dump_as_sexpr_old_impl<'s, RZ, W : std::io::Write>(#[allow(unused_variables)]sm : &SharedMappingHandle, dst: &mut W, src: &mut RZ) -> Result<crate::space::PathCount, String> 
-    where
-    RZ : ZipperIteration<'s, ()>
-{
-    let mut i = 0;
-    loop {
-        match src.to_next_val() {
-            None => { break }
-            Some(()) => {
-                let path = src.path();
-                let e = Expr { ptr: path.as_ptr().cast_mut() };
-                e.serialize(dst, |s| {
-                    #[cfg(feature="interning")]
-                    {
-                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-                    }
-                    #[cfg(not(feature="interning"))]
-                    unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-                });
-                dst.write(&[b'\n']).map_err(|x| x.to_string())?;
-                i += 1;
-            }
-        }
-    }
-    Ok(i)
-}
 
 
 
@@ -921,32 +868,6 @@ where
     Ok(i)
 }
 
-#[deprecated]
-pub(crate) fn load_sexpr_old_impl<'s, WZ, Err>(sm : &SharedMappingHandle, data: &str, dst: &mut WZ) -> Result<SExprCount, Err> 
-    where
-    WZ : ZipperMoving + ZipperWriting<()>
-{
-    let mut it = Context::new(data.as_bytes());
-    let mut submap = BytesTrieMap::new();
-
-    let mut i = 0;
-    let mut stack = [0u8; 2048];
-    let mut parser = ParDataParser::new(sm);
-    loop {
-        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
-            Ok(()) => {
-                submap.insert(&stack[..ez.loc], ());
-            }
-            Err(ParserError::InputFinished) => { break }
-            Err(other) => { panic!("{:?}", other) }
-        }
-        i += 1;
-        it.variables.clear();
-    }
-    dst.graft_map(submap);
-    Ok(i)
-}
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
     let mut it = Context::new(data.as_bytes());
@@ -974,42 +895,6 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
 // ///////
 // CSV //
 // /////
-
-#[deprecated]
-pub(crate) fn load_csv_old_impl<WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
-    where
-        WZ : Zipper + ZipperMoving + ZipperWriting<()>
-{
-    wz.reset();
-
-    let mut i = 0;
-    let mut stack = [0u8; 2048];
-    let mut pdp = ParDataParser::new(sm);
-    for sv in r.as_bytes().split(|&x| x == b'\n') {
-        if sv.len() == 0 { continue }
-        let mut a = 0;
-        let e = Expr{ ptr: stack.as_mut_ptr() };
-        let mut ez = ExprZipper::new(e);
-        ez.loc += 1;
-        for symbol in sv.split(|&x| x == b',') {
-            let internal = pdp.tokenizer(symbol);
-            ez.write_symbol(&internal[..]);
-            ez.loc += internal.len() + 1;
-            a += 1;
-        }
-        let total = ez.loc;
-        ez.reset();
-        ez.write_arity(a);
-
-        // .insert(&stack[..total], ()); // if only we had this function...
-        wz.descend_to(&stack[..total]);
-        wz.set_value(());
-        wz.reset();
-        
-        i += 1;
-    }
-    Ok(i)
-}
 
 pub(crate) fn load_csv_impl<'s, WZ>(
     sm       : &SharedMappingHandle,

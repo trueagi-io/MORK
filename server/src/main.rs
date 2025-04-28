@@ -513,11 +513,6 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => TransformCmd
 
 
-            | GET => StatusOldCmd
-            | POST => ClearDerivedPrefixCmd
-            | POST => UploadDerivedPrefixCmd
-            | GET => ExportDerivedPrefixCmd
-
             | POST => TransformMultiMultiCmd
         }
         #[cfg(feature="neo4j")]
@@ -537,12 +532,6 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => LoadNeo4jNodePropertiesCmd
             | GET => LoadNeo4jNodeLabelsCmd
 
-
-            | GET => StatusOldCmd
-            | POST => ClearDerivedPrefixCmd
-            | POST => UploadDerivedPrefixCmd
-            | GET => ExportDerivedPrefixCmd
-            
 
             | POST => TransformMultiMultiCmd
         }

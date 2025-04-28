@@ -448,27 +448,6 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut templ
     Ok(())
 }
 
-fn do_parse_old(space: &ServerSpace, src_buf: &[u8], dst: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
-    match file_type {
-        DataFormat::Metta => {
-            let count = space.load_sexpr_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from MeTTa S-Expr");
-        },
-        DataFormat::Json => {
-            let count = space.load_json_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from JSON");
-        },
-        DataFormat::Csv => {
-            let count = space.load_csv_old(std::str::from_utf8(src_buf)?, dst).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-            println!("Loaded {count} atoms from CSV");
-        },
-        DataFormat::Raw => {
-            println!("Inimplemnted Import from raw format");
-        }
-    }
-    Ok(())
-}
-
 #[cfg(feature="neo4j")]
 mod neo4j_commands {
     use crate::commands::*;
@@ -607,36 +586,6 @@ impl CommandDefinition for StatusCmd {
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
 
         let status = ctx.0.space.get_status(&prefix);
-        let json_string = serde_json::to_string(&status)?;
-        Ok(json_string.into())
-    }
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// status_old
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// Returns the status associated with a path in the trie
-pub struct StatusOldCmd;
-
-impl CommandDefinition for StatusOldCmd {
-    const NAME: &'static str = "status_old";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = false;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::Path,
-            name: "path",
-            desc: "The path in the map for which to check the status",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[]
-    }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let map_path = cmd.args[0].as_path();
-        let status = ctx.0.space.get_status(map_path);
         let json_string = serde_json::to_string(&status)?;
         Ok(json_string.into())
     }
@@ -831,18 +780,21 @@ impl PatternTemplateArgs {
         
         ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);   
     }
+    #[allow(unused)]
     fn is_read_write(&self) -> bool {
         self.patterns.len()== self.readers.len()
         && self.templates.len() == self.writers.len() 
         && self.patterns.len()  > 0
         && self.templates.len() > 0
     }
+    #[allow(unused)]
     fn is_read(&self) -> bool {
         self.patterns.len()== self.readers.len()
         && self.writers.len()  == 0
         && self.patterns.len()  > 0 
         && self.templates.len() > 0
     }
+    #[allow(unused)]
     fn is_write(&self) -> bool {
         self.templates.len() == self.writers.len() 
         && self.readers.len()  == 0
@@ -955,7 +907,7 @@ fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result
     match z.item() {
         Ok(mork_bytestring::Tag::Arity(arity)) => {
             const SYM_BYTE_LEN : u8 = bucket_map::SYM_LEN as u8;
-            
+
             z.next_child();
             let mork_bytestring::Tag::SymbolSize(SYM_BYTE_LEN) = z.tag() else {
                 return Err("expected `,` symbol");
@@ -1243,117 +1195,6 @@ impl ArgVal {
 }
 
 
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// upload_derived_prefix
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// Upload data directly to the map via a post request
-pub struct UploadDerivedPrefixCmd;
-
-impl CommandDefinition for UploadDerivedPrefixCmd {
-    const NAME: &'static str = "upload_derived_prefix";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::String,
-            name: "prefix_sexpr",
-            desc: "Sexpr to derive a prefix to upload to, it must only contain constants, \
-                   the last constant will be replaced with the data ie: sexpr `(a (b c) (d e f))` => prefix `(a (b c) (d e _))`",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[
-            PropDef {
-                arg_type: ArgType::String,
-                name: "format",
-                desc: "The format to expect, default is metta S-Expressions",
-                required: false
-            }
-        ]
-    }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
-        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
-
-        let sexpr = cmd.args[0].as_str();
-        for each in sexpr.chars() {
-            if matches!(each, '$') {return Err(CommandError::external(StatusCode::EXPECTATION_FAILED, "`prefix_sexpr` must not have any variables (`$`)"));}
-        }
-        let expr = ctx.0.space.sexpr_to_expr(sexpr).map_err(|_| CommandError::external(StatusCode::EXPECTATION_FAILED, "invalid `prefix_sexpr`, not a valid metta S-Expression"))?;
-
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
-
-
-        let writer = ctx.0.space.new_writer(prefix, &())?;
-
-        //Read all the data from the post request
-        let data = get_all_post_frame_bytes(&mut req).await;
-
-        // Do the Parsing
-        //========================
-        let ctx_clone       = ctx.clone();
-        let mut path_writer = writer;
-        let src_buf         = data;
-        let data_format     = format;
-        match tokio::task::spawn_blocking(move || {
-            do_parse_old(&ctx_clone.0.space, &src_buf?[..], &mut path_writer, data_format)
-        }).await.map_err(CommandError::internal)? {
-            Ok(()) => {},
-            Err(err) => {
-                //User-facing error
-                println!("Upload Failed. Parse error: {err:?}"); //GOAT, log this failure
-                return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Failed to parse uploaded data: {err:?}")))
-            }
-        };
-
-        thread.unwrap().finalize().await;
-        Ok("ACK. Upload Successful".into())
-    }
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// clear_derived_prefix
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// Clears all data below a derived prefix
-pub struct ClearDerivedPrefixCmd;
-impl CommandDefinition for ClearDerivedPrefixCmd {
-    const NAME: &'static str = "clear_derived_prefix";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = false;
-    fn args() -> &'static [ArgDef] {
-        &[]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[]
-    }
-    /*
-    (a (b $c) ($d e))
-
-    (a (b $c) _)
-    
-    (a (b c) (d _))
-     */
-    async fn work(ctx: MorkService, _cmd: Command, _thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
-
-        let bytes = post_bytes.bytes().collect::<Result<Vec<u8>, std::io::Error>>()?;
-        let sexpr = String::from_utf8_lossy(&bytes);
-        let expr = ctx.0.space.sexpr_to_expr(&sexpr).map_err(|e|CommandError::internal(format!("failed to parse MeTTa S-Expressions from in POST request: {e:?}")))?;
-
-        let prefix = derive_prefix_from_expr_slice(&expr);
-        let mut writer = ctx.0.space.new_writer(prefix.till_constant_to_full(), &())?;
-
-        let mut wz = ctx.0.space.write_zipper(&mut writer);
-        wz.remove_branches();
-        wz.remove_value();
-        Ok("ACK. Cleared at derived prefix".into())
-    }
-}
-
 type ExprPrefixSlice<'a> = &'a [u8];
 #[derive(Clone, Copy, Debug)]
 enum DerivedPrefix<'a> {
@@ -1454,93 +1295,4 @@ fn prefix_assertions() {
     prefix_to_var!(e11 : expr; pe11 : prefix; "($a ($b $c))");
     core::assert_ne!{e11, pe11.till_constant_to_full()};
     core::assert_eq!{pe11.till_constant_to_full(), pe7.till_constant_to_full()};
-}
-
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// export_derived_prefix
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// deserialize a map, serve as a file to the client. 
-pub struct ExportDerivedPrefixCmd;
-
-impl CommandDefinition for ExportDerivedPrefixCmd {
-    const NAME: &'static str = "export_derived_prefix";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::String,
-            name: "prefix_sexpr",
-            desc: "Sexpr to derive a prefix to upload to, it must only contain constants, \
-                   the last constant will be replaced with the data ie: sexpr `(a (b c) (d e f))` => prefix `(a (b c) (d e _))`",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] {
-        &[
-            PropDef {
-                arg_type: ArgType::String,
-                name: "format",
-                desc: "The format to export, default is metta S-Expressions",
-                required: false
-            }
-        ]
-    }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-
-        let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
-        let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
-
-        //Get the reader for this path in the map, which makes it off-limits to writers
-        let sexpr = cmd.args[0].as_str();
-        for each in sexpr.chars() {
-            if matches!(each, '$') {return Err(CommandError::external(StatusCode::EXPECTATION_FAILED, "`prefix_sexpr` must not have any variables (`$`)"));}
-        }
-        let expr = ctx.0.space.sexpr_to_expr(sexpr).map_err(|_| CommandError::external(StatusCode::EXPECTATION_FAILED, "invalid `prefix_sexpr`, not a valid metta S-Expression"))?;
-
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
-
-        let reader = ctx.0.space.new_reader(prefix, &())?;
-
-        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_export_old(&ctx, reader, format)
-        }).await??;
-
-        thread.unwrap().finalize().await;
-        println!("ExportDerivedPrefix command successful"); // TODO log this!
-
-        Ok(out)
-    }
-}
-
-fn do_export_old(ctx: &MorkService, mut reader: ReadPermission, format: DataFormat) -> Result<Bytes, CommandError> {
-
-    let buffer = match format {
-        DataFormat::Metta => {
-            let mut buffer = Vec::with_capacity(4096);
-            let mut writer = std::io::BufWriter::new(&mut buffer);
-            ctx.0.space.dump_as_sexpr_old(&mut writer, &mut reader).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
-            writer.flush()?;
-            drop(writer);
-            buffer
-        },
-        DataFormat::Csv |
-        DataFormat::Json => {
-            b"Export Error: Unimplemented Export Format".to_vec()
-        },
-        DataFormat::Raw => {
-            let mut buffer = Vec::with_capacity(4096);
-            let mut writer = std::io::BufWriter::new(&mut buffer);
-            let mut rz = ctx.0.space.read_zipper(&mut reader);
-            while let Some(_) = rz.to_next_val() {
-                writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
-            }
-            writer.flush()?;
-            drop(writer);
-            buffer
-        }
-    };
-
-    Ok(hyper::body::Bytes::from(buffer))
 }

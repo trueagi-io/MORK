@@ -316,7 +316,7 @@ impl CommandDefinition for ImportCmd {
         .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
         let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
-        
+
         tokio::task::spawn(async move {
             match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
                 Ok(()) => {},
@@ -696,7 +696,7 @@ impl CommandDefinition for TransformCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        
+
         // this is incorrect, pattern and template need to be parsed together!
 
         let transform_arg = 
@@ -705,7 +705,7 @@ impl CommandDefinition for TransformCmd {
                 cmd.args[TransformArg::Pattern as usize].as_str(),
                 cmd.args[TransformArg::Template as usize].as_str(),
             );
-        
+
         let transform_args = prep_transform_multi_multi(&ctx, &transform_arg)?;
 
         let work_thread = thread.unwrap();
@@ -778,7 +778,7 @@ impl PatternTemplateArgs {
         let PatternTemplateArgs { patterns, mut readers, templates, mut writers } = self;
         let pattern_exprs = slices_to_exprs(&patterns);
         let template_exprs = slices_to_exprs(&templates);
-        
+
         ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);   
     }
     #[allow(unused)]
@@ -878,7 +878,7 @@ fn pattern_template_from_sexpr_pair(space : &ServerSpace, pattern : &str, templa
         );
         let (mut patterns, mut templates) = pattern_template_args(&space, &formatted)?;
         Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
-        
+
 }
 fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
     use mork_bytestring::Tag;

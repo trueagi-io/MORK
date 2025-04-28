@@ -13,27 +13,6 @@ use reqwest::{Client, Error};
 /// Convenience to declare a literal to use like a constant
 macro_rules! decl_lit { ($NAME:ident!() => $LIT:tt) => { macro_rules! $NAME { () => { $LIT }; } }; }
 
-macro_rules! url_percent_encode {
-    ("!") => { "%21" };
-    ("#") => { "%23" };
-    ("$") => { "%24" };
-    ("&") => { "%26" };
-    ("'") => { "%27" };
-    ("(") => { "%28" };
-    (")") => { "%29" };
-    ("*") => { "%2A" };
-    ("+") => { "%2B" };
-    (",") => { "%2C" };
-    ("/") => { "%2F" };
-    (":") => { "%3A" };
-    (";") => { "%3B" };
-    ("=") => { "%3D" };
-    ("?") => { "%3F" };
-    ("@") => { "%40" };
-    ("[") => { "%5B" };
-    ("]") => { "%5D" };
-}
-
 macro_rules! server_url { () => { "http://127.0.0.1:8000" }; }
 
 /// Waits for the server to become available

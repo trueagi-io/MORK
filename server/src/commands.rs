@@ -761,7 +761,7 @@ impl CommandDefinition for TransformCmd {
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
 
-            transform_args.dispatch(&ctx);
+            transform_args.dispatch_transform(&ctx);
             Ok(())
         }).await;
 
@@ -808,7 +808,7 @@ impl CommandDefinition for TransformMultiMultiCmd {
         let transform_args = prep_transform_multi_multi(&ctx, src)?;
 
         work_thread.dispatch_blocking_task(cmd, move |_c| {
-            transform_args.dispatch(&ctx);
+            transform_args.dispatch_transform(&ctx);
             Ok(())
         }).await;
 
@@ -817,24 +817,42 @@ impl CommandDefinition for TransformMultiMultiCmd {
     }
 }
 
-struct TranformMultiMultiArgs {
+struct PatternTemplateArgs {
     patterns  : Vec<Vec<u8>>,
     readers   : Vec<ReadPermission>,
     templates : Vec<Vec<u8>>,
     writers   : Vec<WritePermission>
 }
-impl TranformMultiMultiArgs {
-    fn dispatch(self, ctx : &MorkService) {
-        let TranformMultiMultiArgs { patterns, mut readers, templates, mut writers } = self;
+impl PatternTemplateArgs {
+    fn dispatch_transform(self, ctx : &MorkService) {
+        let PatternTemplateArgs { patterns, mut readers, templates, mut writers } = self;
         let pattern_exprs = slices_to_exprs(&patterns);
         let template_exprs = slices_to_exprs(&templates);
         
         ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);   
     }
+    fn is_read_write(&self) -> bool {
+        self.patterns.len()== self.readers.len()
+        && self.templates.len() == self.writers.len() 
+        && self.patterns.len()  > 0
+        && self.templates.len() > 0
+    }
+    fn is_read(&self) -> bool {
+        self.patterns.len()== self.readers.len()
+        && self.writers.len()  == 0
+        && self.patterns.len()  > 0 
+        && self.templates.len() > 0
+    }
+    fn is_write(&self) -> bool {
+        self.templates.len() == self.writers.len() 
+        && self.readers.len()  == 0
+        && self.patterns.len()  > 0
+        && self.templates.len() > 0
+    }
 }
 
 
-fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<TranformMultiMultiArgs, CommandError> {
+fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<PatternTemplateArgs, CommandError> {
         let (patterns, templates) = transform_multi_multi_get_args(
             &ctx.0.space, src
         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
@@ -842,7 +860,7 @@ fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<TranformM
         let readers = prefix_readers(&ctx, &patterns)?;
         let writers = prefix_writers(&ctx, &templates)?;
 
-        Ok(TranformMultiMultiArgs { patterns, readers, templates, writers })
+        Ok(PatternTemplateArgs { patterns, readers, templates, writers })
 }
 fn prefix_readers(ctx : &MorkService, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
     let mut readers = Vec::with_capacity(patterns.len());

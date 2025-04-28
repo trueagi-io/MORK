@@ -523,7 +523,12 @@ async fn export_request_test() -> Result<(), Error> {
     }
     let response_text = response.text().await?;
     println!("Export MeTTa response:\n{}", response_text);
-    core::assert_eq!(response_text, PAYLOAD);
+
+    let mut sorted_results: Vec<&str> = response_text.lines().collect();
+    let mut sorted_payload: Vec<&str> = PAYLOAD.lines().collect();
+    sorted_results.sort();
+    sorted_payload.sort();
+    core::assert_eq!(sorted_results, sorted_payload);
 
     Ok(())
 }

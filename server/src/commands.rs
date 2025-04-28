@@ -746,22 +746,22 @@ impl CommandDefinition for TransformCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let mut pattern = ctx.0.space.sexpr_to_expr(cmd.args[TransformArg::Pattern as usize].as_str())
-                    .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `pattern` : {e:?}")) )?;
+        
+        // this is incorrect, pattern and template need to be parsed together!
 
-        let mut template = ctx.0.space.sexpr_to_expr(cmd.args[TransformArg::Template as usize].as_str())
-                    .map_err(|e| CommandError::external(StatusCode::EXPECTATION_FAILED, format!("Failed to parse `template` : {e:?}")) )?;
-
-        let mut reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(&pattern).till_constant_to_full(), &())?;
-        let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
+        let transform_arg = 
+            &format!(
+                "(transform (, {}) (, {}))",
+                cmd.args[TransformArg::Pattern as usize].as_str(),
+                cmd.args[TransformArg::Template as usize].as_str(),
+            );
+        
+        let transform_args = prep_transform_multi_multi(&ctx, &transform_arg)?;
 
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
 
-            let pat = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
-            let templ =  mork_bytestring::Expr { ptr: template.as_mut_ptr() };
-
-            ctx.0.space.transform(pat, &mut reader, templ, &mut writer);
+            transform_args.dispatch(&ctx);
             Ok(())
         }).await;
 
@@ -800,42 +800,15 @@ impl CommandDefinition for TransformMultiMultiCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let work_thread = thread.unwrap();
 
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
-        let (patterns, templates) = transform_multi_multi_get_args(
-            &ctx.0.space, core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?
-        ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+        let src  = core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
+        let transform_args = prep_transform_multi_multi(&ctx, src)?;
 
-        let mut readers = Vec::with_capacity(patterns.len());
-        for pattern in &patterns {
-            let reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(pattern).till_constant_to_full(), &())?;
-            readers.push(reader);
-        }
-        
-        let mut writers = Vec::with_capacity(templates.len());
-        for template in &templates {
-            let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(template).till_constant_to_full(), &())?;
-            writers.push(writer);
-        }
-
-
-        let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
-
-            // these exprs are made here because to avoid passing pointers between threades
-
-            let mut pattern_exprs = Vec::with_capacity(patterns.len());
-            for pattern in &patterns {
-                pattern_exprs.push(mork_bytestring::Expr { ptr : pattern.as_ptr() as *mut _ });
-            }
-            
-            let mut template_exprs = Vec::with_capacity(templates.len());
-            for template in &templates {
-                template_exprs.push(mork_bytestring::Expr { ptr : template.as_ptr() as *mut _ });
-            }
-
-            ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);
+            transform_args.dispatch(&ctx);
             Ok(())
         }).await;
 
@@ -843,6 +816,54 @@ impl CommandDefinition for TransformMultiMultiCmd {
         Ok(Bytes::from("ACK. TranformMultiMulti dispatched"))
     }
 }
+
+struct TranformMultiMultiArgs {
+    patterns  : Vec<Vec<u8>>,
+    readers   : Vec<ReadPermission>,
+    templates : Vec<Vec<u8>>,
+    writers   : Vec<WritePermission>
+}
+impl TranformMultiMultiArgs {
+    fn dispatch(self, ctx : &MorkService) {
+        let TranformMultiMultiArgs { patterns, mut readers, templates, mut writers } = self;
+        let pattern_exprs = slices_to_exprs(&patterns);
+        let template_exprs = slices_to_exprs(&templates);
+        
+        ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);   
+    }
+}
+
+
+fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<TranformMultiMultiArgs, CommandError> {
+        let (patterns, templates) = transform_multi_multi_get_args(
+            &ctx.0.space, src
+        ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
+        let readers = prefix_readers(&ctx, &patterns)?;
+        let writers = prefix_writers(&ctx, &templates)?;
+
+        Ok(TranformMultiMultiArgs { patterns, readers, templates, writers })
+}
+fn prefix_readers(ctx : &MorkService, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
+    let mut readers = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        let reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &())?;
+        readers.push(reader);
+    }
+    Ok(readers)
+}
+fn prefix_writers(ctx : &MorkService, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
+    let mut writers = Vec::with_capacity(templates.len());
+    for template in templates {
+        let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &())?;
+        writers.push(writer);
+    }
+    Ok(writers)
+}
+fn slices_to_exprs(slices : &[impl AsRef<[u8]>])->Vec<mork_bytestring::Expr>{
+    slices.into_iter().map(|pattern| mork_bytestring::Expr { ptr : pattern.as_ref().as_ptr() as *mut _ }).collect()
+}
+
 
 
 #[cfg(test)]
@@ -876,12 +897,13 @@ enum TransformMultiMultiError {
     ExpectedPatternList,
     ExpectedTemplateList,
     ExpectedArity3AsFirstByte,
+    ParseError
 }
 fn transform_multi_multi_get_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
     use mork_bytestring::Tag;
 
 
-    let mut expr = space.sexpr_to_expr(input).unwrap();
+    let mut expr = space.sexpr_to_expr(input).map_err(|_| TransformMultiMultiError::ParseError)?;
     let expr_ = 
         mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
     let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
@@ -908,22 +930,27 @@ fn transform_multi_multi_get_args(space : &ServerSpace,input : &str)->Result<(Ve
     Ok((out_paterns,out_templates))
 }
 
-/// Remy: I don't like my use of reading the raw bytes, this will likely need to be changed in the future once Expr is extended.
 fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result<Vec<Vec<u8>>, &'static str> {
 
     let mut out = Vec::new();
     let mut z = mork_bytestring::ExprZipper::new(expr);
     match z.item() {
         Ok(mork_bytestring::Tag::Arity(arity)) => {
+            const SYM_BYTE_LEN : u8 = bucket_map::SYM_LEN as u8;
             
             z.next_child();
-            let comma = z.subexpr();
-            
-            const SYM_BYTE : u8 = 200;
-            let [SYM_BYTE , span @ ..] = (unsafe{&*comma.span()}) else { return Err("expected sym"); };
-            if span.len() < bucket_map::SYM_LEN { return Err("expected byte slice for sym") }
+            let mork_bytestring::Tag::SymbolSize(SYM_BYTE_LEN) = z.tag() else {
+                return Err("expected `,` symbol");
+            };
+
+            let [_ , span @ ..] = (unsafe{&*z.subexpr().span()}) else { 
+                return Err(dbg!("expected `,` sym"));
+            };
+            if span.len() < bucket_map::SYM_LEN { 
+                return Err(dbg!("expected byte slice for `,` sym"))
+            }
             if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b",".as_slice()) {
-                return Err("expected comma")
+                return Err(dbg!("expected `,` symbol"))
             }
             for _ in 0..arity-1 {
                 z.next_child();
@@ -932,7 +959,7 @@ fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result
             }
             Ok(out)
         }
-        _ => Err("expected arity byte")
+        _ => Err(dbg!("expected arity byte"))
     }
 }
 

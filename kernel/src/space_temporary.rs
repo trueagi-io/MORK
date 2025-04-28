@@ -178,26 +178,6 @@ pub trait Space {
 
         transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
     }
-    fn transform_multi<'s>(
-        &'s self,
-        patterns         : &[Expr],
-        pattern_readers  : &'s mut[Self::Reader<'s>],
-        templates        : Expr,
-        template_writers : &mut Self::Writer<'s>,
-
-    ) {
-        self.transform_multi_multi(patterns, pattern_readers, &[templates], std::array::from_mut(template_writers));
-    }
-    fn transform<'s>(
-        &'s self,
-        pattern         : Expr,
-        pattern_reader  : &'s mut Self::Reader<'s>,
-        template        : Expr,
-        template_writer : &mut Self::Writer<'s>,
-
-    ) {
-        self.transform_multi_multi(&[pattern], std::array::from_mut(pattern_reader), &[template], std::array::from_mut(template_writer));
-    }
 
     #[cfg(feature="neo4j")]
     fn load_neo4j_triples<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {

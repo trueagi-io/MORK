@@ -648,12 +648,12 @@ async fn clear_request_test() -> Result<(), Error> {
 async fn transform_basic_request_test() -> Result<(), Error> {
     decl_lit!{space_in_expr!() => "(transform_basic_test in $v)"}
     decl_lit!{space_out_expr!() => "(transform_basic_test out $v)"}
-    decl_lit!{file_expr!() => "$v"}
+    decl_lit!{id_pattern_template!() => "$v"}
 
     const UPLOAD_URL: &str = concat!( 
         server_url!(),
         "/", "upload",
-        "/", file_expr!(),
+        "/", id_pattern_template!(),
         "/", space_in_expr!(),
     );
     const PAYLOAD : &str = "(a b)\
@@ -673,7 +673,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             server_url!(),
             "/", "export",
             "/", space_in_expr!(),
-            "/", file_expr!(),
+            "/", id_pattern_template!(),
             "/?", "format=raw"
         );
     const EXPORT_ORIGINAL_URL: &str =
@@ -681,7 +681,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             server_url!(),
             "/", "export",
             "/", space_in_expr!(),
-            "/", file_expr!(),
+            "/", id_pattern_template!(),
         );
 
     const EXPORT_TRANSFORMED_URL_RAW: &str =
@@ -689,7 +689,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             server_url!(),
             "/", "export",
             "/", space_out_expr!(),
-            "/", file_expr!(),
+            "/", id_pattern_template!(),
             "/?", "format=raw"
         );
     const EXPORT_TRANSFORMED_URL: &str =
@@ -697,7 +697,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
             server_url!(),
             "/", "export",
             "/", space_out_expr!(),
-            "/", file_expr!(),
+            "/", id_pattern_template!(),
         );
     wait_for_server().await.unwrap();
 
@@ -731,7 +731,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     let response_src_text = response_src.text().await.unwrap();
     println!("(out ?) Pre-transformed response:\n{}", response_src_text);
 
-    // Export the pre-transformed data in RAW form
+    // Export the transformed data in RAW form
     let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL_RAW).await.unwrap();
     if !response_src_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
@@ -739,7 +739,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
     println!("(out ?) Post-transformed response:\n{}", response_src_id_transform_text);
 
-    // Export the pre-transformed data in MeTTa form
+    // Export the transformed data in MeTTa form
     let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL).await.unwrap();
     if !response_src_id_transform.status().is_success() {
         panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
@@ -749,6 +749,93 @@ async fn transform_basic_request_test() -> Result<(), Error> {
 
     core::assert_eq!(response_src_text, PAYLOAD);
     core::assert_eq!(response_src_text, response_src_id_transform_text);
+
+    Ok(())
+}
+
+
+#[tokio::test]
+async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
+    decl_lit!{space_in_expr!() => "(transform_ooga_booga_regression_test in $v)"}
+    decl_lit!{space_out_expr!() => "(transform_ooga_booga_regression_test out $v)"}
+    decl_lit!{id_pattern_template!() => "$v"}
+
+    const UPLOAD_URL: &str = concat!( 
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", space_in_expr!(),
+    );
+    const UPLOAD_PAYLOAD : &str = "(Sound (caveman (OOGA BOOGA)))";
+
+    const TRANSFORM_REQUEST_URL: &str =
+        concat!( 
+            server_url!(),
+            "/", "transform_multi_multi",
+            // "/", space_in_expr!(), // pattern
+            // "/", space_out_expr!(), // template
+        );
+    
+    const TRANSFORM_PAYLOAD : &str = 
+     "(transform\
+    \n    (, (transform_ooga_booga_regression_test in (Sound ($n $s)) ))\
+    \n    (, (transform_ooga_booga_regression_test out (The $n is a creature that makes the following sound: $s) ))\
+    \n)\
+    ";
+
+    const EXPORT_TRANSFORMED_URL_RAW: &str =
+        concat!(
+            server_url!(),
+            "/", "export",
+            "/", space_out_expr!(),
+            "/", id_pattern_template!(),
+            "/?", "format=raw"
+        );
+    const EXPORT_TRANSFORMED_URL: &str =
+        concat!(
+            server_url!(),
+            "/", "export",
+            "/", space_out_expr!(),
+            "/", id_pattern_template!(),
+        );
+    wait_for_server().await.unwrap();
+
+    //First import a space from a remote
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
+    if !response.status().is_success() {
+        panic!("Error response: {}", response.text().await.unwrap())
+    }
+    println!("Import response: {}", response.text().await.unwrap());
+
+    // invoke a Transform
+    let response = reqwest::Client::new().post(TRANSFORM_REQUEST_URL).body(TRANSFORM_PAYLOAD).send().await.unwrap();
+    if !response.status().is_success() {
+        panic!("Transform Error response: {}", response.text().await.unwrap())
+    }
+    println!("Transform response: {}", response.text().await.unwrap());
+
+    // Export the transformed data in RAW form
+    let response_src_id_transform = reqwest::get(EXPORT_TRANSFORMED_URL_RAW).await.unwrap();
+    if !response_src_id_transform.status().is_success() {
+        panic!("Error response: {} - {}", response_src_id_transform.status(), response_src_id_transform.text().await.unwrap())
+    }
+    let response_src_id_transform_text = response_src_id_transform.text().await.unwrap();
+    println!("transformed response:\n{}", response_src_id_transform_text);
+
+    // Export the transformed data in MeTTa form
+    let response_src_transform = reqwest::get(EXPORT_TRANSFORMED_URL).await.unwrap();
+    if !response_src_transform.status().is_success() {
+        panic!("Error response: {} - {}", response_src_transform.status(), response_src_transform.text().await.unwrap())
+    }
+    let response_src_transform_text = response_src_transform.text().await.unwrap();
+    println!("transformed response:\n{}", response_src_transform_text);
+
+
+    core::assert_eq!(
+        "(The caveman is a creature that makes the following sound: (OOGA BOOGA))\n".to_string(),
+        response_src_transform_text
+    );
+    // ADD ASSERTS
 
     Ok(())
 }

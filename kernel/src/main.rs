@@ -103,26 +103,30 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
-    const sexpr_contents: &str = r#"(Duck Quack)
-(Human BlaBla)"#;
-
     let mut s = Space::new();
+    const facts: &str = "0,1\n1,2\n2,3\n3,4\n4,5\n5,0\n5,6\n6,7\n7,8\n8,9\n9,10\n10,7";
+    const expected_same_clique: &str = "...";
+    const expected_reachable: &str = "...";
 
-    s.load_sexpr(sexpr_contents.as_bytes(),
-                 expr!(s, "[2] $ $"),
-                 expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
 
-    s.transform_multi_multi(
-        &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
-        &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
-    );
+    s.load_csv(facts.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] edge _1 _2")).unwrap();
+
+    // (reachable $x $y) :- (edge $x $y)
+    // (reachable $x $y) :- (edge $x $z), (reachable $z $y)
+    // (same_clique $x $y) :- (reachable $x $y), (reachable $y $x)
+    s.datalog(&[
+        expr!(s, "[3] -: [2] , [3] edge $ $ [3] reachable _1 _2"),
+        expr!(s, "[3] -: [3] , [3] edge $ $ [3] reachable _2 $ [3] reachable _1 _3"),
+        expr!(s, "[3] -: [3] , [3] reachable $ $ [3] reachable _2 _1 [3] same_clique _1 _2"),
+    ]);
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
     println!("{}", String::from_utf8(v).unwrap());
     return;
-    /*    const csv_contents: &str = r#"1,2
+    /*
+        const csv_contents: &str = r#"1,2
 10,20
 10,30"#;
 
@@ -136,15 +140,25 @@ fn main() {
     s.load_sexpr(sexpr_contents.as_bytes(), expr!(s, "[2] useful $"), expr!(s, "[2] data [2] mysexpr _1")).unwrap();
 
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] data [2] mycsv $"), expr!(s, "_1"), &mut v).unwrap();
 
     println!("{}", String::from_utf8(v).unwrap());
     return;
-*/
+    */
     // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
     //
     // return;
     let mut s = Space::new();
+
+    let everythingf = std::fs::File::open("/mnt/zram/whole_flybase.json").unwrap();
+    let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
+    let load_compressed = Instant::now();
+    println!("done {} {}", s.load_json(everythingfs.as_ref()).unwrap(), load_compressed.elapsed().as_secs());
+
+    let backup_paths_start = Instant::now();
+    println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
+    println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
+
 
     // let restore_symbols_start = Instant::now();
     // println!("restored symbols {:?}", s.restore_symbols("/dev/shm/combined.symbols.zip").unwrap());
@@ -168,10 +182,10 @@ fn main() {
     //     println!("{:?} {:?}", std::str::from_utf8(to_symbol_rz.path()).unwrap_or(format!("{:?}", to_symbol_rz.path()).as_str()), v)
     // }
 
-    let restore_paths_start = Instant::now();
-    println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
-    println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
-    s.statistics();
+    // let restore_paths_start = Instant::now();
+    // println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
+    // println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
+    // s.statistics();
 
     // let load_labels_start = Instant::now();
     // println!("{:?}", s.load_neo4j_node_labels("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
@@ -193,7 +207,7 @@ fn main() {
     // s.statistics();
 
 
-    work(&mut s);
+    // work(&mut s);
 
     // s.statistics();
     // s.done();

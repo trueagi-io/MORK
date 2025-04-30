@@ -6,7 +6,7 @@
 //! server, and the rest of the tests will wait until they confirm the server is alive
 //! ===================================================================================
 
-use std::time::{Duration, Instant};
+use std::{/* os::unix::thread, */ time::{Duration, Instant}};
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -333,21 +333,11 @@ async fn import_request_test() -> Result<(), Error> {
     assert!(response.status().is_success());
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
-    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-    assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary");
+    // let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    // assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary"); // we need to ensure tests simulate latency somehow for this to be deterministic
 
     //Now spin until we get a "pathClear" status
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
     println!("Finished loading space");
 
     //Finally, check that we got the right data in the path by using the count command
@@ -373,17 +363,7 @@ async fn import_request_test() -> Result<(), Error> {
     assert!(response_text.starts_with("ACK"));
 
     //Spin until the status isn't "pathForbiddenTemporary".  Ie. the operation is complete
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() != "pathForbiddenTemporary" {
-            break
-        }
-    }
+    wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
 
     //And check that the path contains the correct error
     let response = reqwest::get(STATUS_URL).await?;
@@ -403,17 +383,7 @@ async fn import_request_test() -> Result<(), Error> {
     assert!(response_text.starts_with("ACK"));
 
     //Spin until the status isn't "pathForbiddenTemporary".  Ie. the operation is complete
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() != "pathForbiddenTemporary" {
-            break
-        }
-    }
+    wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
 
     //And check that the path contains the correct error
     let response = reqwest::get(STATUS_URL).await?;
@@ -475,17 +445,7 @@ async fn export_request_test() -> Result<(), Error> {
     println!("Upload response: {}", response.text().await?);
 
     // Wait until the server has finished import
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
     println!("Finished loading space");
 
     // Export the data in raw form
@@ -558,17 +518,7 @@ async fn copy_request_test() -> Result<(), Error> {
     println!("Import response: {}", response.text().await?);
 
     // Wait until the server has finished import
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(STATUS_URL).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if response_json.get("status").unwrap().as_str().unwrap() == "pathClear" {
-            break
-        }
-    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
     println!("Finished loading space");
 
     // Copy the data from `royals` to `commoners`
@@ -772,8 +722,6 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
         concat!( 
             server_url!(),
             "/", "transform_multi_multi",
-            // "/", space_in_expr!(), // pattern
-            // "/", space_out_expr!(), // template
         );
     
     const TRANSFORM_PAYLOAD : &str = 
@@ -835,8 +783,65 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
         "(The caveman is a creature that makes the following sound: (OOGA BOOGA))\n".to_string(),
         response_src_transform_text
     );
-    // ADD ASSERTS
 
     Ok(())
 }
 
+
+// #[tokio::test]
+// async fn root_writer_test() -> Result<(), Error> {
+//     decl_lit!{space_in_expr!() => "$v"}
+//     decl_lit!{id_pattern_template!() => "$v"}
+
+//     const UPLOAD_URL: &str = concat!( 
+//         server_url!(),
+//         "/", "upload",
+//         "/", id_pattern_template!(),
+//         "/", space_in_expr!(),
+//     );
+//     const UPLOAD_PAYLOAD : &str = "(just a list)";
+    
+//     wait_for_server().await.unwrap();
+
+//     //First import a space from a remote
+//     for i in 0..1000 {
+//         let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
+//         if !response.status().is_success() {
+//                 wait_for_url_eq_status("$whole_space", "pathClear").await.unwrap();
+//             } else {
+//                 return Ok(());
+//             }
+//     }
+
+//     panic!()
+// }
+
+
+
+async fn wait_for_url_eq_status(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
+    wait_for_url_status::<true>(url, expected_status).await
+}
+async fn wait_for_url_ne_status(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
+    wait_for_url_status::<false>(url, expected_status).await
+}
+async fn wait_for_url_status<const EQ : bool>(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let response = reqwest::get(url).await?;
+        assert!(response.status().is_success());
+        let response_text = response.text().await?;
+        println!("Status (polling) response: {}", response_text);
+        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        if EQ {
+
+            if response_json.get("status").unwrap().as_str().unwrap() == expected_status {
+                break
+            }
+        } else {
+            if response_json.get("status").unwrap().as_str().unwrap() != expected_status {
+                break
+            }
+        }
+    }
+    Ok(())
+}

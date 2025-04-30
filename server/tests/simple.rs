@@ -788,33 +788,33 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
 }
 
 
-// #[tokio::test]
-// async fn root_writer_test() -> Result<(), Error> {
-//     decl_lit!{space_in_expr!() => "$v"}
-//     decl_lit!{id_pattern_template!() => "$v"}
+#[tokio::test]
+async fn root_writer_test() -> Result<(), Error> {
+    decl_lit!{space_in_expr!() => "$v"}
+    decl_lit!{id_pattern_template!() => "$v"}
 
-//     const UPLOAD_URL: &str = concat!( 
-//         server_url!(),
-//         "/", "upload",
-//         "/", id_pattern_template!(),
-//         "/", space_in_expr!(),
-//     );
-//     const UPLOAD_PAYLOAD : &str = "(just a list)";
+    const UPLOAD_URL: &str = concat!( 
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", space_in_expr!(),
+    );
+    const UPLOAD_PAYLOAD : &str = "(just a list)";
     
-//     wait_for_server().await.unwrap();
+    wait_for_server().await.unwrap();
 
-//     //First import a space from a remote
-//     for i in 0..1000 {
-//         let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
-//         if !response.status().is_success() {
-//                 wait_for_url_eq_status("$whole_space", "pathClear").await.unwrap();
-//             } else {
-//                 return Ok(());
-//             }
-//     }
+    //First import a space from a remote
+    for i in 0..100000 {
+        let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
+        if !response.status().is_success() {
+                wait_for_url_eq_status("$whole_space", "pathClear").await.unwrap();
+            } else {
+                return Ok(());
+            }
+    }
 
-//     panic!()
-// }
+    panic!()
+}
 
 
 

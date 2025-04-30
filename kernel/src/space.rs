@@ -1,13 +1,16 @@
-use std::{fs::File, io::Write};
-use mork_bytestring::{Expr, ExprZipper, Tag, byte_item, item_byte};
+
+use std::io::Write;
+use std::process;
+use std::fs::File;
+use pathmap::zipper::ProductZipper;
+use mork_bytestring::{byte_item, Expr, ExprZipper, item_byte, serialize, Tag};
+use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{SharedMapping, SharedMappingHandle, WritePermit};
 use pathmap::{
     trie_map::BytesTrieMap,
     utils::{BitMask, ByteMask},
     zipper::*,
 };
-use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -103,7 +106,6 @@ fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
         x
     }).unwrap()
 }
-
 
 fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
     unsafe {
@@ -534,6 +536,7 @@ macro_rules! expr {
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
+        #[allow(unused_unsafe)]
         unsafe {
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
@@ -1160,7 +1163,51 @@ impl Space {
         self.transform_multi_multi(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
+    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
         let _ = self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
+    }
+
+    // (exec <loc> (, <src1> <src2> <srcn>)
+    //             (, <dst1> <dst2> <dstm>))
+    pub fn interpret(&mut self, rt: Expr) {
+        let mut rtz = ExprZipper::new(rt);
+        println!("{:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
+        assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
+        assert!(rtz.next());
+        assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
+        assert!(rtz.next());
+        let loc = rtz.subexpr();
+
+        assert!(rtz.next_child());
+        let mut srcz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
+        let mut srcs = Vec::with_capacity(n as usize - 1);
+        srcz.next();
+        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for i in 0..n as usize - 1 {
+            srcz.next_child();
+            srcs.push(srcz.subexpr());
+        }
+        assert!(rtz.next_child());
+        let mut dstz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+        let mut dsts = Vec::with_capacity(m as usize - 1);
+        dstz.next();
+        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for j in 0..m as usize - 1 {
+            dstz.next_child();
+            dsts.push(dstz.subexpr());
+        }
+
+        self.transform_multi_multi(&srcs[..], &dsts[..]);
+    }
+
+    pub fn done(self) -> ! {
+        // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
+        // counters.print_histogram_by_depth();
+        // counters.print_run_length_histogram();
+        // counters.print_list_node_stats();
+        // println!("#symbols {}", self.sm.symbol_count());
+        process::exit(0);
     }
 }

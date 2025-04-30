@@ -2,8 +2,7 @@
 // use std::task::Poll;
 use std::time::Instant;
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving};
-use mork_frontend::bytestring_parser::Parser;
-use mork::{expr, sexpr};
+use mork::expr;
 use mork::space::Space;
 use mork_bytestring::{item_byte, Tag};
 
@@ -18,6 +17,7 @@ fn main() {
         0 => bench_0(),
         1 => bench_1(),
         2 => bench_2(),
+        3 => bench_3(),
         _ => panic!("no more benchmark tests")
     }
 }
@@ -114,13 +114,31 @@ fn work(s: &mut Space) {
     println!("res2 count {}", count);
 
 }
-const TEST_DAG : bool = false;
 fn bench_2() {
+    const sexpr_contents: &str = r#"(Duck Quack)
+    (Human BlaBla)"#;
+    
+    let mut s = Space::new();
+    
+    s.load_sexpr(sexpr_contents,
+                 expr!(s, "[2] $ $"),
+                 expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
+    
+    s.transform_multi_multi(
+        &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
+        &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
+    );
+    
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
 
+}
+const TEST_DAG : bool = false;
+fn bench_3() {
 
-    // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
-    //
-    // return;
     let mut s = Space::new();
 
     let restore_symbols_start = Instant::now();

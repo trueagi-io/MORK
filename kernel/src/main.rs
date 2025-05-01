@@ -104,6 +104,29 @@ fn work(s: &mut Space) {
 
 fn main() {
     let mut s = Space::new();
+    const space: &str = r#"
+(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
+(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+
+(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
+(? (add $ret) (Z $y) (! $ret $y))
+
+(! (add result) ((S Z) (S Z)))
+"#;
+    
+    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+
+    s.metta_calculus();
+    
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
+    /*
+
+    let mut s = Space::new();
     const facts: &str = "0,1\n1,2\n2,3\n3,4\n4,5\n5,0\n5,6\n6,7\n7,8\n8,9\n9,10\n10,7";
     const expected_same_clique: &str = "...";
     const expected_reachable: &str = "...";
@@ -125,6 +148,7 @@ fn main() {
 
     println!("{}", String::from_utf8(v).unwrap());
     return;
+     */
     /*
         const csv_contents: &str = r#"1,2
 10,20

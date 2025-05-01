@@ -1144,7 +1144,7 @@ impl Space {
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) {
         let mut rtz = ExprZipper::new(rt);
-        println!("{:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
+        println!("interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
         assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
         assert!(rtz.next());
         assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
@@ -1228,6 +1228,24 @@ impl Space {
     //     }
     // }
 
+    pub fn metta_calculus(&mut self) {
+        let prefix_e = expr!(self, "[4] exec $ $ $");
+        let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+        
+        while {
+            let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
+            if let Some(()) = rz.to_next_val() {
+                let mut x: Box<[u8]> = rz.origin_path().unwrap().into(); // should use local buffer
+                drop(rz);
+                self.btm.remove(&x[..]);
+                self.interpret(Expr{ ptr: x.as_mut_ptr() });
+                true
+            } else {
+                false
+            }
+        } {}
+    }
+    
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();

@@ -531,7 +531,7 @@ macro_rules! expr {
     ($space:ident, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
-        let table = $space.sym_table();
+        let table = $space.symbol_table();
         let mut pdp = $crate::space::ParDataParser::new(&table);
         let mut buf = [0u8; 2048];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
@@ -554,7 +554,7 @@ macro_rules! sexpr {
             #[cfg(feature="interning")]
             {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-            let table = $space.sym_table();
+            let table = $space.symbol_table();
             let mstr = table.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
             // println!("symbol {symbol:?}, bytes {mstr:?}");
             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
@@ -571,7 +571,7 @@ macro_rules! prefix {
     ($space:ident, $s:literal) => {{
         let mut src = parse!($s);
         let q = Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = $crate::space_temporary::ParDataParser::new(&$space.sm);
+        let mut pdp = $crate::space::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
         let p = Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
@@ -590,8 +590,9 @@ impl Space {
     }
 
     /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving access directly to the field
+    ///       The name matches the name the Space trait so the macro expr works with it.
     #[doc(hidden)]
-    pub fn sym_table(&self)->SharedMappingHandle{
+    pub fn symbol_table(&self)->SharedMappingHandle{
         self.sm.clone()
     }
 

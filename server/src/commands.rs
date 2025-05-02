@@ -893,9 +893,7 @@ fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>
     let Ok(Tag::Arity(3)) = expr_z.item() else { return  Err(TransformMultiMultiError::ExpectedArity3AsFirstByte);};
 
     expr_z.next_child();
-    let transform_header = expr_z.subexpr();
-    let [_ , span @ ..] = (unsafe{&*transform_header.span()}) else { return Err(TransformMultiMultiError::ExpectedTransformSym); };
-    if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b"transform".as_slice()) {
+    if unsafe {expr_z.subexpr().span().as_ref() != mork::expr!(space, "transform").span().as_ref()} {
         return Err(TransformMultiMultiError::ExpectedTransformSym)
     }
 
@@ -917,21 +915,10 @@ fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result
     let mut z = mork_bytestring::ExprZipper::new(expr);
     match z.item() {
         Ok(mork_bytestring::Tag::Arity(arity)) => {
-            const SYM_BYTE_LEN : u8 = bucket_map::SYM_LEN as u8;
+            if !z.next_child() { return Err("Malformed expr") };
 
-            z.next_child();
-            let mork_bytestring::Tag::SymbolSize(SYM_BYTE_LEN) = z.tag() else {
+            if unsafe {z.subexpr().span().as_ref() != mork::expr!(space, ",").span().as_ref()} {
                 return Err("expected `,` symbol");
-            };
-
-            let [_ , span @ ..] = (unsafe{&*z.subexpr().span()}) else { 
-                return Err(dbg!("expected `,` sym"));
-            };
-            if span.len() < bucket_map::SYM_LEN { 
-                return Err(dbg!("expected byte slice for `,` sym"))
-            }
-            if space.symbol_table().get_bytes(unsafe { core::ptr::read(span.as_ptr() as *const _) }) != Some(b",".as_slice()) {
-                return Err(dbg!("expected `,` symbol"))
             }
             for _ in 0..arity-1 {
                 z.next_child();

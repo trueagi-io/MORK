@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 pathmap = { workspace=true }
 mork = { workspace=true }
+mork-frontend = { workspace=true }
 mork-bytestring = { workspace = true }
 bucket_map = { workspace=true }
 hyper = { version = "1", features = ["full"] }

@@ -165,7 +165,7 @@ pub trait Space {
         let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
         let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
 
-        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
+        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs);
     }
 
     #[cfg(feature="neo4j")]

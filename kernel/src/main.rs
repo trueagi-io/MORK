@@ -136,6 +136,75 @@ fn bench_2() {
     return;
 
 }
+
+fn bench_21() {
+        let mut s = Space::new();
+    const space: &str = r#"
+(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
+(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+
+(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
+(? (add $ret) (Z $y) (! $ret $y))
+
+(! (add result) ((S Z) (S Z)))
+"#;
+    
+    s.load_sexpr(space, expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+
+    s.metta_calculus();
+    
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
+    /*
+
+    let mut s = Space::new();
+    const facts: &str = "0,1\n1,2\n2,3\n3,4\n4,5\n5,0\n5,6\n6,7\n7,8\n8,9\n9,10\n10,7";
+    const expected_same_clique: &str = "...";
+    const expected_reachable: &str = "...";
+
+
+    s.load_csv(facts.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] edge _1 _2")).unwrap();
+    */
+
+    // (reachable $x $y) :- (edge $x $y)
+    // (reachable $x $y) :- (edge $x $z), (reachable $z $y)
+    // (same_clique $x $y) :- (reachable $x $y), (reachable $y $x)
+    s.datalog(&[
+        expr!(s, "[3] -: [2] , [3] edge $ $ [3] reachable _1 _2"),
+        expr!(s, "[3] -: [3] , [3] edge $ $ [3] reachable _2 $ [3] reachable _1 _3"),
+        expr!(s, "[3] -: [3] , [3] reachable $ $ [3] reachable _2 _1 [3] same_clique _1 _2"),
+    ]);
+}
+
+fn bench_22() {
+    /*
+    s.load_sexpr(sexpr_contents.as_bytes(), expr!(s, "[2] useful $"), expr!(s, "[2] data [2] mysexpr _1")).unwrap();
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] data [2] mycsv $"), expr!(s, "_1"), &mut v).unwrap();
+
+    println!("{}", String::from_utf8(v).unwrap());
+    return;
+    */
+    // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
+    //
+    // return;
+    let mut s = Space::new();
+
+    let everythingf = std::fs::File::open("/mnt/zram/whole_flybase.json").unwrap();
+    let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
+    let load_compressed = Instant::now();
+    println!("done {} {}", s.load_json( unsafe { std::str::from_utf8_unchecked(everythingfs.as_ref()) }).unwrap(), load_compressed.elapsed().as_secs());
+
+    let backup_paths_start = Instant::now();
+    println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
+    println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
+
+}
 const TEST_DAG : bool = false;
 fn bench_3() {
 

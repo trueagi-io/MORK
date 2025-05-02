@@ -655,7 +655,7 @@ pub(crate) fn load_csv_impl<'s, WZ>(
             let total = ez.loc;
             ez.reset();
             ez.write_arity(a);
-        
+
             let data = &stack[..total];
             let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
             match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
@@ -668,7 +668,7 @@ pub(crate) fn load_csv_impl<'s, WZ>(
             wz.reset();
             i += 1;
         }
-        
+
         Ok(i)
 }
 impl Space {
@@ -770,16 +770,16 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         use neo4rs::*;
         use mork_bytestring::{Tag, item_byte};
         let graph = Graph::new(uri, user, pass).unwrap();
-        
+
         let mut pdp = ParDataParser::new(sm);
         let sa_symbol = pdp.tokenizer("NKV".as_bytes());
         let mut nodes = 0;
         let mut attributes = 0;
-        
+
         wz.descend_to_byte(item_byte(Tag::Arity(4)));
         wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
         wz.descend_to(sa_symbol);
-        
+
         let guard = rt.enter();
         let mut result = rt.block_on(graph.execute(
             query("MATCH (s) RETURN id(s), s"))
@@ -789,14 +789,14 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
             let internal_s = pdp.tokenizer(&s.to_be_bytes());
             wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
             wz.descend_to(internal_s);
-        
+
             let a: BoltMap = row.get("s").unwrap();
-        
+
             for (bs, bt) in a.value.iter() {
                 let internal_k = pdp.tokenizer(bs.value.as_bytes());
                 wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_k.len() as _)));
                 wz.descend_to(internal_k);
-            
+
                 let BoltType::String(bv) = bt else { unreachable!() };
                 if bv.value.starts_with("[") && bv.value.ends_with("]") {
                     for chunk in bv.value[1..bv.value.len()-1].split(", ") {
@@ -804,25 +804,25 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                         let internal_v = pdp.tokenizer(c.as_bytes());
                         wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
                         wz.descend_to(internal_v);
-                    
+
                         wz.set_value(());
-                    
+
                         wz.ascend(internal_v.len() + 1);
                     }
                 } else {
                     let internal_v = pdp.tokenizer(bv.value.as_bytes());
                     wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
                     wz.descend_to(internal_v);
-                
+
                     wz.set_value(());
-                
+
                     wz.ascend(internal_v.len() + 1);
                 }
-            
+
                 wz.ascend(internal_k.len() + 1);
                 attributes += 1;
             }
-        
+
             wz.ascend(internal_s.len() + 1);
             nodes += 1;
         }
@@ -847,16 +847,16 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         use neo4rs::*;
         use mork_bytestring::{Tag, item_byte};
         let graph = Graph::new(uri, user, pass).unwrap();
-        
+
         let mut pdp = ParDataParser::new(&sm);
         let sa_symbol = pdp.tokenizer("NL".as_bytes());
         let mut nodes = 0;
         let mut labels = 0;
-        
+
         wz.descend_to_byte(item_byte(Tag::Arity(3)));
         wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
         wz.descend_to(sa_symbol);
-        
+
         let guard = rt.enter();
         let mut result = rt.block_on(graph.execute(
             query("MATCH (s) RETURN id(s), labels(s)"))
@@ -866,23 +866,23 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
             let internal_s = pdp.tokenizer(&s.to_be_bytes());
             wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
             wz.descend_to(internal_s);
-        
+
             let a: BoltList = row.get("labels(s)").unwrap();
-        
+
             for bl in a.value.iter() {
                 let BoltType::String(bv) = bl else { unreachable!() };
-            
+
                 let internal_v = pdp.tokenizer(bv.value.as_bytes());
                 wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
                 wz.descend_to(internal_v);
-            
+
                 wz.set_value(());
-            
+
                 wz.ascend(internal_v.len() + 1);
-            
+
                 labels += 1;
             }
-        
+
             wz.ascend(internal_s.len() + 1);
             nodes += 1;
         }
@@ -906,7 +906,7 @@ where
 {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
-        
+
         #[allow(unused_mut)]
         let mut buffer = [0u8; 4096];
         let mut it = Context::new(r.as_bytes());
@@ -961,11 +961,11 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
 {
         let mut buffer = [0u8; 4096];
-        
+
         query_multi_impl(&[pattern], &[pattern_rz],|refs, _loc| {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
             template.substitute(refs, &mut oz);
-        
+
             // &buffer[constant_template_prefix.len()..oz.loc]
             Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
                 #[cfg(feature="interning")]
@@ -979,7 +979,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
                 unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
             });
             w.write(&[b'\n']).map_err(|_| f())?;
-        
+
             Ok(())
         })
 }
@@ -1191,25 +1191,10 @@ impl Space {
         let loc = rtz.subexpr();
 
         assert!(rtz.next_child());
-        let mut srcz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
-        let mut srcs = Vec::with_capacity(n as usize - 1);
-        srcz.next();
-        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for i in 0..n as usize - 1 {
-            srcz.next_child();
-            srcs.push(srcz.subexpr());
-        }
+        let srcs = comma_fun_args(self, rtz.subexpr());
+
         assert!(rtz.next_child());
-        let mut dstz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-        let mut dsts = Vec::with_capacity(m as usize - 1);
-        dstz.next();
-        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for j in 0..m as usize - 1 {
-            dstz.next_child();
-            dsts.push(dstz.subexpr());
-        }
+        let dsts = comma_fun_args(self, rtz.subexpr());
 
         self.transform_multi_multi(&srcs[..], &dsts[..]);
     }
@@ -1219,16 +1204,10 @@ impl Space {
         assert_eq!(rtz.item(), Ok(Tag::Arity(3)));
         assert!(rtz.next());
         assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "-:").span().as_ref().unwrap() });
+
         assert!(rtz.next_child());
-        let mut dstz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-        let mut dsts = Vec::with_capacity(m as usize - 1);
-        dstz.next();
-        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for j in 0..m as usize - 1 {
-            dstz.next_child();
-            dsts.push(dstz.subexpr());
-        }
+        let dsts = comma_fun_args(self, rtz.subexpr());
+
         assert!(rtz.next_child());
         let mut res = rtz.subexpr();
 
@@ -1270,7 +1249,7 @@ impl Space {
     pub fn metta_calculus(&mut self) {
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
-        
+
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if let Some(()) = rz.to_next_val() {
@@ -1284,7 +1263,7 @@ impl Space {
             }
         } {}
     }
-    
+
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();
@@ -1293,4 +1272,17 @@ impl Space {
         // println!("#symbols {}", self.sm.symbol_count());
         process::exit(0);
     }
+}
+
+fn comma_fun_args(s : &Space, e : Expr)->Vec<Expr> {
+    let mut ez = ExprZipper::new(e);
+    let Ok(Tag::Arity(n)) = ez.item() else { panic!() };
+    let mut srcs = Vec::with_capacity(n as usize - 1);
+    ez.next();
+    assert_eq!(unsafe { ez.subexpr().span().as_ref().unwrap() }, unsafe { expr!(s, ",").span().as_ref().unwrap() });
+    for i in 0..n as usize - 1 {
+        ez.next_child();
+        srcs.push(ez.subexpr());
+    }
+    srcs
 }

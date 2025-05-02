@@ -1043,7 +1043,7 @@ where
     RZ :  ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
-        
+
         core::debug_assert_eq!(patterns.len(), pattern_rzs.len());
         #[cfg(debug_assertions)]
         for i in 0..patterns.len() {
@@ -1052,7 +1052,7 @@ where
                 pattern_rzs[i].origin_path().unwrap()
             );
         }
-        
+
         //Graft all the remaining read zippers into temporary maps in order to work around the
         // fact that product zippers can't handle factor zippers beginning in the middle of nodes
         // Also, we need to preserve the original origin path
@@ -1062,34 +1062,36 @@ where
         let mut tmp_maps = vec![];
         for each_rz in pattern_rzs {
             let mut btm = BytesTrieMap::new();
-            btm.write_zipper_at_path(each_rz.origin_path().unwrap()).graft(each_rz);
+            let zh = btm.zipper_head();
+            zh.write_zipper_at_exclusive_path(each_rz.origin_path().unwrap()).unwrap().graft(each_rz);
+            drop(zh);
             tmp_maps.push(btm);
         }
-        
+
         let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
         let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
-        
+
         let mut prz = ProductZipper::new(
             tmp_0.read_zipper_at_path(make_prefix(pat_0)), 
             tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
                 tmp_m.read_zipper_at_path(make_prefix(p))
             }
         ));
-        
+
         prz.reserve_path_buffer(4096);
-        
+
         let mut stack = vec![0; 1];
         stack[0] = ACTION;
-        
+
         for pattern in patterns.iter().rev() {
             let prefix = unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() };
             stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
         }
         stack.reserve(4096);
-        
+
         let mut references: Vec<Expr> = vec![];
         let mut candidate = 0;
-        
+
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
             static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };

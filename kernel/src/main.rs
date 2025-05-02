@@ -18,6 +18,8 @@ fn main() {
         1 => bench_1(),
         2 => bench_2(),
         3 => bench_3(),
+        4 => bench_4(),
+        5 => bench_5(),
         _ => panic!("no more benchmark tests")
     }
 }
@@ -137,7 +139,7 @@ fn bench_2() {
 
 }
 
-fn bench_21() {
+fn bench_3() {
         let mut s = Space::new();
     const space: &str = r#"
 (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
@@ -180,7 +182,7 @@ fn bench_21() {
     ]);
 }
 
-fn bench_22() {
+fn bench_4() {
     /*
     s.load_sexpr(sexpr_contents.as_bytes(), expr!(s, "[2] useful $"), expr!(s, "[2] data [2] mysexpr _1")).unwrap();
 
@@ -206,7 +208,7 @@ fn bench_22() {
 
 }
 const TEST_DAG : bool = false;
-fn bench_3() {
+fn bench_5() {
 
     let mut s = Space::new();
 

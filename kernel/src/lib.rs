@@ -241,9 +241,8 @@ mod tests {
                      expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
 
         s.transform_multi_multi(
-            // &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
             &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
-            &[expr!(s, "$v")],
+            &[expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")],
         );
 
         let mut output = Vec::new();

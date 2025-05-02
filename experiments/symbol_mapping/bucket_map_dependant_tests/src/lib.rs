@@ -14,7 +14,7 @@ use mork::{expr, sexpr};
 
     let mut space : mork::space::Space = mork::space::Space::new();
     space.load_sexpr(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
-    let sm : SharedMappingHandle = space.sym_table();
+    let sm : SharedMappingHandle = space.symbol_table();
 
     let zip_file = "logic_query_small.zip";
 

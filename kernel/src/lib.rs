@@ -153,7 +153,7 @@ mod tests {
     fn transform_multi() {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
-        let mut fileb = vec![]; file.read_to_end(&mut fileb);
+        let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
         s.load_sexpr(unsafe { std::str::from_utf8_unchecked( fileb.as_slice() ) }, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
@@ -191,8 +191,8 @@ mod tests {
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
-        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_,e| c_in += 1);
-        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_,e| c_out += 1);
+        let mut c_in = 0; s.query(expr!(s, "[2] axiom [3] = $ $"), |_, _e| c_in += 1);
+        let mut c_out = 0; s.query(expr!(s, "[2] flip [3] = $ $"), |_, _e| c_out += 1);
         assert_eq!(c_in, c_out);
 
         let mut res = Vec::<u8>::new();
@@ -253,5 +253,28 @@ mod tests {
             "(root (Sound (Sound (Duck Quack))))\n(root (Sound (Sound (Human BlaBla))))\n",
             out_string
         );
+    }
+
+    #[test]
+    fn metta_calculus_test0() {
+        let mut s = Space::new();
+        const SPACE_EXPRS: &str = r#"
+    (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
+    (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+
+    (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
+    (? (add $ret) (Z $y) (! $ret $y))
+
+    (! (add result) ((S Z) (S Z)))
+    "#;
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+        println!("{}", String::from_utf8(v).unwrap());
     }
 }

@@ -1173,7 +1173,7 @@ impl Space {
         self.transform_multi_multi(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
+    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
         let _ = self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 

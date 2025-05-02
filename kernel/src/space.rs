@@ -1052,9 +1052,12 @@ impl Space {
         let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
-            tmp_maps.push(BytesTrieMap::new());
+            let mut temp_map = BytesTrieMap::new();
             let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(&self.btm.read_zipper_at_path(prefix));
+            let zh = temp_map.zipper_head();
+            zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&self.btm.read_zipper_at_path(prefix));
+            drop(zh);
+            tmp_maps.push(temp_map);
         }
         rz.descend_to(&[0; 4096]);
         rz.reset();

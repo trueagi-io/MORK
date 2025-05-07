@@ -266,7 +266,7 @@ fn bench_5() {
         let mut rz = s.btm.read_zipper_at_path(&[item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(3)), b'S', b'P', b'O']);
         println!("SPO's {}", rz.val_count());
         rz.to_next_val();
-        println!("{}", mork_bytestring::serialize(rz.origin_path().unwrap()));
+        println!("{}", mork_bytestring::serialize(rz.absolute_path()));
         drop(rz);
        
         let load_start = Instant::now();

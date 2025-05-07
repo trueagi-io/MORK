@@ -1050,12 +1050,15 @@ impl Space {
     pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
         let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
         let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
+        if !rz.path_exists() { return Ok(0); }
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
             let mut temp_map = BytesTrieMap::new();
             let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
             let zh = temp_map.zipper_head();
-            zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&self.btm.read_zipper_at_path(prefix));
+            let rz = self.btm.read_zipper_at_path(prefix);
+            if !rz.path_exists() { return Ok(0) }
+            zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&rz);
             drop(zh);
             tmp_maps.push(temp_map);
         }

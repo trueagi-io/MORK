@@ -324,7 +324,7 @@ async fn import_request_test() -> Result<(), Error> {
     //1. First test an end-to-end sucessful fetch and parse
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Response: {}", response.text().await?);
 
@@ -356,7 +356,7 @@ async fn import_request_test() -> Result<(), Error> {
     //2. Now test a bogus URL, to make sure we can get the error back
     let response = reqwest::get(BOGUS_URL).await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
@@ -376,7 +376,7 @@ async fn import_request_test() -> Result<(), Error> {
     //3. Try with a file that we don't know how to load
     let response = reqwest::get(BAD_FILE_URL).await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     let response_text = response.text().await?;
     println!("Response: {}", response_text);
@@ -440,7 +440,7 @@ async fn export_request_test() -> Result<(), Error> {
     //First upload a space
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Upload response: {}", response.text().await?);
 
@@ -513,7 +513,7 @@ async fn copy_request_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::get(IMPORT_URL).await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Import response: {}", response.text().await?);
 
@@ -570,7 +570,7 @@ async fn clear_request_test() -> Result<(), Error> {
     //Upload the data so we have something to clear
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await?)
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Upload response: {}", response.text().await?);
 
@@ -654,14 +654,14 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await.unwrap())
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Import response: {}", response.text().await.unwrap());
 
     // invoke a Transform
     let response = reqwest::get(TRANSFORM_REQUEST_URL).await.unwrap();
     if !response.status().is_success() {
-        panic!("Transform Error response: {}", response.text().await.unwrap())
+        panic!("Transform Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Transform response: {}", response.text().await.unwrap());
 
@@ -751,14 +751,14 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     //First import a space from a remote
     let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
     if !response.status().is_success() {
-        panic!("Error response: {}", response.text().await.unwrap())
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Import response: {}", response.text().await.unwrap());
 
     // invoke a Transform
     let response = reqwest::Client::new().post(TRANSFORM_REQUEST_URL).body(TRANSFORM_PAYLOAD).send().await.unwrap();
     if !response.status().is_success() {
-        panic!("Transform Error response: {}", response.text().await.unwrap())
+        panic!("Transform Error response: {} - {}", response.status(), response.text().await?)
     }
     println!("Transform response: {}", response.text().await.unwrap());
 
@@ -787,6 +787,11 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests that it's at least possible to write to the root of the space
+///
+/// This test is ignored because it pollutes the root of the space with crap and holds a lock that
+/// interferes with the rest of the tests.
+#[ignore]
 #[tokio::test]
 async fn root_writer_test() -> Result<(), Error> {
     decl_lit!{space_in_expr!() => "$v"}
@@ -808,7 +813,7 @@ async fn root_writer_test() -> Result<(), Error> {
     wait_for_server().await.unwrap();
 
     //First import a space from a remote
-    for i in 0..100000 {
+    for _ in 0..100000 {
         let response = reqwest::Client::new().post(UPLOAD_URL).body(UPLOAD_PAYLOAD).send().await.unwrap();
         if !response.status().is_success() {
             wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();

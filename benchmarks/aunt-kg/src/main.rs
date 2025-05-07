@@ -124,26 +124,21 @@ fn main() -> Result<(),&'static str> {
     let template = Expr{ ptr: templatev.as_mut_ptr() };
 
     let mut _j = 0;
-    loop {
-        match parent_zipper.to_next_val() {
-            None => { break }
-            Some(_) => {
-                _j += 1;
+    while parent_zipper.to_next_val() {
+        _j += 1;
 
-                let lhs = Expr{ ptr: parent_zipper.origin_path().unwrap().as_ptr().cast_mut() };
-                let rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
-                let mut rhsz = ExprZipper::new(rhs);
+        let lhs = Expr{ ptr: parent_zipper.absolute_path().as_ptr().cast_mut() };
+        let rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
+        let mut rhsz = ExprZipper::new(rhs);
 
-                // (parent $ $) => (child _2 _1)
-                lhs.transformData(pattern, template, &mut rhsz).unwrap();
+        // (parent $ $) => (child _2 _1)
+        lhs.transformData(pattern, template, &mut rhsz).unwrap();
 
-                let slice = &rhsz.span()[child_path.len()..];
+        let slice = &rhsz.span()[child_path.len()..];
 
-                child_zipper.descend_to(slice);
-                child_zipper.set_value(());
-                child_zipper.reset();
-            }
-        }
+        child_zipper.descend_to(slice);
+        child_zipper.set_value(());
+        child_zipper.reset();
     }
     drop(child_zipper);
 
@@ -210,20 +205,15 @@ fn main() -> Result<(),&'static str> {
     // println!("previous tn count {}", C1.total_child_items() as f64/C1.total_nodes() as f64);
     // C1.print_histogram_by_depth();
     let mut _j = 0;
-    loop {
-        match person_rzipper.to_next_val() {
-            None => { break }
-            Some(_) => {
-                _j += 1;
+    while person_rzipper.to_next_val() {
+        _j += 1;
 
-                child_rzipper.reset();
-                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
-                mother_query_out_zipper.reset();
-                mother_query_out_zipper.descend_to(person_rzipper.path());
-                mother_query_out_zipper.graft(&child_rzipper);
-                mother_query_out_zipper.meet(&female_zipper);
-            }
-        }
+        child_rzipper.reset();
+        if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+        mother_query_out_zipper.reset();
+        mother_query_out_zipper.descend_to(person_rzipper.path());
+        mother_query_out_zipper.graft(&child_rzipper);
+        mother_query_out_zipper.meet(&female_zipper);
     }
     drop(mother_query_out_zipper);
 
@@ -242,24 +232,19 @@ fn main() -> Result<(),&'static str> {
 
     person_rzipper.reset();
     let mut _j = 0;
-    loop {
-        match person_rzipper.to_next_val() {
-            None => { break }
-            Some(_) => {
-                _j += 1;
+    while person_rzipper.to_next_val() {
+        _j += 1;
 
-                child_rzipper.reset();
-                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
-                sister_query_out_zipper.reset();
-                sister_query_out_zipper.descend_to(person_rzipper.path());
-                sister_query_out_zipper.graft(&parent_zipper);
-                sister_query_out_zipper.restrict(&child_rzipper);
-                drop_symbol_head_2(&mut sister_query_out_zipper);
-                sister_query_out_zipper.meet(&female_zipper);
-                if sister_query_out_zipper.descend_to(person_rzipper.path()) {
-                    sister_query_out_zipper.remove_value();
-                }
-            }
+        child_rzipper.reset();
+        if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+        sister_query_out_zipper.reset();
+        sister_query_out_zipper.descend_to(person_rzipper.path());
+        sister_query_out_zipper.graft(&parent_zipper);
+        sister_query_out_zipper.restrict(&child_rzipper);
+        drop_symbol_head_2(&mut sister_query_out_zipper);
+        sister_query_out_zipper.meet(&female_zipper);
+        if sister_query_out_zipper.descend_to(person_rzipper.path()) {
+            sister_query_out_zipper.remove_value();
         }
     }
     drop(sister_query_out_zipper);
@@ -280,25 +265,20 @@ fn main() -> Result<(),&'static str> {
     person_rzipper.reset();
     parent_zipper.reset();
     let mut _j = 0;
-    loop {
-        match person_rzipper.to_next_val() {
-            None => { break }
-            Some(_) => {
-                _j += 1;
+    while person_rzipper.to_next_val() {
+        _j += 1;
 
-                child_rzipper.reset();
-                if !child_rzipper.descend_to(person_rzipper.path()) { continue }
-                aunt_query_out_zipper.reset();
-                aunt_query_out_zipper.descend_to(person_rzipper.path());
-                aunt_query_out_zipper.graft(&child_zipper);
-                aunt_query_out_zipper.restrict(&child_rzipper);
-                drop_symbol_head_2(&mut aunt_query_out_zipper);
-                if !aunt_query_out_zipper.restricting(&parent_zipper) { continue }
-                drop_symbol_head_2(&mut aunt_query_out_zipper);
-                aunt_query_out_zipper.subtract(&child_rzipper);
-                aunt_query_out_zipper.meet(&female_zipper);
-            }
-        }
+        child_rzipper.reset();
+        if !child_rzipper.descend_to(person_rzipper.path()) { continue }
+        aunt_query_out_zipper.reset();
+        aunt_query_out_zipper.descend_to(person_rzipper.path());
+        aunt_query_out_zipper.graft(&child_zipper);
+        aunt_query_out_zipper.restrict(&child_rzipper);
+        drop_symbol_head_2(&mut aunt_query_out_zipper);
+        if !aunt_query_out_zipper.restricting(&parent_zipper) { continue }
+        drop_symbol_head_2(&mut aunt_query_out_zipper);
+        aunt_query_out_zipper.subtract(&child_rzipper);
+        aunt_query_out_zipper.meet(&female_zipper);
     }
     drop(aunt_query_out_zipper);
 

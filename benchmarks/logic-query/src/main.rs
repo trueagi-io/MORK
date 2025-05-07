@@ -709,7 +709,7 @@ fn main() {
     let mut references: Vec<(u32, u32)> = vec![];
     referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
     // transition(&mut buffer, &mut z, &mut |loc| {
-        black_box(loc.origin_path());
+        black_box(loc.absolute_path());
         visited += 1;
     });
     println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
@@ -756,7 +756,7 @@ fn main() {
     let mut total_res = 0;
     let mut max_res = 0;
     let mut buffer = vec![];
-    while let Some(_) = z.to_next_val() {
+    while z.to_next_val() {
         let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
         buffer.push(ACTION);
         if k % 100 == 0 { println!("expr  {}", unsafe { serialize(se.span().as_ref().unwrap()) }); }

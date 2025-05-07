@@ -1252,7 +1252,7 @@ impl Space {
 
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
-            if let Some(()) = rz.to_next_val() {
+            if rz.to_next_val() {
                 let mut x: Box<[u8]> = rz.origin_path().unwrap().into(); // should use local buffer
                 drop(rz);
                 self.btm.remove(&x[..]);

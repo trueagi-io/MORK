@@ -1,7 +1,7 @@
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
-use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving};
+use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
 use mork::expr;
 use mork::space::Space;
 use mork_bytestring::{item_byte, Tag};
@@ -230,7 +230,8 @@ fn bench_5() {
     // }
 
     let mut to_symbol_rz = to_symbol.last().unwrap().read_zipper();
-    while let Some(v) = to_symbol_rz.to_next_val() {
+    while to_symbol_rz.to_next_val() {
+        let v = to_symbol_rz.get_value().unwrap();
         println!("{:?} {:?}", std::str::from_utf8(to_symbol_rz.path()).unwrap_or(format!("{:?}", to_symbol_rz.path()).as_str()), v)
     }
     drop(to_symbol_rz);

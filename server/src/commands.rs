@@ -262,7 +262,7 @@ fn do_export(ctx: &MorkService, (mut reader, mut pattern): (ReadPermission, Vec<
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
             let mut rz = ctx.0.space.read_zipper(&mut reader);
-            while let Some(_) = rz.to_next_val() {
+            while rz.to_next_val() {
                 writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
             }
             writer.flush()?;

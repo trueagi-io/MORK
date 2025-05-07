@@ -706,7 +706,7 @@ impl CommandDefinition for TransformCmd {
                 cmd.args[TransformArg::Template as usize].as_str(),
             );
 
-        let transform_args = prep_transform_multi_multi(&ctx, &transform_arg)?;
+        let transform_args = prep_transform_multi_multi(&ctx.0.space, &transform_arg)?;
 
         let work_thread = thread.unwrap();
         work_thread.dispatch_blocking_task(cmd, move |_c| {
@@ -755,7 +755,7 @@ impl CommandDefinition for TransformMultiMultiCmd {
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
         let src  = core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let transform_args = prep_transform_multi_multi(&ctx, src)?;
+        let transform_args = prep_transform_multi_multi(&ctx.0.space, src)?;
 
         work_thread.dispatch_blocking_task(cmd, move |_c| {
             transform_args.dispatch_transform(&ctx);
@@ -805,9 +805,9 @@ impl PatternTemplateArgs {
 }
 
 
-fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<PatternTemplateArgs, CommandError> {
+fn prep_transform_multi_multi(ctx: &ServerSpace, src : &str) -> Result<PatternTemplateArgs, CommandError> {
         let (patterns, templates) = pattern_template_args(
-            &ctx.0.space, src
+            &ctx, src
         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
         let readers = prefix_readers(&ctx, &patterns)?;
@@ -815,18 +815,24 @@ fn prep_transform_multi_multi(ctx: &MorkService, src : &str) -> Result<PatternTe
 
         Ok(PatternTemplateArgs { patterns, readers, templates, writers })
 }
-fn prefix_readers(ctx : &MorkService, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
+fn prefix_readers(ctx : &ServerSpace, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
     let mut readers = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let reader = ctx.0.space.new_reader(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &())?;
+        if pattern.as_ref().is_empty() {
+            return Err(CommandError::internal(String::from("unexpected empty Expr")));
+        }
+        let reader = ctx.new_reader(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &())?;
         readers.push(reader);
     }
     Ok(readers)
 }
-fn prefix_writers(ctx : &MorkService, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
+fn prefix_writers(ctx : &ServerSpace, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
     let mut writers = Vec::with_capacity(templates.len());
     for template in templates {
-        let writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &())?;
+        if template.as_ref().is_empty() {
+            return Err(CommandError::internal(String::from("unexpected empty Expr")));
+        }
+        let writer = ctx.new_writer(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &())?;
         writers.push(writer);
     }
     Ok(writers)
@@ -877,7 +883,8 @@ fn pattern_template_from_sexpr_pair(space : &ServerSpace, pattern : &str, templa
             template,
         );
         let (mut patterns, mut templates) = pattern_template_args(&space, &formatted)?;
-        Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
+        // Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
+        Ok((patterns.pop().unwrap_or(Vec::new()), templates.pop().unwrap_or(Vec::new())))
 
 }
 fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
@@ -1293,4 +1300,34 @@ fn prefix_assertions() {
     prefix_to_var!(e11 : expr; pe11 : prefix; "($a ($b $c))");
     core::assert_ne!{e11, pe11.till_constant_to_full()};
     core::assert_eq!{pe11.till_constant_to_full(), pe7.till_constant_to_full()};
+}
+
+
+
+#[cfg(test)]
+#[test]
+fn misbehaving_transform() {
+    let s = ServerSpace::new();
+
+    let (mut pattern, mut template) = pattern_template_from_sexpr_pair(&s, "", "c").unwrap();
+    let Err(_) = prefix_readers(&s, &[&pattern]) else {panic!()};
+
+    let mut writer = prefix_writers(&s, &[&template]).unwrap();
+    core::assert!(writer.len() == 1);
+
+    s.transform_multi_multi( &[] , &mut [], &[ mork_bytestring::Expr{ptr: template.as_mut_ptr()}], &mut writer);
+
+    drop(writer);
+
+
+    let (mut pattern, mut templates) = pattern_template_from_sexpr_pair(&s, "$x", "$x").unwrap();
+    let mut reader = prefix_readers(&s, &[&pattern]).unwrap();
+
+    let mut out = Vec::new();
+    s.dump_as_sexpr(&mut out, (&mut reader[0] , mork_bytestring::Expr{ptr : pattern.as_mut_ptr()}), mork_bytestring::Expr {ptr : templates.as_mut_ptr()}).unwrap();
+
+    // this prints "c" !
+    println!("{}", unsafe {
+        core::mem::transmute::<_, String>(out)
+    })
 }

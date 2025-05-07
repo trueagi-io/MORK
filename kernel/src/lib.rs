@@ -258,23 +258,48 @@ mod tests {
     #[test]
     fn metta_calculus_test0() {
         let mut s = Space::new();
-        const SPACE_EXPRS: &str = r#"
-    (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
-    (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+        // (exec PC0 (, (? $channel $payload $body) 
+        //              (! $channel $payload)
+        //              (exec PC0 $p $t)) 
+        //           (, $body (exec PC0 $p $t)))
 
-    (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
-    (? (add $ret) (Z $y) (! $ret $y))
+        // const SPACE_EXPRS: &str = r#"
+        // (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
+        // (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
 
-    (! (add result) ((S Z) (S Z)))
-    "#;
+        // (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
+        // (? (add $ret) (Z $y) (! $ret $y))
+
+        // (! (add result) ((S Z) (S Z)))
+        // "#;
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))"
+        // // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
+        // , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
+        // , "\n(? (add $ret) (Z $y) (! $ret $y))"
+        // , "\n(! (add result) ((S Z) (S Z)))"
+
+        // , "\na"
+        // , "\nb"
+        );
 
         s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.metta_calculus();
 
         let mut v = vec![];
+
+        s.transform_multi_multi(
+            &[expr!(s, "a")][..] /* writes "c" */,
+            // &[][..] /* writes nothing */, 
+            &[expr!(s, "c")][..]
+        );
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
+        println!("\nRESULTS\n");
         println!("{}", String::from_utf8(v).unwrap());
     }
 }

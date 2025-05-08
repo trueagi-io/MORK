@@ -1063,6 +1063,7 @@ where
         for each_rz in pattern_rzs {
             let mut btm = BytesTrieMap::new();
             let zh = btm.zipper_head();
+            if !each_rz.path_exists() { return Ok(0) }
             zh.write_zipper_at_exclusive_path(each_rz.origin_path()).unwrap().graft(each_rz);
             drop(zh);
             tmp_maps.push(btm);

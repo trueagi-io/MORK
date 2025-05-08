@@ -1302,6 +1302,149 @@ fn prefix() {
     assert!(unsafe { &*proper }.is_empty());
 }
 
+#[test]
+fn difference() {
+    {
+        let mut xv = parse!(r"a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), None);
+        assert_eq!(x.constant_difference(y), None);
+    }
+    {
+        let mut xv = parse!(r"[2] a b");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a b");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), None);
+        assert_eq!(x.constant_difference(y), None);
+    }
+    {
+        let mut xv = parse!(r"a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), None);
+        assert_eq!(x.constant_difference(y), None);
+    }
+    {
+        let mut xv = parse!(r"[2] a [3] a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [2] a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), Some(3));
+        assert_eq!(x.constant_difference(y), Some(3));
+    }
+    {
+        let mut xv = parse!(r"[2] a [2] a a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [2] b a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), Some(4));
+        assert_eq!(x.constant_difference(y), Some(4));
+    }
+    {
+        let mut xv = parse!(r"[2] $ [2] _1 a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] $ [2] _1 a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), None);
+        assert_eq!(x.constant_difference(y), None);
+    }
+    {
+        let mut xv = parse!(r"[2] $ [2] _1 a");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] $ [2] $ a");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert_eq!(x.difference(y), Some(3));
+        assert_eq!(x.constant_difference(y), None);
+    }
+    // {
+    //     (a (b $) (f _1 (g $ $)))
+    //     let mut xv = parse!(r"[2] $ [2] _1 a");
+    //     let x = Expr{ ptr: xv.as_mut_ptr() };
+    //     let mut yv = parse!(r"[2] $ [2] $ a");
+    //     let y = Expr{ ptr: yv.as_mut_ptr() };
+    //     assert_eq!(x.difference(y), Some(3));
+    //     assert_eq!(x.constant_difference(y), None);
+    // }
+}
+
+#[test]
+fn solver() {
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] x y z");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [2] p q");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_err());
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] x y [2] 1 2");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [3] x y [2] 1 2");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        unsafe {s.build_mapping();}
+        // println!("{:?}", s.subs)
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] $ y [2] 1 $");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [3] $ y [2] 1 $");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        unsafe {s.build_mapping();}
+        // println!("{:?}", s.subs)
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] $ y [2] 1 _1");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [3] $ y [2] 1 _1");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        unsafe {s.build_mapping();}
+        // println!("{:?}", s.subs)
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] $ y [2] 1 _1");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [3] $ y [2] 1 $");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        unsafe {s.build_mapping();}
+        // println!("{:?}", s.subs)
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[2] a [3] $ y [2] 1 $");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] a [3] $ y [2] 1 2");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        println!("{:?}", s.subs);
+        unsafe { s.build_mapping(); }
+        // println!("{:?}", s.subs)
+    }
+    {
+        let mut s = ExprMapSolver::new();
+        let mut xv = parse!(r"[3] a [2] b $ [3] f $ _1");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[3] a [2] b $ [3] f _1 [3] g $ $");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+        assert!(s.solve(&[x, y]).is_ok());
+        println!("{:?}", s.subs);
+        unsafe { s.build_mapping(); }
+        // println!("{:?}", s.subs)
+    }
+}
+
 fn main() {
 
 }

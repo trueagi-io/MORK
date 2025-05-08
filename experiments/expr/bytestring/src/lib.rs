@@ -5,6 +5,8 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
+use std::collections::{HashMap, HashSet};
+use std::iter::empty;
 use smallvec::SmallVec;
 
 #[derive(Copy, Clone, Debug)]
@@ -231,6 +233,139 @@ impl Expr {
         //     |c: &mut u8, _| { *c += 1; ControlFlow::Continue(()) }, |c: &mut u8, _, r| { if r >= *c { ControlFlow::Break(()) } else { ControlFlow::Continue(()) } }, |_, _, _| ControlFlow::Continue(()), |_, _, _| ControlFlow::Continue(()), |_, _, l, r| { r?; l }, |_, _, l| l).1.is_break()
         traverseh!(bool, bool, u8, self, 0,
             |c: &mut u8, _| { *c += 1; false }, |c: &mut u8, _, r| r >= *c, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+    }
+
+    pub fn constant_difference(self, other: Expr) -> Option<usize> {
+        let mut ez = ExprZipper::new(self);
+        let mut oz = ExprZipper::new(other);
+        loop {
+            match (ez.item(), oz.item()) {
+                (Ok(Tag::NewVar), Ok(Tag::NewVar)) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::NewVar), Ok(Tag::VarRef(i))) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::VarRef(i)), Ok(Tag::NewVar)) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::VarRef(i)), Ok(Tag::VarRef(j))) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::NewVar), Err(_)) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::VarRef(_)), Err(_)) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Err(_), Ok(Tag::NewVar)) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Err(_), Ok(Tag::VarRef(_))) => {
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::NewVar | Tag::VarRef(_)), Ok(Tag::Arity(k))) => {
+                    // println!("other {other:?}");
+                    for _ in 0..k {
+                        // println!("se {:?}", oz.subexpr());
+                        assert!(oz.next_descendant(-1, 0))
+                    }
+                    if !oz.next() {
+                        assert!(!ez.next());
+                        return None
+                    }
+                    assert!(ez.next());
+                }
+                (Ok(Tag::Arity(k)), Ok(Tag::NewVar | Tag::VarRef(_))) => {
+                    // println!("self {self:?} other {other:?}");
+                    for _ in 0..k {
+                        // println!("se {:?}", ez.subexpr());
+                        assert!(ez.next_descendant(-1, 0))
+                    }
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    // println!("{:?}", ez.subexpr());
+                    assert!(oz.next());
+                }
+                (Ok(Tag::Arity(i)), Ok(Tag::Arity(j))) => {
+                    if i != j { return Some(ez.loc) }
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::Arity(i)), Err(_)) => {
+                    return Some(ez.loc)
+                }
+                (Err(_), Ok(Tag::Arity(i))) => {
+                    return Some(ez.loc)
+                }
+                (Err(s), Err(o)) => {
+                    if *s != *o { return Some(ez.loc) }
+                    if !ez.next() {
+                        assert!(!oz.next());
+                        return None
+                    }
+                    assert!(oz.next());
+                }
+                (Ok(Tag::SymbolSize(_)), _) => {
+                    unreachable!()
+                }
+                (_, Ok(Tag::SymbolSize(_))) => {
+                    unreachable!()
+                }
+            }
+        }
+    }
+
+    pub fn difference(self, other: Expr) -> Option<usize> {
+        let mut ez = ExprZipper::new(self);
+        let mut oz = ExprZipper::new(other);
+        loop {
+            if ez.item() != oz.item() {
+                return Some(ez.loc)
+            }
+
+            if !ez.next() {
+                return None
+            }
+            assert!(oz.next())
+        }
     }
 
     pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
@@ -1395,4 +1530,325 @@ pub fn serialize(bytes: &[u8]) -> String {
         }
     }
     result
+}
+
+use pathmap::trie_map::BytesTrieMap;
+use pathmap::zipper::{ZipperIteration, ZipperMoving};
+
+pub struct ExprMapSolver {
+    sources: *const [Expr],
+    parents: HashMap<u64, HashSet<u64>>,
+    links: HashMap<u64, HashSet<u64>>,
+
+    complete: HashSet<u64>,
+    pointer: HashMap<u64, Expr>,
+    pub subs: HashMap<u64, Expr>,
+    ready: HashSet<u64>
+}
+
+
+macro_rules! local {
+    ($name:ident : $t:ty) => {
+        thread_local! {
+            static $name: std::cell::UnsafeCell<$t> = unsafe { std::ptr::read(std::cell::UnsafeCell::from_mut(
+                std::mem::MaybeUninit::uninit().assume_init_mut()
+            )) }
+        }
+    };
+    ($name:ident = $value:expr) => {
+        unsafe { $name.with(|x| *x.get() = $value) }
+    };
+    ($name:ident) => {
+        unsafe { $name.with(|x| *x.get()) }
+    }
+}
+
+
+unsafe impl Sync for Expr {}
+unsafe impl Send for Expr {}
+
+unsafe fn p(e: Expr) -> u64 {
+    e.ptr as u64
+}
+
+unsafe fn q(i: u64) -> Expr {
+    Expr { ptr: i as *mut u8 }
+}
+
+
+impl ExprMapSolver {
+    pub fn new() -> Self {
+        Self {
+            sources: &[],
+            parents: HashMap::new(),
+            links: HashMap::new(),
+
+            complete: HashSet::new(),
+            pointer: HashMap::new(),
+            subs: HashMap::new(),
+            ready: HashSet::new()
+        }
+    }
+
+    unsafe fn add_node(&mut self, e: Expr) -> Expr {
+        self.parents.insert(p(e), Default::default());
+        e
+    }
+
+    unsafe fn create_arc(&mut self, parent: Expr, son: Expr) {
+        self.parents.insert(p(son),  [p(parent)].into_iter().collect());
+    }
+
+    unsafe fn create_link(&mut self, x: Expr, y: Expr) {
+        self.links.insert(p(x), [p(y)].into_iter().collect());
+        self.links.insert(p(y), [p(x)].into_iter().collect());
+    }
+
+    unsafe fn add_arcs(&mut self, e: Expr) {
+        let sr = std::mem::transmute(self);
+
+        local!(BASE : Expr);
+        local!(BASE = e);
+
+        traverseh!(Expr, Expr, &'static mut ExprMapSolver, e, sr,
+            |s: &mut &mut ExprMapSolver, o| unsafe{ (*s).add_node(Expr{ ptr: local!(BASE).ptr.add(o) }) },
+            |s: &mut &mut ExprMapSolver, o, i| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
+            |s: &mut &mut ExprMapSolver, o, c| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
+            |s: &mut &mut ExprMapSolver, o, a| unsafe { Expr{ ptr: local!(BASE).ptr.add(o) } },
+            |s: &mut &mut ExprMapSolver, o, a, c| unsafe{ (*s).create_arc(a, c); a },
+            |s: &mut &mut ExprMapSolver, o, a| { a }
+        );
+    }
+
+    pub fn solve(&mut self, oes: &[Expr]) -> Result<(), String> {
+        self.sources = oes as *const [Expr];
+        unsafe {
+        oes.into_iter().for_each(|x| self.add_arcs(*x));
+        oes.into_iter().reduce(|x, y| { self.create_link(*x, *y); y });
+
+        'expressions: loop {
+            self.finish({
+                let mut rz = self.parents.iter();
+                'first_expr: loop {
+                    if let Some((&e, _)) = rz.next() { // iter expressions
+                        match ExprZipper::new(q(e)).tag() {
+                            Tag::NewVar => { continue }
+                            Tag::VarRef(_) => { continue }
+                            Tag::SymbolSize(_) => {}
+                            Tag::Arity(_) => {}
+                        }
+                        break 'first_expr q(e)
+                    } else {
+                        break 'expressions
+                    }
+                }
+            })?;
+        };
+
+        'variables: loop {
+            self.finish({
+                let mut rz = self.parents.iter();
+                'first_expr: loop {
+                    if let Some((&e, _)) = rz.next() { // iter variables
+                        match ExprZipper::new(q(e)).tag() {
+                            Tag::NewVar => {}
+                            Tag::VarRef(_) => {}
+                            Tag::SymbolSize(_) => { continue }
+                            Tag::Arity(_) => { continue }
+                        }
+                        break 'first_expr q(e)
+                    } else {
+                        break 'variables
+                    }
+                }
+            })?;
+        };
+
+        }
+        Ok(())
+    }
+
+    fn ret(&mut self, oes: &[Expr]) -> Expr {
+        let representative = oes[0];
+        unsafe {
+            self.solve(oes);
+            self.build_mapping();
+            // representative.substitute_de_bruijn(...);
+            representative
+        }
+    }
+
+    unsafe fn finish(&mut self, r: Expr) -> Result<(), String> {
+        if self.complete.contains(&p(r)) { return Ok(()); }
+        if let Some(cycle) = self.pointer.get(&p(r)) { return Err(format!("cycle {:?} {:?}", r, cycle)) }
+        let mut stack = vec![r];
+        self.pointer.insert(p(r), r);
+        while let Some(s) = stack.pop() {
+            if let Some(di) = r.constant_difference(s) {
+                return Err(format!("conflict {:?} {:?} ({di})", r, s))
+            }
+            let mut mbtm = self.parents.remove(&p(s));
+            if let Some(ref btm) = mbtm {
+                for entry in btm.iter() {
+                    self.finish(q(*entry))?
+                }
+            }
+            match self.links.get(&p(s)) {
+                None => {}
+                Some(btm) => {
+                    for t in btm.into_iter() {
+                        if self.complete.contains(&t) || q(*t).difference(r).is_none() { // do variable need to refer to the same?
+                            self.parents.remove(&t);
+                        } else if self.pointer.get(t).is_none() {
+                            self.pointer.insert(*t, r);
+                            stack.push(q(*t))
+                        } else if let Some(di) = self.pointer.get(t).unwrap().difference(r) {
+                            return Err(format!("conflict {:?} {:?} ({di})", self.pointer.get(t).unwrap(), r))
+                        } else {
+                            self.parents.remove(t);
+                        }
+                    }
+                }
+            }
+            if p(s) != p(r) {
+                let mut sz = ExprZipper::new(s);
+                match sz.tag() {
+                    Tag::NewVar => {
+                        self.subs.insert(p(s), r);
+                    }
+                    Tag::VarRef(i) => {
+                        self.subs.insert(p(s), r);
+                    }
+                    Tag::SymbolSize(_) => {
+                        // equal by virtue of not being constant_different
+                    }
+                    Tag::Arity(a) => {
+                        let mut rz = ExprZipper::new(r);
+                        // if this was not the case constant_different would've already returned
+                        debug_assert_eq!(Tag::Arity(a), rz.tag());
+                        for _ in 0..a {
+                            assert!(sz.next_child());
+                            assert!(rz.next_child());
+                            self.create_link(sz.subexpr(), rz.subexpr())
+                        }
+                    }
+                }
+                self.complete.insert(p(s));
+            } else if mbtm.is_some() {
+                self.parents.insert(p(s), mem::take(&mut mbtm).unwrap());
+            }
+        }
+        self.complete.insert(p(r));
+        self.parents.remove(&p(r));
+        Ok(())
+    }
+
+    pub unsafe fn build_mapping(&mut self) {
+        // safety: we're serially updating v's and looking up v's without modifying keys in subs
+        // descend touches self.ready but this is disjoint from what we're iterating over
+        for (k, v) in (self as *const Self).cast_mut().as_mut().unwrap().subs.iter_mut() {
+            *v = (self as *const Self).cast_mut().as_mut().unwrap().descend(*v);
+
+            let mut buf = vec![0u8; 512];
+            let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+            let mut oz = ExprZipper::new(out);
+
+            let mut vz = ExprZipper::new(*v);
+            loop {
+                match vz.item() {
+                    Ok(Tag::NewVar | Tag::VarRef(_)) => {
+                        let replacement = format!("{:?}", self.resolve_var(vz.subexpr().ptr as u64));
+                        oz.write_symbol(replacement.as_bytes());
+                        oz.loc += replacement.len() + 1;
+                    }
+                    Ok(Tag::Arity(k)) => {
+                        oz.write_arity(k);
+                        oz.loc += 1;
+                    }
+                    Ok(Tag::SymbolSize(_)) => { unreachable!() }
+                    Err(s) => {
+                        oz.write_symbol(s);
+                        oz.loc += s.len() + 1;
+                    }
+                }
+
+                if !vz.next() {
+                    break
+                }
+            }
+            println!("{:?} -> {:?}", self.resolve_var(*k), out);
+        }
+    }
+
+    unsafe fn descend(&mut self, u: Expr) -> Expr {
+        if self.ready.contains(&p(u)) {
+            u
+        } else {
+            let mut uz = ExprZipper::new(u);
+            // println!("u {:?}", u);
+            match uz.tag() {
+                Tag::NewVar => { self.subs_or_ready(p(u)) }
+                Tag::VarRef(i) => { self.subs_or_ready(p(u)) }
+                Tag::SymbolSize(_) => { u }
+                Tag::Arity(a) => {
+                    let mut buf = vec![0u8; 512];
+                    let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+                    let mut oz = ExprZipper::new(out);
+                    oz.write_arity(a);
+                    oz.loc += 1;
+                    for _ in 0..a {
+                        assert!(uz.next_child());
+                        // println!("use {:?}", uz.subexpr());
+                        let resolved = self.descend(uz.subexpr());
+                        // println!("res {:?}", resolved);
+                        oz.write_move(unsafe { resolved.span().as_ref().unwrap() });
+                    }
+                    if out.difference(u).is_none() { self.ready.insert(p(u)); }
+                    out
+                }
+            }
+        }
+    }
+
+    unsafe fn resolve_var(&self, x: u64) -> (usize, u8) {
+        let srcs = self.sources.as_ref().unwrap();
+        if let Some((min_i, min_e)) = srcs.into_iter().map(|e| e.ptr as u64).enumerate().min_by_key(|(i, es)| {
+            if *es > x { u64::MAX } else { x - es }
+        }) {
+            assert!(min_i < srcs[min_i].span().len());
+            assert!(min_e <= x);
+            local!(xoffset : usize);
+            local!(xoffset = (x - min_e) as usize);
+            match byte_item(*srcs[min_i].ptr.add(local!(xoffset))) {
+                Tag::VarRef(i) => { (min_i, i) }
+                Tag::NewVar => {
+                    let (i, cf) = traverseh!(ops::ControlFlow<(), ()>, ops::ControlFlow<(), ()>, u8, srcs[min_i], 0,
+                        |c: &mut u8, o| { if o == local!(xoffset) { return ControlFlow::Break(()) }; *c += 1; ControlFlow::Continue(()) },
+                        |_, _, _| ControlFlow::Continue(()),
+                        |_, _, _| ControlFlow::Continue(()),
+                        |_, _, _| ControlFlow::Continue(()),
+                        |_, _, l, r| { r?; l },
+                        |_, _, l| l);
+                    assert!(cf.is_break());
+                    (min_i, i)
+                }
+                _ => { unreachable!() }
+            }
+        } else {
+            panic!("no sources")
+        }
+    }
+
+    unsafe fn subs_or_ready(&mut self, x: u64) -> Expr {
+        match self.subs.get(&x) {
+            None => {
+                println!("var {} resolved {:?}", x, self.resolve_var(x));
+                self.ready.insert(x);
+                q(x)
+            }
+            Some(v) => {
+                self.descend(*v)
+            }
+        }
+    }
 }

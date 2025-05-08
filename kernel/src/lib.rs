@@ -302,4 +302,22 @@ mod tests {
         println!("\nRESULTS\n");
         println!("{}", String::from_utf8(v).unwrap());
     }
+    
+    #[test]
+    fn transform_multi_multi_no_match() {
+        let mut s = Space::new();
+
+        s.transform_multi_multi(&[expr!(s, "a")], &[expr!(s, "c")]);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
+
+        let out = unsafe {
+            core::mem::transmute::<_,String>(writer)
+        };
+
+        println!("{}", out);
+
+        core::assert_ne!(&out, "c\n");
+    }
 }

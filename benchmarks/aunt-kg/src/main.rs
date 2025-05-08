@@ -127,7 +127,7 @@ fn main() -> Result<(),&'static str> {
     while parent_zipper.to_next_val() {
         _j += 1;
 
-        let lhs = Expr{ ptr: parent_zipper.absolute_path().as_ptr().cast_mut() };
+        let lhs = Expr{ ptr: parent_zipper.origin_path().as_ptr().cast_mut() };
         let rhs = Expr{ ptr: full_child_path.as_mut_ptr() };
         let mut rhsz = ExprZipper::new(rhs);
 

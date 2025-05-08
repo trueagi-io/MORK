@@ -299,7 +299,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (BEGIN_RANGE $recursive:expr) => {
         // references.push((loc.path().len() as u32, 0));
-        let p = loc.absolute_path();
+        let p = loc.origin_path();
         references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
         $recursive;
         references.pop();
@@ -1049,7 +1049,7 @@ where
         for i in 0..patterns.len() {
             core::debug_assert_eq!(
                 make_prefix(&patterns[i]),
-                pattern_rzs[i].absolute_path()
+                pattern_rzs[i].origin_path()
             );
         }
 
@@ -1063,7 +1063,7 @@ where
         for each_rz in pattern_rzs {
             let mut btm = BytesTrieMap::new();
             let zh = btm.zipper_head();
-            zh.write_zipper_at_exclusive_path(each_rz.absolute_path()).unwrap().graft(each_rz);
+            zh.write_zipper_at_exclusive_path(each_rz.origin_path()).unwrap().graft(each_rz);
             drop(zh);
             tmp_maps.push(btm);
         }
@@ -1099,7 +1099,7 @@ where
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
                 referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
-                    let e = Expr { ptr: loc.absolute_path().as_ptr().cast_mut() };
+                    let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     match effect(refs, e) {
                         Ok(()) => {}
                         Err(t) => {
@@ -1254,7 +1254,7 @@ impl Space {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if !rz.to_next_val() { break }
 
-            let mut x: Box<[u8]> = rz.absolute_path().into(); // should use local buffer
+            let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
             drop(rz);
             self.btm.remove(&x[..]);
             self.interpret(Expr{ ptr: x.as_mut_ptr() });

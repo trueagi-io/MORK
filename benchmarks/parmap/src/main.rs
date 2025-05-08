@@ -63,7 +63,7 @@ fn parallel_map() {
                 run += 1;
 
                 // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-                let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
+                let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path()) };
                 let mut opath = vec![1];
                 opath.extend_from_slice(z.path());
                 // println!("created zpath={:?} ({}) opath={opath:?} for {}", z.path(), z.val_count(), dispatches + 1);
@@ -84,7 +84,7 @@ fn parallel_map() {
                             // work_output.graft(work_input);
                             // println!("thread {} processing origin={:?} (queued: {})", dispatches, work_input.origin_path(), work_input.val_count());
                             loop {
-                                if work_input.to_next_val().is_none() { break }
+                                if !work_input.to_next_val() { break }
                                 // println!("tp {:?}", work_input.path());
                                 let mut buffer = [0; 8];
                                 for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -116,7 +116,7 @@ fn parallel_map() {
                 for (work_input, work_output) in thread_units.iter_mut() {
                     // work_output.graft(work_input);
                     loop {
-                        if work_input.to_next_val().is_none() { break }
+                        if !work_input.to_next_val() { break }
                         // println!("tp {:?}", work_input.path());
                         let mut buffer = [0; 8];
                         for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -143,7 +143,7 @@ fn parallel_map() {
 
     let rz = unsafe { zh.read_zipper_at_path_unchecked(&[]) };
     println!("result count: {}", rz.val_count());
-    // while let Some(_) = rz.to_next_val() {
+    // while rz.to_next_val() {
     //     println!("o {:?}", rz.path());
     // }
     });
@@ -171,7 +171,7 @@ fn task_parallel_map() {
         loop {
             chunks += 1;
             // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-            let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
+            let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path()) };
             let mut opath = vec![1];
             opath.extend_from_slice(&z.path()[..]);
             // println!("dispatched zpath={:?} ({}) opath={opath:?}", z.path(), z.val_count());
@@ -192,7 +192,7 @@ fn task_parallel_map() {
             scope.spawn(move |_| {
                 // work_output.set_value(());
                 loop {
-                    if work_input.to_next_val().is_none() { break }
+                    if !work_input.to_next_val() { break }
                     // println!("tp {:?}", work_input.path());
                     let mut buffer = [0; 8];
                     for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -219,7 +219,7 @@ fn task_parallel_map() {
 
     let rz = unsafe { zh.read_zipper_at_path_unchecked(&[]) };
     println!("result count: {}", rz.val_count());
-    // while let Some(_) = rz.to_next_val() {
+    // while rz.to_next_val() {
     //     println!("o {:?}", rz.path());
     // }
 }

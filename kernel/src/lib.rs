@@ -247,4 +247,32 @@ mod tests {
 
         core::assert_ne!(&out, "c\n");
     }
+
+
+    #[test]
+    fn transform_multi_multi_ignoring_second_template() {
+        let mut s = Space::new();
+                const SPACE_EXPRS: &str = 
+        concat!
+        ( "\n(val a b)"
+        );
+
+        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.transform_multi_multi(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
+
+        let out = unsafe {
+            core::mem::transmute::<_,String>(writer)
+        };
+
+        println!("{}", out);
+
+        let vals = ["a","b","(val a b)"];
+        for each in vals {
+            assert!(out.lines().any(|i| i == each))
+        }
+    }
 }

@@ -284,7 +284,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (BEGIN_RANGE $recursive:expr) => {
         // references.push((loc.path().len() as u32, 0));
-        let p = loc.absolute_path();
+        let p = loc.origin_path();
         references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
         $recursive;
         references.pop();
@@ -1089,7 +1089,7 @@ impl Space {
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
                 referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
-                    let e = Expr { ptr: loc.absolute_path().as_ptr().cast_mut() };
+                    let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     match effect(refs, e) {
                         Ok(()) => {}
                         Err(t) => {
@@ -1241,7 +1241,7 @@ impl Space {
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if rz.to_next_val() {
-                let mut x: Box<[u8]> = rz.absolute_path().into(); // should use local buffer
+                let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
                 drop(rz);
                 self.btm.remove(&x[..]);
                 self.interpret(Expr{ ptr: x.as_mut_ptr() });

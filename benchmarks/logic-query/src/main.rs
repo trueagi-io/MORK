@@ -709,7 +709,7 @@ fn main() {
     let mut references: Vec<(u32, u32)> = vec![];
     referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
     // transition(&mut buffer, &mut z, &mut |loc| {
-        black_box(loc.absolute_path());
+        black_box(loc.origin_path());
         visited += 1;
     });
     println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());

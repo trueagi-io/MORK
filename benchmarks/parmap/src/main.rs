@@ -63,7 +63,7 @@ fn parallel_map() {
                 run += 1;
 
                 // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-                let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
+                let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path()) };
                 let mut opath = vec![1];
                 opath.extend_from_slice(z.path());
                 // println!("created zpath={:?} ({}) opath={opath:?} for {}", z.path(), z.val_count(), dispatches + 1);
@@ -171,7 +171,7 @@ fn task_parallel_map() {
         loop {
             chunks += 1;
             // println!("p {:?} c {}", z.path(), z.child_mask().iter().fold(0, |t, x| t + x.count_ones()))
-            let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path().unwrap()) };
+            let work_input = unsafe { zh.read_zipper_at_path_unchecked(z.origin_path()) };
             let mut opath = vec![1];
             opath.extend_from_slice(&z.path()[..]);
             // println!("dispatched zpath={:?} ({}) opath={opath:?}", z.path(), z.val_count());

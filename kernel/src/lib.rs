@@ -281,22 +281,127 @@ mod tests {
         // , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
         // , "\n(? (add $ret) (Z $y) (! $ret $y))"
         // , "\n(! (add result) ((S Z) (S Z)))"
-
-        // , "\na"
-        // , "\nb"
         );
 
         s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
-
         s.metta_calculus();
 
         let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
-        s.transform_multi_multi(
-            &[expr!(s, "a")][..] /* writes "c" */,
-            // &[][..] /* writes nothing */, 
-            &[expr!(s, "c")][..]
+        println!("\nRESULTS\n");
+        println!("{}", String::from_utf8(v).unwrap());
+    }
+
+    #[test]
+    fn metta_calculus_test_one_exec_only() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        , "\n(exec PC0 (, $x) (, result))"
         );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+        core::assert_eq!(v.len(), 0);
+
+        // println!("\nRESULTS\n");
+        // println!("{}", String::from_utf8(v).unwrap());
+    }
+    #[test]
+    fn metta_calculus_test_clears_two_execs() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        , "\n(exec PC0 (, $x) (, result-pc0 ))"
+
+        // // the test fails if the the other one is used
+        , "\n(exec PC01 (, $x) (, result-pc01))"
+        // , "\n(exec PC1 (, $x) (, result-pc1))"
+        );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+        // println!("\nRESULTS\n");
+        // println!("{}", String::from_utf8(v).unwrap());
+    }
+    #[test]
+    fn metta_calculus_test_clears_two_execs2() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        , "\n(exec PC0 (, $x) (, (result-pc0 $x)))"
+
+        // // the test fails if the the other one is used
+        , "\n(exec PC01 (, $x) (, result-pc01))"
+        // , "\n(exec PC1 (, $x) (, result-pc1))"
+        );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+        println!("\nRESULTS\n");
+        println!("{}", String::from_utf8(v).unwrap());
+    }
+    #[test]
+    fn metta_calculus_test_clears_two_execs3() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        , "\n(exec PC0 (, $x) (, result-pc0))"
+
+        // // the test fails if the the other one is used
+        , "\n(exec PC01 (, $x) (, (result-pc01 $x)))"
+        // , "\n(exec PC1 (, $x) (, result-pc1))"
+        );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+        println!("\nRESULTS\n");
+        println!("{}", String::from_utf8(v).unwrap());
+    }
+    #[test]
+    fn metta_calculus_test_steped_exec() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        , "\n(exec PC0 (, (val $o $e) ) (, $o $e))"
+        , "\n(val a b)"
+
+        ,"\n"
+
+        );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.metta_calculus();
+        // s.metta_calculus();
+        // s.metta_calculus();
+
+        let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
         println!("\nRESULTS\n");
@@ -319,5 +424,32 @@ mod tests {
         println!("{}", out);
 
         core::assert_ne!(&out, "c\n");
+    }
+
+    #[test]
+    fn transform_multi_multi_() {
+        let mut s = Space::new();
+                const SPACE_EXPRS: &str = 
+        concat!
+        ( "\n(val a b)"
+        );
+
+        s.load_sexpr(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.transform_multi_multi(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
+
+        let out = unsafe {
+            core::mem::transmute::<_,String>(writer)
+        };
+
+        println!("{}", out);
+
+        let vals = ["a","b","(val a b)"];
+        for each in vals {
+            assert!(out.lines().any(|i| i == each))
+        }
     }
 }

@@ -5,7 +5,7 @@ use alloc::borrow::Cow;
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_bytestring::{Expr, ExprZipper};
-use pathmap::{trie_map::BytesTrieMap, zipper::*};
+use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 
 use crate::space::{
@@ -26,13 +26,6 @@ pub type PathCount      = usize;
 pub type AttributeCount = usize;
 pub type NodeCount      = usize;
 pub type OwnedExpr      = Vec<u8>;
-/// A path in the space, expressed in terms of the space's semantic
-pub type Path = [u8];
-
-/// Converts the semantic path into a [PathMap] bytes path
-pub fn path_as_bytes(path: &Path) -> Cow<[u8]> {
-    Cow::from(path)
-}
 
 // One should not depend on the string representation of debug as per standard lib. this gives us the room to make these types better later.
 #[allow(unused)]
@@ -56,8 +49,8 @@ pub struct LoadNeo4JNodeLabelsError(String);
 
 
 
-pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + ZipperAbsolutePath + 'r {}
-impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + ZipperAbsolutePath + 'r {}
+pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + 'r {}
+impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + 'r {}
 
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space {
@@ -73,10 +66,10 @@ pub trait Space {
     // ===================== Methods used by caller ===================== 
 
     /// Requests a new [Space::Reader] from the `Space`
-    fn new_reader<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr>;
+    fn new_reader<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr>;
 
     /// Requests a new [Space::Writer] from the `Space`
-    fn new_writer<'space>(&'space self, path: &Path, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr>;
+    fn new_writer<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr>;
 
     // ===================== Methods used by shared impl ===================== 
 
@@ -156,16 +149,15 @@ pub trait Space {
     fn transform_multi_multi<'s>(
         &'s self,
         patterns : &[Expr],
-        pattern_readers : &'s mut[Self::Reader<'s>],
+        pattern_readers : &mut[Self::Reader<'s>],
         template : &[Expr],
         template_writer : &mut [Self::Writer<'s>],
-
-    ) {
+    ) -> (usize, bool) {
         let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
         let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
         let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
 
-        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs);
+        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
     }
 
     #[cfg(feature="neo4j")]
@@ -187,49 +179,6 @@ pub trait Space {
         let sm = self.symbol_table();
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_labels_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodeLabelsError)
-    }
-}
-
-/// A default minimalist implementation of [Space]
-pub struct DefaultSpace {
-    map: ZipperHeadOwned<()>,
-    sm: SharedMappingHandle,
-}
-
-impl DefaultSpace {
-    /// Creates a new empty `DefaultSpace`
-    pub fn new() -> Self {
-        Self {
-            map: BytesTrieMap::new().into_zipper_head([]),
-            sm: SharedMapping::new(),
-        }
-    }
-}
-
-impl Space for DefaultSpace {
-    type Auth = ();
-    type Reader<'space> = ReadZipperTracked<'space, 'static, ()>;
-    type Writer<'space> = WriteZipperTracked<'space, 'static, ()>;
-    type PermissionErr = String;
-
-    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
-        let path = path_as_bytes(path);
-        self.map.read_zipper_at_path(path).map_err(|e| e.to_string())
-    }
-    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
-        let path = path_as_bytes(path);
-        self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
-    }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + ZipperAbsolutePath + 'r {
-        reader.reset();
-        reader
-    }
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w {
-        writer.reset();
-        writer
-    }
-    fn symbol_table(&self) -> &SharedMappingHandle {
-        &self.sm
     }
 }
 

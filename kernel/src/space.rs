@@ -12,22 +12,58 @@ use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
-use pathmap::zipper::{ReadZipperUntracked, ZipperMoving, WriteZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
+use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 
-use pathmap::{
-    zipper::*,
-};
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
     AttributeCount,
     SExprCount,
+    Space,
+    SpaceReaderZipper,
 };
-pub struct Space {
-    pub btm: BytesTrieMap<()>,
-    pub sm: SharedMappingHandle
+
+/// A default minimalist implementation of [Space]
+pub struct DefaultSpace {
+    map: ZipperHeadOwned<()>,
+    sm: SharedMappingHandle,
+}
+
+impl DefaultSpace {
+    /// Creates a new empty `DefaultSpace`
+    pub fn new() -> Self {
+        Self {
+            map: BytesTrieMap::new().into_zipper_head([]),
+            sm: SharedMapping::new(),
+        }
+    }
+}
+
+impl Space for DefaultSpace {
+    type Auth = ();
+    type Reader<'space> = ReadZipperTracked<'space, 'static, ()>;
+    type Writer<'space> = WriteZipperTracked<'space, 'static, ()>;
+    type PermissionErr = String;
+
+    fn new_reader<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
+        self.map.read_zipper_at_path(path).map_err(|e| e.to_string())
+    }
+    fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
+        self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
+    }
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r> {
+        reader.reset();
+        reader
+    }
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w {
+        writer.reset();
+        writer
+    }
+    fn symbol_table(&self) -> &SharedMappingHandle {
+        &self.sm
+    }
 }
 
 const SIZES: [u64; 4] = {
@@ -188,7 +224,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!("no symbol size next")
             }
@@ -210,7 +246,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
             if loc.descend_to(buf) {
                 referential_transition(last, loc, references, f);
             }
-            loc.ascend(1);
+            loc.ascend_byte();
         }
     };
     (ITER_ARITIES $recursive:expr) => {
@@ -229,7 +265,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!()
             }
@@ -592,33 +628,15 @@ macro_rules! prefix {
     }};
 }
 
-impl Space {
-    pub fn new() -> Self {
-        Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
-    }
-
-    /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving access directly to the field
-    ///       The name matches the name the Space trait so the macro expr works with it.
-    #[doc(hidden)]
-    pub fn symbol_table(&self)->SharedMappingHandle{
-        self.sm.clone()
-    }
+impl DefaultSpace {
 
     pub fn statistics(&self) {
-        println!("val count {}", self.btm.val_count());
+        println!("val count {}", self.map.read_zipper_at_borrowed_path(&[]).unwrap().val_count());
     }
 
-    #[allow(unused)]
-    fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
-        unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
-    }
-
-    fn write_zipper_at_unchecked<'a, 'b>(&'a self, path: &'b [u8]) -> WriteZipperUntracked<'a, 'b, ()> {
-        unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
-    }
-
-    pub fn load_csv(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
-        load_csv_impl(&self.sm.clone(), r, pattern, template, self.write_zipper_at_unchecked(unsafe { &*template.prefix().unwrap_or(template.span()) })).map_err(|e| format!("{:?}",e))
+    pub fn load_csv_simple(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
+        let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
+        self.load_csv(r, pattern, template, &mut writer).map_err(|e| format!("{:?}",e))
     }
 }
 pub(crate) fn load_csv_impl<'s, WZ>(
@@ -671,11 +689,14 @@ pub(crate) fn load_csv_impl<'s, WZ>(
 
         Ok(i)
 }
-impl Space {
+impl DefaultSpace {
     pub fn load_json(&mut self, r: &str) -> Result<PathCount, String> {
-        load_json_impl(&self.sm, &mut self.btm.write_zipper(), r)
+        let mut writer = self.new_writer(&[], &())?;
+        let mut wz = self.write_zipper(&mut writer);
+        load_json_impl(&self.sm, &mut wz, r)
     }
 }
+
 pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
     where 
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
@@ -685,14 +706,18 @@ pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r:
     p.parse(&mut st).map_err(|e| format!("{e}"))?;
     Ok(st.path_count)
 }
-impl Space {
+
+impl DefaultSpace {
     #[cfg(feature="neo4j")]
     pub fn load_neo4j_triples(&mut self, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> {
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
           .build()
           .unwrap();
-        load_neo4j_triples_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
+
+        let mut writer = self.new_writer(&[], &())?;
+        let mut wz = self.write_zipper(&mut writer);
+        load_neo4j_triples_impl(&self.sm, &mut wz, &rt.handle(), uri, user, pass)
     }
 }
 
@@ -752,14 +777,17 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
         drop(guard);
         Ok(count)
 }
-impl Space {
+impl DefaultSpace {
     #[cfg(feature="neo4j")]
     pub fn load_neo4j_node_properties(&mut self, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
           .build()
           .unwrap();
-        load_neo4j_node_properties_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
+
+        let mut writer = self.new_writer(&[], &())?;
+        let mut wz = self.write_zipper(&mut writer);
+        load_neo4j_node_properties_impl(&self.sm, &mut wz, &rt.handle(), uri, user, pass)
     }
 }
 #[cfg(feature="neo4j")]
@@ -829,14 +857,17 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         drop(guard);
         Ok((nodes, attributes))
 }
-impl Space {
+impl DefaultSpace {
     #[cfg(feature="neo4j")]
     pub fn load_neo4j_node_lables(&mut self, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> {
         let rt = tokio::runtime::Builder::new_current_thread()
           .enable_io()
           .build()
           .unwrap();
-        load_neo4j_node_labels_impl(&self.sm, &mut self.btm.write_zipper(), &rt.handle(), uri, user, pass)
+
+        let mut writer = self.new_writer(&[], &())?;
+        let mut wz = self.write_zipper(&mut writer);
+        load_neo4j_node_labels_impl(&self.sm, &mut wz, &rt.handle(), uri, user, pass)
     }
 }
 #[cfg(feature="neo4j")]
@@ -889,9 +920,11 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         drop(guard);
         Ok((nodes, labels))
 }
-impl Space {
-    pub fn load_sexpr(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
-        load_sexpr_impl(&self.sm, r, pattern, template, self.btm.write_zipper_at_path(unsafe { &*template.prefix().unwrap_or(template.span()) })).map_err(|e| format!("{:?}", e))
+
+impl DefaultSpace {
+    pub fn load_sexpr_simple(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
+        let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
+        self.load_sexpr(r, pattern, template, &mut writer).map_err(|e| format!("{:?}", e))
     }
 }
 pub(crate) fn load_sexpr_impl<'s, WZ>(
@@ -936,12 +969,15 @@ where
         }
         Ok(i)
 }
-impl Space {
+impl DefaultSpace {
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
+        let mut reader = self.new_reader(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }, &())?;
+        let rz = self.read_zipper(&mut reader);
+
         dump_as_sexpr_impl(
             &self.sm,
             pattern,
-            self.btm.read_zipper_at_path(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }),
+            rz,
             template,
             w, 
             || "IoWriteError"
@@ -983,7 +1019,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
             Ok(())
         })
 }
-impl Space {
+impl DefaultSpace {
     pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, #[allow(unused_variables)]path: OutFilePath) -> Result<(), std::io::Error>  {
         #[cfg(feature="interning")]
         {
@@ -1004,33 +1040,46 @@ impl Space {
     }
 
     pub fn backup_as_dag<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<(), std::io::Error> {
-        pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
+        let mut reader = self.new_reader(&[], &()).unwrap();
+        let rz = self.read_zipper(&mut reader);
+        pathmap::serialization::write_trie("neo4j triples", rz,
                                            |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
                                            path.as_ref()).map(|_| ())
     }
 
     pub fn restore_from_dag(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-        self.btm = pathmap::serialization::deserialize_file(path, |_| ())?;
+        let new_map = pathmap::serialization::deserialize_file(path, |_| ())?;
+        self.map = new_map.into_zipper_head([]);
         Ok(())
     }
 
     pub fn backup_paths<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
-        pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
+        let mut reader = self.new_reader(&[], &()).unwrap();
+        let rz = self.read_zipper(&mut reader);
+        pathmap::path_serialization::serialize_paths_(rz, &mut file)
     }
 
     pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
-        pathmap::path_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, |_, _| ())
+        let mut writer = self.new_writer(&[], &()).unwrap();
+        let wz = self.write_zipper(&mut writer);
+        pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
 
     pub fn query_multi<T : Copy, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], effect: F) -> Result<usize, T> {
-        let rzs = patterns.iter().map(
-            |p| self.btm.read_zipper_at_path(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() })
-        ).collect::<Vec<_>>();
+        let mut readers = patterns.iter().map(
+            |p| {
+                self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
+        }).collect::<Vec<_>>();
 
-        query_multi_impl(patterns,&rzs , effect)
+        let rzs = readers.iter_mut().map(
+            |reader| {
+                self.read_zipper(reader)
+        }).collect::<Vec<_>>();
+
+        query_multi_impl(patterns, &rzs , effect)
     }
 }
 pub(crate) fn query_multi_impl<'s, RZ, E: Copy, F: FnMut(&[Expr], Expr) -> Result<(), E>>
@@ -1126,18 +1175,17 @@ where
         })
 }
 
-impl Space {
-    pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
+impl DefaultSpace {
+    pub fn transform_multi_multi_simple(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
 
-        let readers = patterns.iter().map(|e| 
-            self.btm.read_zipper_at_path(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() })
+        let mut readers = patterns.iter().map(|e|
+            self.new_reader(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
         ).collect::<Vec<_>>();
 
         let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
-        let mut template_wzs: Vec<_> = template_prefixes.iter().map(|p| self.write_zipper_at_unchecked(p)).collect();
+        let mut writers = template_prefixes.iter().map(|p| self.new_writer(p, &()).unwrap() ).collect::<Vec<_>>();
 
-
-        transform_multi_multi_impl(patterns, &readers, templates, &template_prefixes, &mut template_wzs)
+        self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..])
     }
 }
 pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
@@ -1167,13 +1215,13 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
         (touched, any_new)
 }
 
-impl Space {
+impl DefaultSpace {
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {
-        self.transform_multi_multi(patterns, &[template])
+        self.transform_multi_multi_simple(patterns, &[template])
     }
 
     pub fn transform(&mut self, pattern: Expr, template: Expr) -> (usize, bool) {
-        self.transform_multi_multi(&[pattern], &[template])
+        self.transform_multi_multi_simple(&[pattern], &[template])
     }
 
     pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
@@ -1197,7 +1245,7 @@ impl Space {
         assert!(rtz.next_child());
         let dsts = comma_fun_args(self, rtz.subexpr());
 
-        self.transform_multi_multi(&srcs[..], &dsts[..]);
+        self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
     }
 
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
@@ -1252,12 +1300,21 @@ impl Space {
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
 
         loop {
-            let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
+            let mut find_next_expr_reader = self.new_reader(prefix, &()).unwrap();
+            let mut rz = self.read_zipper(&mut find_next_expr_reader);
             if !rz.to_next_val() { break }
 
             let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
             drop(rz);
-            self.btm.remove(&x[..]);
+            drop(find_next_expr_reader);
+
+            let mut clearing_writer = self.new_writer(&x[..], &()).unwrap();
+            let mut clearing_wz = self.write_zipper(&mut clearing_writer);
+            clearing_wz.remove_branches();
+            clearing_wz.remove_value();
+            drop(clearing_wz);
+            drop(clearing_writer);
+
             self.interpret(Expr{ ptr: x.as_mut_ptr() });
         }
     }
@@ -1272,13 +1329,13 @@ impl Space {
     }
 }
 
-fn comma_fun_args(s : &Space, e : Expr)->Vec<Expr> {
+fn comma_fun_args(s : &DefaultSpace, e : Expr)->Vec<Expr> {
     let mut ez = ExprZipper::new(e);
     let Ok(Tag::Arity(n)) = ez.item() else { panic!() };
     let mut srcs = Vec::with_capacity(n as usize - 1);
     ez.next();
     assert_eq!(unsafe { ez.subexpr().span().as_ref().unwrap() }, unsafe { expr!(s, ",").span().as_ref().unwrap() });
-    for i in 0..n as usize - 1 {
+    for _ in 0..n as usize - 1 {
         ez.next_child();
         srcs.push(ez.subexpr());
     }

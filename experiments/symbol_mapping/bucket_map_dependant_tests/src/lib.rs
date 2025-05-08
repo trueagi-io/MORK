@@ -2,19 +2,19 @@
 mod tests {
   use std::{collections::BTreeMap, fs::create_dir_all, io::Read, path::PathBuf};
   use bucket_map::{SharedMappingHandle, SharedMapping};
-use mork::{expr, sexpr};
+  use mork::{expr, Space};
 
   #[test]
   fn logic_query_small() {
     let workspace_root = std::env::var("CARGO_WORKSPACE_DIR").unwrap();
     let mut small_metta = std::fs::File::open(PathBuf::from(workspace_root).join("benchmarks/logic-query/resources/small.metta")).unwrap();
     let mut s = String::new();
-    
+
     small_metta.read_to_string(&mut s).unwrap();
 
-    let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
-    let sm : SharedMappingHandle = space.symbol_table();
+    let mut space = mork::space::DefaultSpace::new();
+    space.load_sexpr_simple(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
+    let sm : SharedMappingHandle = space.symbol_table().clone();
 
     let zip_file = "logic_query_small.zip";
 
@@ -25,12 +25,12 @@ use mork::{expr, sexpr};
     let workspace_root = std::env::var("CARGO_WORKSPACE_DIR").unwrap();
     let mut big_metta = std::fs::File::open(PathBuf::from(workspace_root).join("benchmarks/logic-query/resources/big.metta")).unwrap();
     let mut s = String::new();
-    
+
     big_metta.read_to_string(&mut s).unwrap();
 
-    let mut space : mork::space::Space = mork::space::Space::new();
-    space.load_sexpr(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
-    let sm : SharedMappingHandle = space.sm.clone();
+    let mut space = mork::space::DefaultSpace::new();
+    space.load_sexpr_simple(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
+    let sm : SharedMappingHandle = space.symbol_table().clone();
 
     let zip_file = "logic_query_small.zip";
 
@@ -42,7 +42,7 @@ use mork::{expr, sexpr};
     let dir_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp");
     create_dir_all(&dir_path)?;
     let path = dir_path.join(zip_file_name);
-    
+
     sm.serialize(&path)?;
 
     let load = SharedMapping::deserialize(&path)?;
@@ -77,7 +77,7 @@ use mork::{expr, sexpr};
         out2.insert(unsafe {*(value.as_ptr() as *const [u8;bucket_map::SYM_LEN])}, unsafe {(&*path.as_raw()).to_owned()}, );
       }
     }
-    
+
     (out, out2)
   }
 }

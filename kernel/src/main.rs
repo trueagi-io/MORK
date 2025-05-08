@@ -2,8 +2,8 @@
 // use std::task::Poll;
 use std::time::Instant;
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
-use mork::expr;
-use mork::space::Space;
+use mork::{expr, Space};
+use mork::space::DefaultSpace;
 use mork_bytestring::{item_byte, Tag};
 
 // Remy : Adam, You seem does not seem to like using the test framework for benchmarks, I'm sure you have reasons.
@@ -25,7 +25,7 @@ fn main() {
 }
 
 fn bench_0() {
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
     let t0 = Instant::now();
     let nodesf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3-002/results/nodes.json").unwrap();
     let nodesfs = unsafe { memmap2::Mmap::map(&nodesf).unwrap() };
@@ -41,7 +41,7 @@ fn bench_0() {
 
 
 fn bench_1() {
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
     let t0 = Instant::now();
     let nodesf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/awesome-biomedical-kg/ckg_v3-002/results/nodes.json").unwrap();
     let nodesfs = unsafe { memmap2::Mmap::map(&nodesf).unwrap() };
@@ -54,7 +54,7 @@ fn bench_1() {
     println!("loaded {} edges in {} seconds", loaded, t1.elapsed().as_secs());
     done(&s);
 }
-fn work(s: &mut Space) {
+fn work(s: &mut DefaultSpace) {
     let add_gene_name_index_start = Instant::now();
     s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
     println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
@@ -120,13 +120,13 @@ fn bench_2() {
     const sexpr_contents: &str = r#"(Duck Quack)
     (Human BlaBla)"#;
     
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
     
-    s.load_sexpr(sexpr_contents,
+    s.load_sexpr_simple(sexpr_contents,
                  expr!(s, "[2] $ $"),
                  expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
     
-    s.transform_multi_multi(
+    s.transform_multi_multi_simple(
         &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
         &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
     );
@@ -140,7 +140,7 @@ fn bench_2() {
 }
 
 fn bench_3() {
-        let mut s = Space::new();
+        let mut s = DefaultSpace::new();
     const space: &str = r#"
 (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
 (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
@@ -151,7 +151,7 @@ fn bench_3() {
 (! (add result) ((S Z) (S Z)))
 "#;
     
-    s.load_sexpr(space, expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.load_sexpr_simple(space, expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
     s.metta_calculus();
@@ -195,7 +195,7 @@ fn bench_4() {
     // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
     //
     // return;
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
 
     let everythingf = std::fs::File::open("/mnt/zram/whole_flybase.json").unwrap();
     let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
@@ -210,14 +210,14 @@ fn bench_4() {
 const TEST_DAG : bool = false;
 fn bench_5() {
 
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
 
     let restore_symbols_start = Instant::now();
     println!("restored symbols {:?}", s.restore_symbols("/dev/shm/combined.symbols.zip").unwrap());
     println!("symbols backup took {}", restore_symbols_start.elapsed().as_secs());
-    println!("{:?}", s.sm.get_sym(b"SPO"));
-    println!("{:?}", s.sm.get_sym(b"IL9R-207"));
-    let bucket_map::serialization::Tables { to_symbol, to_bytes } = s.sm.reveal_tables();
+    println!("{:?}", s.symbol_table().get_sym(b"SPO"));
+    println!("{:?}", s.symbol_table().get_sym(b"IL9R-207"));
+    let bucket_map::serialization::Tables { to_symbol, to_bytes } = s.symbol_table().reveal_tables();
     println!("to_symbol.len() = {}; to_bytes.len() = {}", to_symbol.len(), to_bytes.len());
     println!("to_symbol.first().unwrap().val_count() = {:?}; to_bytes.first().unwrap().val_count() = {:?}", to_symbol.last().unwrap().val_count(), to_bytes.last().unwrap().val_count());
 
@@ -247,50 +247,50 @@ fn bench_5() {
     #[allow(unused)]
     if TEST_DAG {
 
-        let restore_start = Instant::now();
-        s.restore_from_dag("/dev/shm/");
-        println!("restore took {}", restore_start.elapsed().as_secs());
-        s.statistics();
+        // let restore_start = Instant::now();
+        // s.restore_from_dag("/dev/shm/");
+        // println!("restore took {}", restore_start.elapsed().as_secs());
+        // s.statistics();
     
     
-        let property_load_start = Instant::now();
-        println!("{:?}", s.load_neo4j_node_properties("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
-        println!("property loading took {}", property_load_start.elapsed().as_secs());
-        s.statistics();
+        // let property_load_start = Instant::now();
+        // println!("{:?}", s.load_neo4j_node_properties("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
+        // println!("property loading took {}", property_load_start.elapsed().as_secs());
+        // s.statistics();
 
-        let load_labels_start = Instant::now();
-        println!("{:?}", s.load_neo4j_node_lables("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
-        println!("loading labels took {}", load_labels_start.elapsed().as_secs());
-        s.statistics();
+        // let load_labels_start = Instant::now();
+        // println!("{:?}", s.load_neo4j_node_lables("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
+        // println!("loading labels took {}", load_labels_start.elapsed().as_secs());
+        // s.statistics();
         
-        let mut rz = s.btm.read_zipper_at_path(&[item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(3)), b'S', b'P', b'O']);
-        println!("SPO's {}", rz.val_count());
-        rz.to_next_val();
-        println!("{}", mork_bytestring::serialize(rz.origin_path()));
-        drop(rz);
+        // let mut rz = s.btm.read_zipper_at_path(&[item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(3)), b'S', b'P', b'O']);
+        // println!("SPO's {}", rz.val_count());
+        // rz.to_next_val();
+        // println!("{}", mork_bytestring::serialize(rz.origin_path()));
+        // drop(rz);
        
-        let load_start = Instant::now();
-        s.load_neo4j_triples("bolt://localhost:7687", "neo4j", "morkwork");
-        println!("loading took {}", load_start.elapsed().as_secs());
-        s.statistics();
+        // let load_start = Instant::now();
+        // s.load_neo4j_triples("bolt://localhost:7687", "neo4j", "morkwork");
+        // println!("loading took {}", load_start.elapsed().as_secs());
+        // s.statistics();
     
-        // edges 331291528
-        // nodes 76683739
-        // props 567148252
-        // paths 898439780
+        // // edges 331291528
+        // // nodes 76683739
+        // // props 567148252
+        // // paths 898439780
     
     
-        let backup_start = Instant::now();
-        s.backup_as_dag("/dev/shm/combined.remydag");
-        println!("backup took {}", backup_start.elapsed().as_secs());
+        // let backup_start = Instant::now();
+        // s.backup_as_dag("/dev/shm/combined.remydag");
+        // println!("backup took {}", backup_start.elapsed().as_secs());
     
-        let backup_paths_start = Instant::now();
-        s.backup_paths("/dev/shm/combined.paths.gz");
-        println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
+        // let backup_paths_start = Instant::now();
+        // s.backup_paths("/dev/shm/combined.paths.gz");
+        // println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
         
-        let backup_symbols_start = Instant::now();
-        s.backup_symbols("/dev/shm/combined.symbols.zip");
-        println!("symbols backup took {}", backup_symbols_start.elapsed().as_secs());
+        // let backup_symbols_start = Instant::now();
+        // s.backup_symbols("/dev/shm/combined.symbols.zip");
+        // println!("symbols backup took {}", backup_symbols_start.elapsed().as_secs());
     }
     work(&mut s);
 }
@@ -301,9 +301,9 @@ fn load_csv_with_pat() {
 10,20
 10,30"#;
 
-    let mut s = Space::new();
+    let mut s = DefaultSpace::new();
     // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
-    s.load_csv(csv_contents, expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
+    s.load_csv_simple(csv_contents, expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -313,7 +313,7 @@ fn load_csv_with_pat() {
 }
 
 #[allow(unused_variables)]
-pub fn done(s : &Space) -> ! {
+pub fn done(s : &DefaultSpace) -> ! {
     // let inner = s.inner_map_as_ref();
     // let counters = pathmap::counters::Counters::count_ocupancy(inner);
     // counters.print_histogram_by_depth();

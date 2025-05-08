@@ -4,7 +4,7 @@ use hyper::StatusCode;
 use pathmap::{trie_map::BytesTrieMap, zipper::ZipperHeadOwned};
 use pathmap::zipper::*;
 
-use mork::{Space, path_as_bytes, Path};
+use mork::{Space, SpaceReaderZipper};
 
 use crate::status_map::*;
 use crate::commands::*;
@@ -58,15 +58,13 @@ impl Space for ServerSpace {
     type Writer<'space> = WritePermission;
     type PermissionErr = CommandError;
 
-    fn new_reader<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
-        let path = path_as_bytes(path);
+    fn new_reader<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
         self.status_map.get_read_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
-    fn new_writer<'space>(&'space self, path: &Path, _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
-        let path = path_as_bytes(path);
+    fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
         self.status_map.get_write_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl  ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + ZipperAbsolutePath + 'r {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r> {
         unsafe{ self.primary_map.read_zipper_at_borrowed_path_unchecked(reader.path()) }
     }
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {

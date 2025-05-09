@@ -1,4 +1,4 @@
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::fs::File;
@@ -8,7 +8,7 @@ use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperSubtries};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
-use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
@@ -634,23 +634,24 @@ impl DefaultSpace {
         println!("val count {}", self.map.read_zipper_at_borrowed_path(&[]).unwrap().val_count());
     }
 
-    pub fn load_csv_simple(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<usize, String> {
+    pub fn load_csv_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr) -> Result<usize, String> {
         let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
-        self.load_csv(r, pattern, template, &mut writer).map_err(|e| format!("{:?}",e))
+        self.load_csv(src, pattern, template, &mut writer).map_err(|e| format!("{:?}",e))
     }
 }
-pub(crate) fn load_csv_impl<'s, WZ>(
+pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     sm       : &SharedMappingHandle,
-    r        : &str,
+    mut src  : SrcStream,
     pattern  : Expr,
     template : Expr,
     mut wz   : WZ,
 ) -> Result<crate::space::PathCount, ()>
     where
-        WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's
+        WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's,
+        SrcStream: BufRead,
 {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-
+        let mut src_line = vec![];
 
         #[allow(unused_mut)]
         let mut buf = [0u8; 2048];
@@ -658,7 +659,10 @@ pub(crate) fn load_csv_impl<'s, WZ>(
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut pdp = ParDataParser::new(sm);
-        for sv in r.as_bytes().split(|&x| x == b'\n') {
+
+        while src.read_until(b'\n', &mut src_line).unwrap() > 0  {
+            debug_assert_eq!(src_line[src_line.len()-1], b'\n');
+            let sv = &src_line[..src_line.len()-1];
             if sv.len() == 0 { continue }
             let mut a = 0;
             let e = Expr{ ptr: stack.as_mut_ptr() };
@@ -685,6 +689,7 @@ pub(crate) fn load_csv_impl<'s, WZ>(
             wz.set_value(());
             wz.reset();
             i += 1;
+            src_line.clear();
         }
 
         Ok(i)
@@ -922,27 +927,28 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
 }
 
 impl DefaultSpace {
-    pub fn load_sexpr_simple(&mut self, r: &str, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
+    pub fn load_sexpr_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr) -> Result<SExprCount, String> {
         let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
-        self.load_sexpr(r, pattern, template, &mut writer).map_err(|e| format!("{:?}", e))
+        self.load_sexpr(src, pattern, template, &mut writer).map_err(|e| format!("{:?}", e))
     }
 }
-pub(crate) fn load_sexpr_impl<'s, WZ>(
+pub(crate) fn load_sexpr_impl<'s, SrcStream, WZ>(
     sm       : &SharedMappingHandle,
-    r        : &str,
+    src      : SrcStream,
     pattern  : Expr,
     template : Expr,
     mut wz   : WZ,
 ) -> Result<usize, ParserError>
 where
-        WZ : Zipper + ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 's
+        WZ : Zipper + ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 's,
+        SrcStream: BufRead,
 {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
 
         #[allow(unused_mut)]
         let mut buffer = [0u8; 4096];
-        let mut it = Context::new(r.as_bytes());
+        let mut it = ParseContext::new(src);
         let mut i = 0;
         let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(sm);
@@ -965,7 +971,6 @@ where
                 Err(other) => { return Err(other) }
             }
             i += 1;
-            it.variables.clear();
         }
         Ok(i)
 }

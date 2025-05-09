@@ -1,9 +1,11 @@
 
 extern crate alloc;
+use std::io::{BufRead, Read};
+
 use alloc::borrow::Cow;
 
 use bucket_map::{SharedMapping, SharedMappingHandle};
-use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
 use mork_bytestring::{Expr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
@@ -91,9 +93,9 @@ pub trait Space {
     /// Parses and loads a buffer of S-Expressions into the `Space`
     ///
     /// Returns the number of expressions loaded into the space
-    fn load_sexpr<'s>(
+    fn load_sexpr<'s, SrcStream: Read + BufRead>(
         &'s self,
-        src_data        : &str,
+        src_data        : SrcStream,
         pattern         : Expr,
         template        : Expr,
         template_writer : &mut Self::Writer<'s>,
@@ -124,9 +126,9 @@ pub trait Space {
         .map_err(|e| DumpSExprError( e.to_string() ))
     }
 
-    fn load_csv<'s>(
+    fn load_csv<'s, SrcStream: BufRead>(
         &'s self,
-        src_data        : &str,
+        src_data        : SrcStream,
         pattern         : Expr,
         template        : Expr,
         template_writer : &mut Self::Writer<'s>,
@@ -183,7 +185,7 @@ pub trait Space {
 }
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
-    let mut it = Context::new(data.as_bytes());
+    let mut it = ParseContext::new(data.as_bytes());
     let mut stack = [0u8; 2048];
     let mut parser = ParDataParser::new(sm);
     let mut result = None;
@@ -199,7 +201,6 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
             Err(ParserError::InputFinished) => { break }
             Err(other) => { return Err(ParseError(format!("Internal Parse error: {other:?}"))) }
         }
-        it.variables.clear();
     }
 
     result.ok_or_else(|| ParseError(format!("Failed to parse S-Expression: {data}")))

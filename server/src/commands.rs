@@ -2,7 +2,7 @@
 use core::pin::Pin;
 use std::future::Future;
 use std::path::Path;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 use mork::Space;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
@@ -370,14 +370,10 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
 
     let ctx_clone = ctx.clone();
     match tokio::task::spawn_blocking(move || {
-        //GOAT, Reading the whole file into a ginormous buffer is a terrible idea.
-        // I'm sure the parser is capable of streaming or chunking but I gotta
-        // figure out the right way to chunk the input without corrupting any data
-        let mut file_handle = std::fs::File::open(&file_path)?;
-        let mut buffer = Vec::new();
-        file_handle.read_to_end(&mut buffer)?;
+        let file_handle = std::fs::File::open(&file_path)?;
+        let file_stream = BufReader::new(file_handle);
 
-        do_parse(&ctx_clone.0.space, &buffer[..], pattern, template, &mut writer, file_type)
+        do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
@@ -425,12 +421,12 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut template: Vec<u8>, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, mut pattern: Vec<u8>, mut template: Vec<u8>, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
     let pattern_expr = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
     let template_expr = mork_bytestring::Expr { ptr: template.as_mut_ptr() };
     match file_type {
         DataFormat::Metta => {
-            let count = space.load_sexpr(std::str::from_utf8(src_buf)?, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_sexpr(src, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from MeTTa S-Expr");
         },
         DataFormat::Json => {
@@ -439,7 +435,7 @@ fn do_parse(space: &ServerSpace, src_buf: &[u8], mut pattern: Vec<u8>, mut templ
             // println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            let count = space.load_csv(std::str::from_utf8(src_buf)?, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_csv(src, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {

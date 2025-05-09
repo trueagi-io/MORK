@@ -5,7 +5,7 @@ use pathmap::ring::Lattice;
 use bucket_map::*;
 use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
 use pathmap::trie_map::BytesTrieMap;
 // use pathmap::zipper::WriteZipper;
 // use bstr::ByteSlice;
@@ -319,7 +319,7 @@ impl <'a> ParDataParser<'a> {
 
 fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<()> {
     let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
-    let mut it = Context::new(slice);
+    let mut it = ParseContext::new(slice);
     let mut parser = ParDataParser::new(handle);
     #[allow(unused_variables)]
     let mut i = 0;
@@ -332,7 +332,6 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
             Err(other) => { panic!("{:?}", other) }
         }
         i += 1;
-        it.variables.clear();
     }
     // println!("inserted {}, symbols {}", i, parser.count - 3);
     btm

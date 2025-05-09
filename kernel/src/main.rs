@@ -122,7 +122,7 @@ fn bench_2() {
     
     let mut s = DefaultSpace::new();
     
-    s.load_sexpr_simple(sexpr_contents,
+    s.load_sexpr_simple(sexpr_contents.as_bytes(),
                  expr!(s, "[2] $ $"),
                  expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
     
@@ -151,7 +151,7 @@ fn bench_3() {
 (! (add result) ((S Z) (S Z)))
 "#;
     
-    s.load_sexpr_simple(space, expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.load_sexpr_simple(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
     s.metta_calculus();
@@ -303,7 +303,7 @@ fn load_csv_with_pat() {
 
     let mut s = DefaultSpace::new();
     // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
-    s.load_csv_simple(csv_contents, expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
+    s.load_csv_simple(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] mycsv [3] my precious _1")).unwrap();
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();

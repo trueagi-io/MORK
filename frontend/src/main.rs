@@ -183,7 +183,7 @@ use pathmap::zipper::ZipperWriting;
 // }
 
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
 use pathmap::trie_map::BytesTrieMap;
 
 struct DataParser {
@@ -237,7 +237,7 @@ fn main() {
     let mut v = vec![];
     file.read_to_end(&mut v).unwrap();
     let slice = &v[..];
-    let mut it = Context::new(&slice);
+    let mut it = ParseContext::new(slice);
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
@@ -258,7 +258,6 @@ fn main() {
             Err(other) => { panic!("{:?}", other) }
         }
         i += 1;
-        it.variables.clear();
     }
     println!("built {}", i);
     println!("took {} ms", t0.elapsed().as_millis()); // 4GB, 6 seconds

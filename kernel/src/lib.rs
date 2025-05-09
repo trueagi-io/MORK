@@ -26,7 +26,7 @@ mod tests {
     fn prefix_parse_sexpr() {
         let input = "((nested and) (singleton))\n(foo bar)\n(1 \"test\" 2)\n";
         let mut s = DefaultSpace::new();
-        assert_eq!(s.load_sexpr_simple(input, expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
+        assert_eq!(s.load_sexpr_simple(input.as_bytes(), expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "[2] my [2] prefix $"), expr!(s, "_1"), &mut res).unwrap();
 
@@ -40,7 +40,7 @@ mod tests {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = DefaultSpace::new();
-        assert_eq!(s.load_csv_simple(csv_input, expr!(s, "$"), expr!(s, "_1")).unwrap(), 2);
+        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap(), 2);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn query_simple() {
         let mut s = DefaultSpace::new();
-        assert_eq!(16, s.load_sexpr_simple( SEXPRS0, expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.load_sexpr_simple( SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = DefaultSpace::new();
-        assert_eq!(16, s.load_sexpr_simple(SEXPRS0, expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.load_sexpr_simple(SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
@@ -154,7 +154,7 @@ mod tests {
         let mut s = DefaultSpace::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
-        s.load_sexpr_simple(unsafe { std::str::from_utf8_unchecked( fileb.as_slice() ) }, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple( fileb.as_slice(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = DefaultSpace::new();
-        s.load_sexpr_simple(LOGICSEXPR0, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(LOGICSEXPR0.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
@@ -207,7 +207,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load_sexpr_simple(unsafe { std::str::from_utf8_unchecked(&buf[..]) }, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(&buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
@@ -236,7 +236,7 @@ mod tests {
 
         let mut s = DefaultSpace::new();
 
-        s.load_sexpr_simple(SEXPR_CONTENTS,
+        s.load_sexpr_simple(SEXPR_CONTENTS.as_bytes(),
                      expr!(s, "[2] $ $"),
                      expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
 
@@ -283,7 +283,7 @@ mod tests {
         // , "\n(! (add result) ((S Z) (S Z)))"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.metta_calculus();
 
@@ -304,7 +304,7 @@ mod tests {
         , "\n(exec PC0 (, $x) (, result))"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
         s.metta_calculus();
 
         let mut v = vec![];
@@ -328,7 +328,7 @@ mod tests {
         // , "\n(exec PC1 (, $x) (, result-pc1))"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
         s.metta_calculus();
 
         let mut v = vec![];
@@ -351,7 +351,7 @@ mod tests {
         // , "\n(exec PC1 (, $x) (, result-pc1))"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
         s.metta_calculus();
 
         let mut v = vec![];
@@ -374,7 +374,7 @@ mod tests {
         // , "\n(exec PC1 (, $x) (, result-pc1))"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
         s.metta_calculus();
 
         let mut v = vec![];
@@ -397,7 +397,7 @@ mod tests {
 
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
         s.metta_calculus();
         // s.metta_calculus();
         // s.metta_calculus();
@@ -435,7 +435,7 @@ mod tests {
         ( "\n(val a b)"
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi_multi_simple(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
 
@@ -469,7 +469,7 @@ mod tests {
         , "\n(exec \"01\" (, (val $x $y)) (, (pair $x $y)) )" // swap vals
         );
 
-        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
         s.metta_calculus();

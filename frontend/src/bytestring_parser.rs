@@ -1,3 +1,5 @@
+use std::io::{BufRead, Read};
+
 use mork_bytestring::{ExprZipper, Tag, item_byte, byte_item};
 
 #[allow(non_snake_case)]
@@ -18,56 +20,101 @@ pub enum ParserError {
   InputFinished,
   NotArity,
   UnexpectedRightBracket,
-  UnfinishedEscapeSequence
+  UnfinishedEscapeSequence,
+  OtherIOErr,
 }
 
-pub struct Context<'a> {
-  pub src: &'a [u8],
-  pub loc: usize,
-  pub variables: Vec<&'a [u8]>
+impl From<std::io::Error> for ParserError {
+  fn from(io_err: std::io::Error) -> Self {
+    match io_err.kind() {
+      std::io::ErrorKind::UnexpectedEof => ParserError::UnexpectedEOF,
+      _ => ParserError::OtherIOErr,
+    }
+  }
 }
 
-impl <'a> Context<'a> {
-  pub fn new(r: &'a [u8]) -> Context<'a> {
-    Context{ src: r, loc: 0, variables: vec![] }
+/// State associated with the parsing of a stream of s-expressions
+pub struct ParseContext<SrcStream> {
+  /// The stream from which to read the source expressions
+  src: SrcStream,
+  /// An offset relative to the beginning of the source expression stream
+  byte_idx: usize,
+  /// The mapping between DeBruijn indices and variable names, as indices into the `var_names` field
+  var_indices: Vec<usize>,
+  /// A buffer containing all the variables name that have been found
+  var_names: Vec<u8>,
+  /// A temporary buffer for reading from the stream
+  tmp_buf: Vec<u8>,
+}
+
+impl<SrcStream: BufRead + Read> ParseContext<SrcStream> {
+  /// Make a new `ParseContext` to parse the stream
+  pub fn new(src: SrcStream) -> Self {
+    Self{ src, byte_idx: 0, var_indices: vec![], var_names: vec![], tmp_buf: vec![] }
+  }
+
+  /// Returns index of the 
+  pub fn byte_idx(&self) -> usize {
+    self.byte_idx
   }
 
   #[inline(always)]
   fn peek(&mut self) -> Result<u8, ParserError> {
-    if self.loc == self.src.len() {
+    let reader_buf = self.src.fill_buf().unwrap();
+    if reader_buf.len() == 0 {
       Err(ParserError::UnexpectedEOF)
     } else {
-      Ok(unsafe { *self.src.get_unchecked(self.loc) })
+      Ok(unsafe{ *reader_buf.get_unchecked(0) })
     }
   }
 
   #[inline(always)]
   fn next(&mut self) -> Result<u8, ParserError> {
-    if self.loc == self.src.len() {
-      Err(ParserError::UnexpectedEOF)
-    } else {
-      let r = unsafe { *self.src.get_unchecked(self.loc) };
-      self.loc += 1;
-      Ok(r)
-    }
+    let mut c: u8 = 0;
+    self.src.read_exact(core::slice::from_mut(&mut c)).map_err(|e| ParserError::from(e))?;
+    self.byte_idx += 1;
+    Ok(c)
+    //GOAT old impl
+    // let reader_buf = self.src.fill_buf().unwrap();
+    // if reader_buf.len() == 0 {
+    //   Err(ParserError::UnexpectedEOF)
+    // } else {
+    //   let r = unsafe{ *reader_buf.get_unchecked(0) };
+    //   self.src.consume(1);
+    //   self.byte_idx += 1;
+    //   Ok(r)
+    // }
+  }
+
+  #[inline(always)]
+  fn next_to_tmp_buf(&mut self) -> Result<u8, ParserError> {
+    let c = self.next()?;
+    self.tmp_buf.push(c);
+    Ok(c)
   }
 
   #[inline(always)]
   fn has_next(&mut self) -> bool {
-    self.loc < self.src.len()
+    let reader_buf = self.src.fill_buf().unwrap();
+    reader_buf.len() != 0
   }
 
+  /// Finds the DeBruijn index of the named var in the `tmp_buf` among the variables that have already been
+  /// encountered or saves the var name if it's the first time seeing it
   #[inline]
-  fn get_or_put(&mut self, var: &'a [u8]) -> Result<Option<u8>, ParserError> {
-    let mut i = 0;
-    for &v in self.variables.iter() {
-      if var == v { return Ok(Some(i as u8)) }
-      else { i += 1 }
+  fn var_in_tmp_buf(&mut self) -> Result<Option<u8>, ParserError> {
+    let mut var_name_start = 0;
+    for (i, &var_name_end) in self.var_indices.iter().enumerate() {
+      let ctx_var = &self.var_names[var_name_start..var_name_end];
+      if self.tmp_buf == ctx_var { return Ok(Some(i as u8)) }
+      var_name_start = var_name_end;
     }
 
-    if self.variables.len() < 64 {
+    if self.var_indices.len() < 64 {
       // we can only have 64 variables, we don't need a vec here, perhaps uninit array?
-      self.variables.push(var);
+      self.var_names.extend(&self.tmp_buf[..]);
+      self.var_indices.push(self.var_names.len());
+      self.tmp_buf.clear();
       Ok(None)
     } else {
       Err(ParserError::TooManyVars)
@@ -78,25 +125,27 @@ impl <'a> Context<'a> {
 pub trait Parser {
   fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8];
 
-  fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
+  /// Parse a single s-expression from the ParseContext
+  fn sexpr<SrcStream: BufRead + Read>(&mut self, it: &mut ParseContext<SrcStream>, target: &mut ExprZipper) -> Result<(), ParserError> {
     use ParserError::*;
+    it.var_names.clear();
+    it.var_indices.clear();
+
     while it.has_next() {
       match it.peek()? {
         b';' => { while it.next()? != b'\n' {} }
         c if isWhitespace(c) => { it.next()?; }
         b'$' => {
-          let id = {
-            let start = it.loc;
-            while it.has_next() {
-              match it.peek()? {
-                b'(' | b')' => { break }
-                c if isWhitespace(c) => { break }
-                _ => { it.next()?; }
-              }
+          it.tmp_buf.clear();
+          while it.has_next() {
+            match it.peek()? {
+              b'(' | b')' => { break }
+              c if isWhitespace(c) => { break }
+              _ => { it.next_to_tmp_buf()?; }
             }
-            unsafe { &it.src.get_unchecked(start..it.loc) }
-          };
-          match it.get_or_put(id)? {
+          }
+
+          match it.var_in_tmp_buf()? {
             None => { target.write_new_var(); target.loc += 1; }
             Some(ind) => { target.write_var_ref(ind); target.loc += 1; }
           }
@@ -125,14 +174,14 @@ pub trait Parser {
         }
         b')' => { return Err(UnexpectedRightBracket) }
         _ => {
-          let start = it.loc;
+          it.tmp_buf.clear();
           if it.has_next() && it.peek()? == b'"' {
-            it.next()?;
+            it.next_to_tmp_buf()?;
             while it.has_next() {
-              match it.next()? {
+              match it.next_to_tmp_buf()? {
                 b'"' => { break }
                 b'\\' => {
-                  if it.has_next() { it.next()?; }
+                  if it.has_next() { it.next_to_tmp_buf()?; }
                   else { return Err(UnfinishedEscapeSequence) }
                 }
                 _ => {}
@@ -143,12 +192,12 @@ pub trait Parser {
               match it.peek()? {
                 b'(' | b')' => { break }
                 c if isWhitespace(c) => { break }
-                _ => { it.next()?; }
+                _ => { it.next_to_tmp_buf()?; }
               }
             }
           }
 
-          let e = self.tokenizer(unsafe { &it.src.get_unchecked(start..it.loc) });
+          let e = self.tokenizer(&it.tmp_buf[..]);
           target.write_symbol(e);
           target.loc += 1 + e.len();
           return Ok(());

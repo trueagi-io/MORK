@@ -5,7 +5,7 @@ use std::ptr;
 use std::ptr::slice_from_raw_parts_mut;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
@@ -671,7 +671,7 @@ fn main() {
         .expect("Should have been able to read the file");
     let mut buf = vec![];
     file.read_to_end(&mut buf).unwrap();
-    let mut it = Context::new(&buf[..]);
+    let mut it = ParseContext::new(&buf[..]);
     let mut parser = DataParser::new();
 
     let mut space = BytesTrieMap::<()>::new();
@@ -690,10 +690,12 @@ fn main() {
                 space.insert(&stack[..ez.loc], ());
             }
             Err(ParserError::InputFinished) => break,
-            Err(other) => panic!("{:?} (byte {}, line {})", other, it.loc, it.src[..it.loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
+            Err(other) => {
+                let loc = it.byte_idx();
+                panic!("{:?} (byte {}, line {})", other, loc, buf[..loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
+            }
         }
         i += 1;
-        it.variables.clear();
     }
     // println!("built {}", i);
     // println!("took {} ms", t0.elapsed().as_millis());

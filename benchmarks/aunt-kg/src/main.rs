@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{Parser, Context, ParserError};
+use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
 
@@ -72,7 +72,7 @@ fn main() -> Result<(),&'static str> {
         .expect("Should have been able to read the file");
     let mut buf = vec![];
     file.read_to_end(&mut buf).unwrap();
-    let mut it = Context::new(&buf[..]);
+    let mut it = ParseContext::new(&buf[..]);
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
@@ -91,7 +91,6 @@ fn main() -> Result<(),&'static str> {
         }
 
         i += 1;
-        it.variables.clear();
     }
     println!("built {}", i);
     println!("parsing and loading took {} microseconds", t0.elapsed().as_micros());

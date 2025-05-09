@@ -453,4 +453,42 @@ mod tests {
             assert!(out.lines().any(|i| i == each))
         }
     }
+
+
+
+    #[test]
+    fn metta_calculus_exec_permissions() {
+
+        let mut s = DefaultSpace::new();
+
+        const SPACE_EXPRS: &str =
+        concat!
+        ( ""
+        , "\n(val a b)"
+        , "\n(exec \"00\" (, (val $x $y)) (, (swaped-val (val $x $y) (val $y $x))) )" // swap vals
+        , "\n(exec \"01\" (, (val $x $y)) (, (pair $x $y)) )" // swap vals
+        );
+
+        s.load_sexpr_simple(SPACE_EXPRS, expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+
+        s.metta_calculus();
+
+
+            #[cfg(test)]
+            println!("IN METTA_CALCULUS_EXEC_PEREMISSIONS after METTA_CALCULUS:\n\t{:#?}", s.dump_raw_at_root());
+
+
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
+
+        let out = String::from(std::str::from_utf8(&writer).unwrap());
+
+
+            // #[cfg(test)]
+            // println!("{:?}", s.dump_raw_at_root());
+
+        println!("RESULTS:\n{}", out);
+    }
 }

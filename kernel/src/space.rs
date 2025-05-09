@@ -1308,8 +1308,9 @@ impl DefaultSpace {
             drop(rz);
             drop(find_next_expr_reader);
 
-            let mut clearing_writer = self.new_writer(&x[..], &()).unwrap();
+            let mut clearing_writer = self.new_writer(&prefix, &()).unwrap();
             let mut clearing_wz = self.write_zipper(&mut clearing_writer);
+            clearing_wz.descend_to(&x[prefix.len()..]);
             clearing_wz.remove_branches();
             clearing_wz.remove_value();
             drop(clearing_wz);
@@ -1326,6 +1327,17 @@ impl DefaultSpace {
         // counters.print_list_node_stats();
         // println!("#symbols {}", self.sm.symbol_count());
         process::exit(0);
+    }
+
+    // just a helper method for debuging
+    #[cfg(test)]
+    pub fn dump_raw_at_root(&self)->Vec<Vec<u8>> {
+        let mut rz = self.new_reader(&[], &()).unwrap();
+        let mut out = Vec::new();
+        while rz.to_next_val() {
+            out.push(rz.origin_path().to_vec());
+        }
+        out
     }
 }
 

@@ -1311,7 +1311,6 @@ impl DefaultSpace {
             let mut clearing_writer = self.new_writer(&prefix, &()).unwrap();
             let mut clearing_wz = self.write_zipper(&mut clearing_writer);
             clearing_wz.descend_to(&x[prefix.len()..]);
-            clearing_wz.remove_branches();
             clearing_wz.remove_value();
             drop(clearing_wz);
             drop(clearing_writer);

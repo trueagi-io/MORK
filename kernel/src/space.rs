@@ -464,6 +464,7 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
             v.push(i);
         },
         |(v, from): &mut (Vec<u8>, usize), o, s: &[u8]| {
+            // likely wrong, what happens if `from` lies inside of a symbol?
             if o < *from { return }
             v.push(ITER_VAR_SYMBOL);
             v.push(s.len() as u8);
@@ -1048,19 +1049,19 @@ impl Space {
     }
 
     pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
-        let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
+        let pattern_prefixes: Vec<_> = patterns.iter().map(|p| unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() }).collect();
+        // println!("pattern prefixes {:?}", pattern_prefixes);
+        let first_pattern_prefix = pattern_prefixes[0];
         let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
-        let mut tmp_maps = vec![];
-        for p in patterns[1..].iter() {
-            tmp_maps.push(BytesTrieMap::new());
-            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            tmp_maps.last_mut().unwrap().write_zipper_at_path(prefix).graft(&self.btm.read_zipper_at_path(prefix));
-        }
+        let tmp_maps: Vec<BytesTrieMap<()>> = patterns[1..].iter().zip(&pattern_prefixes[1..]).map(|(p, prefix)| {
+            let mut tmp = BytesTrieMap::new();
+            tmp.write_zipper_at_path(prefix).graft(&self.btm.read_zipper_at_path(prefix));
+            tmp
+        }).collect();
         rz.descend_to(&[0; 4096]);
         rz.reset();
-        let mut prz = ProductZipper::new(rz, patterns[1..].iter().enumerate().map(|(i, p)| {
-            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            tmp_maps[i].read_zipper_at_path(prefix)
+        let mut prz = ProductZipper::new(rz, pattern_prefixes[1..].iter().zip(tmp_maps.iter()).map(|(prefix, tmp)| {
+            tmp.read_zipper_at_path(prefix)
         }));
         prz.reserve_path_buffer(4096);
 
@@ -1111,12 +1112,14 @@ impl Space {
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
         let mut buffer = [0u8; 512];
         let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
+        // println!("template prefixes {:?}", template_prefixes);
         let mut template_wzs: Vec<_> = template_prefixes.iter().map(|p| self.write_zipper_at_unchecked(p)).collect();
 
         let mut any_new = false;
         let touched = self.query_multi(patterns, |refs, loc| {
             for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes.iter()).zip(templates.iter()) {
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+                // for r in refs.iter() { debug_assert!(r.variables() == 0, "{r:?}"); }
                 template.substitute(refs, &mut oz);
                 wz.descend_to(&buffer[prefix.len()..oz.loc]);
                 any_new = any_new || wz.set_value(()).is_none();
@@ -1172,7 +1175,7 @@ impl Space {
             dsts.push(dstz.subexpr());
         }
 
-        self.transform_multi_multi(&srcs[..], &dsts[..]);
+        println!("{:?}", self.transform_multi_multi(&srcs[..], &dsts[..]));
     }
 
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
@@ -1229,21 +1232,48 @@ impl Space {
     // }
 
     pub fn metta_calculus(&mut self) {
+        // current, sequential: machine that does argmin _1; remove; transform
+        // proposed, parallel: machines mk do argmin (mk _1); remove; transform
+        // proposed, parallel users: machines mk do argmin (mk $user _1); remove; transform
+
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
-        
+
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if let Some(()) = rz.to_next_val() {
                 let mut x: Box<[u8]> = rz.origin_path().unwrap().into(); // should use local buffer
                 drop(rz);
-                self.btm.remove(&x[..]);
+                // self.btm.remove(&x[..]);
                 self.interpret(Expr{ ptr: x.as_mut_ptr() });
                 true
             } else {
                 false
             }
-        } {}
+        } { break }
+    }
+
+    pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
+        let Ok(prefix) = e.prefix() else {
+            return (vec![], vec![e])
+        };
+
+        let mut rz = self.btm.read_zipper_at_path(unsafe { prefix.as_ref().unwrap() });
+        rz.descend_to([0; 4096]);
+        rz.reset();
+        
+        if rz.path_exists() {
+            let mut buf = vec![];
+            let mut es = vec![];
+
+            rz.descend_until();
+            
+            // rz.child_mask()
+
+            (buf, es)
+        } else {
+            (vec![], vec![])
+        }
     }
     
     pub fn done(self) -> ! {

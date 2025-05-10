@@ -930,6 +930,54 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
     }
 }
 
+enum Remaining {
+    None,
+    
+}
+
+pub fn execute_loop_truncated<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, m: usize) -> Result<(usize, R), (Vec<(u8, A)>, u8)> {
+let mut stack: Vec<(u8, A)> = Vec::with_capacity(8);
+    let mut j = 0;
+    'putting: loop {
+        if j == m { return Err((stack, 0u8)) }
+        let mut value = match unsafe { byte_item(*e.ptr.byte_add(j)) } {
+            Tag::NewVar => { j += 1; t.new_var(j - 1) }
+            Tag::VarRef(r) => { j += 1; t.var_ref(j - 1, r) }
+            Tag::SymbolSize(s) => {
+                // if j <
+                let slice = unsafe { &*slice_from_raw_parts(e.ptr.byte_add(j + 1), s as usize) };
+                let v = t.symbol(j, slice);
+                j += s as usize + 1;
+                v
+            }
+            Tag::Arity(a) => {
+                let acc = t.zero(j, a);
+                j += 1;
+                stack.push((a, acc));
+                continue 'putting;
+            }
+        };
+
+        'popping: loop {
+            match stack.last_mut() {
+                None => { return Ok((j, value)) }
+                Some(&mut (ref mut k, ref mut acc )) => {
+                    unsafe {
+                        std::ptr::write(k, std::ptr::read(k).wrapping_sub(1));
+                        std::ptr::write(acc, t.add(j, std::ptr::read(acc), value));
+                        if std::ptr::read(k) != 0 { continue 'putting }
+                    }
+                }
+            }
+
+            value = match stack.pop() {
+                Some((_, acc)) => t.finalize(j, acc),
+                None => break 'popping
+            }
+        }
+    }
+}
+
 struct DebugTraversal { string: String, transient: bool }
 #[allow(unused_variables)]
 impl Traversal<(), ()> for DebugTraversal {

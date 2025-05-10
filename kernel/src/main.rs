@@ -103,27 +103,36 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
-    let mut s = Space::new();
+/*    let mut s = Space::new();
     const space: &str = r#"
-(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
-(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+(= (add (S $x) $y) (S (add $x $y)))
+(= (add Z $y) $y)
+(= (mul (S (S $x)) $y) (add $y (mul (S $x) $y)))
+(= (mul (S Z) $y) $y)
+(= (mul Z $y) Z)
 
-(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
-(? (add $ret) (Z $y) (! $ret $y))
+(PC (Cat (Point3D 39 9504 34980)))
+(PC (Cat (Point3D 39 9504 34980)))
+(PC (Cat (Point3D 39 9480 34980)))
+(PC (Cat (Point3D 39 4830 34980)))
+(PC (Cat (Point3D 39 9504 34980)))
+(PC (Cat (Point3D 39 3230 34923)))
+(PC (Cat (Point3D 27 3410 34900)))
+(PC (Cat (Point3D 27 3410 34964)))
+(PC (Cat (Point3D 23 3459 34932)))
 
-(! (add result) ((S Z) (S Z)))
 "#;
     
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
-    s.metta_calculus();
+    println!("{:?}", s.prefix_forks(expr!(s, "$")).1);
     
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
     println!("{}", String::from_utf8(v).unwrap());
-    return;
+    return;*/
     /*
 
     let mut s = Space::new();
@@ -174,7 +183,7 @@ fn main() {
     // return;
     let mut s = Space::new();
 
-    let everythingf = std::fs::File::open("/mnt/zram/whole_flybase.json").unwrap();
+    let everythingf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.json").unwrap();
     let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
     let load_compressed = Instant::now();
     println!("done {} {}", s.load_json(everythingfs.as_ref()).unwrap(), load_compressed.elapsed().as_secs());

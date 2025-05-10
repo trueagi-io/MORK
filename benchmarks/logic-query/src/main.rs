@@ -756,7 +756,7 @@ fn main() {
     let mut total_res = 0;
     let mut max_res = 0;
     let mut buffer = vec![];
-    while let Some(_) = z.to_next_val() {
+    while z.to_next_val() {
         let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
         buffer.push(ACTION);
         if k % 100 == 0 { println!("expr  {}", unsafe { serialize(se.span().as_ref().unwrap()) }); }

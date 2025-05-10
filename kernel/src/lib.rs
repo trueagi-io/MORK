@@ -229,4 +229,50 @@ mod tests {
         // s.dump(&mut res).unwrap();
         // println!("{}", String::from_utf8(res).unwrap());
     }
+
+    #[test]
+    fn transform_multi_multi_no_match() {
+        let mut s = Space::new();
+
+        s.transform_multi_multi(&[expr!(s, "a")], &[expr!(s, "c")]);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
+
+        let out = unsafe {
+            core::mem::transmute::<_,String>(writer)
+        };
+
+        println!("{}", out);
+
+        core::assert_ne!(&out, "c\n");
+    }
+
+
+    #[test]
+    fn transform_multi_multi_ignoring_second_template() {
+        let mut s = Space::new();
+                const SPACE_EXPRS: &str = 
+        concat!
+        ( "\n(val a b)"
+        );
+
+        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.transform_multi_multi(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer);
+
+        let out = unsafe {
+            core::mem::transmute::<_,String>(writer)
+        };
+
+        println!("{}", out);
+
+        let vals = ["a","b","(val a b)"];
+        for each in vals {
+            assert!(out.lines().any(|i| i == each))
+        }
+    }
 }

@@ -368,6 +368,21 @@ impl Expr {
         }
     }
 
+    pub fn difference_under<F : Fn(Expr, Expr) -> bool>(self, other: Expr, under: F) -> Option<usize> {
+        let mut ez = ExprZipper::new(self);
+        let mut oz = ExprZipper::new(other);
+        loop {
+            if ez.item() != oz.item() {
+                return Some(ez.loc)
+            }
+
+            if !ez.next() {
+                return None
+            }
+            assert!(oz.next())
+        }
+    }
+
     pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
         use ControlFlow::*;
         match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
@@ -981,6 +996,19 @@ impl Expr {
         let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
         execute_loop(&mut traversal, *self, 0);
     }
+
+    #[inline(never)]
+    pub fn serialize2<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G) -> () {
+        let mut traversal = SerializerTraversal2{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0 };
+        execute_loop(&mut traversal, *self, 0);
+    }
+
+    #[inline(never)]
+    pub fn serialize_highlight<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G, target: usize) -> () {
+        let mut targets = [(target, "\x1B[43m", "\x1B[0m")];
+        let mut traversal = SerializerTraversalHighlights{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0, targets: &targets };
+        execute_loop(&mut traversal, *self, 0);
+    }
 }
 
 pub trait Traversal<A, R> {
@@ -991,6 +1019,18 @@ pub trait Traversal<A, R> {
     fn add(&mut self, offset: usize, acc: A, sub: R) -> A;
     fn finalize(&mut self, offset: usize, acc: A) -> R;
 }
+
+pub struct PairTraversal<A1, A2, R1, R2, T1, T2> { t1: T1, t2: T2, pd: std::marker::PhantomData<(A1, A2, R1, R2)> }
+
+impl <A1, A2, R1, R2, T1 : Traversal<A1, R1>, T2 : Traversal<A2, R2>> Traversal<(A1, A2), (R1, R2)> for PairTraversal<A1, A2, R1, R2, T1, T2> {
+    fn new_var(&mut self, offset: usize) -> (R1, R2) { (self.t1.new_var(offset), self.t2.new_var(offset)) }
+    fn var_ref(&mut self, offset: usize, i: u8) -> (R1, R2) { (self.t1.var_ref(offset, i), self.t2.var_ref(offset, i)) }
+    fn symbol(&mut self, offset: usize, s: &[u8]) -> (R1, R2) { (self.t1.symbol(offset, s), self.t2.symbol(offset, s)) }
+    fn zero(&mut self, offset: usize, a: u8) -> (A1, A2) { (self.t1.zero(offset, a), self.t2.zero(offset, a)) }
+    fn add(&mut self, offset: usize, acc: (A1, A2), sub: (R1, R2)) -> (A1, A2) { (self.t1.add(offset, acc.0, sub.0), self.t2.add(offset, acc.1, sub.1)) }
+    fn finalize(&mut self, offset: usize, acc: (A1, A2)) -> (R1, R2) { (self.t1.finalize(offset, acc.0), self.t2.finalize(offset, acc.1)) }
+}
+
 #[allow(unused)]
 fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
     match unsafe { byte_item(*e.ptr.byte_add(i)) } {
@@ -1096,6 +1136,56 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+}
+
+struct SerializerTraversal2<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8 }
+#[allow(unused_variables, unused_must_use)]
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<(), ()> for SerializerTraversal2<'_, Target, F, G> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(i, false).as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+}
+
+struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
+#[allow(unused_variables, unused_must_use)]
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<Option<&'static str>, ()> for SerializerTraversalHighlights<'_, '_, Target, F, G> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_variable)(self.n, true).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+        self.n += 1;
+    }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_variable)(i, false).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+    }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_symbol)(s).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+    }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> Option<&'static str> {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write("(".as_bytes()); self.transient = false;
+        if offset == self.targets[0].0 { let r = Some(self.targets[0].2); self.targets = &self.targets[1..]; r }
+        else { None }
+    }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: Option<&'static str>, sub: ()) -> Option<&'static str> {
+        self.transient = true;
+        acc
+    }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
+        self.out.write(")".as_bytes());
+        if let Some(end) = acc { self.out.write(end.as_bytes()); }
+    }
 }
 
 #[derive(Clone)]
@@ -1536,7 +1626,7 @@ use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
 pub struct ExprMapSolver {
-    sources: *const [Expr],
+    pub sources: Vec<Expr>,
     parents: HashMap<u64, HashSet<u64>>,
     links: HashMap<u64, HashSet<u64>>,
 
@@ -1560,6 +1650,12 @@ macro_rules! local {
     };
     ($name:ident) => {
         unsafe { $name.with(|x| *x.get()) }
+    };
+    (&$name:ident) => {
+        unsafe { ($name.with(|x| x.get().as_ref().unwrap())) }
+    };
+    (&mut$name:ident) => {
+        unsafe { $name.with(|x| x.get()).as_mut().unwrap() }
     }
 }
 
@@ -1579,7 +1675,7 @@ unsafe fn q(i: u64) -> Expr {
 impl ExprMapSolver {
     pub fn new() -> Self {
         Self {
-            sources: &[],
+            sources: vec![],
             parents: HashMap::new(),
             links: HashMap::new(),
 
@@ -1607,12 +1703,22 @@ impl ExprMapSolver {
     unsafe fn add_arcs(&mut self, e: Expr) {
         let sr = std::mem::transmute(self);
 
+        local!(VS : Vec<u64>);
+        local!(VS = vec![]);
         local!(BASE : Expr);
         local!(BASE = e);
 
         traverseh!(Expr, Expr, &'static mut ExprMapSolver, e, sr,
-            |s: &mut &mut ExprMapSolver, o| unsafe{ (*s).add_node(Expr{ ptr: local!(BASE).ptr.add(o) }) },
-            |s: &mut &mut ExprMapSolver, o, i| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
+            |s: &mut &mut ExprMapSolver, o| unsafe{
+                let n = Expr{ ptr: local!(BASE).ptr.add(o) };
+                local!(&mut VS).push(p(n));
+                (*s).add_node(n)
+            },
+            |s: &mut &mut ExprMapSolver, o, i| unsafe{
+                let n = Expr { ptr: local!(BASE).ptr.add(o) };
+                (*s).create_link(q(local!(&VS)[i as usize]), n);
+                (*s).add_node(n)
+            },
             |s: &mut &mut ExprMapSolver, o, c| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
             |s: &mut &mut ExprMapSolver, o, a| unsafe { Expr{ ptr: local!(BASE).ptr.add(o) } },
             |s: &mut &mut ExprMapSolver, o, a, c| unsafe{ (*s).create_arc(a, c); a },
@@ -1620,11 +1726,10 @@ impl ExprMapSolver {
         );
     }
 
-    pub fn solve(&mut self, oes: &[Expr]) -> Result<(), String> {
-        self.sources = oes as *const [Expr];
+    pub fn solve(&mut self) -> Result<(), String> {
         unsafe {
-        oes.into_iter().for_each(|x| self.add_arcs(*x));
-        oes.into_iter().reduce(|x, y| { self.create_link(*x, *y); y });
+        self.sources.clone().iter().for_each(|x| self.add_arcs(*x));
+        self.sources.clone().iter().reduce(|x, y| { self.create_link(*x, *y); y });
 
         'expressions: loop {
             self.finish({
@@ -1642,7 +1747,7 @@ impl ExprMapSolver {
                         break 'expressions
                     }
                 }
-            })?;
+            }, 1)?;
         };
 
         'variables: loop {
@@ -1656,58 +1761,146 @@ impl ExprMapSolver {
                             Tag::SymbolSize(_) => { continue }
                             Tag::Arity(_) => { continue }
                         }
+                        println!("finish {:?} {} {:?}", q(e), e, self.resolve_var(e));
                         break 'first_expr q(e)
                     } else {
                         break 'variables
                     }
                 }
-            })?;
+            }, 1)?;
         };
 
         }
         Ok(())
     }
 
-    fn ret(&mut self, oes: &[Expr]) -> Expr {
-        let representative = oes[0];
-        unsafe {
-            self.solve(oes);
-            self.build_mapping();
-            // representative.substitute_de_bruijn(...);
-            representative
+    pub fn eq(&self) {
+        let representative = unsafe { *self.sources.first().unwrap() };
+        let mut ez = ExprZipper::new(representative);
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {
+                            // println!("unbound {:?} {:?}", unsafe { self.resolve_var(ez.subexpr().ptr as u64) }, ez.subexpr().ptr as u64);
+                            // println!("  {:?}", unsafe { self.subs[&self.var_resolve((1, 0))] });
+                            // subs.push(nv)
+                        }
+                        Some(se) => unsafe {
+                            // println!("bound {:?} {:?} {:?} {:?}", self.resolve_var(ez.subexpr().ptr as u64), se, se.ptr as u64, self.resolve_var(se.ptr as u64));
+                            // subs.push(unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) })
+                        }
+                    }
+                }
+                Tag::VarRef(i) => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {}
+                        Some(se) => {
+                            // let old = subs[i as usize];
+                            // if old.ptr != nv.ptr {
+                            //
+                            // }
+                            // println!("replacing {old:?} by {se:?}");
+                            // subs[i as usize] = unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) };
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if !ez.next() {
+                return;
+            }
+        }
+
+    }
+
+    pub fn ret(&self, oz: &mut ExprZipper) {
+        self.eq();
+        let representative = unsafe { *self.sources.first().unwrap() };
+        let mut ez = ExprZipper::new(representative);
+        let mut subs = vec![];
+        let mut b = item_byte(Tag::NewVar);
+        let nv = Expr{ ptr: &mut b };
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {
+                            println!("unbound {:?} {:?}", unsafe { self.resolve_var(ez.subexpr().ptr as u64) }, ez.subexpr().ptr as u64);
+                            // println!("  {:?}", unsafe { self.subs[&self.var_resolve((1, 0))] });
+                            subs.push(nv)
+                        }
+                        Some(se) => unsafe {
+                            println!("bound {:?} {:?} {:?} {:?}", self.resolve_var(ez.subexpr().ptr as u64), se, se.ptr as u64, self.resolve_var(se.ptr as u64));
+                            subs.push(unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) }) }
+                    }
+                }
+                Tag::VarRef(i) => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {}
+                        Some(se) => {
+                            let old = subs[i as usize];
+                            // if old.ptr != nv.ptr {
+                            //
+                            // }
+                            println!("replacing {old:?} by {se:?}");
+                            subs[i as usize] = unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) };
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if !ez.next() {
+                representative.substitute_de_bruijn(&subs[..], oz);
+                return;
+            }
         }
     }
 
-    unsafe fn finish(&mut self, r: Expr) -> Result<(), String> {
-        if self.complete.contains(&p(r)) { return Ok(()); }
+
+    unsafe fn finish(&mut self, r: Expr, depth: usize) -> Result<(), String> {
+        if self.complete.contains(&p(r)) {
+            println!("{}complete", "  ".repeat(depth));
+            return Ok(()); }
         if let Some(cycle) = self.pointer.get(&p(r)) { return Err(format!("cycle {:?} {:?}", r, cycle)) }
         let mut stack = vec![r];
         self.pointer.insert(p(r), r);
         while let Some(s) = stack.pop() {
+            println!("{}popped {:?} {:?}", "  ".repeat(depth), s, p(s));
             if let Some(di) = r.constant_difference(s) {
                 return Err(format!("conflict {:?} {:?} ({di})", r, s))
             }
             let mut mbtm = self.parents.remove(&p(s));
             if let Some(ref btm) = mbtm {
+                println!("{}evaluating parents", "  ".repeat(depth));
                 for entry in btm.iter() {
-                    self.finish(q(*entry))?
+                    self.finish(q(*entry), depth+1)?
                 }
             }
             match self.links.get(&p(s)) {
-                None => {}
+                None => { println!("{}no link", "  ".repeat(depth)); }
                 Some(btm) => {
+                    print!("{}links {:?} {{", "  ".repeat(depth), btm);
                     for t in btm.into_iter() {
                         if self.complete.contains(&t) || q(*t).difference(r).is_none() { // do variable need to refer to the same?
+                            if self.complete.contains(&t) { print!("C") }
+                            if q(*t).difference(r).is_none() { print!("=") }
+                            print!(", ");
                             self.parents.remove(&t);
                         } else if self.pointer.get(t).is_none() {
+                            print!("C2, ");
                             self.pointer.insert(*t, r);
                             stack.push(q(*t))
                         } else if let Some(di) = self.pointer.get(t).unwrap().difference(r) {
                             return Err(format!("conflict {:?} {:?} ({di})", self.pointer.get(t).unwrap(), r))
                         } else {
+                            print!("C4, ");
                             self.parents.remove(t);
                         }
                     }
+                    println!("}}");
                 }
             }
             if p(s) != p(r) {
@@ -1717,7 +1910,18 @@ impl ExprMapSolver {
                         self.subs.insert(p(s), r);
                     }
                     Tag::VarRef(i) => {
-                        self.subs.insert(p(s), r);
+                        println!("{}adding sub {:?} {:?}", "  ".repeat(depth), p(s), self.resolve_var(p(s)));
+                        if let Tag::NewVar | Tag::VarRef(_) = byte_item(*r.ptr) {
+                            println!("{} {:?} {:?}", "  ".repeat(depth), p(r), self.resolve_var(p(r)));
+                            if self.resolve_var(p(r)).0 < self.resolve_var(p(s)).0 {
+                                self.subs.insert(p(r), s);
+                            } else {
+                                self.subs.insert(p(s), r);
+                            }
+                        } else {
+                            self.subs.insert(p(s), r);
+                        }
+
                     }
                     Tag::SymbolSize(_) => {
                         // equal by virtue of not being constant_different
@@ -1743,40 +1947,44 @@ impl ExprMapSolver {
         Ok(())
     }
 
+    pub unsafe fn abs(&self, v: Expr) -> Expr {
+        let mut buf = vec![0u8; 512];
+        let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+        let mut oz = ExprZipper::new(out);
+
+        let mut vz = ExprZipper::new(v);
+        loop {
+            match vz.item() {
+                Ok(Tag::NewVar | Tag::VarRef(_)) => {
+                    let replacement = format!("{:?}", self.resolve_var(vz.subexpr().ptr as u64));
+                    oz.write_symbol(replacement.as_bytes());
+                    oz.loc += replacement.len() + 1;
+                }
+                Ok(Tag::Arity(k)) => {
+                    oz.write_arity(k);
+                    oz.loc += 1;
+                }
+                Ok(Tag::SymbolSize(_)) => { unreachable!() }
+                Err(s) => {
+                    oz.write_symbol(s);
+                    oz.loc += s.len() + 1;
+                }
+            }
+
+            if !vz.next() {
+                return out
+            }
+        }
+    }
+
     pub unsafe fn build_mapping(&mut self) {
         // safety: we're serially updating v's and looking up v's without modifying keys in subs
         // descend touches self.ready but this is disjoint from what we're iterating over
         for (k, v) in (self as *const Self).cast_mut().as_mut().unwrap().subs.iter_mut() {
             *v = (self as *const Self).cast_mut().as_mut().unwrap().descend(*v);
 
-            let mut buf = vec![0u8; 512];
-            let out = Expr{ ptr: buf.leak().as_mut_ptr() };
-            let mut oz = ExprZipper::new(out);
 
-            let mut vz = ExprZipper::new(*v);
-            loop {
-                match vz.item() {
-                    Ok(Tag::NewVar | Tag::VarRef(_)) => {
-                        let replacement = format!("{:?}", self.resolve_var(vz.subexpr().ptr as u64));
-                        oz.write_symbol(replacement.as_bytes());
-                        oz.loc += replacement.len() + 1;
-                    }
-                    Ok(Tag::Arity(k)) => {
-                        oz.write_arity(k);
-                        oz.loc += 1;
-                    }
-                    Ok(Tag::SymbolSize(_)) => { unreachable!() }
-                    Err(s) => {
-                        oz.write_symbol(s);
-                        oz.loc += s.len() + 1;
-                    }
-                }
-
-                if !vz.next() {
-                    break
-                }
-            }
-            println!("{:?} -> {:?}", self.resolve_var(*k), out);
+            println!("{:?} -> {:?}", self.resolve_var(*k), self.abs(*v));
         }
     }
 
@@ -1793,6 +2001,7 @@ impl ExprMapSolver {
                 Tag::Arity(a) => {
                     let mut buf = vec![0u8; 512];
                     let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+                    self.sources.push(out);
                     let mut oz = ExprZipper::new(out);
                     oz.write_arity(a);
                     oz.loc += 1;
@@ -1810,8 +2019,8 @@ impl ExprMapSolver {
         }
     }
 
-    unsafe fn resolve_var(&self, x: u64) -> (usize, u8) {
-        let srcs = self.sources.as_ref().unwrap();
+    pub unsafe fn resolve_var(&self, x: u64) -> (usize, u8) {
+        let srcs = &self.sources[..];
         if let Some((min_i, min_e)) = srcs.into_iter().map(|e| e.ptr as u64).enumerate().min_by_key(|(i, es)| {
             if *es > x { u64::MAX } else { x - es }
         }) {
@@ -1839,6 +2048,27 @@ impl ExprMapSolver {
         }
     }
 
+    pub unsafe fn var_resolve(&self, y: (usize, u8)) -> u64 {
+        let srcs = &self.sources[..];
+        let to_search = srcs[y.0];
+        local!(yvar : u8);
+        local!(yvar = y.1);
+        let (i, cf) = traverseh!(ops::ControlFlow<usize, ()>, ops::ControlFlow<usize, ()>, u8, to_search, 0,
+            |c: &mut u8, o| { if *c == local!(yvar) { return ControlFlow::Break(o) }; *c += 1; ControlFlow::Continue(()) },
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, l, r| { r?; l },
+            |_, _, l| l);
+        assert!(i == y.1);
+        match cf {
+            ControlFlow::Continue(_) => { unreachable!() }
+            ControlFlow::Break(offset) => {
+                to_search.ptr as u64 + offset as u64
+            }
+        }
+    }
+
     unsafe fn subs_or_ready(&mut self, x: u64) -> Expr {
         match self.subs.get(&x) {
             None => {
@@ -1850,5 +2080,292 @@ impl ExprMapSolver {
                 self.descend(*v)
             }
         }
+    }
+}
+
+
+use std::collections::BTreeMap;
+
+/// ------------------------------------------------------------------
+/// The “signature” that a concrete term implementation has to satisfy
+/// ------------------------------------------------------------------
+pub trait Term: Clone {
+    /// The host language’s representation for logic variables
+    type TVar: Ord + Clone;
+
+    ///  ▒ var_opt : t -> tvar option
+    fn var_opt(&self) -> Option<Self::TVar>;
+
+    ///  ▒ same_functor : t -> t -> bool
+    fn same_functor(&self, other: &Self) -> bool;
+
+    ///  ▒ args : t -> t list
+    fn args(&self) -> Vec<Self>;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ExprEnv {
+    pub n: u8,
+    v: u8,
+    offset: u32,
+    base: Expr
+}
+
+impl ExprEnv {
+    pub fn new(i: u8, e: Expr) -> Self {
+        Self {
+            n: i,
+            v: 0,
+            offset: 0,
+            base: e,
+        }
+    }
+
+    pub fn subsexpr(&self) -> Expr {
+        Expr { ptr: unsafe { self.base.ptr.add(self.offset as usize) } }
+    }
+
+    pub fn show(&self) -> String {
+        let mut v = vec![];
+        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap(), |v, i| format!("<{},{}>", self.n, v).leak(), self.offset as usize);
+        String::from_utf8(v).unwrap()
+    }
+}
+
+impl Term for ExprEnv {
+    type TVar = (u8, u8);
+
+    fn var_opt(&self) -> Option<Self::TVar> {
+        unsafe {
+            match byte_item(*self.base.ptr.add(self.offset as usize)) {
+                Tag::NewVar => { Some((self.n, self.v)) }
+                Tag::VarRef(i) => { Some((self.n, i)) }
+                Tag::SymbolSize(_) => { None }
+                Tag::Arity(_) => { None }
+            }
+        }
+    }
+
+    fn same_functor(&self, other: &Self) -> bool {
+        unsafe {
+            let lhs = self.subsexpr();
+            let rhs = other.subsexpr();
+            if lhs.constant_difference(rhs).is_none() {
+                true
+            } else {
+                println!("{lhs:?} != {rhs:?}");
+                false
+            }
+        }
+    }
+
+    fn args(&self) -> Vec<Self> {
+        unsafe {
+            match byte_item(*self.subsexpr().ptr) {
+                Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { vec![] }
+                Tag::Arity(k) => {
+                    local!(vec : Vec<ExprEnv>);
+                    local!(vec = Vec::with_capacity(k as usize));
+                    local!(env : ExprEnv);
+                    local!(env = ExprEnv{
+                        n: self.n,
+                        v: self.v,
+                        offset: self.offset,
+                        base: self.base,
+                    });
+
+                    traverseh!((bool, u32), u32, (u8, bool), self.subsexpr(), (self.v, true),
+                        |(c, t): &mut (u8, bool), o| { *c += 1; o as u32 },
+                        |(c, t): &mut (u8, bool), o, r| o as u32,
+                        |_, o, _| o as u32,
+                        |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
+                        |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
+                            let mut ne = local!(&env).clone();
+                            ne.offset += y;
+                            local!(&mut vec).push(ne);
+                            local!(&mut env).v = *c
+                        }; x},
+                        |_, _, x: (bool, u32)| x.1);
+
+                    println!("args {:?} into {:?}", self.subsexpr(), local!(&vec).iter().map(|x| x.subsexpr()).collect::<Vec<_>>());
+
+                    std::mem::take(local!(&mut vec))
+                }
+            }
+        }
+    }
+}
+
+/// Failure raised by the algorithm (mirrors the OCaml `exception Fail`)
+#[derive(Debug)]
+pub struct Fail;
+
+// pub fn apply(n: u8, mut evars: u8, mut nvars: u8, ez: &mut ExprZipper, bindings: &BTreeMap<(u8, u8), ExprEnv>, oz: &mut ExprZipper) {
+//     unsafe {
+//         loop {
+//             match ez.item() {
+//                 Ok(Tag::NewVar) => {
+//                     match bindings.get(&(n, evars)) {
+//                         None => {
+//                             oz.write_new_var();
+//                             oz.loc += 1;
+//                             evars += 1;
+//                             nvars += 1;
+//                         }
+//                         Some(rhs) => {
+//                             println!("gotten {:?} for {:?}", rhs, (n, evars));
+//                             apply(rhs.n, rhs.v, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz);
+//                             oz.write_new_var();
+//                             oz.loc += 1;
+//                             evars += 1;
+//                         }
+//                     }
+//                 }
+//                 Ok(Tag::VarRef(i)) => {
+//                     match bindings.get(&(n, i)) {
+//                         None => {
+//                             oz.write_var_ref(i);
+//                             oz.loc += 1;
+//                         }
+//                         Some(rhs) => {
+//                             println!("gotten {:?} ({:?}) for {:?}", rhs, rhs.subsexpr(), (n, i));
+//                             // apply(rhs.n, rhs.v, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz);
+//                             oz.write_var_ref(i);
+//                             oz.loc += 1;
+//                         }
+//                     }
+//                 }
+//                 Ok(Tag::SymbolSize(s)) => {
+//                     unreachable!()
+//                 }
+//                 Err(slice) => {
+//                     oz.write_symbol(slice);
+//                     oz.loc += 1 + slice.len();
+//                 }
+//                 Ok(Tag::Arity(a)) => {
+//                     oz.write_arity(a);
+//                     oz.loc += 1;
+//                 }
+//             }
+//
+//             if !ez.next() {
+//                 return;
+//             }
+//         }
+//     }
+// }
+
+/// ------------------------------------------------------------------
+/// One-shot functor application: unify two term vectors
+/// ------------------------------------------------------------------
+/// * `sx` and `sy` play the rôle of the OCaml stacks.
+/// * On success a map `var ↦ term` is returned; on failure `Err(Fail)`.
+///
+pub fn unify<T>(mut sx: Vec<T>, mut sy: Vec<T>)
+                -> Result<BTreeMap<T::TVar, T>, Fail>
+where
+    T: Term + Debug,
+{
+    let mut bindings: BTreeMap<T::TVar, T> = BTreeMap::new();
+
+    // ----------------------------------------------------------------
+    while let (Some(x), Some(y)) = (sx.pop(), sy.pop()) {
+        println!("popping");
+        println!("x: {:?}, sx : {:?}", x, sx);
+        println!("y: {:?}, sy : {:?}", y, sy);
+        match (x.var_opt(), y.var_opt()) {
+            //----------------------------------------------------------
+            // two compound terms
+            //----------------------------------------------------------
+            (None, None) => {
+                if x.same_functor(&y) {
+                    sx.extend(x.args().into_iter());
+                    sy.extend(y.args().into_iter());
+                } else {
+                    println!("diff {x:?}  != {y:?}");
+                    return Err(Fail);
+                }
+            }
+
+            //----------------------------------------------------------
+            // x = variable, y = compound
+            //----------------------------------------------------------
+            (Some(vx), None) => {
+                let bx = bindings.get(&vx).cloned();     // immutable borrow ends here
+                match bx {
+                    // vx already bound
+                    Some(t) => match t.var_opt() {
+                        // …to another variable
+                        Some(vx2) => {
+                            bindings.insert(vx2, y.clone());
+                            sx.push(x);
+                            sy.push(y);
+                        }
+                        // …to a real term
+                        None => {
+                            sx.push(t);
+                            sy.push(y);
+                        }
+                    },
+                    // vx unbound
+                    None => {
+                        bindings.insert(vx, y);
+                    }
+                }
+            }
+
+            //----------------------------------------------------------
+            // x = compound, y = variable   (mirror case)
+            //----------------------------------------------------------
+            (None, Some(vy)) => {
+                let by = bindings.get(&vy).cloned();
+                match by {
+                    Some(t) => match t.var_opt() {
+                        Some(vy2) => {
+                            bindings.insert(vy2, x.clone());
+                            sx.push(x);
+                            sy.push(y);
+                        }
+                        None => {
+                            sx.push(x);
+                            sy.push(t);
+                        }
+                    },
+                    None => {
+                        bindings.insert(vy, x);
+                    }
+                }
+            }
+
+            //----------------------------------------------------------
+            // two variables
+            //----------------------------------------------------------
+            (Some(vx), Some(vy)) => {
+                let bx = bindings.get(&vx).cloned();
+                let by = bindings.get(&vy).cloned();
+
+                match (bx, by) {
+                    (None, None) => {
+                        bindings.insert(vx, y);
+                    }
+                    (Some(t), None) => {
+                        bindings.insert(vy, t);
+                    }
+                    (None, Some(t)) => {
+                        bindings.insert(vx, t);
+                    }
+                    (Some(tx), Some(ty)) => {
+                        sx.push(tx);
+                        sy.push(ty);
+                    }
+                }
+            }
+        }
+    }
+
+    if sx.is_empty() && sy.is_empty() {
+        Ok(bindings)
+    } else {
+        Err(Fail)
     }
 }

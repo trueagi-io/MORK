@@ -90,10 +90,10 @@ impl Space for ServerSpace {
     fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
         self.status_map.get_write_permission(&path).map_err(|e| CommandError::External(ExternalError::new(StatusCode::UNAUTHORIZED, format!("Error accessing path: {e:?}"))))
     }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r> {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s> {
         unsafe{ self.primary_map.read_zipper_at_borrowed_path_unchecked(reader.path()) }
     }
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + 'w {
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + 'w {
         unsafe{ self.primary_map.write_zipper_at_exclusive_path_unchecked(writer.path()) }
     }
     fn symbol_table(&self) -> &bucket_map::SharedMappingHandle {

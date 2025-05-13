@@ -49,10 +49,8 @@ pub struct LoadNeo4JNodePropertiesError(String);
 #[derive(Debug)]
 pub struct LoadNeo4JNodeLabelsError(String);
 
-
-
-pub trait SpaceReaderZipper<'s, 'r> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + 'r {}
-impl<'s, 'r, T > SpaceReaderZipper<'s, 'r> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + 'r {}
+pub trait SpaceReaderZipper<'s> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath {}
+impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath {}
 
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space {
@@ -79,13 +77,13 @@ pub trait Space {
     ///
     /// NOTE: The `&mut Self::Reader` argument ensures exclusivity, but the `Reader` does
     /// not conceptually have mutable state
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r>;
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s>;
 
     /// Gets a write zipper from a Writer
     ///
     /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
     /// not conceptually have mutable state
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> /* + ZipperAbsolutePath */ + 'w;
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;

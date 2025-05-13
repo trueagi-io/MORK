@@ -12,7 +12,8 @@ use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
-use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperIteration, ZipperWriting, ZipperCreation};
+use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperForking, ZipperWriting, ZipperCreation, ZipperIteration};
+use tokio::runtime;
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 
@@ -53,11 +54,11 @@ impl Space for DefaultSpace {
     fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
         self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
     }
-    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s, 'r> {
+    fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s> {
         reader.reset();
         reader
     }
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> /* + ZipperAbsolutePath */ + 'w {
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> /* + ZipperAbsolutePath */ + 'w {
         writer.reset();
         writer
     }
@@ -1305,20 +1306,18 @@ impl DefaultSpace {
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
 
         loop {
-            let mut find_next_expr_reader = self.new_reader(prefix, &()).unwrap();
-            let mut rz = self.read_zipper(&mut find_next_expr_reader);
+            let mut exec_permission = self.new_writer(&prefix, &()).unwrap(); //GOAT, retry here if fails
+            let mut exec_wz = self.write_zipper(&mut exec_permission);
+            let mut rz = exec_wz.fork_read_zipper();
             if !rz.to_next_val() { break }
 
             let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
             drop(rz);
-            drop(find_next_expr_reader);
 
-            let mut clearing_writer = self.new_writer(&prefix, &()).unwrap();
-            let mut clearing_wz = self.write_zipper(&mut clearing_writer);
-            clearing_wz.descend_to(&x[prefix.len()..]);
-            clearing_wz.remove_value();
-            drop(clearing_wz);
-            drop(clearing_writer);
+            exec_wz.descend_to(&x[prefix.len()..]);
+            exec_wz.remove_value();
+            drop(exec_wz);
+            drop(exec_permission);
 
             self.interpret(Expr{ ptr: x.as_mut_ptr() });
         }

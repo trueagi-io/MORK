@@ -7,7 +7,7 @@ use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
+use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting, ZipperMovingPriv};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 use pathmap::utils::{ByteMaskIter, ByteMask};
 
@@ -699,20 +699,20 @@ fn main() {
     // println!("took {} ms", t0.elapsed().as_millis());
     println!("map contains: {}", space.val_count());
 
-    let t0 = Instant::now();
-    let mut z = space.read_zipper();
-
-    let mut visited = 0;
-    let mut buffer = [0u8; 4096];
-    buffer[0] = ACTION;
-    buffer[1] = ITER_EXPR;
-    let mut references: Vec<(u32, u32)> = vec![];
-    referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
-    // transition(&mut buffer, &mut z, &mut |loc| {
-        black_box(loc.origin_path());
-        visited += 1;
-    });
-    println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
+    // let t0 = Instant::now();
+    // let mut z = space.read_zipper();
+    //
+    // let mut visited = 0;
+    // let mut buffer = [0u8; 4096];
+    // buffer[0] = ACTION;
+    // buffer[1] = ITER_EXPR;
+    // let mut references: Vec<(u32, u32)> = vec![];
+    // referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
+    // // transition(&mut buffer, &mut z, &mut |loc| {
+    //     black_box(loc.origin_path());
+    //     visited += 1;
+    // });
+    // println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
     // let mut keeping = BytesTrieMap::from_iter(space.iter());
 
@@ -747,9 +747,12 @@ fn main() {
     //     assert!(recover.contains(rrz.path()));
     // }
 
-    return;
+    // return;
     // let mut keeping_wz = keeping.write_zipper();
     let mut z = space.read_zipper();
+    // z.reserve_buffers(1024*4096, 1024*512);
+    // z.descend_to([0; 4096]);
+    // z.reset();
     let mut k = 0;
     let mut total_unified = 0;
     let mut max_unified = 0;
@@ -757,43 +760,48 @@ fn main() {
     let mut max_res = 0;
     let mut buffer = vec![];
     while z.to_next_val() {
+        // println!("path {:?}", z.path());
         let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
         buffer.push(ACTION);
         if k % 100 == 0 { println!("expr  {}", unsafe { serialize(se.span().as_ref().unwrap()) }); }
+        // println!("LHS:    {}", unsafe { serialize(se.span().as_ref().unwrap()) });
         // buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(se)));
-        // buffer.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(se)));
+        buffer.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(se)));
         let mut visited = 0;
         let mut unified = 0;
         let mut rz = space.read_zipper();
+        // rz.reserve_buffers(1024*4096, 1024*512);
+        // rz.descend_to([0; 4096]);
+        // rz.reset();
         let mut references: Vec<(u32, u32)> = vec![];
 
-        transition(&mut buffer, &mut rz, &mut |loc| {
-        // referential_transition(&mut buffer, &mut rz, &mut references, &mut |loc| {
+        // transition(&mut buffer, &mut rz, &mut |loc| {
+        referential_transition(buffer.last_mut().unwrap(), &mut rz, &mut references, &mut |loc| {
         //     black_box(loc.origin_path());
             visited += 1;
             // assert!(space.contains(loc.path()));
 
-            // if z.path() != loc.path() {
-            //     let se_copy = Expr { ptr: z.path().to_vec().leak().as_mut_ptr() };
-            //     let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
-            //     let pe_copy = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
-            //
-            //     match Expr::unification(se_copy, pe_copy) {
-            //         Ok(e) => {
-            //             std::hint::black_box(e);
-            //             unified += 1;
-            //             // keeping.remove_old(loc.path());
-            //             // keeping_wz.descend_to(loc.path());
-            //             // assert!(keeping.contains(loc.path()));
-            //             // assert!(keeping_wz.path_exists());
-            //             // assert!(space.contains(keeping_wz.path()));
-            //             // assert!(keeping_wz.remove_value().is_some());
-            //             keeping.remove(loc.path());
-            //             // keeping_wz.reset();
-            //         }
-            //         Err(_) => {}
-            //     }
-            // }
+            // println!("LHS: {:?}", z.path());
+            // println!("RHS: {:?}", loc.path());
+            let se = Expr{ ptr: z.path().to_vec().leak().as_mut_ptr() };
+            let pe = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
+            // let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
+            // let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
+            // let e = String::new(); se.str(&mut e, );
+            // println!("LHS: {:?}", serialize(z.path()));
+            // println!("RHS: {:?}", serialize(loc.path()));
+            // println!("RHS: {}", unsafe { serialize(pe.span().as_ref().unwrap()) });
+            if Expr::unifiable(se, pe) {
+                unified += 1;
+                // keeping.remove_old(loc.path());
+                // keeping_wz.descend_to(loc.path());
+                // assert!(keeping.contains(loc.path()));
+                // assert!(keeping_wz.path_exists());
+                // assert!(space.contains(keeping_wz.path()));
+                // assert!(keeping_wz.remove_value().is_some());
+                // keeping.remove(loc.path());
+                // keeping_wz.reset();
+            }
         });
         // assert!(visited >= 1);
         total_res += visited;

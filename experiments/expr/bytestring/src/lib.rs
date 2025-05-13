@@ -687,6 +687,37 @@ impl Expr {
         }
     }
 
+    pub fn unifiable(self, other: Expr) -> bool {
+        let mut sx = vec![ExprEnv::new(0, self)];
+        let mut sy = vec![ExprEnv::new(1, other)];
+
+        unify(sx, sy).is_ok()
+    }
+
+    pub fn unify(self, other: Expr, o: &mut ExprZipper) -> bool {
+        let mut sx = vec![ExprEnv::new(0, self)];
+        let mut sy = vec![ExprEnv::new(1, other)];
+
+        if let Ok(bindings) = unify(sx, sy) {
+            println!("{:?}", bindings.iter().map(|(k, v)| {
+                let ov = vec![0u8; 512];
+                let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+                println!("binding {:?} +{} {}", *k, v.v, v.show());
+                // println!("output {:?}", o);
+                (*k, v.subsexpr())
+            }).collect::<Vec<_>>());
+            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+            let mut stack: Vec<(u8, u8)> = vec![];
+            let mut assignments: Vec<(u8, u8)> = vec![];
+            apply(0, 0, 0, &mut ExprZipper::new(self), &bindings, o, &mut cycled, &mut stack, &mut assignments);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[deprecated(note="please use unify")]
     pub fn unification(self, other: Expr, o: Expr) -> Result<Expr, ExtractFailure> {
         // [2][2] $ a [2] _1  a  unification
         // [2][2] b $ [2]  b _1
@@ -894,6 +925,23 @@ impl Expr {
         Ok(rz.subexpr())
     }
 
+    // pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
+    //     let mut transformation = vec![item_byte(Tag::Arity(2))];
+    //     transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
+    //     transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
+    //     let mut data = vec![item_byte(Tag::Arity(2)), item_byte(Tag::NewVar)];
+    //     data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
+    //     unsafe {
+    //         let e = Expr{ ptr: data.as_mut_ptr().add(2)};
+    //         e.shift(1, &mut ExprZipper::new(e));
+    //     }
+    //     println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+    //     println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
+    //     let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
+    //     let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
+    //     Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
+    // }
+
     pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
         let mut transformation = vec![item_byte(Tag::Arity(2))];
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
@@ -904,25 +952,8 @@ impl Expr {
             let e = Expr{ ptr: data.as_mut_ptr().add(2)};
             e.shift(1, &mut ExprZipper::new(e));
         }
-        println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
-        println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
-        let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
-        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
-        Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
-    }
-
-    pub fn transformed_(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
-        let mut transformation = vec![item_byte(Tag::Arity(2))];
-        transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
-        transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
-        let mut data = vec![item_byte(Tag::Arity(2)), item_byte(Tag::NewVar)];
-        data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
-        unsafe {
-            let e = Expr{ ptr: data.as_mut_ptr().add(2)};
-            e.shift(1, &mut ExprZipper::new(e));
-        }
-        println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
-        println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
+        // println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+        // println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
         let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
         let x = Expr{ ptr: transformation.as_mut_ptr() };
         let y = Expr{ ptr: data.as_mut_ptr() };
@@ -1312,7 +1343,7 @@ impl ExprZipper {
     pub fn write_move(&mut self, value: &[u8]) -> bool {
         unsafe {
             let l = value.len();
-            std::ptr::copy_nonoverlapping(value.as_ptr(), self.root.ptr.byte_add(self.loc), l);
+            std::ptr::copy(value.as_ptr(), self.root.ptr.byte_add(self.loc), l);
             self.loc += l;
             true
         }
@@ -1771,26 +1802,47 @@ pub struct ExprMapSolver {
     ready: HashSet<u64>
 }
 
+pub union AlignedArr<T: Sized, const SZ: usize> {
+    x: std::mem::ManuallyDrop<T>,
+    arr: [u8; SZ],
+}
+impl <T: Sized, const SZ: usize> AlignedArr<T, SZ> {
+    fn inner_mut(&mut self) -> &'static mut T {
+        unsafe { std::mem::transmute(std::ptr::addr_of_mut!(self.x)) }
+    }
+    fn inner_ref(&self) -> &'static T {
+        unsafe { std::mem::transmute(std::ptr::addr_of!(self.x)) }
+    }
+    fn inner(&self) -> T where T : Copy {
+        unsafe { std::ptr::read((&self.x) as *const std::mem::ManuallyDrop<T> as *const T) }
+    }
+    fn inner_cloned(&self) -> T where T : Clone + 'static {
+        let t: &'static T =  unsafe { std::mem::transmute(std::ptr::addr_of!(self.x)) };
+        t.clone()
+    }
+}
 
 macro_rules! local {
     ($name:ident : $t:ty) => {
         thread_local! {
-            static $name: std::cell::UnsafeCell<$t> = unsafe { std::ptr::read(std::cell::UnsafeCell::from_mut(
-                std::mem::MaybeUninit::uninit().assume_init_mut()
-            )) }
+            static $name: std::cell::UnsafeCell<AlignedArr<$t, { std::mem::size_of::<$t>() }>> = std::cell::UnsafeCell::new(
+                AlignedArr { arr: [0; { std::mem::size_of::<$t>() }] });
         }
     };
     ($name:ident = $value:expr) => {
-        unsafe { $name.with(|x| *x.get() = $value) }
+        unsafe { $name.with(|x| *x.get() = AlignedArr{ x: std::mem::ManuallyDrop::new($value) } ) }
     };
     ($name:ident) => {
-        unsafe { $name.with(|x| *x.get()) }
+        unsafe { $name.with(|x| x.get().as_ref().unwrap().inner()) }
+    };
+    (clone $name:ident) => {
+        unsafe { $name.with(|x| x.get().as_ref().unwrap().inner_cloned()) }
     };
     (&$name:ident) => {
-        unsafe { ($name.with(|x| x.get().as_ref().unwrap())) }
+        unsafe { ($name.with(|x| x.get().as_ref().unwrap())).inner_ref() }
     };
     (&mut$name:ident) => {
-        unsafe { $name.with(|x| x.get()).as_mut().unwrap() }
+        unsafe { $name.with(|x| x.get().as_mut().unwrap()).inner_mut() }
     }
 }
 
@@ -2220,6 +2272,7 @@ impl ExprMapSolver {
 
 
 use std::collections::BTreeMap;
+use std::ptr::addr_of_mut;
 
 /// ------------------------------------------------------------------
 /// The “signature” that a concrete term implementation has to satisfy
@@ -2235,7 +2288,7 @@ pub trait Term: Clone {
     fn same_functor(&self, other: &Self) -> bool;
 
     ///  ▒ args : t -> t list
-    fn args(&self) -> Vec<Self>;
+    fn args(&self, stack: &mut Vec<Self>);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2262,8 +2315,10 @@ impl ExprEnv {
 
     pub fn show(&self) -> String {
         let mut v = vec![];
-        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap(), 
+        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap(),
                                       |v, i| format!("<{},{}>", self.n, v).leak(), self.offset as usize);
+        // self.subsexpr().serialize2(&mut v, |x| std::str::from_utf8(x).unwrap(),
+        //                               |v, i| format!("<{},{}>", self.n, v).leak());
         String::from_utf8(v).unwrap()
     }
 }
@@ -2284,6 +2339,7 @@ impl Term for ExprEnv {
 
     fn same_functor(&self, other: &Self) -> bool {
         unsafe {
+            if self.n == other.n && self.offset == other.offset { return true }
             let lhs = self.subsexpr();
             let lprefix = lhs.prefix().unwrap_or_else(|x| x).as_ref().unwrap();
             let rhs = other.subsexpr();
@@ -2294,20 +2350,21 @@ impl Term for ExprEnv {
             if count == lprefix.len() || count == rprefix.len() {
                 true
             } else {
-                // let diff = lhs.constant_difference(rhs).unwrap(); 
+                // let diff = lhs.constant_difference(rhs).unwrap();
                 // println!("({}) {:?}  !=  {:?}", diff, self.subsexpr(), other.subsexpr());
                 false
             }
         }
     }
 
-    fn args(&self) -> Vec<Self> {
+    fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
+            let start_len = dest.len();
             match byte_item(*self.subsexpr().ptr) {
-                Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { vec![] }
+                Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
                 Tag::Arity(k) => {
-                    local!(vec : Vec<ExprEnv>);
-                    local!(vec = Vec::with_capacity(k as usize));
+                    local!(vec : &'static mut Vec<ExprEnv>);
+                    local!(vec = std::mem::transmute(dest));
                     local!(env : ExprEnv);
                     local!(env = ExprEnv{
                         n: self.n,
@@ -2322,16 +2379,16 @@ impl Term for ExprEnv {
                         |_, o, _| o as u32,
                         |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
                         |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
-                            let mut ne = local!(&env).clone();
+                            let mut ne = local!(clone env);
                             ne.offset += y;
                             local!(&mut vec).push(ne);
                             local!(&mut env).v = *c
                         }; x},
                         |_, _, x: (bool, u32)| x.1);
 
-                    println!("args {:?} into {:?}", self.subsexpr(), local!(&vec).iter().map(|x| x.subsexpr()).collect::<Vec<_>>());
-
-                    std::mem::take(local!(&mut vec))
+                    // if PRINT_DEBUG { println!("args {:?} into {:?}", self.subsexpr(), local!(&vec).iter().map(|x| x.subsexpr()).collect::<Vec<_>>()); }
+                    // println!("args {:?} into {:?}", self.subsexpr(), local!(&vec)[start_len..].iter().map(|x| x.subsexpr()).collect::<Vec<_>>());
+                    std::hint::black_box(&vec);
                 }
             }
         }
@@ -2342,23 +2399,25 @@ impl Term for ExprEnv {
 #[derive(Debug)]
 pub struct Fail;
 
-const apply_depth: usize = 10;
+const APPLY_DEPTH: usize = 64;
+const MAX_UNIFY_ITER: usize = 1024;
+const PRINT_DEBUG: bool = false;
 pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<(u8, u8), ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<(u8, u8), u8>, stack: &mut Vec<(u8, u8)>, assignments: &mut Vec<(u8, u8)>) -> (u8, u8) {
     let depth = stack.len();
-    if stack.len() > apply_depth { panic!("apply depth > {apply_depth}: {n} {original_intros} {new_intros}"); }
+    if stack.len() > APPLY_DEPTH { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
+    if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, ez.subexpr()); }
     unsafe {
         loop {
             match ez.item() {
                 Ok(Tag::NewVar) => {
                     match bindings.get(&(n, original_intros)) {
                         None => {
-                            println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros));
-                            println!("original {original_intros} new {new_intros}");
+                            if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
+                            // println!("original {original_intros} new {new_intros}");
                             if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
-                                println!("FOUND {} for {:?}", pos, (n, original_intros));
+                                println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
                                 oz.write_var_ref(pos as u8);
                             } else {
-                                println!("{:?} NOT IN {:?} ... adding at {}", (n, original_intros), assignments, assignments.len());
                                 oz.write_new_var();
                                 new_intros += 1;
                                 assignments.push((n, original_intros));
@@ -2368,9 +2427,10 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
 
                         }
                         Some(rhs) => {
-                            println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros));
+                            if PRINT_DEBUG { println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros)); }
                             // println!("stack={stack:?}");
                             if let Some(introduced) = cycled.get(&(n, original_intros)) {
+                                if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
                                 oz.write_var_ref(*introduced);
                                 // println!("nv cycled contains {:?}", (n, original_intros));
                                 oz.loc += 1;   
@@ -2382,8 +2442,8 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                                 new_intros += 1;
                             } else {
                                 stack.push((n, original_intros));
-                                let (evars_, nvars_) = apply(rhs.n, rhs.v, 0, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
-                                new_intros += nvars_;
+                                let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
+                                new_intros = nvars_;
                                 stack.pop();
                             }
                             original_intros += 1;
@@ -2393,21 +2453,23 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                 Ok(Tag::VarRef(i)) => {
                     match bindings.get(&(n, i)) {
                         None => {
-                            println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i));
+                            if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
                             if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
+                                println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
                                 oz.write_var_ref(pos as u8);
                             } else {
                                 oz.write_new_var();
                                 new_intros += 1;
-                                assignments.push((n, i));
+                                assignments.push((n, i)); // this can't be right in general
                             }
                             oz.loc += 1;
                         }
                         Some(rhs) => {
-                            println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i));
+                            if PRINT_DEBUG { println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i)); }
                             // println!("stack={stack:?}");
                             if let Some(introduced) = cycled.get(&(n, i)) {
                                 // println!("vr cycled contains {:?}", (n, i));
+                                if PRINT_DEBUG { println!("{}cycled _{} for {:?} (ref) rhs={}", "  ".repeat(depth), *introduced+1, (n, i), rhs.show()); }
                                 oz.write_var_ref(*introduced);
                                 oz.loc += 1;
                             } else if stack.contains(&(n, i)) {
@@ -2418,8 +2480,8 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                                 new_intros += 1;
                             } else {
                                 stack.push((n, i));
-                                let (evars_, nvars_) = apply(rhs.n, rhs.v, 0, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
-                                new_intros += nvars_;
+                                let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
+                                new_intros = nvars_;
                                 stack.pop();
                             }
                             // oz.write_var_ref(i);
@@ -2431,12 +2493,12 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                     unreachable!()
                 }
                 Err(slice) => {
-                    println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(slice) });
+                    if PRINT_DEBUG { println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(slice) }); }
                     oz.write_symbol(slice);
                     oz.loc += 1 + slice.len();
                 }
                 Ok(Tag::Arity(a)) => {
-                    println!("{}@ [{}]", "  ".repeat(depth), a);
+                    if PRINT_DEBUG { println!("{}@ [{}]", "  ".repeat(depth), a); }
                     oz.write_arity(a);
                     oz.loc += 1;
                 }
@@ -2455,67 +2517,73 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
 /// * `sx` and `sy` play the rôle of the OCaml stacks.
 /// * On success a map `var ↦ term` is returned; on failure `Err(Fail)`.
 ///
-pub fn unify<T>(mut sx: Vec<T>, mut sy: Vec<T>)
-                -> Result<BTreeMap<T::TVar, T>, Fail>
-where
-    T: Term + Debug,
+pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
+                -> Result<BTreeMap<(u8, u8), ExprEnv>, Fail>
 {
-    let mut bindings: BTreeMap<T::TVar, T> = BTreeMap::new();
+    let mut bindings: BTreeMap<(u8, u8), ExprEnv> = BTreeMap::new();
+    let mut iterations = 0;
 
-    // ----------------------------------------------------------------
     while let (Some(x), Some(y)) = (sx.pop(), sy.pop()) {
-        println!("popping");
-        println!("x: {:?}, sx : {:?}", x, sx);
-        println!("y: {:?}, sy : {:?}", y, sy);
+        if iterations > MAX_UNIFY_ITER { 
+            print!("#");
+            return Err(Fail) }
+        iterations += 1;
+        if PRINT_DEBUG {
+            println!("popping");
+            println!("x: {}, sx : {:?}", x.show(), sx.len());
+            println!("y: {}, sy : {:?}", y.show(), sy.len());
+        }
         match (x.var_opt(), y.var_opt()) {
-            //----------------------------------------------------------
-            // two compound terms
-            //----------------------------------------------------------
             (None, None) => {
+                // println!("NV NV");
                 if x.same_functor(&y) {
-                    sx.extend(x.args().into_iter());
-                    sy.extend(y.args().into_iter());
+                    x.args(&mut sx);
+                    y.args(&mut sy);
                 } else {
-                    println!("diff {x:?}  != {y:?}");
+                    if PRINT_DEBUG { println!("diff {x:?}  != {y:?}"); }
                     return Err(Fail);
                 }
             }
 
-            //----------------------------------------------------------
-            // x = variable, y = compound
-            //----------------------------------------------------------
             (Some(vx), None) => {
-                let bx = bindings.get(&vx).cloned();     // immutable borrow ends here
+                // println!("V NV");
+                let bx = bindings.get(&vx).cloned();
                 match bx {
-                    // vx already bound
                     Some(t) => match t.var_opt() {
-                        // …to another variable
                         Some(vx2) => {
+                            if PRINT_DEBUG { println!("x {vx:?} bound to {} ({:?}), inserting {}", t.show(), vx2, y.show()); }
+                            if let Some(bound) = bindings.get(&vx2) {
+                                sx.push(*bound);
+                                sy.push(y);
+                                continue
+                            } 
                             bindings.insert(vx2, y.clone());
                             sx.push(x);
                             sy.push(y);
                         }
-                        // …to a real term
                         None => {
                             sx.push(t);
                             sy.push(y);
                         }
                     },
-                    // vx unbound
                     None => {
                         bindings.insert(vx, y);
                     }
                 }
             }
 
-            //----------------------------------------------------------
-            // x = compound, y = variable   (mirror case)
-            //----------------------------------------------------------
             (None, Some(vy)) => {
+                // println!("NV V");
                 let by = bindings.get(&vy).cloned();
                 match by {
                     Some(t) => match t.var_opt() {
                         Some(vy2) => {
+                            if PRINT_DEBUG { println!("y {vy:?} bound to {} ({:?}), inserting {}", t.show(), vy2, x.show()); }
+                            if let Some(bound) = bindings.get(&vy2) {
+                                sx.push(x);
+                                sy.push(*bound);
+                                continue
+                            } 
                             bindings.insert(vy2, x.clone());
                             sx.push(x);
                             sy.push(y);
@@ -2531,24 +2599,41 @@ where
                 }
             }
 
-            //----------------------------------------------------------
-            // two variables
-            //----------------------------------------------------------
             (Some(vx), Some(vy)) => {
+                // println!("V  V");
                 let bx = bindings.get(&vx).cloned();
                 let by = bindings.get(&vy).cloned();
 
                 match (bx, by) {
                     (None, None) => {
+                        // println!("no no insert {vx:?} {y:?}");
                         bindings.insert(vx, y);
                     }
                     (Some(t), None) => {
+                        // println!("yes no insert {vy:?} {t:?}");
                         bindings.insert(vy, t);
                     }
                     (None, Some(t)) => {
+                        // println!("no yes insert {vx:?} {t:?}");
                         bindings.insert(vx, t);
                     }
                     (Some(tx), Some(ty)) => {
+                        if tx.n == ty.n && tx.offset == ty.offset { continue }
+                        // if tx.n == ty.n && tx.offset == ty.offset {
+                        //     unsafe {
+                        //         if let Tag::NewVar = byte_item(*tx.subsexpr().ptr) {
+                        //             if let Tag::NewVar = byte_item(*ty.subsexpr().ptr) {
+                        //                 continue
+                        //             }
+                        //         }
+                        //     if let Tag::VarRef(i) = byte_item(*tx.subsexpr().ptr) {
+                        //         if let Tag::VarRef(j) = byte_item(*ty.subsexpr().ptr) {
+                        //             if i == j { continue }
+                        //         }
+                        //     }
+                        //     }
+                        // }
+                        if PRINT_DEBUG { println!("yes yes push {} {}", tx.show(), ty.show()); }
                         sx.push(tx);
                         sy.push(ty);
                     }

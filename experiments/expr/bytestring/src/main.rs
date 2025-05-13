@@ -1487,45 +1487,13 @@ fn unify_other() {
         let x = Expr { ptr: xv.as_mut_ptr() };
         let mut yv = parse!(r"[3] [2] f $ [3] h $ [2] f a _2"); // ((f $x) (h $y (f a)) $y)
         let y = Expr { ptr: yv.as_mut_ptr() };
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
 
-        // unify(sx, sy) = 
-        const names: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
-        if let Ok(bindings) = unify(sx, sy) {
-            let tov = vec![0u8; 512];
-            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-            // println!("top input {:?}", x);
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
-            apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(to), &mut cycled, &mut stack, &mut assignments);
-            // println!("top output {:?}", to);
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-            assert_eq!(format!("{:?}", to), format!("{:?}", t));
-            
-            // println!("{:?}", bindings.iter().map(|(k, v)| {
-            //     let ov = vec![0u8; 512];
-            //     let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-            //     apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-            //     // apply(_, _, _, (f <0,1>), {
-            //     //  (0, 0) (<0,0> (h <0,0> <0,1>) (f <0,1>))
-            //     //  (0, 1) ((f <1,0>) (h <1,1> (f a)) <1,1>)
-            //     //  (1, 0) ((f <1,0>) (h <1,1> (f a)) <1,1>)
-            //     //  (1, 1) (<0,0> (h <0,0> <0,1>) (f <0,1>))}, ...) = (f (f a))
-            //     println!("input {:?} +{} {}", *k, v.v, v.show());
-            //     // println!("output {:?}", o);
-            //     (*k, v.subsexpr())
-            //     }).collect::<Vec<_>>());
-            let v = vec![0u8; 512];
-            let o = Expr{ ptr: v.leak().as_mut_ptr() };
-            // apply(ExprEnv::new(0, x), &bindings, &mut ExprZipper::new(o));
-            // println!("{:?}", o);
-        } else {
-            println!("failed");
-        }
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
-    println!("================");
     {
         let mut tv = parse!(r"[4] $ _1 _1 _1"); // $i $i $i $i
         let t = Expr { ptr: tv.as_mut_ptr() };
@@ -1534,33 +1502,13 @@ fn unify_other() {
         let x = Expr { ptr: xv.as_mut_ptr() };
         let mut yv = parse!(r"[4] $ $ _2 _1"); // $x $y $y $x
         let y = Expr { ptr: yv.as_mut_ptr() };
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
-        if let Ok(bindings) = unify(sx, sy) {
-            let tov = vec![0u8; 512];
-            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-            // println!("top input {:?}", x);
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
-            apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(to), &mut cycled, &mut stack, &mut assignments);
-            // println!("top output {:?}", to);
+        
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-            // println!("{:?}", bindings.iter().map(|(k, v)| {
-            //     let ov = vec![0u8; 512];
-            //     let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-            //     // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-            //     println!("binding {:?} +{} {}", *k, v.v, v.show());
-            //     // println!("output {:?}", o);
-            //     (*k, v.subsexpr())
-            //     }).collect::<Vec<_>>());
-            
-            assert_eq!(format!("{:?}", to), format!("{:?}", t)); 
-        } else {
-            println!("failed")
-        }
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
-    println!("================");
     {
         let mut tv = parse!(r"[8] $ _1 _1 _1 _1 _1 _1 _1"); // $i $i $i $i $i $i $i $i
         let t = Expr { ptr: tv.as_mut_ptr() };
@@ -1569,24 +1517,13 @@ fn unify_other() {
         let x = Expr { ptr: xv.as_mut_ptr() };
         let mut yv = parse!(r"[8] $ $ $ $ _4 _1 _2 _3"); // $x $y $z $w $w $x $y $z
         let y = Expr { ptr: yv.as_mut_ptr() };
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
-        if let Ok(bindings) = unify(sx, sy) {
-            let tov = vec![0u8; 512];
-            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-            println!("top input {:?}", x);
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
-            apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(to), &mut cycled, &mut stack, &mut assignments);
-            println!("top output {:?}", to);
 
-            assert_eq!(format!("{:?}", to), format!("{:?}", t));
-        } else {
-            println!("failed")
-        }
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
-    println!("================");
     {
         let mut tv = parse!("[2] [2] flip [3] = $ [3] T _1 [4] a _1 $ $ [2] axiom [3] = [3] T _1 [4] a _1 _2 _3 _1");
         //                   ((flip (= $ (T _1 (a _1 $ _1)))) (axiom (= (T _1 (a _1 _2 _1)) _1)))
@@ -1600,46 +1537,26 @@ fn unify_other() {
         //                   ((flip (= $l $r)) (axiom (= $r $l))
         //                    template          pattern
         let y = Expr{ ptr: yv.as_mut_ptr() };
-        
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
-        if let Ok(bindings) = unify(sx, sy) {
-            let tov = vec![0u8; 512];
-            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-            println!("top input {:?}", x);
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
-            apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(to), &mut cycled, &mut stack, &mut assignments);
-            println!("top output {:?}", to);
 
-            println!("{:?}", bindings.iter().map(|(k, v)| {
-                let ov = vec![0u8; 512];
-                let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                println!("binding {:?} +{} {}", *k, v.v, v.show());
-                // println!("output {:?}", o);
-                (*k, v.subsexpr())
-                }).collect::<Vec<_>>());
-            
-            assert_eq!(format!("{:?}", to), format!("{:?}", t));
-        } else {
-            println!("failed")
-        }
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
     {
         let mut srcv = parse!(r"[2] axiom [3] = [3] T $ [3] * $ _2 [3] T _1 [3] R [4] a _1 $ $ [3] * _2 _2");
         let src = Expr{ ptr: srcv.as_mut_ptr() };
         let mut patv = parse!("[2] axiom [3] = _2 _1");
         let pat = Expr{ ptr: patv.as_mut_ptr() };
-
+    
         let mut templv = parse!("[2] flip [3] = $ $");
         let templ = Expr{ ptr: templv.as_mut_ptr() };
-
+    
         let mut rv = parse!(r"[2] flip [3] = [3] T $ [3] R [4] a _1 $ $ [3] * $ _4 [3] T _1 [3] * _4 _4");
         let r = Expr{ ptr: rv.as_mut_ptr() };
-
-        match src.transformed_(templ, pat) {
+    
+        match src.transformed(templ, pat) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
             Err(e) => { panic!("{:?}", e); }
         }
@@ -1648,7 +1565,7 @@ fn unify_other() {
     {
         // let mut tv = parse!("");
         // let t = Expr{ ptr: tv.as_mut_ptr() };
-
+    
         let mut xv = parse!("[3] [3] [3] [3] [3] [3] a * $ * $ * $ * $ * $ = [3] _5 * [3] _4 * [3] _3 * [3] _2 * [3] _1 * a");
         //                   ($res (axiom (= (T $x (a $x $y $z)) $x)))
         //                    result   input-data
@@ -1657,33 +1574,64 @@ fn unify_other() {
         //                   ((flip (= $l $r)) (axiom (= $r $l))
         //                    template          pattern
         let y = Expr{ ptr: yv.as_mut_ptr() };
+    
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+    
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        println!("{:?}", to);
+    }
+    {
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] * [3] / 1 $ [3] * _1 $ $ _1 [3] \\ _1 1 [3] * _2 [3] * [3] * _3 _1 [3] \\ _1 1");
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] * [3] / 1 $ [3] * _1 $ $ _1 [3] \\ _1 1 [3] * _2 [3] * [3] * _3 _1 [3] \\ _1 1");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
 
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
-        if let Ok(bindings) = unify(sx, sy) {
-            let tov = vec![0u8; 512];
-            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-            println!("top input {:?}", x);
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
-            apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(to), &mut cycled, &mut stack, &mut assignments);
-            println!("top output {:?}", to);
+        // x.serialize2()
+        // println!("{}", )
+    
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+    
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert_eq!(format!("{:?}", to), format!("{:?}", x));
+    }
+    {
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ $ _1 [3] \\ _1 [3] * _2 [3] * _3 _1");
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _1 (* (* _1 _1) (\ _1 1)))))  <- gotten
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ _1 [3] K $ $ [3] \\ _1 [3] * _2 [3] * _1 [3] K _3 _4");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
 
-            println!("{:?}", bindings.iter().map(|(k, v)| {
-                let ov = vec![0u8; 512];
-                let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                println!("binding {:?} +{} {}", *k, v.v, v.show());
-                // println!("output {:?}", o);
-                (*k, v.subsexpr())
-            }).collect::<Vec<_>>());
+        // x.serialize2()
+        // println!("{}", )
 
-            println!("{:?}", to);
-            // assert_eq!(format!("{:?}", to), format!("{:?}", t));
-        } else {
-            println!("failed")
-        }
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        println!("{:?}", to);
+    }
+    {
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 _3 [3] * _4 _3");
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _1 (* (* _1 _1) (\ _1 1)))))  <- gotten
+        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 [3] / 1 _3 [3] * _4 _3");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+
+        // x.serialize2()
+        // println!("{}", )
+
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        println!("{:?}", to);
     }
 }
 

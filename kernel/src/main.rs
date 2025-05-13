@@ -103,7 +103,7 @@ fn work(s: &mut Space) {
 }
 
 fn main() {
-/*    let mut s = Space::new();
+    let mut s = Space::new();
     const space: &str = r#"
 (= (add (S $x) $y) (S (add $x $y)))
 (= (add Z $y) $y)
@@ -126,13 +126,15 @@ fn main() {
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
-    println!("{:?}", s.prefix_forks(expr!(s, "$")).1);
+    let [(t1, _), (t2, _)] = &s.token_bfs(&[], expr!(s, "$"))[..] else { panic!() };
+    println!("{:?}", s.token_bfs(&t1[..], expr!(s, "$")));
+    println!("{:?}", s.token_bfs(t2, expr!(s, "$")));
     
-    let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-
-    println!("{}", String::from_utf8(v).unwrap());
-    return;*/
+    // let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    // 
+    // println!("{}", String::from_utf8(v).unwrap());
+    return;
     /*
 
     let mut s = Space::new();
@@ -180,17 +182,49 @@ fn main() {
     */
     // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
     //
-    // return;
-    let mut s = Space::new();
+    return;
+    // let mut s = Space::new();
 
-    let everythingf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.json").unwrap();
-    let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
-    let load_compressed = Instant::now();
-    println!("done {} {}", s.load_json(everythingfs.as_ref()).unwrap(), load_compressed.elapsed().as_secs());
-
-    let backup_paths_start = Instant::now();
-    println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
-    println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
+    // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.tree").unwrap();
+    // 
+    // let iter_tree_start = Instant::now();
+    // let mut rz = tree.read_zipper();
+    // let mut npaths = 0usize; 
+    // let mut nbytes = 0; 
+    // while rz.to_next_val() {
+    //     nbytes += rz.path().len();
+    //     npaths += 1;
+    //     if npaths % 10_000_000 == 0 {
+    //         println!("npaths {}", npaths);
+    //     }
+    // }
+    // println!("iterating tree backup {} {} took {}", npaths, nbytes, iter_tree_start.elapsed().as_secs());
+    
+    // let restore_paths_start = Instant::now();
+    // let restored = s.restore_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap();
+    // println!("restored paths {:?} {}", restored, restore_paths_start.elapsed().as_secs());
+    
+    // let everythingf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.jsonl").unwrap();
+    // let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
+    // let load_compressed = Instant::now();
+    // println!("done {:?} {}", s.load_jsonl(everythingfs.as_ref()).unwrap(), load_compressed.elapsed().as_secs());
+    // // done (326728210, 6798095370) 1934s
+    // 
+    // let backup_paths_start = Instant::now();
+    // println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
+    // println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
+    // // SerializationStats { bytes_out: 42_741_214_528, bytes_in: 355_357_500_042, path_count: 6798095370 }
+    // //                                                           328_165_118_562
+    // // paths backup took 4619s
+    // 
+    // let backup_tree_start = Instant::now();
+    // println!("{:?}", s.backup_tree("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.tree").unwrap());
+    // println!("tree backup took {}", backup_tree_start.elapsed().as_secs());
+    // // tree backup took 3033
+    // 
+    // let backup_dag_start = Instant::now();
+    // println!("{:?}", s.backup("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/").unwrap());
+    // println!("dag backup took {}", backup_dag_start.elapsed().as_secs());
 
 
     // let restore_symbols_start = Instant::now();

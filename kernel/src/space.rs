@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::ptr::{addr_of, null_mut};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use pathmap::zipper::{ProductZipper, ZipperSubtries};
+use pathmap::zipper::{ProductZipper, ZipperMovingPriv, ZipperSubtries};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
@@ -756,6 +756,54 @@ impl Space {
         Ok(st.count)
     }
 
+    pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
+        let mut wz = self.write_zipper_unchecked();
+        let mut lines = 0usize;
+        let mut count = 0usize;
+        let mut pdp = ParDataParser::new(&self.sm);
+        let spo_symbol = pdp.tokenizer("JSONL".as_bytes());
+        let mut path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(spo_symbol.len() as u8))];
+        path.extend_from_slice(spo_symbol);
+        wz.descend_to(&path[..]);
+        for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
+            wz.descend_to(lines.to_be_bytes());
+            let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+            let mut p = crate::json_parser::Parser::new(line);
+            p.parse(&mut st).unwrap();
+            count += st.count;
+            lines += 1;
+            wz.ascend(8);
+            if lines > 0 && lines % 1000_000 == 0 {
+                println!("parsed {} JSON lines ({} paths)", lines, count);
+            }
+        }
+        Ok((lines, count))
+    }
+
+    pub fn load_jsonl_par(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
+        let mut wz = self.write_zipper_unchecked();
+        let mut lines = 0usize;
+        let mut count = 0usize;
+        let mut pdp = ParDataParser::new(&self.sm);
+        let spo_symbol = pdp.tokenizer("JSONL".as_bytes());
+        let mut path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(spo_symbol.len() as u8))];
+        path.extend_from_slice(spo_symbol);
+        wz.descend_to(&path[..]);
+        for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
+            wz.descend_to(lines.to_be_bytes());
+            let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+            let mut p = crate::json_parser::Parser::new(line);
+            p.parse(&mut st).unwrap();
+            count += st.count;
+            lines += 1;
+            wz.ascend(8);
+            if lines > 0 && lines % 1000_000 == 0 {
+                println!("parsed {} JSON lines ({} paths)", lines, count);
+            }
+        }
+        Ok((lines, count))
+    }
+
     pub fn load_json_(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
@@ -1038,6 +1086,20 @@ impl Space {
         Ok(())
     }
 
+    pub fn backup_tree<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
+        pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
+            self.btm.read_zipper(), |_v| 0, path).map(|_tree| ())
+    }
+
+    pub fn restore_tree(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+        let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(path)?;
+        let mut rz = tree.read_zipper();
+        while rz.to_next_val() {
+            self.btm.insert(rz.path(), ());
+        }
+        Ok(())
+    }
+
     pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
@@ -1236,12 +1298,15 @@ impl Space {
     // }
 
     pub fn metta_calculus(&mut self) {
-        let prefix_e = expr!(self, "[4] exec $ $ $");
+        // MC CMD "TEXEC THREAD0"
+
+        let prefix_e = expr!(self, "[4] exec THREAD0 $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
         
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if rz.to_next_val() {
+                // cannot be here `rz` conflicts potentially with zippers(rz.path())
                 let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
                 drop(rz);
                 // self.btm.remove(&x[..]);
@@ -1253,27 +1318,68 @@ impl Space {
         } { break }
     }
 
-    pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
-        let Ok(prefix) = e.prefix() else {
-            return (vec![], vec![e])
-        };
+    // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
+    //     let Ok(prefix) = e.prefix() else {
+    //         return (vec![], vec![e])
+    //     };
+    //
+    //     let mut rz = self.btm.read_zipper_at_path(unsafe { prefix.as_ref().unwrap() });
+    //     rz.descend_to([0; 4096]);
+    //     rz.reset();
+    //
+    //     if rz.path_exists() {
+    //         let mut buf = vec![];
+    //         let mut es = vec![];
+    //
+    //         rz.descend_until();
+    //
+    //         // rz.child_mask()
+    //
+    //         (buf, es)
+    //     } else {
+    //         (vec![], vec![])
+    //     }
+    // }
+    
+    pub fn token_bfs(&self, token: &[u8], pattern: Expr) -> Vec<(Vec<u8>, Expr)> {
 
-        let mut rz = self.btm.read_zipper_at_path(unsafe { prefix.as_ref().unwrap() });
-        rz.descend_to([0; 4096]);
-        rz.reset();
+        // let mut stack = vec![0; 1];
+        // stack[0] = ACTION;
+        // 
+        // let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+        // let shared = pathmap::utils::find_prefix_overlap(&token[..], prefix);
+        // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(pattern, prefix.len())[..]);
+        // // println!("show {}", show_stack(&stack[..]));
+        // stack.reserve(4096);
+        
 
-        if rz.path_exists() {
-            let mut buf = vec![];
-            let mut es = vec![];
+        let mut rz = self.btm.read_zipper_at_path(&token[..]);
+        rz.reserve_buffers(4096, 64);
 
-            rz.descend_until();
-
-            // rz.child_mask()
-
-            (buf, es)
-        } else {
-            (vec![], vec![])
+        rz.descend_until();
+        
+        let cm = rz.child_mask();
+        let mut it = cm.iter();
+        
+        let mut res = vec![];
+        
+        
+        while let Some(b) = it.next() {
+            rz.descend_to_byte(b);
+            
+            let mut rzc = rz.clone();
+            rzc.to_next_val();
+            let e = Expr { ptr: rzc.origin_path().to_vec().leak().as_ptr().cast_mut() };
+            if e.unifiable(pattern) {
+                let v = rz.origin_path().to_vec();
+                // println!("token {:?}", &v[..]);
+                // println!("expr  {:?}", e);
+                res.push((v, e));
+            }
+            rz.ascend_byte();
         }
+        
+        res
     }
     
     pub fn done(self) -> ! {

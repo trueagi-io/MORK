@@ -1,6 +1,7 @@
 use core::assert_eq;
 use core::result::Result::{Err, Ok};
 use std::io::{BufRead, Write};
+use std::sync::Once;
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::fs::File;
@@ -1326,14 +1327,17 @@ impl DefaultSpace {
         }
     }
 
-    pub fn metta_calculus_localized(&self, location : Expr) -> Result<(),()> {
-        if location.is_not_var_and_not_ref() {return Err(());};
+    pub async fn metta_calculus_localized<Status : From<Result<(),ExecSyntaxError>>>(
+        &self, 
+        location : Expr,
+        status_lock : impl FnOnce(&[u8])->Option<Box<dyn FnOnce(Status)>>,
+    ) -> Result<(), MettaCalculusLocalizedError> {
+        if location.is_not_var_and_not_ref() {return Err(MettaCalculusLocalizedError::LocationWasNotAConstantExpression);};
         let e = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
 
         // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
-        let _status_loc = sexpr_to_path(&self.sm, &format!("(exec {})", e)).unwrap();
-        // get status location and hold writer
-        // set status busy at status_loc, or return
+        let status_loc = sexpr_to_path(&self.sm, &format!("(exec {})", e)).unwrap();
+        let Some(status_sink) = status_lock(&status_loc) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
 
         // (exec <location> $program_counter $patterns $templates)
         let mut prefix_e_vec = sexpr_to_path(&self.sm, &format!("(exec {} $ $)", e)).unwrap();
@@ -1346,11 +1350,14 @@ impl DefaultSpace {
         // the invariant is that buffer should always be reset with at least the prefix
         let mut buffer = Vec::from(prefix);
 
-        let status_result : Result<(), ()> = loop {
+        let status_result : Result<(), ExecSyntaxError> = loop {
             debug_assert!(buffer.len() >= prefix.len());
             debug_assert_eq!(&buffer[..prefix.len()], prefix);
 
-            let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else { continue; /* async sleep */};
+            let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else {
+                tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+                continue;
+            };
             let mut exec_wz = self.write_zipper(&mut exec_permission);
             let mut rz = exec_wz.fork_read_zipper();
             rz.descend_to(&buffer[prefix.len()..]);
@@ -1358,8 +1365,8 @@ impl DefaultSpace {
             if !rz.to_next_val() { 
                 if retry {
                     buffer.truncate(prefix.len());
+                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
                     continue;
-                    /* async sleep */
                 }
 
                 // Done
@@ -1380,42 +1387,40 @@ impl DefaultSpace {
 
 
             let exec_expr = Expr{ ptr: buffer.as_mut_ptr() };
-            let (ref patterns, ref templates) = match localized_exec_match(self, exec_expr) {
+            let (patterns, templates) = match localized_exec_match(self, exec_expr) {
                 Ok(ok) => ok,
-                Err(exec_syntax_error) => break match exec_syntax_error {
-                    _ => todo!("bubble error to status map")
-                },
+                Err(exec_syntax_error) => break Err(exec_syntax_error),
             }.collect_inner();
 
-
-            let (mut readers, mut writers) = match self.aquire_interpret_localized_permissions(patterns, templates) {
+            let (mut readers, mut writers) = match self.aquire_interpret_localized_permissions(&patterns, &templates) {
                 Ok(ok) => ok,
                 Err(Retry) => {
                     // undo the removal on failure and retry
-                    let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else { continue; /* async sleep */};
+                    let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else { 
+                        tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+                        continue;
+                    };
                     let mut exec_wz = self.write_zipper(&mut exec_permission);
                     exec_wz.descend_to(&buffer[prefix.len()..]);
                     exec_wz.set_value(());
 
                     retry = true;
+                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
                     continue;
                 },
             };
 
-            self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..]);
+            self.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
             retry = false;
             buffer.truncate(prefix.len());
         };
 
-        match status_result {
-            Ok(_) => todo!("write success to status_loc value"),
-            Err(_) => todo!("write error into status_loc_value"),
-        }
+        status_sink(Status::from(status_result));
 
         Ok(())
     }
 
-    pub fn aquire_interpret_localized_permissions
+    fn aquire_interpret_localized_permissions
     <'s: 'r + 'w,  'r, 'w>
     ( &'s self, patterns : &'r [Expr], templates : &'w [Expr]) 
     -> Result<(Vec<<Self as Space>::Reader<'r>>, Vec<<Self as Space>::Writer<'w>>),Retry>
@@ -1458,7 +1463,7 @@ impl DefaultSpace {
     }
 }
 
-enum ExecSyntaxError {
+pub enum ExecSyntaxError {
     ExpectedArity4,
     ExpectedCommaListPatterns,
     ExpectedCommaListTemplates,
@@ -1597,3 +1602,7 @@ fn iter_reset_expr(){
 }
 
 struct Retry;
+pub enum MettaCalculusLocalizedError{
+    LocationWasNotAConstantExpression,
+    LocationWasAlreadyDispatchedOnAnotherThread
+}

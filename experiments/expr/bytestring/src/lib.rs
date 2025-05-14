@@ -981,6 +981,20 @@ impl Expr {
         let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
         execute_loop(&mut traversal, *self, 0);
     }
+
+    /// checks if an [`Expr`] no vars or refs
+    pub fn is_not_var_and_not_ref(self)->bool {
+        let mut ez = ExprZipper::new(self);
+        loop {
+            match ez.tag() {
+                Tag::NewVar        => return false,
+                Tag::VarRef(_)     => return false,
+                Tag::SymbolSize(_) => {}
+                Tag::Arity(_)      => {}
+            };
+            if !ez.next() { return true; }
+        }
+    }
 }
 
 pub trait Traversal<A, R> {
@@ -1239,6 +1253,9 @@ impl ExprZipper {
     pub fn reset(&mut self) -> bool {
         self.loc = 0;
         unsafe { self.trace.set_len(0); }
+        if let Tag::Arity(a) = unsafe { byte_item(*self.root.ptr) } {
+            self.trace.push(Breadcrumb {parent: 0, arity:a, seen : 0})
+        }
         true
     }
 

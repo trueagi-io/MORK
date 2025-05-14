@@ -1,3 +1,5 @@
+use core::assert_eq;
+use core::result::Result::{Err, Ok};
 use std::io::{BufRead, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
@@ -17,6 +19,7 @@ use tokio::runtime;
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 
+use crate::sexpr_to_path;
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -573,7 +576,7 @@ impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, W
 
 #[macro_export]
 macro_rules! expr {
-    ($space:ident, $s:literal) => {{
+    ($space:expr, $s:literal) => {{
         let mut src = mork_bytestring::parse!($s);
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
         let table = $space.symbol_table();
@@ -1246,10 +1249,10 @@ impl DefaultSpace {
         let loc = rtz.subexpr();
 
         assert!(rtz.next_child());
-        let srcs = comma_fun_args(self, rtz.subexpr());
+        let srcs = comma_fun_args_asserted(self, rtz.subexpr());
 
         assert!(rtz.next_child());
-        let dsts = comma_fun_args(self, rtz.subexpr());
+        let dsts = comma_fun_args_asserted(self, rtz.subexpr());
 
         self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
     }
@@ -1261,7 +1264,7 @@ impl DefaultSpace {
         assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "-:").span().as_ref().unwrap() });
 
         assert!(rtz.next_child());
-        let dsts = comma_fun_args(self, rtz.subexpr());
+        let dsts = comma_fun_args_asserted(self, rtz.subexpr());
 
         assert!(rtz.next_child());
         let mut res = rtz.subexpr();
@@ -1323,6 +1326,117 @@ impl DefaultSpace {
         }
     }
 
+    pub fn metta_calculus_localized(&self, location : Expr) -> Result<(),()> {
+        if location.is_not_var_and_not_ref() {return Err(());};
+        let e = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
+
+        // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
+        let _status_loc = sexpr_to_path(&self.sm, &format!("(exec {})", e)).unwrap();
+        // get status location and hold writer
+        // set status busy at status_loc, or return
+
+        // (exec <location> $program_counter $patterns $templates)
+        let mut prefix_e_vec = sexpr_to_path(&self.sm, &format!("(exec {} $ $)", e)).unwrap();
+        let prefix_e = Expr{ ptr : prefix_e_vec.as_mut_ptr() };
+
+
+        let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+
+        let mut retry = false;
+        // the invariant is that buffer should always be reset with at least the prefix
+        let mut buffer = Vec::from(prefix);
+
+        let status_result : Result<(), ()> = loop {
+            debug_assert!(buffer.len() >= prefix.len());
+            debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
+            let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else { continue; /* async sleep */};
+            let mut exec_wz = self.write_zipper(&mut exec_permission);
+            let mut rz = exec_wz.fork_read_zipper();
+            rz.descend_to(&buffer[prefix.len()..]);
+
+            if !rz.to_next_val() { 
+                if retry {
+                    buffer.truncate(prefix.len());
+                    continue;
+                    /* async sleep */
+                }
+
+                // Done
+                break Ok(())
+            }
+
+            // remember expr
+            buffer.truncate(prefix.len());
+            buffer.extend_from_slice(rz.path());
+            drop(rz);
+
+            // remove expr in case of success
+            exec_wz.descend_to(&buffer[prefix.len()..]);
+            exec_wz.remove_value();
+            drop(exec_wz);
+            drop(exec_permission);
+
+
+
+            let exec_expr = Expr{ ptr: buffer.as_mut_ptr() };
+            let (ref patterns, ref templates) = match localized_exec_match(self, exec_expr) {
+                Ok(ok) => ok,
+                Err(exec_syntax_error) => break match exec_syntax_error {
+                    _ => todo!("bubble error to status map")
+                },
+            }.collect_inner();
+
+
+            let (mut readers, mut writers) = match self.aquire_interpret_localized_permissions(patterns, templates) {
+                Ok(ok) => ok,
+                Err(Retry) => {
+                    // undo the removal on failure and retry
+                    let Ok(mut exec_permission) = self.new_writer(&prefix, &()) else { continue; /* async sleep */};
+                    let mut exec_wz = self.write_zipper(&mut exec_permission);
+                    exec_wz.descend_to(&buffer[prefix.len()..]);
+                    exec_wz.set_value(());
+
+                    retry = true;
+                    continue;
+                },
+            };
+
+            self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..]);
+            retry = false;
+            buffer.truncate(prefix.len());
+        };
+
+        match status_result {
+            Ok(_) => todo!("write success to status_loc value"),
+            Err(_) => todo!("write error into status_loc_value"),
+        }
+
+        Ok(())
+    }
+
+    pub fn aquire_interpret_localized_permissions
+    <'s: 'r + 'w,  'r, 'w>
+    ( &'s self, patterns : &'r [Expr], templates : &'w [Expr]) 
+    -> Result<(Vec<<Self as Space>::Reader<'r>>, Vec<<Self as Space>::Writer<'w>>),Retry>
+    {
+        let mut readers = Vec::new();
+        for pat in patterns.iter() {
+            let Ok(reader) = self.new_reader(unsafe { pat.prefix().unwrap_or_else(|_| pat.span()).as_ref().unwrap() }, &())
+                else { return Err(Retry) };
+            readers.push(reader);
+        }
+
+        let mut writers = Vec::new();
+        for pat in patterns.iter() {
+            let Ok(writer) = self.new_writer(unsafe { pat.prefix().unwrap_or_else(|_| pat.span()).as_ref().unwrap() }, &()) 
+                else { return Err(Retry) };
+            writers.push(writer);
+        }
+
+        Ok((readers, writers))
+    }
+
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();
@@ -1344,15 +1458,142 @@ impl DefaultSpace {
     }
 }
 
-fn comma_fun_args(s : &DefaultSpace, e : Expr)->Vec<Expr> {
-    let mut ez = ExprZipper::new(e);
+enum ExecSyntaxError {
+    ExpectedArity4,
+    ExpectedCommaListPatterns,
+    ExpectedCommaListTemplates,
+}
+
+/// this function should only be called on values of the form `(exec <loc> [, ..patterns) (, ..templates))`
+/// it only checks the exec and <loc> in debug as asserts
+fn localized_exec_match(s : &impl Space, exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
+    let mut exec_ez = ExprZipper::new(exec_e);
+    if exec_ez.item() != Ok(Tag::Arity(4)) {
+        return Err(ExecSyntaxError::ExpectedArity4);
+    }
+    assert!(exec_ez.next());
+
+    // exec
+    core::debug_assert_eq!{
+        unsafe { exec_ez.subexpr().span().as_ref().unwrap() },
+        unsafe { expr!(s, "exec").span().as_ref().unwrap() }
+    };
+    assert!(exec_ez.next());
+
+    // <loc>
+    core::debug_assert!( exec_ez.subexpr().is_not_var_and_not_ref() );
+    assert!(exec_ez.next_child());
+
+    let comma_list_check = |e| {
+        let mut ez = ExprZipper::new(e);
+        let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
+        ez.next();
+
+        let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
+        if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
+            return Err(());
+        } else { Ok(()) }
+    };
+
+    // (, ..$patterns)
+    let srcs = exec_ez.subexpr();
+    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns)?;
+    assert!(exec_ez.next_child());
+
+    // (, ..$templates)
+    let dsts = exec_ez.subexpr();
+    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates)?;
+
+    Ok(PatternsTemplatesExprs { pattterns: srcs, templates: dsts })
+}
+
+type PatternExpr = Expr;
+type PatternsExpr = Expr;
+type TemplateExpr = Expr;
+type TemplatesExpr = Expr;
+
+/// the inner [`(PatternsExpr, TemplatesExpr)`] is guaranteed to have expr lists of the form `[<len>] , ...<Patterns | Templates>)`
+#[derive(Clone, Copy)]
+struct PatternsTemplatesExprs {
+    pattterns : PatternsExpr,
+    templates : TemplatesExpr,
+}
+impl PatternsTemplatesExprs {
+    pub fn inner_raw(&self) -> (PatternsExpr, TemplatesExpr) {
+        (self.pattterns, self.templates)
+    }
+    pub fn collect_inner(self) -> (Vec<PatternExpr>, Vec<TemplateExpr>) {
+
+        ( fun_args(ExprZipper::new(self.pattterns))
+        , fun_args(ExprZipper::new(self.templates))
+        )
+
+    }
+}
+/// this function should only be called if the [`ExprZipper`] passed in is at an [`Tag::Arity`] and the first element is a "function" symbol.
+fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
+
+    // [n]
     let Ok(Tag::Arity(n)) = ez.item() else { panic!() };
-    let mut srcs = Vec::with_capacity(n as usize - 1);
     ez.next();
-    assert_eq!(unsafe { ez.subexpr().span().as_ref().unwrap() }, unsafe { expr!(s, ",").span().as_ref().unwrap() });
+    debug_assert!(n > 1);
+
+    // <function>
+    ez.next();
+
+    let mut srcs = Vec::with_capacity(n as usize - 1);
     for _ in 0..n as usize - 1 {
         ez.next_child();
         srcs.push(ez.subexpr());
     }
     srcs
 }
+
+fn comma_fun_args_asserted(s : &impl Space, e : Expr)->Vec<Expr> {
+    let mut ez = ExprZipper::new(e);
+    let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
+    assert_eq!(
+        unsafe { ez.subexpr().span().as_ref().unwrap() }, 
+        comma
+    );
+    ez.reset();
+    fun_args(ez)    
+}
+
+
+#[cfg(test)]
+#[test]
+fn iter_reset_expr(){
+    let mut s = DefaultSpace::new();
+    let e = expr!(&s, "[3] a [2] b c d");
+    let mut ez = ExprZipper::new(e);
+
+    let mut first = String::new();
+    loop {
+        match ez.tag() {
+            Tag::NewVar        => panic!(),
+            Tag::VarRef(_)     => panic!(),
+            Tag::SymbolSize(n) => first += &format!("SYM({n})"),
+            Tag::Arity(n)      => first += &format!("[{}]", n),
+        }
+        if !ez.next() {break;}
+    }
+
+    println!("\n");
+    ez.reset();
+
+    let mut second = String::new();
+    loop {
+        match ez.tag() {
+            Tag::NewVar        => panic!(),
+            Tag::VarRef(_)     => panic!(),
+            Tag::SymbolSize(n) => second += &format!("SYM({n})"),
+            Tag::Arity(n)      => second += &format!("[{}]", n),
+        }
+        if !ez.next() {break;}
+    }
+
+    assert_eq!(first,second)
+}
+
+struct Retry;

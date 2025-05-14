@@ -13,7 +13,7 @@ mod tests {
     small_metta.read_to_string(&mut s).unwrap();
 
     let mut space = mork::space::DefaultSpace::new();
-    space.load_sexpr_simple(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
+    space.load_sexpr_simple(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
     let sm : SharedMappingHandle = space.symbol_table().clone();
 
     let zip_file = "logic_query_small.zip";
@@ -29,7 +29,7 @@ mod tests {
     big_metta.read_to_string(&mut s).unwrap();
 
     let mut space = mork::space::DefaultSpace::new();
-    space.load_sexpr_simple(&s, expr!(space, "$"), expr!(space, "_1")).unwrap();
+    space.load_sexpr_simple(s.as_bytes(), expr!(space, "$"), expr!(space, "_1")).unwrap();
     let sm : SharedMappingHandle = space.symbol_table().clone();
 
     let zip_file = "logic_query_small.zip";

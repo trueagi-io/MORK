@@ -1491,7 +1491,7 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
     {
@@ -1506,7 +1506,7 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
     {
@@ -1521,7 +1521,7 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
     {
@@ -1541,7 +1541,7 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         assert_eq!(format!("{:?}", to), format!("{:?}", t));
     }
     {
@@ -1578,7 +1578,7 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
     
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         println!("{:?}", to);
     }
     {
@@ -1594,14 +1594,13 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
     
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         assert_eq!(format!("{:?}", to), format!("{:?}", x));
     }
     {
         let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ $ _1 [3] \\ _1 [3] * _2 [3] * _3 _1");
         //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
         //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _1 (* (* _1 _1) (\ _1 1)))))  <- gotten
-        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
         let x = Expr{ ptr: xv.as_mut_ptr() };
         let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ _1 [3] K $ $ [3] \\ _1 [3] * _2 [3] * _1 [3] K _3 _4");
         let y = Expr{ ptr: yv.as_mut_ptr() };
@@ -1612,14 +1611,11 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
         println!("{:?}", to);
     }
     {
         let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 _3 [3] * _4 _3");
-        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
-        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _1 (* (* _1 _1) (\ _1 1)))))  <- gotten
-        //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
         let x = Expr{ ptr: xv.as_mut_ptr() };
         let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 [3] / 1 _3 [3] * _4 _3");
         let y = Expr{ ptr: yv.as_mut_ptr() };
@@ -1630,8 +1626,70 @@ fn unify_other() {
         let tov = vec![0u8; 512];
         let to = Expr{ ptr: tov.leak().as_mut_ptr() };
 
-        assert!(x.unify(y, &mut ExprZipper::new(to)));
-        println!("{:?}", to);
+        // occurs
+        assert!(matches!(x.unify(y, &mut ExprZipper::new(to)), Err(UnificationFailure::Occurs(_, _))));
+    }
+    {
+        // [2] axiom [3] = [3] * [3] * $ [3] \ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 _2 _2 _2 _2 
+        // [2] axiom [3] = [3] * [3] * $ [3] \ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 [3] \ _2 1 _2 _2 _2
+
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * $ [3] \\ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 _2 _2 _2 _2");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * $ [3] \\ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 [3] \\ _2 1 _2 _2 _2");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+
+        // x.serialize2()
+        // println!("{}", )
+
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        
+    }
+    {
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 [4] L $ [4] L _1 _1 _2 [3] * _2 _1 [3] * [3] * _2 _1 [3] * [4] L [3] T _1 [3] * _1 _2 _1 _2 _3");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 [4] L $ [4] L _1 _1 _2 [3] * _2 _1 [3] * [3] * _2 _1 [3] * [4] L [3] T _1 [3] * _2 _1 _1 _2 _3");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+
+        // x.serialize2()
+        // println!("{}", )
+
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+    }
+    {
+        //   
+        // 
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 _2 [3] * _2 [3] * _1 [3] * _2 _1");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ _1 $ [3] * [3] * _1 _1 _2 [3] * [3] * _1 [3] * _1 _2 [3] * _1 [3] * _1 _2");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+
+        // x.serialize2()
+        // println!("{}", )
+
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+    }
+    {
+        let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ $ [3] K _2 _1 [3] T [3] * [3] * _2 _1 _3 [3] K _2 _1");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ $ [3] K _1 [4] L _2 [3] * _2 _1 _3 [3] T [3] * [3] * _2 _1 _3 [3] K _1 _2");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+    
+        // x.serialize2()
+        // println!("{}", )
+    
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+    
+        println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
     }
 }
 

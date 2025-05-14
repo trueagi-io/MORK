@@ -3,7 +3,7 @@ use std::{mem, process, ptr};
 use std::any::Any;
 use std::fs::File;
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null_mut};
+use std::ptr::{addr_of, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperMovingPriv, ZipperSubtries};
@@ -708,12 +708,12 @@ impl Space {
      */
 
 
-    pub fn load_csv(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+    pub fn load_csv(&mut self, r: &[u8], pattern: Expr, template: Expr, seperator: u8) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
         let mut buf = [0u8; 2048];
 
-        let mut i = 0;
+        let mut i = 0usize;
         let mut stack = [0u8; 2048];
         let mut pdp = ParDataParser::new(&self.sm);
         for sv in r.split(|&x| x == b'\n') {
@@ -722,7 +722,13 @@ impl Space {
             let e = Expr{ ptr: stack.as_mut_ptr() };
             let mut ez = ExprZipper::new(e);
             ez.loc += 1;
-            for symbol in sv.split(|&x| x == b',') {
+            let num = pdp.tokenizer(i.to_string().as_bytes());
+            // ez.write_symbol(i.to_be_bytes().as_slice());
+            ez.write_symbol(num);
+            // ez.loc += 9;
+            ez.loc += num.len() + 1;
+
+            for symbol in sv.split(|&x| x == seperator) {
                 let internal = pdp.tokenizer(symbol);
                 ez.write_symbol(&internal[..]);
                 ez.loc += internal.len() + 1;
@@ -730,7 +736,7 @@ impl Space {
             }
             let total = ez.loc;
             ez.reset();
-            ez.write_arity(a);
+            ez.write_arity(a + 1);
 
             let data = &stack[..total];
             let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
@@ -1179,16 +1185,46 @@ impl Space {
 
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
         let mut buffer = [0u8; 512];
-        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
-        let mut template_wzs: Vec<_> = template_prefixes.iter().map(|p| self.write_zipper_at_unchecked(p)).collect();
+        let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
+        let mut subsumption = vec![0; templates.len()];
+        // x abc y ab z   =>  0 3 2 3 4 
+        // x ab y abc z   =>  0 1 2 1 4
+
+        // x abc y ab z a   =>  0 5 2 5 4 5 
+        // x ab y abc z a   =>  0 5 2 5 4 5
+
+        // a x abc y ab z   =>  0 1 0 3 0 4
+        // a x ab y abc z   =>  0 1 0 3 0 4
+
+        // abc x a y ab z   =>  2 1 2 3 2 5
+        // ab x a y abc z   =>  2 1 2 3 2 5
+        for (i, e) in templates.iter().enumerate() {
+            template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
+            subsumption[i] = i;
+            for j in 0..i {
+                let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
+                if o == template_prefixes[j].len() { // i prefix of j (or equal) 
+                    subsumption[i] = j;
+                    break
+                }
+            }
+        }
+        println!("templates {:?}", templates);
+        println!("prefixes {:?}", template_prefixes);
+        println!("subsumption {:?}", subsumption);
+        let mut template_wzs: Vec<_> = template_prefixes.iter().enumerate().map(|(i, x)| {
+            if subsumption[i] == i { self.write_zipper_at_unchecked(x) }
+            else { unsafe { MaybeUninit::zeroed().assume_init() } }
+        }).collect();
 
         let mut any_new = false;
         let touched = self.query_multi(patterns, |refs, loc| {
-            for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes.iter()).zip(templates.iter()) {
+            for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                let wz = &mut template_wzs[subsumption[i]];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
                 template.substitute(refs, &mut oz);
                 wz.descend_to(&buffer[prefix.len()..oz.loc]);
-                any_new = any_new || wz.set_value(()).is_none();
+                any_new |= wz.set_value(()).is_none();
                 wz.reset();
             }
             Ok::<(), ()>(())
@@ -1238,6 +1274,7 @@ impl Space {
         assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
         for j in 0..m as usize - 1 {
             dstz.next_child();
+            println!("dst {:?}", dstz.subexpr());
             dsts.push(dstz.subexpr());
         }
 
@@ -1300,7 +1337,7 @@ impl Space {
     pub fn metta_calculus(&mut self) {
         // MC CMD "TEXEC THREAD0"
 
-        let prefix_e = expr!(self, "[4] exec THREAD0 $ $ $");
+        let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
         
         while {
@@ -1309,13 +1346,14 @@ impl Space {
                 // cannot be here `rz` conflicts potentially with zippers(rz.path())
                 let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
                 drop(rz);
-                // self.btm.remove(&x[..]);
+                self.btm.remove(&x[..]);
+                println!("expr {:?}", Expr{ ptr: x.as_mut_ptr() });
                 self.interpret(Expr{ ptr: x.as_mut_ptr() });
                 true
             } else {
                 false
             }
-        } { break }
+        } { }
     }
 
     // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {

@@ -783,10 +783,10 @@ fn main() {
 
             // println!("LHS: {:?}", z.path());
             // println!("RHS: {:?}", loc.path());
-            let se = Expr{ ptr: z.path().to_vec().leak().as_mut_ptr() };
-            let pe = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
-            // let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
-            // let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
+            // let se = Expr{ ptr: z.path().to_vec().leak().as_mut_ptr() };
+            // let pe = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
+            let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
+            let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
             // let e = String::new(); se.str(&mut e, );
             // println!("LHS: {:?}", serialize(z.path()));
             // println!("RHS: {:?}", serialize(loc.path()));

@@ -105,6 +105,43 @@ fn work(s: &mut Space) {
 fn main() {
     let mut s = Space::new();
     const space: &str = r#"
+(exec P0 (, (sudoku p2 input (row ($r $x1 $x2 $x3 $x4 $x5 $x6 $x7 $x8 $x9)))) 
+         (, (cell 1 $r $x1) (cell 2 $r $x2) (cell 3 $r $x3)  (cell 4 $r $x4) (cell 5 $r $x5) (cell 6 $r $x6)  (cell 7 $r $x7) (cell 8 $r $x8) (cell 9 $r $x9)  ))
+
+(exec P1 (, (cell $c $r _)) 
+         (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
+
+
+"#;
+
+    const sudoku_p2: &str = r#"
+1 2 3 4 5 6 7 8 9
+_ 5 _ _ _ _ 9 _ _
+_ _ _ 8 3 1 2 5 _
+2 _ 7 _ _ _ 6 1 3
+9 _ 6 _ _ 7 _ 3 _
+1 2 8 _ _ _ 7 _ _
+_ _ _ 2 _ 4 _ 9 6
+8 1 _ 7 6 _ _ 2 9
+7 3 4 _ 2 8 _ _ 1
+_ _ _ 4 1 _ _ _ _"#;
+    
+    s.load_csv(sudoku_p2.as_bytes(), expr!(s, "$"), expr!(s, "[4] sudoku p2 input [2] row _1"), b' ').unwrap();
+    
+    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    s.metta_calculus();
+    
+    // println!("size {:?}", s.btm.val_count());
+    
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    
+    println!("{}", String::from_utf8(v).unwrap());
+    
+    return;
+    /*let mut s = Space::new();
+    const space: &str = r#"
 (= (add (S $x) $y) (S (add $x $y)))
 (= (add Z $y) $y)
 (= (mul (S (S $x)) $y) (add $y (mul (S $x) $y)))
@@ -122,19 +159,19 @@ fn main() {
 (PC (Cat (Point3D 23 3459 34932)))
 
 "#;
-    
+
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
 
     let [(t1, _), (t2, _)] = &s.token_bfs(&[], expr!(s, "$"))[..] else { panic!() };
     println!("{:?}", s.token_bfs(&t1[..], expr!(s, "$")));
     println!("{:?}", s.token_bfs(t2, expr!(s, "$")));
-    
+
     // let mut v = vec![];
     // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-    // 
+    //
     // println!("{}", String::from_utf8(v).unwrap());
-    return;
+    return;*/
     /*
 
     let mut s = Space::new();

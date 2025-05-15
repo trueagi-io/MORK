@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::ptr::{addr_of, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use pathmap::zipper::{ProductZipper, ZipperMovingPriv, ZipperSubtries};
+use pathmap::zipper::{ProductZipper, ZipperForking, ZipperMovingPriv, ZipperSubtries};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
@@ -1117,15 +1117,16 @@ impl Space {
     }
 
     pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
+        let copy_map = self.btm.clone();
         let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
-        let mut rz = self.btm.read_zipper_at_path(first_pattern_prefix);
+        let mut rz = copy_map.read_zipper_at_path(first_pattern_prefix);
         if !rz.path_exists() { return Ok(0); }
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
             let mut temp_map = BytesTrieMap::new();
             let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
             let zh = temp_map.zipper_head();
-            let rz = self.btm.read_zipper_at_path(prefix);
+            let rz = copy_map.read_zipper_at_path(prefix);
             if !rz.path_exists() { return Ok(0) }
             zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&rz);
             drop(zh);
@@ -1209,13 +1210,22 @@ impl Space {
                 }
             }
         }
+        let mut placements = subsumption.clone();
+        let mut template_wzs: Vec<_> = vec![];
+        // let mut write_copy = self.btm.clone();
+        template_prefixes.iter().enumerate().for_each(|(i, x)| {
+            if subsumption[i] == i {
+                // placements[i] = template_wzs.len();
+                template_wzs.push(self.write_zipper_at_unchecked(x));
+                // template_wzs.push(write_copy.write_zipper_at_path(x));
+            }
+        });
+        for i in 0..subsumption.len() {
+            subsumption[i] = placements[subsumption[i]]
+        }
         println!("templates {:?}", templates);
         println!("prefixes {:?}", template_prefixes);
         println!("subsumption {:?}", subsumption);
-        let mut template_wzs: Vec<_> = template_prefixes.iter().enumerate().map(|(i, x)| {
-            if subsumption[i] == i { self.write_zipper_at_unchecked(x) }
-            else { unsafe { MaybeUninit::zeroed().assume_init() } }
-        }).collect();
 
         let mut any_new = false;
         let touched = self.query_multi(patterns, |refs, loc| {
@@ -1223,9 +1233,13 @@ impl Space {
                 let wz = &mut template_wzs[subsumption[i]];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
                 template.substitute(refs, &mut oz);
-                wz.descend_to(&buffer[prefix.len()..oz.loc]);
+                println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+                wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
                 any_new |= wz.set_value(()).is_none();
                 wz.reset();
+                // THIS DOES WORK v
+                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..], ()).is_none();
+                
             }
             Ok::<(), ()>(())
         }).unwrap();
@@ -1274,7 +1288,8 @@ impl Space {
         assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
         for j in 0..m as usize - 1 {
             dstz.next_child();
-            println!("dst {:?}", dstz.subexpr());
+            // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
+            // println!("dst {:?}", dstz.subexpr());
             dsts.push(dstz.subexpr());
         }
 

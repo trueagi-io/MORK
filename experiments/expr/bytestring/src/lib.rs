@@ -983,7 +983,7 @@ impl Expr {
     }
 
     /// checks if an [`Expr`] no vars or refs
-    pub fn is_not_var_and_not_ref(self)->bool {
+    pub fn is_ground(self)->bool {
         let mut ez = ExprZipper::new(self);
         loop {
             match ez.tag() {

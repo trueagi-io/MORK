@@ -557,6 +557,84 @@ mod neo4j_commands {
 pub use neo4j_commands::*;
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// metta_thread
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Returns the status associated with a path in the trie
+pub struct MettaThreadCmd;
+
+impl CommandDefinition for MettaThreadCmd {
+    const NAME: &'static str = "metta_thread";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "location",
+            desc: "The location of the execution of a metta thread. The location must be a ground (no variable bindings or references).\
+                  \nThe thread will run and consume expressions of the form (exec <loc> (, <..patterns>) (, <..templates>)) until there are none left.\
+                  \nIt is an error to spawn a thread at the same location or to execute an exec expression where the patterns and templates are not in (, <..args>) form\n
+                  \nThe final status of the execution can be queried at (exec <location>)",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let expr = cmd.args[0].as_expr();
+
+
+        let status_location = format!("(exec {})", mork_bytestring::serialize(&expr));
+        let status_location_expr = ctx.0.space.sexpr_to_expr(&status_location).unwrap();
+        let status_lock = |path| {
+            
+            let status_writer = ctx.0.space.new_writer(&status_location_expr, &());
+            match status_writer {
+                Err(_) => None,
+                Ok(writer) => {
+                    let c : Option<(_,Box<dyn FnOnce(_,_)+ Send + 'static> )>= Some((
+                        writer, 
+                        Box::new(move |writer : <ServerSpace as Space>::Writer<'_>, result : Result<(), mork::space::ExecSyntaxError>|match result {
+                        Ok(_) => drop(writer),
+                        Err(syntax_error) => {
+                            ctx.0.space.set_user_status(writer.path(), match syntax_error {
+                                mork::space::ExecSyntaxError::ExpectedArity4(e) => panic!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
+                                mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e) => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; `{}`", e)),
+                                mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; `{}`", e)),
+                            });
+                        },
+                        })
+                    ));
+                    c
+                }
+            }
+        };
+
+        let (status_writer, fut)  = match ctx.0.space.metta_calculus_localized(mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()}, status_lock) {
+            Ok(f) => f,
+            Err(error) => match error {
+                mork::space::MettaCalculusLocalizedError::LocationWasNotAConstantExpression => todo!(),
+                mork::space::MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread => todo!(),
+            },
+        };
+
+        let thread  = _thread.unwrap();
+        
+        thread.dispatch_blocking_task(cmd, move |cmd| {
+
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(
+                fut(&ctx.0.space, status_writer)
+            );
+            Ok(())
+        });
+
+        todo!();
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // status
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
@@ -1135,6 +1213,7 @@ impl CommandError {
             StatusRecord::PathForbiddenTemporary => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
             StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
+            StatusRecord::ExecSyntaxError(err) =>Self::external(err.status_code, err.log_message),
         }
     }
 }

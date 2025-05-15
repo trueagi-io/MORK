@@ -11,15 +11,7 @@ use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 
 use crate::space::{
-    dump_as_sexpr_impl,
-    load_csv_impl,
-    load_json_impl,
-    load_neo4j_node_labels_impl,
-    load_neo4j_node_properties_impl,
-    load_neo4j_triples_impl,
-    load_sexpr_impl,
-    transform_multi_multi_impl,
-    ParDataParser
+    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl, load_sexpr_impl, transform_multi_multi_impl, ParDataParser
 };
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
@@ -158,6 +150,22 @@ pub trait Space {
         let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
 
         transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
+    }
+
+    fn metta_calculus_localized<'s,S : Space<Auth = ()>>(
+        &'s self, 
+        location : Expr,
+        status_lock : impl FnOnce(&[u8])->
+        Option<
+            ( Self::Writer<'s>
+            , Box<dyn for<'b> FnOnce(Self::Writer<'b>, Result<(), crate::space::ExecSyntaxError>) + Send + 'static>
+            )
+        >,
+    ) ->  Result<(Self::Writer<'s>, impl AsyncFnOnce(&Self, Self::Writer<'s>)), crate::space::MettaCalculusLocalizedError>
+
+        where Self : Space<Auth = ()>,
+    {
+        space::metta_calculus_localized(self, location, status_lock)
     }
 
     #[cfg(feature="neo4j")]

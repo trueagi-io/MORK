@@ -29,6 +29,7 @@ pub enum StatusRecord {
     CountResult(CountResult),
     FetchError(FetchError),
     ParseError(ParseError),
+    ExecSyntaxError(String)
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -85,6 +86,7 @@ impl StatusRecord {
             Self::PathForbiddenTemporary => true,
             Self::FetchError(_) => false,
             Self::ParseError(_) => false,
+            Self::ExecSyntaxError(_) => false,
         }
     }
     /// Returns `true` if the status can block the creation of a reader at that path
@@ -98,6 +100,7 @@ impl StatusRecord {
             Self::PathForbiddenTemporary => true,
             Self::FetchError(_) => true,
             Self::ParseError(_) => true,
+            Self::ExecSyntaxError(_) => false,
         }
     }
 }

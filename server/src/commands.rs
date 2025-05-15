@@ -5,7 +5,7 @@ use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 
 use mork::Space;
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
+use pathmap::zipper::{ZipperAbsolutePath, ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -560,7 +560,7 @@ pub use neo4j_commands::*;
 // metta_thread
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
-/// Returns the status associated with a path in the trie
+/// Runs a MeTTa thread at a location
 pub struct MettaThreadCmd;
 
 impl CommandDefinition for MettaThreadCmd {
@@ -582,55 +582,54 @@ impl CommandDefinition for MettaThreadCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let expr = cmd.args[0].as_expr();
+        let thread  = _thread.unwrap();
 
+        let expr = cmd.args[0].as_expr().to_owned();
 
-        let status_location = format!("(exec {})", mork_bytestring::serialize(&expr));
-        let status_location_expr = ctx.0.space.sexpr_to_expr(&status_location).unwrap();
-        let status_lock = |path| {
-            
-            let status_writer = ctx.0.space.new_writer(&status_location_expr, &());
-            match status_writer {
-                Err(_) => None,
-                Ok(writer) => {
-                    let c : Option<(_,Box<dyn FnOnce(_,_)+ Send + 'static> )>= Some((
-                        writer, 
-                        Box::new(move |writer : <ServerSpace as Space>::Writer<'_>, result : Result<(), mork::space::ExecSyntaxError>|match result {
-                        Ok(_) => drop(writer),
-                        Err(syntax_error) => {
-                            ctx.0.space.set_user_status(writer.path(), match syntax_error {
-                                mork::space::ExecSyntaxError::ExpectedArity4(e) => panic!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
-                                mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e) => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; `{}`", e)),
+        let status_lock = move |server_space : &ServerSpace, path : Vec<u8>| {
+            let status_writer = server_space.new_writer(&path, &());
+            status_writer.ok().and_then(|writer|
+                Option::<( _,Box<dyn for<'b> FnOnce(&'b _,_,_) + Send + Sync + 'static> )>::Some((
+                    writer, 
+                    Box::new(move |server_space : &ServerSpace, writer : <ServerSpace as Space>::Writer<'_>, result : Result<(), mork::space::ExecSyntaxError>|{
+                        if let Err(syntax_error) = result {
+                            server_space.set_user_status(writer.path(), match syntax_error {
+                                mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
+                                mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; `{}`", e)),
                                 mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; `{}`", e)),
                             });
-                        },
-                        })
-                    ));
-                    c
-                }
-            }
+                        }
+                    })
+                ))
+            ) 
         };
+        
 
-        let (status_writer, fut)  = match ctx.0.space.metta_calculus_localized(mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()}, status_lock) {
+        let (mut status_writer, fut) = match ctx.0.space.metta_calculus_localized(mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()}, status_lock) {
             Ok(f) => f,
             Err(error) => match error {
-                mork::space::MettaCalculusLocalizedError::LocationWasNotAConstantExpression => todo!(),
-                mork::space::MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread => todo!(),
+                mork::space::MettaCalculusLocalizedError::LocationWasNotAConstantExpression           => return Err(CommandError::external(StatusCode::BAD_REQUEST, "Loaction was not a ground expression.")),
+                mork::space::MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread => return Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")),
             },
         };
 
-        let thread  = _thread.unwrap();
+        let status_wz = ctx.0.space.write_zipper(&mut status_writer);
+        let status_path_reader = status_wz.fork_read_zipper();
+        let status_location = mork_bytestring::serialize(status_path_reader.origin_path());
+        drop(status_path_reader);
+        drop(status_wz);
         
-        thread.dispatch_blocking_task(cmd, move |cmd| {
-
+        thread.dispatch_blocking_task(cmd, move |_| {
             let handle = tokio::runtime::Handle::current();
-            handle.block_on(
-                fut(&ctx.0.space, status_writer)
+            handle.block_on( 
+                async move {
+                    fut(&ctx.0.space, status_writer).await;
+                }
             );
             Ok(())
-        });
+        }).await;
 
-        todo!();
+        Ok(Bytes::from(format!("Thread at location `{}` was dispatched. Errors will be found at the status location of `{status_location}`", mork_bytestring::serialize(&expr))))
     }
 }
 
@@ -1213,7 +1212,7 @@ impl CommandError {
             StatusRecord::PathForbiddenTemporary => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
             StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
-            StatusRecord::ExecSyntaxError(err) =>Self::external(err.status_code, err.log_message),
+            StatusRecord::ExecSyntaxError(err) =>Self::external(StatusCode::CONFLICT, err),
         }
     }
 }

@@ -1360,24 +1360,30 @@ pub enum ExecSyntaxError {
     ExpectedCommaListTemplates(String),
 }
 
+/// the `Writer` return in the Option of `status_lock` argument needs to be passed to the paired return continuation.
+/// The Writer should will be the location of the StatusLock
+/// 
+/// unfortunately this is just a hook to inline the code, the lifetimes are too difficult to describe with just types
 pub fn metta_calculus_localized<'s, S : Space<Auth = ()> + ?Sized>(
     _self: &'s S, 
     // `location`` is turned into an owned value before returning the future
     location : Expr,
-    status_lock : impl FnOnce(&[u8])->
+    status_lock : impl FnOnce(&'s S, Vec<u8>)->
         Option<
             ( S::Writer<'s>
-            , Box<dyn for<'b> FnOnce(S::Writer<'b>, Result<(),ExecSyntaxError>) + Send + 'static>
+            , Box<dyn for<'b> FnOnce(&'b S, S::Writer<'b>, Result<(),ExecSyntaxError>) + Send + Sync + 'static>
             )
         >
-) ->  Result<(S::Writer<'s>, impl AsyncFnOnce(&S, S::Writer<'s>)), MettaCalculusLocalizedError>
+        + 'static
+) ->  Result<(S::Writer<'s>, impl AsyncFnOnce(&'s S, S::Writer<'s>) + 'static), MettaCalculusLocalizedError>
+where S : 'static
 {
     if location.is_ground() {return Err(MettaCalculusLocalizedError::LocationWasNotAConstantExpression);};
     let e = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
 
     // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
-    let status_loc = sexpr_to_path(_self.symbol_table(), &format!("(exec {})", e)).unwrap();
-    let Some((status_writer, status_sink)) = status_lock(&status_loc) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
+    let status_location = sexpr_to_path(_self.symbol_table(), &format!("(exec {})", e)).unwrap();
+    let Some((status_writer, status_sink)) = status_lock(_self, status_location) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
 
     // (exec <location> $program_counter $patterns $templates)
     let mut prefix_e_vec = sexpr_to_path(_self.symbol_table(), &format!("(exec {} $ $)", e)).unwrap();
@@ -1390,15 +1396,21 @@ pub fn metta_calculus_localized<'s, S : Space<Auth = ()> + ?Sized>(
     // the invariant is that buffer should always be reset with at least the prefix
     let mut buffer = Vec::from(prefix);
 
-    Ok((status_writer ,async move|_self : &S, status_writer | {
+    Ok((status_writer ,async move|_self : &'s S, status_writer | {
         let status_result : Result<(), ExecSyntaxError> = loop {
             debug_assert!(buffer.len() >= prefix.len());
             debug_assert_eq!(&buffer[..prefix.len()], prefix);
     
-            let Ok(mut exec_permission) = _self.new_writer(&prefix, &()) else {
-                tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                continue;
+            let mut exec_permission = 'get_writer : loop { 
+                match _self.new_writer(&prefix, &()) {
+                    Ok(writer) => break 'get_writer writer,
+                    Err(_) => { 
+                        tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+                        continue 'get_writer;
+                    } 
+                };
             };
+
             let mut exec_wz = _self.write_zipper(&mut exec_permission);
             let mut rz = exec_wz.fork_read_zipper();
             rz.descend_to(&buffer[prefix.len()..]);
@@ -1437,9 +1449,14 @@ pub fn metta_calculus_localized<'s, S : Space<Auth = ()> + ?Sized>(
                 Ok(ok) => ok,
                 Err(Retry) => {
                     // undo the removal on failure and retry
-                    let Ok(mut exec_permission) = _self.new_writer(&prefix, &()) else { 
-                        tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                        continue;
+                    let mut exec_permission = 'get_writer : loop { 
+                        match _self.new_writer(&prefix, &()) {
+                            Ok(writer) => break 'get_writer writer,
+                            Err(_) => { 
+                                tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+                                continue 'get_writer;
+                            } 
+                        };
                     };
                     let mut exec_wz = _self.write_zipper(&mut exec_permission);
                     exec_wz.descend_to(&buffer[prefix.len()..]);
@@ -1456,12 +1473,14 @@ pub fn metta_calculus_localized<'s, S : Space<Auth = ()> + ?Sized>(
             buffer.truncate(prefix.len());
         };
     
-        status_sink(status_writer, status_result);
+        status_sink(_self, status_writer, status_result);
     }))
 
 }
 
-fn aquire_interpret_localized_permissions
+#[doc = "hidden"]
+/// this function should only remain as an artifact for inlining
+pub fn aquire_interpret_localized_permissions
 <'s: 'r + 'w,  'r, 'w, S : Space<Auth = ()> + ?Sized>
 ( _self : &'s S, patterns : &'r [Expr], templates : &'w [Expr]) 
 -> Result<(Vec<S::Reader<'r>>, Vec<S::Writer<'w>>),Retry>
@@ -1483,9 +1502,12 @@ fn aquire_interpret_localized_permissions
     Ok((readers, writers))
 }
 
+#[doc = "hidden"]
 /// this function should only be called on values of the form `(exec <loc> [, ..patterns) (, ..templates))`
 /// it only checks the exec and <loc> in debug as asserts
-fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
+/// 
+/// this function should only remain as an artifact for inlining
+pub fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
     let mut exec_ez = ExprZipper::new(exec_e);
     if exec_ez.item() != Ok(Tag::Arity(4)) {
         return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
@@ -1533,7 +1555,7 @@ type TemplatesExpr = Expr;
 
 /// the inner [`(PatternsExpr, TemplatesExpr)`] is guaranteed to have expr lists of the form `[<len>] , ...<Patterns | Templates>)`
 #[derive(Clone, Copy)]
-struct PatternsTemplatesExprs {
+pub struct PatternsTemplatesExprs {
     pattterns : PatternsExpr,
     templates : TemplatesExpr,
 }
@@ -1550,7 +1572,7 @@ impl PatternsTemplatesExprs {
     }
 }
 /// this function should only be called if the [`ExprZipper`] passed in is at an [`Tag::Arity`] and the first element is a "function" symbol.
-fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
+pub fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
 
     // [n]
     let Ok(Tag::Arity(n)) = ez.item() else { panic!() };
@@ -1615,7 +1637,7 @@ fn iter_reset_expr(){
     assert_eq!(first,second)
 }
 
-struct Retry;
+pub struct Retry;
 pub enum MettaCalculusLocalizedError{
     LocationWasNotAConstantExpression,
     LocationWasAlreadyDispatchedOnAnotherThread

@@ -152,18 +152,23 @@ pub trait Space {
         transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
     }
 
-    fn metta_calculus_localized<'s,S : Space<Auth = ()>>(
+    /// the `Writer` return in the Option of `status_lock` argument needs to be passed to the paired return continuation.
+    /// The Writer should will be the location of the StatusLock
+    /// 
+    /// unfortunately this is just a hook to inline the code, the lifetimes are too difficult to describe with just types
+    fn metta_calculus_localized<'s>(
         &'s self, 
         location : Expr,
-        status_lock : impl FnOnce(&[u8])->
+        status_lock : impl FnOnce(&'s Self, Vec<u8>)->
         Option<
             ( Self::Writer<'s>
-            , Box<dyn for<'b> FnOnce(Self::Writer<'b>, Result<(), crate::space::ExecSyntaxError>) + Send + 'static>
+            , Box<dyn for<'b> FnOnce(&'b Self, Self::Writer<'b>, Result<(), crate::space::ExecSyntaxError>) + Send + Sync +'static>
             )
-        >,
-    ) ->  Result<(Self::Writer<'s>, impl AsyncFnOnce(&Self, Self::Writer<'s>)), crate::space::MettaCalculusLocalizedError>
+        >
+        + 'static,
+    ) ->  Result<(Self::Writer<'s>, impl AsyncFnOnce(&'s Self, Self::Writer<'s>) + 'static), crate::space::MettaCalculusLocalizedError>
 
-        where Self : Space<Auth = ()>,
+        where Self : Space<Auth = ()> + 'static,
     {
         space::metta_calculus_localized(self, location, status_lock)
     }

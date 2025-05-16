@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 
+use bytes::buf::Writer;
 use mork::Space;
 use pathmap::zipper::{ZipperAbsolutePath, ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
@@ -586,50 +587,145 @@ impl CommandDefinition for MettaThreadCmd {
 
         let expr = cmd.args[0].as_expr().to_owned();
 
-        let status_lock = move |server_space : &ServerSpace, path : Vec<u8>| {
-            let status_writer = server_space.new_writer(&path, &());
-            status_writer.ok().and_then(|writer|
-                Option::<( _,Box<dyn for<'b> FnOnce(&'b _,_,_) + Send + Sync + 'static> )>::Some((
-                    writer, 
-                    Box::new(move |server_space : &ServerSpace, writer : <ServerSpace as Space>::Writer<'_>, result : Result<(), mork::space::ExecSyntaxError>|{
-                        if let Err(syntax_error) = result {
-                            server_space.set_user_status(writer.path(), match syntax_error {
-                                mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
-                                mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; `{}`", e)),
-                                mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; `{}`", e)),
-                            });
-                        }
-                    })
-                ))
-            ) 
-        };
-        
+        // //////////
+        // GUARDS //
+        // ////////
+        let location = mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()};
+        if location.is_ground() { return Err(CommandError::external(StatusCode::BAD_REQUEST, "Loaction was not a ground expression."));};
+        let location_sexpr = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
 
-        let (mut status_writer, fut) = match ctx.0.space.metta_calculus_localized(mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()}, status_lock) {
-            Ok(f) => f,
-            Err(error) => match error {
-                mork::space::MettaCalculusLocalizedError::LocationWasNotAConstantExpression           => return Err(CommandError::external(StatusCode::BAD_REQUEST, "Loaction was not a ground expression.")),
-                mork::space::MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread => return Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")),
-            },
+        // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
+        let status_location_sexpr = format!("(exec {})", location_sexpr);
+        let status_location = <_>::sexpr_to_expr(&ctx.0.space, &status_location_sexpr).unwrap();
+
+        let Ok(status_writer) = (&ctx.0.space).new_writer(&status_location, &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
+
+        // //////////////
+        // BUILD TASK //
+        // ////////////
+
+        // (exec <location> $program_counter $patterns $templates)
+        let mut prefix_e_vec =  ctx.0.space.sexpr_to_expr(&format!("(exec {} $ $)", location_sexpr)).unwrap();
+
+        let task = async move|server_space : &ServerSpace, status_writer | {
+
+            // ////////////////
+            // BUILD BUFFER //
+            // //////////////
+
+            let prefix = unsafe { mork_bytestring::Expr{ ptr : prefix_e_vec.as_mut_ptr() }.prefix().unwrap().as_ref().unwrap() };
+            let mut retry = false;
+            // the invariant is that buffer should always be reset with at least the prefix
+            let mut buffer = Vec::from(prefix);
+
+            // ///////////
+            // PROCESS //
+            // /////////
+
+            let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
+                debug_assert!(buffer.len() >= prefix.len());
+                debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
+                let mut exec_permission = 'get_writer : loop { 
+                    match server_space.new_writer(&prefix, &()) {
+                        Ok(writer) => break 'get_writer writer,
+                        Err(_) => { 
+                            tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+                            continue 'get_writer;
+                        } 
+                    };
+                };
+
+                let mut exec_wz = server_space.write_zipper(&mut exec_permission);
+                let mut rz = exec_wz.fork_read_zipper();
+                rz.descend_to(&buffer[prefix.len()..]);
+
+                if !rz.to_next_val() { 
+                    if retry {
+                        // ////////////////////
+                        // LOOP TO BEGINING //
+                        // //////////////////
+                        buffer.truncate(prefix.len());
+                        tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+                        continue 'process_execs;
+                    }
+
+                    // /////////////////////////////////////
+                    // SUCCESSFUL CONSUMING OF ALL EXECS //
+                    // ///////////////////////////////////
+                    break 'process_execs Ok(())
+                }
+
+                // remember expr
+                buffer.truncate(prefix.len());
+                buffer.extend_from_slice(rz.path());
+                drop(rz);
+
+                // remove expr in case of success
+                exec_wz.descend_to(&buffer[prefix.len()..]);
+                exec_wz.remove_value();
+                drop(exec_wz);
+                drop(exec_permission);
+
+
+                let exec_expr = mork_bytestring::Expr{ ptr: buffer.as_mut_ptr() };
+                let (patterns, templates) = match mork::space::localized_exec_match(server_space, exec_expr) {
+                    Ok(ok) => ok,
+                    Err(exec_syntax_error) => break 'process_execs Err(exec_syntax_error),
+                }.collect_inner();
+
+                let Ok((mut readers, mut writers)) = mork::space::aquire_interpret_localized_permissions(server_space, &patterns, &templates) else {
+                    // /////////
+                    // RETRY //
+                    // ///////
+
+                    // undo the removal on failure and retry
+                    let mut exec_permission = 'get_writer : loop { 
+                        match server_space.new_writer(&prefix, &()) {
+                            Ok(writer) => break 'get_writer writer,
+                            Err(_) => { 
+                                tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+                                continue 'get_writer;
+                            } 
+                        };
+                    };
+                    let mut exec_wz = server_space.write_zipper(&mut exec_permission);
+                    exec_wz.descend_to(&buffer[prefix.len()..]);
+                    exec_wz.set_value(());
+
+                    retry = true;
+                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+                    continue 'process_execs;
+                };
+
+                // ////////////////////////////
+                // ALL PERMISSIONS ACQUIRED //
+                // //////////////////////////
+                server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
+                retry = false;
+                buffer.truncate(prefix.len());
+            };
+
+
+            if let Err(syntax_error) = status_result {
+                    let _ = server_space.set_user_status(status_location, match syntax_error {
+                        mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
+                        mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; `{}`", e)),
+                        mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; `{}`", e)),
+                    });
+            };
+
+            // Free MeTTa Thread location explicty after everything is done.
+            drop(status_writer);
         };
 
-        let status_wz = ctx.0.space.write_zipper(&mut status_writer);
-        let status_path_reader = status_wz.fork_read_zipper();
-        let status_location = mork_bytestring::serialize(status_path_reader.origin_path());
-        drop(status_path_reader);
-        drop(status_wz);
-        
         thread.dispatch_blocking_task(cmd, move |_| {
             let handle = tokio::runtime::Handle::current();
-            handle.block_on( 
-                async move {
-                    fut(&ctx.0.space, status_writer).await;
-                }
-            );
+            handle.block_on( task(&ctx.0.space, status_writer) );
             Ok(())
         }).await;
 
-        Ok(Bytes::from(format!("Thread at location `{}` was dispatched. Errors will be found at the status location of `{status_location}`", mork_bytestring::serialize(&expr))))
+        Ok(Bytes::from(format!("Thread at location `{}` was dispatched. Errors will be found at the status location of `{status_location_sexpr}`", mork_bytestring::serialize(&expr))))
     }
 }
 

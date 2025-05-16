@@ -75,7 +75,7 @@ pub trait Space {
     ///
     /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
     /// not conceptually have mutable state
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> /* + ZipperAbsolutePath */ + 'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + /* ZipperAbsolutePath +  */'w;
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
@@ -145,6 +145,9 @@ pub trait Space {
         template : &[Expr],
         template_writer : &mut [Self::Writer<'s>],
     ) -> (usize, bool) {
+        core::debug_assert_eq!(patterns.len(), pattern_readers.len());
+        core::debug_assert_eq!(template.len(), template_writer.len());
+
         let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
         let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
         let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();

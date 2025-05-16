@@ -1194,8 +1194,11 @@ impl DefaultSpace {
             self.new_reader(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
         ).collect::<Vec<_>>();
 
-        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
-        let mut writers = template_prefixes.iter().map(|p| self.new_writer(p, &()).unwrap() ).collect::<Vec<_>>();
+        let mut writers = templates.iter().map(|e| 
+            self.new_writer(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
+        ).collect::<Vec<_>>();
+
+
 
         self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..])
     }
@@ -1215,11 +1218,12 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
 
         let mut any_new = false;
         let touched = query_multi_impl(patterns, pattern_rzs, |refs, _loc| {
-            for ((wz, prefix), template) in template_wzs.iter_mut().zip(template_prefixes).zip(templates) {
+            for i in 0..template_wzs.len() {
+                let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
                 template.substitute(refs, &mut oz);
                 wz.descend_to(&buffer[prefix.len()..oz.loc]);
-                any_new = any_new || wz.set_value(()).is_none();
+                any_new |= wz.set_value(()).is_none();
                 wz.reset();
             }
             Result::<(),()>::Ok(())
@@ -1256,6 +1260,18 @@ impl DefaultSpace {
 
         assert!(rtz.next_child());
         let dsts = comma_fun_args_asserted(self, rtz.subexpr());
+
+        #[cfg(test)]{
+            println!("SRCS");
+            for each in &srcs {
+                println!("tag : {:?}", ExprZipper::new(*each).tag());
+                println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+            }
+            println!("DSTS");
+            for each in &dsts {
+                println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+            }
+        }
 
         self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
     }
@@ -1311,21 +1327,33 @@ impl DefaultSpace {
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
 
+        // the invariant is that buffer should always be reset with at least the prefix
+        let mut buffer = Vec::from(prefix);
+
         loop {
+            debug_assert!(buffer.len() >= prefix.len());
+            debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
             let mut exec_permission = self.new_writer(&prefix, &()).unwrap(); //GOAT, retry here if fails
             let mut exec_wz = self.write_zipper(&mut exec_permission);
             let mut rz = exec_wz.fork_read_zipper();
+            rz.descend_to(&buffer[prefix.len()..]);
+
             if !rz.to_next_val() { break }
 
-            let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
+            // let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
+            // drop(rz);
+
+            buffer.truncate(prefix.len());
+            buffer.extend_from_slice(rz.path());
             drop(rz);
 
-            exec_wz.descend_to(&x[prefix.len()..]);
+            exec_wz.descend_to(&buffer[prefix.len()..]);
             exec_wz.remove_value();
             drop(exec_wz);
             drop(exec_permission);
 
-            self.interpret(Expr{ ptr: x.as_mut_ptr() });
+            self.interpret(Expr{ ptr: buffer.as_mut_ptr() });
         }
     }
 
@@ -1353,6 +1381,7 @@ impl DefaultSpace {
         out
     }
 }
+
 
 pub enum ExecSyntaxError {
     ExpectedArity4(String),
@@ -1415,10 +1444,10 @@ where S : 'static
             let mut rz = exec_wz.fork_read_zipper();
             rz.descend_to(&buffer[prefix.len()..]);
     
-            if !rz.to_next_val() { 
+            if !rz.to_next_val() {
                 if retry {
                     buffer.truncate(prefix.len());
-                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+                    tokio::time::sleep(core::time::Duration::from_millis(1)).await;
                     continue;
                 }
     
@@ -1575,29 +1604,33 @@ impl PatternsTemplatesExprs {
 pub fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
 
     // [n]
-    let Ok(Tag::Arity(n)) = ez.item() else { panic!() };
-    ez.next();
+    let Tag::Arity(n) = ez.tag() else { panic!() };
+    ez.next_child();
     debug_assert!(n > 1);
 
     // <function>
-    ez.next();
+    debug_assert!(ez.subexpr().is_ground());
+    ez.next_child();
 
     let mut srcs = Vec::with_capacity(n as usize - 1);
     for _ in 0..n as usize - 1 {
-        ez.next_child();
         srcs.push(ez.subexpr());
+        ez.next_child();
     }
     srcs
 }
 
 fn comma_fun_args_asserted(s : &impl Space, e : Expr)->Vec<Expr> {
     let mut ez = ExprZipper::new(e);
+    debug_assert!(matches!(ez.tag(), Tag::Arity(_)));
+    ez.next_child();
     let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
     assert_eq!(
         unsafe { ez.subexpr().span().as_ref().unwrap() }, 
         comma
     );
     ez.reset();
+    debug_assert!(matches!(ez.tag(), Tag::Arity(_)));
     fun_args(ez)    
 }
 

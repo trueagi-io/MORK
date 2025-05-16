@@ -111,6 +111,8 @@ fn main() {
 (exec P1 (, (cell $c $r _)) 
          (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
 
+(exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
+    (, (Deduction remaining (cell $ca $r $x) (cell $cb $r $y))))
 
 "#;
 

@@ -29,4 +29,4 @@ freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } 
 [workspace.dependencies.pathmap]
 path = "../PathMap"
 #features = ["jemalloc"]
-#features = ["all_dense_nodes"]
+features = ["arena_compact"]

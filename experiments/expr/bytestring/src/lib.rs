@@ -2397,7 +2397,6 @@ impl Term for ExprEnv {
     }
 }
 
-/// Failure raised by the algorithm (mirrors the OCaml `exception Fail`)
 #[derive(Debug)]
 pub enum UnificationFailure {
     Occurs((u8, u8), ExprEnv),
@@ -2407,8 +2406,8 @@ pub enum UnificationFailure {
 }
 
 const APPLY_DEPTH: u32 = 64;
-const MAX_UNIFY_ITER: u32 = 1024;
-const PRINT_DEBUG: bool = true;
+const MAX_UNIFY_ITER: u32 = 100;
+const PRINT_DEBUG: bool = false;
 pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<(u8, u8), ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<(u8, u8), u8>, stack: &mut Vec<(u8, u8)>, assignments: &mut Vec<(u8, u8)>) -> (u8, u8) {
     let depth = stack.len();
     if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
@@ -2422,7 +2421,7 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                             if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
                             // println!("original {original_intros} new {new_intros}");
                             if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
-                                println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
+                                // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
                                 oz.write_var_ref(pos as u8);
                             } else {
                                 oz.write_new_var();
@@ -2462,7 +2461,7 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
                         None => {
                             if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
                             if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
-                                println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
+                                // println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
                                 oz.write_var_ref(pos as u8);
                             } else {
                                 oz.write_new_var();
@@ -2527,12 +2526,28 @@ fn occurs(x: (u8, u8), e: ExprEnv) -> bool {
         |c: &mut u8, _, r| r == local!(t), |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
 }
 
-/// ------------------------------------------------------------------
-/// One-shot functor application: unify two term vectors
-/// ------------------------------------------------------------------
-/// * `sx` and `sy` play the rôle of the OCaml stacks.
-/// * On success a map `var ↦ term` is returned; on failure `Err(Fail)`.
-///
+fn dereference(mut t: ExprEnv, bindings: &BTreeMap<(u8, u8), ExprEnv>) -> ExprEnv {
+    if PRINT_DEBUG { println!("derefencing ... (bound to {})", t.show()); }
+    let mut dc = 0;
+    'dereference: loop {
+        match t.var_opt() {
+            None => { break 'dereference }
+            Some(vt) => {
+                match bindings.get(&vt) {
+                    None => { break 'dereference }
+                    Some(ot) => {
+                        if PRINT_DEBUG { println!("following {} bound to {}", t.show(), ot.show()); }
+                        t = *ot;
+                        if dc > 5 { panic!("deref loop") }
+                        else { dc += 1 }
+                    }
+                }
+            }
+        }
+    }
+    t
+}
+
 pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
                 -> Result<BTreeMap<(u8, u8), ExprEnv>, UnificationFailure>
 {
@@ -2541,6 +2556,19 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
     let mut iterations = 0;
 
     while let (Some(x), Some(y)) = (sx.pop(), sy.pop()) {
+        if PRINT_DEBUG {
+            println!("step {iterations}");
+            bindings.iter().for_each(|(k, v)| {
+                // let ov = vec![0u8; 512];
+                // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+                println!("  binding {:?} +{} {}", *k, v.v, v.show());
+                // println!("output {:?}", o);
+
+            });
+            println!();
+        }
+
         if iterations > MAX_UNIFY_ITER { 
             print!("#");
             unsafe {
@@ -2557,7 +2585,7 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
         }
         match (x.var_opt(), y.var_opt()) {
             (None, None) => {
-                println!("NV NV");
+                // println!("NV NV");
                 if x.same_functor(&y) {
                     x.args(&mut sx);
                     y.args(&mut sy);
@@ -2569,10 +2597,15 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
             }
 
             (Some(vx), None) => {
-                println!("V NV");
+                if occurs(vx, y)  { return Err(UnificationFailure::Occurs(vx, y)) }
+                // println!("V NV");
                 let bx = bindings.get(&vx).cloned();
                 match bx {
-                    Some(t) => match t.var_opt() {
+                    Some(mut t) => {
+                        if PRINT_DEBUG { println!("derefencing {vx:?} (bound to {})", t.show()); }
+                        t = dereference(t, &bindings);
+
+                        match t.var_opt() {
                         Some(vx2) => {
                             if PRINT_DEBUG { println!("x {vx:?} bound to {} ({:?}), inserting {}", t.show(), vx2, y.show()); }
                             // if let Some(bound) = bindings.get(&vx2) {
@@ -2583,42 +2616,47 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
                             // }
                             if occurs(vx2, y)  { return Err(UnificationFailure::Occurs(vx2, y)) }
                             bindings.insert(vx2, y.clone());
-                            sx.push(x);
-                            sy.push(y);
+                            // sx.push(x);
+                            // sy.push(y);
                         }
                         None => {
                             sx.push(t);
                             sy.push(y);
                         }
-                    },
+                    } },
                     None => {
                         if occurs(vx, y)  { return Err(UnificationFailure::Occurs(vx, y)) }
                         bindings.insert(vx, y);
+                        // mgu[vx] = 1
                     }
                 }
             }
 
             (None, Some(vy)) => {
-                println!("NV V");
-                let by = bindings.get(&vy).cloned();
-                match by {
-                    Some(t) => match t.var_opt() {
-                        Some(vy2) => {
-                            if PRINT_DEBUG { println!("y {vy:?} bound to {} ({:?}), inserting {}", t.show(), vy2, x.show()); }
-                            // if let Some(bound) = bindings.get(&vy2) {
-                            //     if occurs(vy2, *bound)  { return Err(UnificationFailure::Occurs(vy2, *bound)) }
-                            //     sx.push(x);
-                            //     sy.push(*bound);
-                            //     continue
-                            // }
-                            if occurs(vy2, x)  { return Err(UnificationFailure::Occurs(vy2, x)) }
-                            bindings.insert(vy2, x.clone());
-                            sx.push(x);
-                            sy.push(y);
-                        }
-                        None => {
-                            sx.push(x);
-                            sy.push(t);
+                if occurs(vy, x)  { return Err(UnificationFailure::Occurs(vy, x)) }
+                // println!("NV V");
+                match bindings.get(&vy).cloned() {
+                    Some(mut t) => {
+                        t = dereference(t, &bindings);
+
+                        match t.var_opt() {
+                            Some(vy2) => {
+                                if PRINT_DEBUG { println!("y {vy:?} bound to {} ({:?}), inserting {}", t.show(), vy2, x.show()); }
+                                // if let Some(bound) = bindings.get(&vy2) {
+                                //     if occurs(vy2, *bound)  { return Err(UnificationFailure::Occurs(vy2, *bound)) }
+                                //     sx.push(x);
+                                //     sy.push(*bound);
+                                //     continue
+                                // }
+                                if occurs(vy2, x)  { return Err(UnificationFailure::Occurs(vy2, x)) }
+                                bindings.insert(vy2, x.clone());
+                                // sx.push(x);
+                                // sy.push(y);
+                            }
+                            None => {
+                                sx.push(x);
+                                sy.push(t);
+                            }
                         }
                     },
                     None => {
@@ -2629,22 +2667,36 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
             }
 
             (Some(vx), Some(vy)) => {
-                println!("V  V");
+                // println!("V  V");
                 let bx = bindings.get(&vx).cloned();
                 let by = bindings.get(&vy).cloned();
 
                 match (bx, by) {
                     (None, None) => {
-                        println!("no no insert {vx:?} {y:?}");
-                        bindings.insert(vx, y);
+                        if PRINT_DEBUG { println!("free free; bind {vx:?} to {}", y.show()); }
+                        if vx != vy { bindings.insert(vx, y); }
                     }
-                    (Some(t), None) => {
-                        println!("yes no insert {vy:?} {t:?}");
-                        bindings.insert(vy, t);
+                    (Some(mut t), None) => {
+                        if PRINT_DEBUG { println!("bound free; bind {vy:?} to {}", t.show()); }
+                        t = dereference(t, &bindings);
+                        match t.var_opt() {
+                            None => {
+                                if occurs(vy, t)  { return Err(UnificationFailure::Occurs(vy, t)) }
+                                bindings.insert(vy, t); }
+                            Some(vt) => { if vy != vt { bindings.insert(vy, t); } }
+                        }
+                        // bindings.insert(vy, x);
                     }
-                    (None, Some(t)) => {
-                        println!("no yes insert {vx:?} {t:?}");
-                        bindings.insert(vx, t);
+                    (None, Some(mut t)) => {
+                        if PRINT_DEBUG { println!("free bound; bind {vx:?} to {}", t.show()); }
+                        t = dereference(t, &bindings);
+                        match t.var_opt() {
+                            None => {
+                                if occurs(vx, t)  { return Err(UnificationFailure::Occurs(vx, t)) }
+                                bindings.insert(vx, t); }
+                            Some(vt) => { if vx != vt { bindings.insert(vx, t); } }
+                        }
+                        // bindings.insert(vx, y);
                     }
                     (Some(tx), Some(ty)) => {
                         // $x <- POS ($x $b)
@@ -2653,6 +2705,7 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
                         // HACK; false
                         // if tx.n == ty.n && tx.offset == ty.offset { continue }
                         if tx.n == ty.n && tx.offset == ty.offset {
+                            // println!("HACK1");
                             unsafe {
                                 if let Tag::NewVar = byte_item(*tx.subsexpr().ptr) {
                                     if let Tag::NewVar = byte_item(*ty.subsexpr().ptr) {
@@ -2669,6 +2722,7 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
                             if occurs(vy, ty)  { return Err(UnificationFailure::Occurs(vy, ty)) }
                         }
                         if let (Some(vx_), Some(vy_)) = (tx.var_opt(), ty.var_opt()) {
+                            // println!("HACK2");
                             // println!("yes yes push {} {}", tx.show(), ty.show());
                             // println!("             {} {}", x.show(), y.show());
                             if vx == vx_ && vy == vy_ && vx != vy { return Err(Unsatisfiable(vx, vy)) }
@@ -2681,8 +2735,10 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
                                 continue
                             }
                         }
-                        if PRINT_DEBUG { println!("yes yes push {} {}", tx.show(), ty.show()); }
-                        println!("             {} {}", x.show(), y.show());
+                        if PRINT_DEBUG {
+                            println!("bound bound; push {} {}", tx.show(), ty.show());
+                            println!("             {} {}", x.show(), y.show());
+                        }
                         sx.push(tx);
                         sy.push(ty);
                     }

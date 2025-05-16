@@ -1,13 +1,14 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
 use std::ptr::{addr_of, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperForking, ZipperMovingPriv, ZipperSubtries};
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -1040,7 +1041,7 @@ impl Space {
 
         let mut buffer = [0u8; 4096];
 
-        self.query_multi(&[pattern], |refs, loc| {
+        Self::query_multi(&self.btm, &[pattern], |refs, loc| {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
             template.substitute(refs, &mut oz);
 
@@ -1116,17 +1117,16 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
-        let copy_map = self.btm.clone();
+    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
         let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
-        let mut rz = copy_map.read_zipper_at_path(first_pattern_prefix);
+        let mut rz = btm.read_zipper_at_path(first_pattern_prefix);
         if !rz.path_exists() { return Ok(0); }
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
             let mut temp_map = BytesTrieMap::new();
             let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
             let zh = temp_map.zipper_head();
-            let rz = copy_map.read_zipper_at_path(prefix);
+            let rz = btm.read_zipper_at_path(prefix);
             if !rz.path_exists() { return Ok(0) }
             zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&rz);
             drop(zh);
@@ -1211,6 +1211,7 @@ impl Space {
             }
         }
         let mut placements = subsumption.clone();
+        let read_copy = self.btm.clone();
         let mut template_wzs: Vec<_> = vec![];
         // let mut write_copy = self.btm.clone();
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
@@ -1228,17 +1229,26 @@ impl Space {
         println!("subsumption {:?}", subsumption);
 
         let mut any_new = false;
-        let touched = self.query_multi(patterns, |refs, loc| {
+        let touched = Self::query_multi(&read_copy, patterns, |refs, loc| {
             for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
                 let wz = &mut template_wzs[subsumption[i]];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+                // println!("template {}", serialize(unsafe { templates.first().unwrap().span().as_ref().unwrap()}));
+                // println!("refs {:?}", refs.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>());
+                // loc.transformed(template,)
                 template.substitute(refs, &mut oz);
-                println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+                // mork_bytestring::apply(0, 0, 0, &mut ExprZipper::new(*template), &refs.iter().enumerate().map(|(i, r)| {
+                //     ((i as u8, 0u8), ExprEnv::new(0u8, *r))
+                // }).collect(), &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                // println!("out {:?}", oz.root);
+                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
                 wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
+                // println!("insert path {}", serialize(&buffer[..oz.loc]));
                 any_new |= wz.set_value(()).is_none();
                 wz.reset();
                 // THIS DOES WORK v
-                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..], ()).is_none();
+                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
                 
             }
             Ok::<(), ()>(())
@@ -1256,7 +1266,7 @@ impl Space {
     }
 
     pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
-        self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
+        Self::query_multi(&self.btm, &[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 
     // (exec <loc> (, <src1> <src2> <srcn>)

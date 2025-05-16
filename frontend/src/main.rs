@@ -246,7 +246,7 @@ fn main() {
     let mut stack = [0; 2 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
+        match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
                 // btm.insert(&stack[..ez.loc], ());
                 // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }

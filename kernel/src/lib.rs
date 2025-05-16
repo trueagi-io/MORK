@@ -280,11 +280,11 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))"
-        // // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
-        // , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
-        // , "\n(? (add $ret) (Z $y) (! $ret $y))"
-        // , "\n(! (add result) ((S Z) (S Z)))"
+        , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
+        // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
+        , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
+        , "\n(? (add $ret) (Z $y) (! $ret $y))"
+        , "\n(! (add result) ((S Z) (S Z)))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
@@ -305,7 +305,7 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec PC0 (, ($x a b) v) (, result thing))"
+        , "\n(exec PC0 (, ($x a b) v) (, thing))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
@@ -313,7 +313,10 @@ mod tests {
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-        dbg!(unsafe { core::mem::transmute::<_,&String>(&v) });
+
+        let string = std::str::from_utf8(&v).unwrap();
+        dbg!( string );
+        
         core::assert_eq!(v.len(), 0);
         
     }
@@ -324,11 +327,9 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec PC0 (, $x) (, result-pc0 ))"
+        , "\n(exec PC0 (, (exec $loc $p $t)) (, (result-pc0 (exec $loc $p $t))))"
 
-        // // the test fails if the the other one is used
-        , "\n(exec PC01 (, $x) (, result-pc01))"
-        // , "\n(exec PC1 (, $x) (, result-pc1))"
+        , "\n(exec PC1 (, (exec $loc $p $t)) (, (result-pc1 (exec $loc $p $t))))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
@@ -337,8 +338,7 @@ mod tests {
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
-        // println!("\nRESULTS\n");
-        // println!("{}", String::from_utf8(v).unwrap());
+        core::assert_eq!("(result-pc0 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n", &String::from_utf8(v).unwrap())
     }
     
     #[test]
@@ -407,8 +407,8 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        #[cfg(test)]
-        println!("IN METTA_CALCULUS_EXEC_PEREMISSIONS after METTA_CALCULUS:\n\t{:#?}", s.dump_raw_at_root());
+        // #[cfg(test)]
+        // println!("IN METTA_CALCULUS_EXEC_PEREMISSIONS after METTA_CALCULUS:\n\t{:#?}", s.dump_raw_at_root());
 
         s.metta_calculus();
 

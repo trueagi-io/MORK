@@ -82,7 +82,7 @@ fn main() -> Result<(),&'static str> {
     let mut stack = [0u8; 1 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
+        match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
                 family.insert(&stack[..ez.loc], ());
             }

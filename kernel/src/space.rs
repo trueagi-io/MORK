@@ -1200,9 +1200,12 @@ impl DefaultSpace {
 
 
 
+        // //the bug even if I use this dummy return value
+        // (0,false)
         self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..])
     }
 }
+#[inline(always)]
 pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
     patterns          : &[Expr],
     pattern_rzs       : &[RZ],
@@ -1261,17 +1264,16 @@ impl DefaultSpace {
         assert!(rtz.next_child());
         let dsts = comma_fun_args_asserted(self, rtz.subexpr());
 
-        #[cfg(test)]{
-            println!("SRCS");
-            for each in &srcs {
-                println!("tag : {:?}", ExprZipper::new(*each).tag());
-                println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-            }
-            println!("DSTS");
-            for each in &dsts {
-                println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-            }
-        }
+        // #[cfg(test)]{
+        //     println!("SRCS");
+        //     for each in &srcs {
+        //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+        //     }
+        //     println!("DSTS");
+        //     for each in &dsts {
+        //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+        //     }
+        // }
 
         self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
     }
@@ -1606,7 +1608,7 @@ pub fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
     // [n]
     let Tag::Arity(n) = ez.tag() else { panic!() };
     ez.next_child();
-    debug_assert!(n > 1);
+    debug_assert!(n >= 1);
 
     // <function>
     debug_assert!(ez.subexpr().is_ground());

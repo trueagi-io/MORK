@@ -684,7 +684,7 @@ fn main() {
     let mut stack = [0u8; 2 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
+        match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
                 // println!("{:?}", ez.root);
                 space.insert(&stack[..ez.loc], ());

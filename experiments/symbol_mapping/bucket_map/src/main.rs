@@ -326,7 +326,7 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
     let mut stack = [0; 2 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
+        match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
             Err(ParserError::InputFinished) => { break }
             Err(other) => { panic!("{:?}", other) }

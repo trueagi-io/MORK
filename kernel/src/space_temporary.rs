@@ -205,7 +205,7 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
     let mut result = None;
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-        match parser.sexpr(&mut it, &mut ez) {
+        match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
                 if result.is_some() {
                     return Err(ParseError(format!("Found multiple S-Expressions in: {data}")))

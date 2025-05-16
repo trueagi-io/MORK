@@ -127,9 +127,12 @@ pub trait Parser {
 
   /// Parse a single s-expression from the ParseContext
   fn sexpr<SrcStream: BufRead + Read>(&mut self, it: &mut ParseContext<SrcStream>, target: &mut ExprZipper) -> Result<(), ParserError> {
-    use ParserError::*;
     it.var_names.clear();
     it.var_indices.clear();
+    self.sexpr_(it, target)
+  }
+  fn sexpr_<SrcStream: BufRead + Read>(&mut self, it: &mut ParseContext<SrcStream>, target: &mut ExprZipper) -> Result<(), ParserError> {
+    use ParserError::*;
 
     while it.has_next() {
       match it.peek()? {
@@ -160,7 +163,7 @@ pub trait Parser {
             match it.peek()? {
               c if isWhitespace(c) => { it.next()?; }
               _ => {
-                self.sexpr(it, target)?;
+                self.sexpr_(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
                   if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }

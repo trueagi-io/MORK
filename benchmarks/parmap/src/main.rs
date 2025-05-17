@@ -3,9 +3,9 @@ use std::time::Instant;
 use rayon::ThreadPoolBuilder;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperIteration, ZipperAbsolutePath};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::WriteZipper;
+use pathmap::zipper::*;
 
-const K: u64 = 1_000_000_0;
+const K: u64 = 1_000_000_000;
 
 fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &mut ReadZipperUntracked<()>, f: &mut F) {
     rz.descend_until();
@@ -21,14 +21,14 @@ fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &m
     rz.descend_first_byte();
     loop {
         cs += rz.child_mask().iter().fold(0, |t, x| t + x.count_ones());
-        if !rz.to_sibling(true) { break }
+        if !rz.to_next_sibling_byte() { break }
     }
     rz.ascend_byte();
     rz.descend_first_byte();
     if cs >= at_least {
         loop {
             f(cs, rz);
-            if !rz.to_sibling(true) { break }
+            if !rz.to_next_sibling_byte() { break }
         }
     } else {
         panic!("not implemented at_least={}, cs={}", at_least, cs)
@@ -37,7 +37,7 @@ fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &m
 
 #[allow(unused)]
 fn parallel_map() {
-    const TC: u32 = 12;
+    const TC: u32 = 64;
 
     let mut map = BytesTrieMap::new();
     let zh = map.zipper_head();
@@ -84,7 +84,7 @@ fn parallel_map() {
                             // work_output.graft(work_input);
                             // println!("thread {} processing origin={:?} (queued: {})", dispatches, work_input.origin_path(), work_input.val_count());
                             loop {
-                                if work_input.to_next_val().is_none() { break }
+                                if !work_input.to_next_val() { break }
                                 // println!("tp {:?}", work_input.path());
                                 let mut buffer = [0; 8];
                                 for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -103,7 +103,7 @@ fn parallel_map() {
                     }));
                 }
 
-                if !z.to_sibling(true) { break }
+                if !z.to_next_sibling_byte() { break }
             }
             z.ascend_byte();
         });
@@ -116,7 +116,7 @@ fn parallel_map() {
                 for (work_input, work_output) in thread_units.iter_mut() {
                     // work_output.graft(work_input);
                     loop {
-                        if work_input.to_next_val().is_none() { break }
+                        if !work_input.to_next_val() { break }
                         // println!("tp {:?}", work_input.path());
                         let mut buffer = [0; 8];
                         for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -180,7 +180,7 @@ fn task_parallel_map() {
 
             work_zippers.push((work_input, work_output));
 
-            if !z.to_sibling(true) { break }
+            if !z.to_next_sibling_byte() { break }
         }
         z.ascend_byte();
     });
@@ -192,7 +192,7 @@ fn task_parallel_map() {
             scope.spawn(move |_| {
                 // work_output.set_value(());
                 loop {
-                    if work_input.to_next_val().is_none() { break }
+                    if !work_input.to_next_val() { break }
                     // println!("tp {:?}", work_input.path());
                     let mut buffer = [0; 8];
                     for (s, t) in work_input.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -238,7 +238,7 @@ fn sequential_map() {
 
     let t0 = Instant::now();
     loop {
-        if dz.to_next_val().is_none() { break }
+        if !dz.to_next_val() { break }
         // println!("tp {:?}", dz.path());
         let mut buffer = [0; 8];
         for (s, t) in dz.path().iter().rev().zip(buffer.iter_mut().rev()) {
@@ -273,30 +273,56 @@ fn main() {
     parallel_map();
 }
 
+// using K = 1_000_000_000
 /*
-using K = 1_000_000_000
-
 > sequential_map
 processing took 98_984_927 micros
 
+jemalloc
 > parallel_map
-jemalloc (8) 93% eff.
+(8) 93% eff.
 delegating 60 chunks took 619 micros
 processing took 13_352_843 micros
 
-jemalloc (16) 83% eff.
+(16) 83% eff.
 delegating 60 chunks took 1091 micros
 processing took 7_451_781 micros
 
-jemalloc (32) 73% eff.
+(32) 73% eff.
 delegating 60 chunks took 1888 micros
 processing took 4_191_062 micros
 
-jemalloc (48) 69% eff.
+(48) 69% eff.
 delegating 15259 chunks took 9439 micros
 processing took 2_952_002 micros
 
-jemalloc (64) 55% eff.
+(64) 55% eff.
 delegating 15259 chunks took 10814 micros
 processing took 2_766_225 micros
+ */
+
+/*
+> sequential map
+processing took 80_667_456 micros  (racy rc 76_223_403)
+
+> parallel map jemalloc+2MB THP
+(8) 39% eff.
+delegating 60 chunks took 214 micros
+processing took 25775365 micros (racy rc 24_525_754)
+
+(16) 35% eff.
+delegating 60 chunks took 754 micros
+processing took 14284084 micros
+
+(32) 32% eff.
+delegating 60 chunks took 1870 micros
+processing took 7856521 micros
+
+(48) 31% eff.
+delegating 60 chunks took 795 micros
+processing took 5437888 micros
+
+(64) 30% eff.
+delegating 60 chunks took 3457 micros
+processing took 4081127 micros (racy rc 3_787_482)
  */

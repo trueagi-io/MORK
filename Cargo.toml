@@ -6,6 +6,7 @@ members = [
     "benchmarks/logic-query/",
     "benchmarks/oeis/",
     "benchmarks/simple_partest/",
+    "benchmarks/parmap/",
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/bucket_map_dependant_tests", "experiments/symbol_mapping/naive_map",
     "frontend/",
@@ -28,5 +29,4 @@ freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } 
 
 [workspace.dependencies.pathmap]
 path = "../PathMap"
-#features = ["jemalloc"]
-features = ["arena_compact"]
+features = ["jemalloc", "arena_compact"]

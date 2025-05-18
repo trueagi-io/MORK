@@ -108,13 +108,23 @@ fn main() {
 (exec P0 (, (sudoku p2 input (row ($r $x1 $x2 $x3 $x4 $x5 $x6 $x7 $x8 $x9)))) 
          (, (cell 1 $r $x1) (cell 2 $r $x2) (cell 3 $r $x3)  (cell 4 $r $x4) (cell 5 $r $x5) (cell 6 $r $x6)  (cell 7 $r $x7) (cell 8 $r $x8) (cell 9 $r $x9)  ))
 
-(exec P1 (, (cell $c $r _)) 
-         (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
-
-(exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
-    (, (Deduction remaining (cell $ca $r $x) (cell $cb $r $y))))
 
 "#;
+    // (exec P1 (, (cell $c $r _))
+    // (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
+    // 
+    // (exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
+    // (, (Deduction remaining (cell $ca $r X) (cell $cb $r Y))))
+
+    // (exec P3 (, (cell $c $ra $va) (cell $c $rb $vb))
+    // (, (Deduction remaining (cell $c $ra X) (cell $c $rb Y))))
+    // 
+    // 
+    // (exec P4 (, (cell $c $ra $va) (cell $c $rb $vb))
+    // (, (Deduction remaining (cell $c $ra $x) (cell $c $rb $y))))
+    // (block 0 1 1) (block 0 1 2) (block 0 1 3)
+    // (block 0 2 1) (block 0 2 2) (block 0 2 3)
+    // (block 0 3 1) (block 0 3 2) (block 0 3 3)
 
     const sudoku_p2: &str = r#"
 1 2 3 4 5 6 7 8 9

@@ -8,7 +8,7 @@ use std::ptr::{addr_of, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperForking, ZipperMovingPriv, ZipperSubtries};
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify};
+use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -101,10 +101,12 @@ fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
     }).unwrap()
 }
 
-fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[ExprEnv], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<ExprEnv>, introduced: u8, f: &mut F) {
     unsafe {
     macro_rules! unroll {
-    (ACTION $recursive:expr) => { f(&references[..], loc); };
+    (ACTION $recursive:expr) => {
+        println!("introduced {} in {}", introduced, serialize(loc.origin_path()));
+        f(&references[..], loc); };
     (ITER_AT_DEPTH $recursive:expr) => {
         let level = *last; last = last.offset(-1);
 
@@ -123,7 +125,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         while i > 0 {
             if i == level {
-                referential_transition(last, loc, references, f);
+                referential_transition(last, loc, references, introduced, f);
                 if loc.to_next_sibling_byte() {
                 } else {
                     assert!(loc.ascend_byte());
@@ -146,13 +148,13 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (ITER_NESTED $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
         if arity == 0 {
-          referential_transition(last, loc, references, f);
+          referential_transition(last, loc, references, introduced, f);
         } else {
             for _ in 0..arity-1 {
                 last = last.offset(1);
                 *last = ITER_EXPR;
             }
-            unroll!(ITER_EXPR referential_transition(last, loc, references, f));
+            unroll!(ITER_EXPR referential_transition(last, loc, references, introduced, f));
 
             last = last.offset(-(arity as isize - 1));
         }
@@ -169,7 +171,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = s;
                     last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, f);
+                    referential_transition(last, loc, references, introduced, f);
                     last = last.offset(-1);
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
@@ -194,7 +196,10 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         while let Some(b) = it.next() {
             let buf = [b];
             if loc.descend_to(buf) {
-                referential_transition(last, loc, references, f);
+                let intro = if matches!(byte_item(b), Tag::NewVar) {
+                    introduced + 1
+                } else { introduced };
+                referential_transition(last, loc, references, intro, f);
             }
             loc.ascend(1);
         }
@@ -210,7 +215,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = a;
                     last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, f);
+                    referential_transition(last, loc, references, introduced, f);
                     last = last.offset(-1);
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
@@ -256,7 +261,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
             if loc.descend_to(&v[..size as usize]) {
-                referential_transition(last, loc, references, f);
+                referential_transition(last, loc, references, introduced, f);
             }
             loc.ascend(size as usize);
         }
@@ -267,7 +272,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (ITER_ARITY $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
         if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-            referential_transition(last, loc, references, f);
+            referential_transition(last, loc, references, introduced, f);
         }
         loc.ascend_byte();
         last = last.offset(1); *last = arity;
@@ -278,7 +283,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         unroll!(ITER_VARIABLES $recursive);
 
         if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-            referential_transition(last, loc, references, f);
+            referential_transition(last, loc, references, introduced, f);
         }
         loc.ascend_byte();
         last = last.offset(1); *last = arity;
@@ -286,7 +291,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (BEGIN_RANGE $recursive:expr) => {
         // references.push((loc.path().len() as u32, 0));
         let p = loc.origin_path();
-        references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
+        references.push(ExprEnv { n: 0, v: introduced, offset: p.len() as u32, base: Expr{ ptr: p.as_ptr().cast_mut() } });
         $recursive;
         references.pop();
     };
@@ -297,7 +302,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (REFER_RANGE $recursive:expr) => {
         let index = *last; last = last.offset(-1);
-        let subexpr = references[index as usize];
+        let subexpr = references[index as usize].subsexpr();
         let mut ez = ExprZipper::new(subexpr);
         let mut v0 = last;
         loop {
@@ -362,7 +367,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
-    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f)));
+    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
     // unroll!(CALL referential_transition(last, loc, references, f));
     }
 }
@@ -1043,7 +1048,9 @@ impl Space {
 
         Self::query_multi(&self.btm, &[pattern], |refs, loc| {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            template.substitute(refs, &mut oz);
+            // template.substitute(refs, &mut oz);
+            mork_bytestring::apply(0, 0, 0, &mut ExprZipper::new(template),
+                                   &refs.iter().enumerate().map(|(i, ee)| ((0u8, i as u8), *ee)).collect(), &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
 
             // &buffer[constant_template_prefix.len()..oz.loc]
             Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
@@ -1117,10 +1124,21 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<T, F : FnMut(&[Expr], Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
+    pub fn query_multi<T, F : FnMut(&[ExprEnv], Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
         let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
         let mut rz = btm.read_zipper_at_path(first_pattern_prefix);
         if !rz.path_exists() { return Ok(0); }
+        let mut first_temp_map = BytesTrieMap::new();
+        let mut first_zh = first_temp_map.zipper_head();
+        let mut virtual_path = vec![item_byte(Tag::Arity(patterns.len() as u8))];
+        let mut pattern_expr = virtual_path.clone();
+        for pattern in patterns.iter() {
+            pattern_expr.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() })
+        }
+        virtual_path.extend_from_slice(first_pattern_prefix);
+        first_zh.write_zipper_at_exclusive_path(&virtual_path[..]).unwrap().graft(&rz);
+        drop(first_zh);
+        let mut rz = first_temp_map.into_read_zipper(&[virtual_path[0]]);
         let mut tmp_maps = vec![];
         for p in patterns[1..].iter() {
             let mut temp_map = BytesTrieMap::new();
@@ -1136,7 +1154,8 @@ impl Space {
         rz.reset();
         let mut prz = ProductZipper::new(rz, patterns[1..].iter().enumerate().map(|(i, p)| {
             let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            tmp_maps[i].read_zipper_at_path(prefix)
+            // tmp_maps[i].read_zipper_at_path(prefix)
+            tmp_maps[i].read_zipper()
         }));
         prz.reserve_path_buffer(4096);
 
@@ -1145,21 +1164,31 @@ impl Space {
 
         for pattern in patterns.iter().rev() {
             let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
-            stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
+            stack.extend_from_slice(&referential_bidirectional_matching_stack(&mut ExprZipper::new(*pattern))[..]);
+            // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
         }
         stack.reserve(4096);
 
-        let mut references: Vec<Expr> = vec![];
+        let mut references: Vec<ExprEnv> = vec![];
         let mut candidate = 0;
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
             static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(null_mut()) };
         }
 
+        println!("pattern {:?}", serialize(&pattern_expr[..]));
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
+                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
+                    let bindings = unify(vec![ExprEnv::new(0, Expr { ptr: pattern_expr.as_mut_ptr() })], vec![ExprEnv::new(1, e)]);
+                    match bindings {
+                        Ok(bs) => {
+                            bs.iter().for_each(|(v, ee)| println!("binding {:?} {}", *v, ee.show()));
+                        }
+                        Err(failed) => { println!("failed {:?}", failed) }
+                    }
+                    
                     match effect(refs, e) {
                         Ok(()) => {}
                         Err(t) => {
@@ -1230,17 +1259,23 @@ impl Space {
 
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, patterns, |refs, loc| {
+            // println!("pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+            println!("data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+
             for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
                 let wz = &mut template_wzs[subsumption[i]];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-                // println!("template {}", serialize(unsafe { templates.first().unwrap().span().as_ref().unwrap()}));
-                // println!("refs {:?}", refs.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>());
+
+
+                println!("{i} template {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+                let ti: usize = patterns.iter().map(|p| p.newvars()).sum();
+                println!("{i} ti {ti} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
                 // loc.transformed(template,)
-                template.substitute(refs, &mut oz);
-                // mork_bytestring::apply(0, 0, 0, &mut ExprZipper::new(*template), &refs.iter().enumerate().map(|(i, r)| {
-                //     ((i as u8, 0u8), ExprEnv::new(0u8, *r))
+                template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                // mork_bytestring::apply(0, ti as u8, ti as u8, &mut ExprZipper::new(*template), &refs.iter().enumerate().map(|(i, ee)| {
+                //     ((i as u8, 0u8), *ee)
                 // }).collect(), &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
-                // println!("out {:?}", oz.root);
+                println!("{i} out {:?}", oz.root);
                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
                 wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
@@ -1265,7 +1300,7 @@ impl Space {
         self.transform_multi_multi(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
+    pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
         Self::query_multi(&self.btm, &[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
     }
 

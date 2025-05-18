@@ -305,7 +305,13 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec PC0 (, ($x a b) v) (, thing))"
+        // , "\n(exec PC0 (, v) (, thing))"                        // regression bug was outputing : "thing\n"
+        // , "\n(exec PC0 (, v) (, (thing) ))"                     // regression bug was outputing : "(thing)\n"
+        // , "\n(exec PC0 (, v) (, (thing (thing thing) thing) ))" // regression bug was outputing : "(thing (thing thing) thing)\n"
+        // , "\n(exec PC0 (, v) (, (thing thing) ))"               // regression bug was outputing : "(thing thing)\n"
+        , "\n(exec PC0 (, v) (, ($x thing) ))"                     // ""
+        // , "\n(exec PC0 (, v) (, (thing $x) ))"                  // ""
+
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();

@@ -1162,13 +1162,20 @@ where
             if unsafe { setjmp(a) == 0 } {
                 referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
-                    match effect(refs, e) {
-                        Ok(()) => {}
-                        Err(t) => {
-                            let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
-                            unsafe { std::ptr::write(t_ptr as *mut E, t) };
-                            RET.set(t_ptr);
-                            unsafe { longjmp(a, 1) }
+
+
+                    // Remy : this check is potentially expensive, but at least it makes dangling constant not an issue.
+                    //        I would like a better alternative
+                    let skip = !loc.is_value() && e.is_ground();
+                    if !skip {
+                        match effect(refs, e) {
+                            Ok(()) => {}
+                            Err(t) => {
+                                let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
+                                unsafe { std::ptr::write(t_ptr as *mut E, t) };
+                                RET.set(t_ptr);
+                                unsafe { longjmp(a, 1) }
+                            }
                         }
                     }
                     unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
@@ -1200,8 +1207,6 @@ impl DefaultSpace {
 
 
 
-        // //the bug even if I use this dummy return value
-        // (0,false)
         self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..])
     }
 }

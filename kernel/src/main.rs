@@ -115,8 +115,8 @@ const work_mm2: &str = r#"
             (SPO $x includes $y)
             (SPO $x transcribed_from $z)) (,) (, (res0 $x $y $z))))
 (exec P1' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
-(exec P1'' (, (res0 $x $y $z)) (, (COUNT (res0 $x $y $z))) (, (count "all related to gene" $c)))
-(exec P1''' (,) (, (MICROS $t)) (, (time "all related to gene result count" $t us)))
+(exec P1'' (, (res0 $x $y $z)) (, (COUNT (res0 $x $y $z))) (, (count "query TP73-AS1" $c)))
+(exec P1''' (,) (, (MICROS $t)) (, (time "query TP73-AS1" $t us)))
 
 (exec P2 (, (NKV $x chr $y)) (,) (, (chr_of $y $x)))
 (exec P2' (,) (, (MICROS $t)) (, (time "add exon chr index" $t us)))
@@ -155,6 +155,26 @@ fn work_mm2_run() {
     println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
     println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
 }
+
+/*
+paths restore took 135
+ 978700221 atoms
+add gene name index took 8637 ms
+ 979015756 atoms
+query TP73-AS1
+ 193 µs
+ 142
+add exon chr index took 32 s
+ 1054962128 atoms
+add ops index took 91 s
+ 1386253656 atoms
+query chr1
+ 7691 ms
+ 40172978 atoms
+query BRCA2
+ 33295 µs
+ 151956 atoms
+ */
 
 fn basic() {
     let mut s = Space::new();

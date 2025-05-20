@@ -40,6 +40,11 @@ use mork_bytestring::{item_byte, Tag};
 // }
 
 fn work(s: &mut Space) {
+    let restore_paths_start = Instant::now();
+    println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
+    println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
+    s.statistics();
+
     let add_gene_name_index_start = Instant::now();
     s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
     println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
@@ -100,6 +105,55 @@ fn work(s: &mut Space) {
     });
     println!("res2 count {}", count);
 
+}
+
+const work_mm2: &str = r#"
+(exec P0 (, (NKV $x gene_name $y)) (,) (, (gene_name_of $y $x)))
+(exec P0' (,) (, (MICROS $t) (U64.DIV $t 1000 $tms)) (, (time "add gene name index" $tms ms)))
+
+(exec P1 (, (gene_name_of TP73-AS1 $x)
+            (SPO $x includes $y)
+            (SPO $x transcribed_from $z)) (,) (, (res0 $x $y $z))))
+(exec P1' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+(exec P1'' (, (res0 $x $y $z)) (, (COUNT (res0 $x $y $z))) (, (count "all related to gene" $c)))
+(exec P1''' (,) (, (MICROS $t)) (, (time "all related to gene result count" $t us)))
+
+(exec P2 (, (NKV $x chr $y)) (,) (, (chr_of $y $x)))
+(exec P2' (,) (, (MICROS $t)) (, (time "add exon chr index" $t us)))
+
+(exec P3 (, (SPO $s $p $o)) (,) (, (OPS $o $p $s)))
+(exec P3' (,) (, (MICROS $t)) (, (time "add exon chr index" $t us)))
+
+(exec P4 (, (chr_of chr1 $x)
+            (OPS $x includes $y)
+            (SPO $y transcribed_from $z)
+            (OPS $z transcribed_from $w)) (,) (, (res1 $x $y $z $w))))
+(exec P4' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+(exec P4'' (, (res1 $x $y $z $w)) (, (COUNT (res1 $x $y $z $w))) (, (count "query chr1" $c)))
+(exec P4''' (,) (, (MICROS $t)) (, (time "query chr1" $t us)))
+
+(exec P5 (, (gene_name_of BRCA2 $x)
+            (SPO $x transcribed_to $y)
+            (SPO $y translates_to $z)
+            (OPS $z interacts_with $p)
+            (SPO $x genes_pathways $q)) (,) (, (res2 $x $y $z $p $q))))
+(exec P5' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+(exec P5'' (, (res2 $x $y $z $p $q)) (, (COUNT (res2 $x $y $z $p $q))) (, (count "query BRCA2" $c)))
+(exec P5''' (,) (, (MICROS $t)) (, (time "query BRCA2" $t us)))
+"#;
+
+fn work_mm2_run() {
+    let mut s = Space::new();
+    let restore_paths_start = Instant::now();
+    println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
+    println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
+    s.statistics();
+
+    s.metta_calculus();
+
+    let backup_paths_start = Instant::now();
+    println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
+    println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
 }
 
 fn basic() {

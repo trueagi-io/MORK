@@ -102,17 +102,51 @@ fn work(s: &mut Space) {
 
 }
 
+fn basic() {
+    let mut s = Space::new();
+
+    const space: &str = r#"
+(Straight 1 2)
+(Straight 2 3)
+
+(exec (P0 reverse) (, (Straight $x $y) (exec (P0 reverse) $P $T)) (, (Reverse $y $x) (pexec (P0 reverse) $P $T)))
+
+"#;
+    //
+    // (exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
+    //
+    // (exec P2 (, (Transitive $x $y)) (, (Line $x $q)))
+    // (exec P3 (, (Transitive $x $y)) (, (Line $q $y)))
+
+    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    s.metta_calculus();
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+    println!("out {}", String::from_utf8(v).unwrap());
+
+
+}
+
 fn main() {
+    basic();
+    return;
+
     let mut s = Space::new();
     const space: &str = r#"
 (exec P0 (, (sudoku p2 input (row ($r $x1 $x2 $x3 $x4 $x5 $x6 $x7 $x8 $x9)))) 
          (, (cell 1 $r $x1) (cell 2 $r $x2) (cell 3 $r $x3)  (cell 4 $r $x4) (cell 5 $r $x5) (cell 6 $r $x6)  (cell 7 $r $x7) (cell 8 $r $x8) (cell 9 $r $x9)  ))
 
+(exec P1 (, (cell $c $r _))
+         (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
+
+(exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
+         (, (Deduction remaining (cell $ca $r $x) (cell $cb $r $y))))
 
 "#;
-    // (exec P1 (, (cell $c $r _))
-    // (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
-    // 
+    //
     // (exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
     // (, (Deduction remaining (cell $ca $r X) (cell $cb $r Y))))
 

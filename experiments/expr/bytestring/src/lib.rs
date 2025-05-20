@@ -2297,8 +2297,8 @@ pub trait Term: Clone {
 pub struct ExprEnv {
     pub n: u8,
     pub v: u8,
-    offset: u32,
-    base: Expr
+    pub offset: u32,
+    pub base: Expr
 }
 
 impl ExprEnv {

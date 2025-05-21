@@ -984,16 +984,7 @@ impl Expr {
 
     /// checks if an [`Expr`] no vars or refs
     pub fn is_ground(self)->bool {
-        let mut ez = ExprZipper::new(self);
-        loop {
-            match ez.tag() {
-                Tag::NewVar        => return false,
-                Tag::VarRef(_)     => return false,
-                Tag::SymbolSize(_) => {}
-                Tag::Arity(_)      => {}
-            };
-            if !ez.next() { return true; }
-        }
+        self.variables() == 0
     }
 }
 

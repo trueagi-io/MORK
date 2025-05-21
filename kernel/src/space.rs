@@ -1164,8 +1164,8 @@ where
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
 
 
-                    // Remy : this check is potentially expensive, but at least it makes dangling constant not an issue.
-                    //        I would like a better alternative
+                    // Remy : This check is potentially expensive, but at least it makes dangling constant not an issue.
+                    //        I would like a better alternative.
                     let skip = !loc.is_value() && e.is_ground();
                     if !skip {
                         match effect(refs, e) {

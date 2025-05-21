@@ -399,7 +399,7 @@ mod tests {
 
 
     #[test]
-    fn metta_calculus_exec_permissions() {
+    fn metta_calculus_swap_0() {
 
         let mut s = DefaultSpace::new();
 
@@ -427,6 +427,45 @@ mod tests {
 
             // #[cfg(test)]
             // println!("{:?}", s.dump_raw_at_root());
+
+        println!("RESULTS:\n{}", out);
+    }
+
+    #[test]
+    fn metta_calculus_swap2() {
+
+        let mut s = DefaultSpace::new();
+
+        const SPACE_EXPRS: &str =
+        concat!
+        ( ""
+        , "\n(val a b)"
+        , "\n(val c d)"
+        , "\n(val e f)"
+        , "\n(val g h)"
+
+        , "\n(def (metta_thread_basic 2) (, (swapped $v $u))"
+        , "\n                            (, (val $v $u))"
+        , "\n)"
+
+        , "\n(exec metta_thread_basic (, (val $x $y) (def (metta_thread_basic 2) $p $t) )"
+        , "\n                         (,"
+        , "\n                            (swapped $y $x)"
+        , "\n                            (exec metta_thread_basic $p $t)"
+        , "\n                         )"
+        , "\n)"
+        );
+
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus();
+        s.metta_calculus();
+
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
+
+        let out = String::from(std::str::from_utf8(&writer).unwrap());
 
         println!("RESULTS:\n{}", out);
     }

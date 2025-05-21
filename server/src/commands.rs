@@ -570,7 +570,7 @@ impl CommandDefinition for MettaThreadCmd {
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "location",
             desc: "The location of the execution of a metta thread. The location must be a ground (no variable bindings or references).\
                   \nThe thread will run and consume expressions of the form (exec <loc> (, <..patterns>) (, <..templates>)) until there are none left.\
@@ -583,16 +583,17 @@ impl CommandDefinition for MettaThreadCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let thread  = _thread.unwrap();
+        let thread = _thread.unwrap();
 
-        let expr = cmd.args[0].as_expr().to_owned();
+        let location_sexpr = cmd.args[0].as_str().to_owned();
+        let Ok(mut expr) = ctx.0.space.sexpr_to_expr(&location_sexpr) else { return Err(CommandError::external(StatusCode::BAD_REQUEST, "malformed sexpr")) };
 
         // //////////
         // GUARDS //
         // ////////
-        let location = mork_bytestring::Expr { ptr: expr.as_ptr().cast_mut()};
-        if location.is_ground() { return Err(CommandError::external(StatusCode::BAD_REQUEST, "Loaction was not a ground expression."));};
-        let location_sexpr = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
+        let location = mork_bytestring::Expr { ptr: expr.as_mut_ptr()};
+        if !location.is_ground() { return Err(CommandError::external(StatusCode::BAD_REQUEST, "Loaction was not a ground expression."));};
+        // let location_sexpr = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
 
         // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
         let status_location_sexpr = format!("(exec {})", location_sexpr);
@@ -613,6 +614,9 @@ impl CommandDefinition for MettaThreadCmd {
             // BUILD BUFFER //
             // //////////////
 
+            #[cfg(debug_assertions)]
+            let mut loops_left = 500;
+
             let prefix = unsafe { mork_bytestring::Expr{ ptr : prefix_e_vec.as_mut_ptr() }.prefix().unwrap().as_ref().unwrap() };
             let mut retry = false;
             // the invariant is that buffer should always be reset with at least the prefix
@@ -623,6 +627,10 @@ impl CommandDefinition for MettaThreadCmd {
             // /////////
 
             let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
+                #[cfg(debug_assertions)]
+                { 
+                    if loops_left == 0 { println!("TEST TOO LONG"); return } loops_left -= 1
+                }
                 debug_assert!(buffer.len() >= prefix.len());
                 debug_assert_eq!(&buffer[..prefix.len()], prefix);
 
@@ -655,7 +663,6 @@ impl CommandDefinition for MettaThreadCmd {
                     // ///////////////////////////////////
                     break 'process_execs Ok(())
                 }
-
                 // remember expr
                 buffer.truncate(prefix.len());
                 buffer.extend_from_slice(rz.path());
@@ -725,7 +732,8 @@ impl CommandDefinition for MettaThreadCmd {
             Ok(())
         }).await;
 
-        Ok(Bytes::from(format!("Thread at location `{}` was dispatched. Errors will be found at the status location of `{status_location_sexpr}`", mork_bytestring::serialize(&expr))))
+        // TODO! location needs to be pulled out with space!
+        Ok(Bytes::from(format!("Thread at location `{}` was dispatched. Errors will be found at the status location of `{status_location_sexpr}`", location_sexpr)))
     }
 }
 

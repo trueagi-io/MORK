@@ -513,6 +513,7 @@ impl Service<Request<IncomingBody>> for MorkService {
 
 
             | GET => MettaThreadCmd
+            | GET => MettaThreadSuspendCmd
             | POST => TransformMultiMultiCmd
         }
         #[cfg(feature="neo4j")]
@@ -534,6 +535,7 @@ impl Service<Request<IncomingBody>> for MorkService {
 
 
             | GET => MettaThreadCmd
+            | GET => MettaThreadSuspendCmd
             | POST => TransformMultiMultiCmd
         }
     }

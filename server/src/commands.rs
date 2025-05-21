@@ -737,6 +737,95 @@ impl CommandDefinition for MettaThreadCmd {
     }
 }
 
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// metta_thread_suspend
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Extracts a executing thread from the execution space to a location to be suspended
+pub struct MettaThreadSuspendCmd;
+
+impl CommandDefinition for MettaThreadSuspendCmd {
+    const NAME: &'static str = "metta_thread_suspend";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+    fn args() -> &'static [ArgDef] {
+        &[
+            ArgDef{
+                arg_type: ArgType::String,
+                name: "thread loaction",
+                desc: "The thread location to stop execution",
+                required: true
+            },
+            ArgDef{
+                arg_type: ArgType::String,
+                name: "suspend loaction",
+                desc: "The location execs at the thread location will be suspended in the form ($suspend_loc (exec $thread_loc $patterns $templates))",
+                required: true
+            }
+        ]
+
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+        let exec_loc_sexpr = cmd.args[0].as_str().to_owned();
+        let Ok(mut exec_loc_expr)  = ctx.0.space.sexpr_to_expr(&exec_loc_sexpr)  else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for exec location : {:?}", exec_loc_sexpr))); };
+        if !(mork_bytestring::Expr{ptr : exec_loc_expr.as_mut_ptr()}).is_ground() {
+            return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Exec location must be ground : {}", exec_loc_sexpr)));
+        }
+
+        let suspend_loc_sexpr = cmd.args[1].as_str().to_owned();
+        let Ok(mut suspend_loc_expr)  = ctx.0.space.sexpr_to_expr(&suspend_loc_sexpr) else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for suspend location : {:?}", exec_loc_sexpr))); };
+        if !(mork_bytestring::Expr{ptr : suspend_loc_expr.as_mut_ptr()}).is_ground() {
+            return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Freeze location must be ground : {}", exec_loc_sexpr)));
+        }
+
+
+        let suspend_prefix_sexpr = format!("({} $x)", suspend_loc_sexpr);
+        let suspend_prefix_expr  = ctx.0.space.sexpr_to_expr(&suspend_prefix_sexpr).unwrap();
+        let suspend_prefix =  derive_prefix_from_expr_slice(&suspend_prefix_expr).till_constant_to_full();
+
+        let Ok(mut suspend_writer) = ctx.0.space.new_writer_async(suspend_prefix, &()).await else {
+            return Err(CommandError::external(StatusCode::CONFLICT, format!("Conflict at suspend location : {}", suspend_prefix_sexpr)));
+        };
+
+
+        let status_loc_sexpr = format!("(exec {})", exec_loc_sexpr);
+        let status_loc_expr = ctx.0.space.sexpr_to_expr(&status_loc_sexpr).unwrap();
+
+        let mut suspend_wz = ctx.0.space.write_zipper(&mut suspend_writer);
+        suspend_wz.remove_branches();
+
+
+        let exec_prefix_sexpr = format!("(exec {} $p $t)", exec_loc_sexpr);
+        let exec_prefix_expr  = ctx.0.space.sexpr_to_expr(&exec_prefix_sexpr).unwrap();
+        let exec_prefix       =  derive_prefix_from_expr_slice(&exec_prefix_expr).till_constant_to_full();
+        let mut exec_loc_writer = loop {
+            if let Ok(exec_writer) = ctx.0.space.new_writer(exec_prefix, &()) {
+                break exec_writer;
+            };
+        };
+
+        // if this fails, we have successfully blocked the thread
+        if let Ok(_status) = ctx.0.space.new_reader(&status_loc_expr, &()) {
+            return Err(CommandError::external(StatusCode::GONE, format!("The thread has already stopped, suspend location has been cleared : {}", suspend_prefix_sexpr)));
+        };
+
+        let mut exec_wz = ctx.0.space.write_zipper(&mut exec_loc_writer);
+        let Some(pats_templates) = exec_wz.take_map() else {
+            return Err(CommandError::external(StatusCode::GONE, format!("The thread has already been exhausted, suspend location has been cleared : {}", suspend_prefix_sexpr)));
+        };
+
+        suspend_wz.descend_to(exec_prefix_expr);
+        suspend_wz.graft_map(pats_templates);
+
+        Ok(Bytes::from(format!("Ack. Thread {} cleared, now frozen at `({} (exec {} $patterns $templates))`", exec_loc_sexpr, suspend_loc_sexpr, exec_loc_sexpr)))
+    }
+}
+
+
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // status
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

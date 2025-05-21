@@ -207,6 +207,8 @@ fn basic() {
 }
 
 fn main() {
+    env_logger::init();
+
     // basic();
     // return;
 

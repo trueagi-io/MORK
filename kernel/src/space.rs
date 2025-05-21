@@ -4,7 +4,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null_mut, slice_from_raw_parts};
+use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure};
@@ -1279,9 +1279,9 @@ impl Space {
         for i in 0..subsumption.len() {
             subsumption[i] = placements[subsumption[i]]
         }
-        // println!("templates {:?}", templates);
-        // println!("prefixes {:?}", template_prefixes);
-        // println!("subsumption {:?}", subsumption);
+        trace!(target: "transform", "templates {:?}", templates);
+        trace!(target: "transform", "prefixes {:?}", template_prefixes);
+        trace!(target: "transform", "subsumption {:?}", subsumption);
 
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, patterns, |refs_bindings, loc| {
@@ -1301,7 +1301,7 @@ impl Space {
                     Err((ref bindings, ti, ni)) => {
                         #[cfg(debug_assertions)]
                         {
-                        bindings.iter().for_each(|(v, ee)| trace!("binding {:?} {}", *v, ee.show()));
+                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
                         }
 
                         mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
@@ -1327,7 +1327,7 @@ impl Space {
 
     pub fn transform_multi_multi_(&mut self, patterns: &[Expr], templates: &[Expr], add: Expr) -> (usize, bool) {
         let mut buffer = [0u8; 512];
-        let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
+        let mut template_prefixes = vec![slice_from_raw_parts(null(), 0); templates.len()];
         let mut subsumption = vec![0; templates.len()];
         // x abc y ab z   =>  0 3 2 3 4
         // x ab y abc z   =>  0 1 2 1 4
@@ -1341,16 +1341,19 @@ impl Space {
         // abc x a y ab z   =>  2 1 2 3 2 5
         // ab x a y abc z   =>  2 1 2 3 2 5
         for (i, e) in templates.iter().enumerate() {
-            template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
+            template_prefixes[i] = e.prefix().unwrap_or_else(|x| e.span());
             subsumption[i] = i;
             for j in 0..i {
-                let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
+                let o = unsafe {
+                    pathmap::utils::find_prefix_overlap(template_prefixes[i].as_ref().unwrap_unchecked(),
+                                                        template_prefixes[j].as_ref().unwrap_unchecked()) };
                 if o == template_prefixes[j].len() { // i prefix of j (or equal)
                     subsumption[i] = j;
                     break
                 }
             }
         }
+        let template_prefixes: &[&[u8]] = unsafe { std::mem::transmute(&template_prefixes[..]) };
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
@@ -1387,7 +1390,7 @@ impl Space {
                     Err((ref bindings, ti, ni)) => {
                         #[cfg(debug_assertions)]
                         {
-                        bindings.iter().for_each(|(v, ee)| trace!("binding {:?} {}", *v, ee.show()));
+                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
                         }
                         template.shift(ti, &mut ExprZipper::new(*template));
                         trace!(target: "transform", "total introduced {:?}", ti);

@@ -17,7 +17,8 @@ members = [
 edition = "2021"
 
 [workspace.dependencies]
-log = "0.4.27"
+log = { version = "0.4.27" }
+env_logger = "0.11.8"
 
 # Internal to MORK
 mork-bytestring = {path = "./experiments/expr/bytestring"}

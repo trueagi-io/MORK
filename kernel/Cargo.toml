@@ -8,6 +8,7 @@ edition = "2021"
 
 
 [dependencies]
+log = { workspace=true }
 pathmap = { workspace = true, features = [] }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace=true }

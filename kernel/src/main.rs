@@ -183,14 +183,16 @@ fn basic() {
 (Straight 1 2)
 (Straight 2 3)
 
-(exec (P0 reverse) (, (Straight $x $y) (exec (P0 reverse) $P $T)) (, (Reverse $y $x) (pexec (P0 reverse) $P $T)))
+(exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
+
+(exec P2 (, (Transitive $x $y)) (, (Line $x $q)))
+(exec P2 (, (Transitive $x $y)) (, (Line $q $y)))
 
 "#;
+    // (exec (P0 reverse) (, (Straight $x $y) (exec (P0 reverse) $P $T)) (, (Reverse $y $x) (pexec (P0 reverse) $P $T)))
     //
     // (exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
     //
-    // (exec P2 (, (Transitive $x $y)) (, (Line $x $q)))
-    // (exec P3 (, (Transitive $x $y)) (, (Line $q $y)))
 
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
@@ -205,8 +207,8 @@ fn basic() {
 }
 
 fn main() {
-    basic();
-    return;
+    // basic();
+    // return;
 
     let mut s = Space::new();
     const space: &str = r#"

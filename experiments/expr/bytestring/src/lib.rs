@@ -642,7 +642,7 @@ impl Expr {
         }
     }
 
-    fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
+    pub fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
         // this.foldMap(i => Var(if i >= 0 then i else i - n), App(_, _))
         let mut ez = ExprZipper::new(self);
         let mut new_var = 0u8;

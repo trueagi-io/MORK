@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 
@@ -28,6 +28,6 @@ bucket_map = {path = "./experiments/symbol_mapping/bucket_map"}
 freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } #Fixes build on MacOS
 
 [workspace.dependencies.pathmap]
-path = "../PathMap"
+git = "https://github.com/Adam-Vandervorst/PathMap.git"
 features = ["jemalloc", "zipper_tracking"]
 # features = ["jemalloc", "zipper_tracking", "all_dense_nodes"]

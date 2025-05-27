@@ -7,7 +7,7 @@ use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{Context, Parser, ParserError};
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting, ZipperMovingPriv};
+use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 use pathmap::utils::{ByteMaskIter, ByteMask};
 

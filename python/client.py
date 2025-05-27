@@ -392,31 +392,36 @@ class ManagedMORK(MORK):
         if "log_stdout" in self.finalization:
             # with open(self.stdout) as f:
             #     print("stderr", f.read())
-            self.stdout.seek(0)
-            print("stdout:", self.stdout.read().decode("utf8"))
+            if self.process is not None:
+                self.stdout.seek(0)
+                print("stdout:", self.stdout.read().decode("utf8"))
+            else:
+                print("stdout unavailable with external server")
         if "log_stderr" in self.finalization:
             # with open(self.stdout) as f:
             #     print("stderr", f.read())
-            self.stderr.seek(0)
-            print("stderr:", self.stderr.read().decode("utf8"))
+            if self.process is not None:
+                self.stderr.seek(0)
+                print("stderr:", self.stderr.read().decode("utf8"))
+            else:
+                print("stderr unavailable with external server")
         if "terminate" in self.finalization:
             print(exc_type, exc_val, exc_tb, "caused terminate")
             self.cleanup()
 
 
 def _main():
-    with ManagedMORK.start("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("main").and_clear() as ins:
             print("entered")
             ins.upload("(foo 1)\n(foo 2)\n")
-            sleep(1)
+
             print("data", ins.download_().data)
-            sleep(1)
+
             imp = ins.sexpr_import("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta")
             print("imp", imp.response.text)
-            sleep(1)
+
             print("data", ins.download_().data)
-            sleep(1)
 
         print("server data", server.download_().data)
         for i, item in enumerate(server.history):

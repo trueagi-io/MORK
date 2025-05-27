@@ -1,4 +1,21 @@
-//! Bucket map attemps to tackle the symbol mapping problem by spreading the load to as many buckets as possible with a simple and efficient method to spit the keys
+//! Bucket map attemps to tackle the symbol mapping problem by spreading the load to as many buckets
+//! as possible with a simple and efficient method to spit the keys
+//!
+//! # Algorithm Overview
+//!
+//! The [`SharedMapping`] contains [`MAX_WRITER_THREADS`] append-only linked lists of [`Slab`] objects, where
+//! each `Slab` is a contiguous block of memory containing the symbol.  The `Slab` lists start are at [SharedMapping::permissions].
+//!
+//! The [`Symbol`] type is a fixed-size (8-Bytes) reference to a symbol in the symbol table.
+//!
+//! The [SharedMapping::to_bytes] contains maps (PathMaps) to map from [`Symbol`] to a byte pointer in the [Slab]s
+//! ([ThinBytes] type).  The symbol's `permission_idx` selects which PathMap to perform the lookup in.
+//!
+//! The [SharedMapping::to_symbol] contains maps (PathMaps) to map from raw symbol bytes to a [`Symbol`] handle.
+//! The `MAX_WRITER_THREADS` pathmaps use a Pearson hash on the first 8 Bytes of the symbol to reduce contention
+//! over the `PathMaps`  TODO: We may want to revisit the first 8-Byte behavior if we end up with symbols that
+//! all contain the same prefix, e.g. a namespace.
+//!
 
 extern crate alloc;
 
@@ -15,8 +32,12 @@ pub mod serialization;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
-/// The top two bytes are left free for tagging, 
-// Big endian!
+/// Uniquely identifies a symbol in the table
+///
+/// [0, 1]: unused
+/// [2]: permission_idx.  Identifies which list in [SharedMapping::permissions] contains the symbol
+/// [3..=7]: unique symbol id within slab list.  Corresponds to insertion order in list
+///
 type Symbol = [u8;SYM_LEN];
 #[doc(hidden)]
 pub const SYM_LEN : usize = 8;
@@ -64,8 +85,9 @@ impl SharedMapping {
   /// This is unsafe because this could be done inside a stack frame, which makes safety guarantees more difficult.
   /// This has been made public for use in initializing a static.
   pub const unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
-    let inner = (*uninit).as_mut_ptr();
     unsafe {
+      let inner = (*uninit).as_mut_ptr();
+
       (*inner).count = AtomicU64::new(1);
       (*inner).flags = AtomicU64::new(init_flags);
 
@@ -97,8 +119,6 @@ impl SharedMapping {
   pub unsafe fn keep_slabs_alive(&self) {
     self.flags.store(SharedMappingFlags::KeepSlabsAlive as u64, atomic::Ordering::Release);
   }
-  
-
 
   /// try to get a [`Symbol`] if it is already in the map.
   /// If one requires a guaranteed [`Symbol`], then consider creating a [`WritePermit`] and using [`WritePermit::get_or_insert`].
@@ -112,7 +132,7 @@ impl SharedMapping {
       let lock_guard = trie_lock.read().unwrap();
 
       lock_guard.get(bytes).copied()
-    }    
+    }
   }
 }
 

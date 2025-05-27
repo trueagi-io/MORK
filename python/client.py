@@ -40,7 +40,7 @@ class MORK:
                 if self.response and self.response.status_code == 200:
                     self.data = "ok"
 
-            except RequestException as e:
+            except (RequestException, ConnectionError) as e:
                 self.error = e
                 raise e
 
@@ -319,7 +319,7 @@ class ManagedMORK(MORK):
         """
         try:
             return cls(base_url=url, *args)
-        except ConnectionError as e:
+        except (ConnectionError, RequestException) as e:
             return cls.start(binary_path, *args)
 
     @classmethod

@@ -14,33 +14,35 @@ impl Slab {
     let slab_size = (bytes as usize + core::mem::size_of::<Slab>()).max(4096);
     let layout = alloc::alloc::Layout::array::<core::cell::UnsafeCell<u8>>(slab_size).unwrap().align_to(4096).expect("Cannot be aligned");
     // for serialization we want the tail to be zeroed so that it compresses well
-    let allocation = alloc::alloc::alloc_zeroed(layout);
-    
+    let allocation = unsafe { alloc::alloc::alloc_zeroed(layout) };
+
     let out = allocation as *mut Slab;
-    *out = Slab {
+    unsafe{ *out = Slab {
       next : core::ptr::null_mut(),
       write_pos : 0,
       slab_len : slab_size - core::mem::size_of::<Slab>(),
       slab_data : allocation.add(core::mem::size_of::<Slab>())
-    };
+    }};
     out
   }
   #[allow(unused)]
   pub(crate) fn total_slab_size(&self) -> usize {
     self.slab_len + core::mem::size_of::<Slab>()
   }
-  
+
   pub(crate) unsafe fn free(mut slab : *mut Self) {
     while !slab.is_null() {
-      let size = core::mem::size_of::<Slab>() + (*slab).slab_len;
-    
-      let cur = slab;
-      slab = (*slab).next;
-    
-      alloc::alloc::dealloc(cur as *mut u8, alloc::alloc::Layout::array::<u8>(size).unwrap().align_to(4096).unwrap());
+      unsafe {
+        let size = core::mem::size_of::<Slab>() + (*slab).slab_len;
+
+        let cur = slab;
+        slab = (*slab).next;
+
+        alloc::alloc::dealloc(cur as *mut u8, alloc::alloc::Layout::array::<u8>(size).unwrap().align_to(4096).unwrap());
+      }
     }
   }
-  
+
   pub(crate) unsafe fn register_bytes(mut _self : *mut Self, bytes : &[u8]) -> ThinBytes {
     let len = bytes.len();
     core::debug_assert!(len < i64::MAX as usize);
@@ -71,7 +73,7 @@ impl Slab {
       (*_self).write_pos += offset + len;
 
       core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
-    
+
       ThinBytes(head) 
     }
   }
@@ -83,7 +85,8 @@ impl Slab {
 /// if top bit set, the length is the bitwise not of that byte.
 /// if the top is not set, read that byte and the next three as a u32 and use that as the length.
 #[derive(Clone, Copy)]
-pub struct ThinBytes(pub(crate) *const u8);
+#[doc(hidden)]
+pub(crate) struct ThinBytes(pub(crate) *const u8);
 
 impl ThinBytes {
   pub(crate) fn as_raw_slice(self) -> *const [u8] {

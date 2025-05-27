@@ -1,5 +1,7 @@
 from typing import Optional
 import os
+import json
+import time
 from time import monotonic_ns, sleep
 from base64 import b32encode
 import re
@@ -12,26 +14,78 @@ from subprocess import Popen
 
 class MORK:
     """
-    Wrapper for the MORK server-based API.
+    Wrapper for the MORK server-based API.  Used to manage the server connection, or throught the `work_at`
+    method to scope activity to a subspace.
     """
     class Request:
+        """
+        Base class for request to the MORK server
+        """
         def __init__(self, method, subdir, **kwargs):
             self.method = method
             self.subdir = subdir
             self.kwargs = kwargs
             self.response = None
             self.error = None
+            self.server = None
+            self.data = None
 
         def dispatch(self, server):
+            """
+            Send a request to the server
+            """
+            self.server = server
             try:
                 self.response = request(self.method, server.base + self.subdir, **self.kwargs)
+                if self.response and self.response.status_code == 200:
+                    self.data = "ok"
+
             except RequestException as e:
                 self.error = e
+                raise e
+
+        def result(self):
+            """
+            Retrieve the result from a previously dispatched request.
+
+            Returns:
+                Any: The result data.
+                None: If the result is not yet ready.
+            """
+            if self.server is None:
+                raise RuntimeError(f"Must dispatch a request before it can be polled")
+            if self.error is not None:
+                raise self.error
+            if self.data is not None:
+                return self.data
+            status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
+            if status_response and status_response.status_code == 200:
+                status_info = json.loads(status_response.text)
+                return_status = status_info['status']
+                if return_status == "pathForbiddenTemporary":
+                    return None
+                elif return_status == "pathClear":
+                    return "ok"
+                else:
+                    return return_status #TODO: Add handler for command-specific results
+
+        def poll_for_result(self):
+            """
+            Continue to poll until a request has returned a result or failed
+            """
+            while self.result() is None:
+                time.sleep(0.005)
+            self.data = self.result()
+            return self.data
 
         def __str__(self):
             return str(vars(self))
 
     class Upload(Request):
+        """
+        A request to upload the specified data to the server
+        """
+        #TODO: Specify format
         def __init__(self, pattern, template, data):
             self.pattern = pattern
             self.template = template
@@ -39,6 +93,10 @@ class MORK:
             super().__init__("post", f"/upload/{quote(self.pattern)}/{quote(self.template)}/", data=self.data, headers={"Content-Type": "text/plain"})
 
     class Download(Request):
+        """
+        A request to download data from the server
+        """
+        #TODO: Specify format
         def __init__(self, pattern, template):
             self.pattern = pattern
             self.template = template
@@ -51,41 +109,85 @@ class MORK:
                 self.data = self.response.text
 
     class Clear(Request):
+        """
+        A request to clear the items matching `expr`
+        """
         def __init__(self, expr):
             self.expr = expr
             super().__init__("get", f"/clear/{quote(self.expr)}/")
 
     class Stop(Request):
+        """
+        A request to initiate a server shutdown.
+
+        `wait_for_idle=False` will immediately stop accepting connections, and terminate the server when all
+        in-flight activity has stopped.
+
+        `wait_for_idle=True` will will wait to begin the shutdown when the server has been idle for an uninterupted
+        time period.
+        """
         def __init__(self, wait_for_idle=False):
             self.wait_for_idle = wait_for_idle
             super().__init__("get", f"/stop/" if wait_for_idle else f"/stop/?wait_for_idle")
 
     class Status(Request):
-        def __init__(self, pattern):
-            self.pattern = pattern
-            super().__init__("get", f"/status/{quote(pattern)}")
+        """
+        A request for the status associated with the expression
+        """
+        def __init__(self, expr):
+            self.expr = expr
+            super().__init__("get", f"/status/{quote(expr)}")
+
+        def dispatch(self, server):
+            super().dispatch(server)
+            if self.response and self.response.status_code == 200:
+                self.data = self.response.text
 
     class Import(Request):
+        """
+        A request to import data from a file or remotely hosted resource
+        """
+        #TODO: Specify format
         def __init__(self, pattern, template, file_uri):
             self.pattern = pattern
             self.template = template
             self.uri = file_uri
+            self.status_loc = template
             super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
 
+        def dispatch(self, server):
+            super().dispatch(server)
+            self.data = None
+
     class Transform(Request):
+        """
+        A request to transform `patterns` to `templates`
+        """
         def __init__(self, patterns, templates):
             self.patterns = patterns
             self.templates = templates
             self.payload = "(transform (, {}) (, {}))".format(" ".join(patterns), " ".join(templates))
+            self.status_loc = templates[0] #GOAT, is there a better location expr to use?
             super().__init__("post", f"/transform_multi_multi/", data=self.payload, headers={"Content-Type": "text/plain"})
 
+        def dispatch(self, server):
+            super().dispatch(server)
+            self.data = None
+
     def transform(self, patterns, templates):
-        u = self.Transform(tuple(map(self.ns.format, patterns)), tuple(map(self.ns.format, templates)))
-        self.history.append(u)
-        u.dispatch(self)
-        return u
+        """
+        Initiate a transform and return when it is complete
+        """
+        cmd = self.Transform(tuple(map(self.ns.format, patterns)), tuple(map(self.ns.format, templates)))
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        cmd.poll_for_result()
+        return cmd
 
     def and_clear(self):
+        """
+        Calling this method will cause the expression subspace to be cleared when exiting the `with` block
+        """
         self.finalization += ("clear",)
         return self
 
@@ -108,41 +210,63 @@ class MORK:
                 raise ConnectionError(f"Failed to connect to MORK server at {base_url}")
 
     def upload(self, data):
+        """
+        Upload `data` to the server
+        """
+        #TODO: Specify format
         io = self.ns.format("$x")
-        u = self.Upload("$x", io, data)
-        self.history.append(u)
-        u.dispatch(self)
-        return u
+        cmd = self.Upload("$x", io, data)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
 
     def download_(self):
+        """
+        Download everything in the scope
+        """
+        #TODO: Specify format
         io = self.ns.format("$x")
-        d = self.Download(io, "$x")
-        self.history.append(d)
-        d.dispatch(self)
-        return d
+        cmd = self.Download(io, "$x")
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
 
     def download(self, pattern, template):
+        """
+        Download items from `pattern` and format them using `template`
+        """
+        #TODO: Specify format
         io = self.ns.format(pattern)
-        d = self.Download(io, template)
-        self.history.append(d)
-        d.dispatch(self)
-        return d
+        cmd = self.Download(io, template)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
 
     def sexpr_import(self, file_uri):
+        """
+        Import s-expressions from the specified URI
+        """
         io = self.ns.format("$x")
-        u = self.Import("$x", io, file_uri)
-        self.history.append(u)
-        u.dispatch(self)
-        return u
+        cmd = self.Import("$x", io, file_uri)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        cmd.poll_for_result()
+        return cmd
 
     def clear(self):
+        """
+        Clear the the entire scoped subspace
+        """
         io = self.ns.format("$x")
-        c = self.Clear(io)
-        self.history.append(c)
-        c.dispatch(self)
-        return c
+        cmd = self.Clear(io)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
 
     def work_at(self, name, finalization=(), **kwargs):
+        """
+        Creates a new scoped subspace to work inside of
+        """
         return MORK(**kwargs, namespace=f"({name} {{}})", finalization=finalization, parent=self, history=self.history)
 
     def __enter__(self):
@@ -177,7 +301,7 @@ class MORK:
         self.finalization += ("stop",)
         return self
 
-
+#GOAT: What is this for?
 def retry(f, count):
     for i in range(count):
         res = f()

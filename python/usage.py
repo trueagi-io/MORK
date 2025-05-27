@@ -1,7 +1,6 @@
 import unittest
 
 from client import MORK, ManagedMORK
-from time import sleep
 
 # class Simple(unittest.TestCase):
 #     def test_global_upload_download_identity(self):
@@ -23,7 +22,6 @@ class Example(unittest.TestCase):
             for dataset in datasets:
                 with ins.work_at(dataset) as scope:
                     scope.sexpr_import(f"https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")
-                    sleep(1)
 
                     downloaded = ins.download("(Individuals $i (Fullname $name))", "$name")
                     print("download", downloaded.data)
@@ -35,11 +33,11 @@ class Example(unittest.TestCase):
 
                     father_t = ins.transform(("(Relations $r (Husband $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
                     # mother_t = father_t.try_when_done(lambda: ins.transform(("(Relations $r (Wife $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",)))
-                    sleep(1)
+
                     mother_t = ins.transform(("(Relations $r (Wife $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
         for i, item in enumerate(ins.history):
             print(i, str(item))
-        sleep(1)
+
         print("data", ins.download_().data)
 
 if __name__ == '__main__':

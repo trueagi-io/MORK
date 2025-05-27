@@ -11,10 +11,10 @@ from time import sleep
 
 class Example(unittest.TestCase):
     def setUp(self):
-        self.ins = ManagedMORK.start("../target/debug/mork_server")
+        self.ins = ManagedMORK.connect(binary_path="../target/debug/mork_server")
 
     def tearDown(self):
-        self.ins.stop()
+        self.ins.cleanup()
 
     def test_auntkg_preprocessing(self):
         with self.ins.work_at("aunt-kg") as ins:
@@ -44,8 +44,10 @@ class Example(unittest.TestCase):
 
 if __name__ == '__main__':
     # Simple().debug()
-    suite = unittest.TestSuite()
-    suite.addTest(Example())
+    # suite = unittest.TestSuite()
+    # suite.addTest(Example())
 
-    runner = unittest.TextTestRunner()
-    runner.run(suite)
+    # runner = unittest.TextTestRunner()
+    # runner.run(suite)
+
+    unittest.main()

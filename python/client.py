@@ -1,3 +1,5 @@
+from typing import Optional
+import os
 from time import monotonic_ns, sleep
 from base64 import b32encode
 import re
@@ -9,6 +11,9 @@ from requests import request, RequestException
 from subprocess import Popen
 
 class MORK:
+    """
+    Wrapper for the MORK server-based API.
+    """
     class Request:
         def __init__(self, method, subdir, **kwargs):
             self.method = method
@@ -55,6 +60,11 @@ class MORK:
             self.wait_for_idle = wait_for_idle
             super().__init__("get", f"/stop/" if wait_for_idle else f"/stop/?wait_for_idle")
 
+    class Status(Request):
+        def __init__(self, pattern):
+            self.pattern = pattern
+            super().__init__("get", f"/status/{quote(pattern)}")
+
     class Import(Request):
         def __init__(self, pattern, template, file_uri):
             self.pattern = pattern
@@ -79,12 +89,23 @@ class MORK:
         self.finalization += ("clear",)
         return self
 
-    def __init__(self, base_url = "http://127.0.0.1:8000", namespace = "{}", finalization = (), parent=None, history=None):
+    def __init__(self, base_url: Optional[str] = os.environ.get("MORK_URL"), namespace = "{}", finalization = (), parent=None, history=None):
+        if base_url is None:
+            base_url = "http://127.0.0.1:8000"
+        if isinstance(base_url, str):
+            base_url = base_url.strip()
+
         self.base = base_url
         self.ns = namespace
         self.finalization = finalization
         self.parent = parent
         self.history = [] if history is None else history
+
+        if parent is None:
+            status_req = self.Status("-")
+            status_req.dispatch(self)
+            if status_req.response is None or status_req.response.status_code != 200:
+                raise ConnectionError(f"Failed to connect to MORK server at {base_url}")
 
     def upload(self, data):
         io = self.ns.format("$x")
@@ -164,8 +185,31 @@ def retry(f, count):
         return res
 
 class ManagedMORK(MORK):
+    """
+    Wrapper to establish a MORK server connection.  Can connect to a running server or start a server if one isn't already running.
+    """
+    @classmethod
+    def connect(cls, binary_path=None, url=None, *args):
+        """
+        Connects to a running MORK server, and falls back to starting the server if the connection fails
+        """
+        try:
+            return cls(base_url=url, *args)
+        except ConnectionError as e:
+            return cls.start(binary_path, *args)
+
     @classmethod
     def start(cls, binary_path, *args):
+        """
+        Starts the MORK server.  Fails if it's already running and therefore can't be started
+
+        Args:
+            binary_path (str): file system path to the compiled MORK server binary
+
+        Returns:
+            Self: a ManagedMORK instance
+        """
+        print("Starting server from binary")
         bin_hash = b32encode(abs(hash(binary_path)).to_bytes(8)).decode("ascii")
         print("bin hash", bin_hash)
         stdout_path = f"/tmp/.mork_server_stdout_{bin_hash}.log"
@@ -186,7 +230,7 @@ class ManagedMORK(MORK):
                 raise RuntimeError(f"server failed to start, check logs {stdout_path} and {stderr_path}")
             else:
                 protocol, ip, port = address.groups()
-                full_address = (protocol or "https://") + ip + ":" + (port or 8000)
+                full_address = (protocol or "http://") + ip + ":" + (port or 8000)
                 print("server starting at", full_address)
                 return cls(server_stdout, server_stderr, process, base_url=full_address)
         else:
@@ -204,7 +248,12 @@ class ManagedMORK(MORK):
         self.finalization += ("terminate",)
         return self
 
-    def __init__(self, stdout, stderr, process, **kwargs):
+    def cleanup(self):
+        if self.process is not None:
+            print("sending stop command to server...")
+            self.stop()
+
+    def __init__(self, stdout=None, stderr=None, process=None, **kwargs):
         super().__init__(**kwargs)
         self.stdout = stdout
         self.stderr = stderr
@@ -228,7 +277,7 @@ class ManagedMORK(MORK):
             print("stderr:", self.stderr.read().decode("utf8"))
         if "terminate" in self.finalization:
             print(exc_type, exc_val, exc_tb, "caused terminate")
-            self.process.terminate()
+            self.cleanup()
 
 
 def _main():

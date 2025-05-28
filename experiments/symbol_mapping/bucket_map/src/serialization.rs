@@ -197,6 +197,7 @@ impl SharedMapping {
 
 
   /// this is only for debugging
+  #[cfg(feature = "debug_api")]
   #[doc(hidden)]
   pub fn reveal_tables<'a>(&'a self) -> Tables<'a> {
     let mut to_bytes = Vec::new();

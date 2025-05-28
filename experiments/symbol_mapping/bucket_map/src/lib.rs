@@ -23,12 +23,20 @@ use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr
 use pathmap::trie_map::BytesTrieMap;
 
 mod handle;
-pub use handle::*;
+use handle::*;
+pub use handle::SharedMappingHandle;
+pub use handle::WritePermit;
 
 mod symbol_backing;
 use symbol_backing::*;
 
-pub mod serialization;
+#[cfg(feature = "debug_api")]
+pub use symbol_backing::ThinBytes;
+
+mod serialization;
+
+#[cfg(feature = "debug_api")]
+pub use serialization::Tables;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 

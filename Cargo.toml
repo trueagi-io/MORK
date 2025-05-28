@@ -22,7 +22,7 @@ edition = "2024"
 mork-bytestring = {path = "./experiments/expr/bytestring"}
 mork-frontend = {path = "./frontend"}
 mork = {path = "./kernel"}
-bucket_map = {path = "./experiments/symbol_mapping/bucket_map"}
+bucket_map = {features = ["debug_api"], path = "./experiments/symbol_mapping/bucket_map"}
 
 # External to MORK
 freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } #Fixes build on MacOS

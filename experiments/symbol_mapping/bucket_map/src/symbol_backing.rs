@@ -86,7 +86,7 @@ impl Slab {
 /// if the top is not set, read that byte and the next three as a u32 and use that as the length.
 #[derive(Clone, Copy)]
 #[doc(hidden)]
-pub(crate) struct ThinBytes(pub(crate) *const u8);
+pub struct ThinBytes(pub(crate) *const u8);
 
 impl ThinBytes {
   pub(crate) fn as_raw_slice(self) -> *const [u8] {

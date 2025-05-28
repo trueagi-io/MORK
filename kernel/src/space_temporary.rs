@@ -11,7 +11,7 @@ use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl, load_sexpr_impl, transform_multi_multi_impl, ParDataParser
+    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
 };
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
@@ -41,8 +41,8 @@ pub struct LoadNeo4JNodePropertiesError(String);
 #[derive(Debug)]
 pub struct LoadNeo4JNodeLabelsError(String);
 
-pub trait SpaceReaderZipper<'s> :ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath {}
-impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath {}
+pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
+impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space {
@@ -136,6 +136,14 @@ pub trait Space {
         let mut wz = self.write_zipper(dst);
         let sm = self.symbol_table();
         load_json_impl(sm, &mut wz, src_data).map_err(ParseError)
+    }
+
+    fn token_bfs<'s>(&'s self, token: &[u8], pattern: Expr, reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, Expr)> {
+        token_bfs_impl(
+            token,
+            pattern,
+            self.read_zipper(reader)
+        )
     }
 
     fn transform_multi_multi<'s>(

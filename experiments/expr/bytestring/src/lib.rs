@@ -5,7 +5,7 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::empty;
 use smallvec::SmallVec;
 
@@ -16,7 +16,7 @@ pub struct Breadcrumb {
     seen: u8,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum Tag {
     NewVar, // $
     VarRef(u8), // _1 .. _63
@@ -297,29 +297,32 @@ impl Expr {
                     assert!(oz.next());
                 }
                 (Ok(Tag::NewVar | Tag::VarRef(_)), Ok(Tag::Arity(k))) => {
-                    // println!("other {other:?}");
-                    for _ in 0..k {
-                        // println!("se {:?}", oz.subexpr());
-                        assert!(oz.next_descendant(-1, 0))
-                    }
-                    if !oz.next() {
+                    // oz.next_skip();
+                    // println!("other {:?}", oz.subexpr());
+                    println!("self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
+
+                    if !oz.next_skip() {
                         assert!(!ez.next());
                         return None
                     }
                     assert!(ez.next());
+
+                    println!("after: self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
                 }
                 (Ok(Tag::Arity(k)), Ok(Tag::NewVar | Tag::VarRef(_))) => {
                     // println!("self {self:?} other {other:?}");
-                    for _ in 0..k {
-                        // println!("se {:?}", ez.subexpr());
-                        assert!(ez.next_descendant(-1, 0))
-                    }
-                    if !ez.next() {
+                    // ez.next_skip();
+                    println!("self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
+
+                    if !ez.next_skip() {
                         assert!(!oz.next());
                         return None
                     }
                     // println!("{:?}", ez.subexpr());
                     assert!(oz.next());
+
+                    println!("after: self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
+
                 }
                 (Ok(Tag::Arity(i)), Ok(Tag::Arity(j))) => {
                     if i != j { return Some(ez.loc) }
@@ -330,9 +333,11 @@ impl Expr {
                     assert!(oz.next());
                 }
                 (Ok(Tag::Arity(i)), Err(_)) => {
+                    println!("diff self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
                     return Some(ez.loc)
                 }
                 (Err(_), Ok(Tag::Arity(i))) => {
+                    println!("diff self {:?}  other {:?}", ez.subexpr(), oz.subexpr());
                     return Some(ez.loc)
                 }
                 (Err(s), Err(o)) => {
@@ -354,6 +359,21 @@ impl Expr {
     }
 
     pub fn difference(self, other: Expr) -> Option<usize> {
+        let mut ez = ExprZipper::new(self);
+        let mut oz = ExprZipper::new(other);
+        loop {
+            if ez.item() != oz.item() {
+                return Some(ez.loc)
+            }
+
+            if !ez.next() {
+                return None
+            }
+            assert!(oz.next())
+        }
+    }
+
+    pub fn difference_under<F : Fn(Expr, Expr) -> bool>(self, other: Expr, under: F) -> Option<usize> {
         let mut ez = ExprZipper::new(self);
         let mut oz = ExprZipper::new(other);
         loop {
@@ -622,7 +642,7 @@ impl Expr {
         }
     }
 
-    fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
+    pub fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
         // this.foldMap(i => Var(if i >= 0 then i else i - n), App(_, _))
         let mut ez = ExprZipper::new(self);
         let mut new_var = 0u8;
@@ -667,6 +687,38 @@ impl Expr {
         }
     }
 
+    pub fn unifiable(self, other: Expr) -> bool {
+        let mut sx = vec![ExprEnv::new(0, self)];
+        let mut sy = vec![ExprEnv::new(1, other)];
+
+        unify(sx, sy).is_ok()
+    }
+
+    pub fn unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
+        let mut sx = vec![ExprEnv::new(0, self)];
+        let mut sy = vec![ExprEnv::new(1, other)];
+
+        match unify(sx, sy) {
+            Ok(bindings) => {
+                /*println!("{:?}", bindings.iter().map(|(k, v)| {
+                    let ov = vec![0u8; 512];
+                    let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+                    // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+                    println!("binding {:?} +{} {}", *k, v.v, v.show());
+                    // println!("output {:?}", o);
+                    (*k, v.subsexpr())
+                }).collect::<Vec<_>>());*/
+                let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                let mut stack: Vec<(u8, u8)> = vec![];
+                let mut assignments: Vec<(u8, u8)> = vec![];
+                apply(0, 0, 0, &mut ExprZipper::new(self), &bindings, o, &mut cycled, &mut stack, &mut assignments);
+                Ok(())
+            }
+            Err(f) => Err(f)
+        }
+    }
+
+    #[deprecated(note="please use unify")]
     pub fn unification(self, other: Expr, o: Expr) -> Result<Expr, ExtractFailure> {
         // [2][2] $ a [2] _1  a  unification
         // [2][2] b $ [2]  b _1
@@ -874,6 +926,23 @@ impl Expr {
         Ok(rz.subexpr())
     }
 
+    // pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
+    //     let mut transformation = vec![item_byte(Tag::Arity(2))];
+    //     transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
+    //     transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
+    //     let mut data = vec![item_byte(Tag::Arity(2)), item_byte(Tag::NewVar)];
+    //     data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
+    //     unsafe {
+    //         let e = Expr{ ptr: data.as_mut_ptr().add(2)};
+    //         e.shift(1, &mut ExprZipper::new(e));
+    //     }
+    //     println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+    //     println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
+    //     let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
+    //     let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
+    //     Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
+    // }
+
     pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
         let mut transformation = vec![item_byte(Tag::Arity(2))];
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
@@ -884,11 +953,23 @@ impl Expr {
             let e = Expr{ ptr: data.as_mut_ptr().add(2)};
             e.shift(1, &mut ExprZipper::new(e));
         }
-        println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
-        println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
+        // println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
+        // println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
         let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
-        let res = Expr{ ptr: transformation.as_mut_ptr() }.unification(Expr{ ptr: data.as_mut_ptr() }, o)?;
-        Ok(Expr { ptr: unsafe { res.ptr.byte_add(1) } })
+        let x = Expr{ ptr: transformation.as_mut_ptr() };
+        let y = Expr{ ptr: data.as_mut_ptr() };
+        let mut sx = vec![ExprEnv::new(0, x)];
+        let mut sy = vec![ExprEnv::new(1, y)];
+        
+        if let Ok(bindings) = unify(sx, sy) {
+            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+            let mut stack: Vec<(u8, u8)> = vec![];
+            let mut assignments: Vec<(u8, u8)> = vec![];
+            apply(0, 0, 0, &mut ExprZipper::new(Expr{ ptr: transformation.as_mut_ptr() }), &bindings, &mut ExprZipper::new(o), &mut cycled, &mut stack, &mut assignments);
+            Ok(Expr { ptr: unsafe { o.ptr.byte_add(1) } })
+        } else {
+            Err(ExtractFailure::ExprEarlyMismatch(0, 0))
+        }
     }
 
     pub fn extract_data(self, iz: &mut ExprZipper) -> Result<Vec<Expr>, ExtractFailure> {
@@ -982,7 +1063,20 @@ impl Expr {
         execute_loop(&mut traversal, *self, 0);
     }
 
-    /// checks if an [`Expr`] no vars or refs
+    #[inline(never)]
+    pub fn serialize2<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G) -> () {
+        let mut traversal = SerializerTraversal2{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0 };
+        execute_loop(&mut traversal, *self, 0);
+    }
+
+    #[inline(never)]
+    pub fn serialize_highlight<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G, target: usize) -> () {
+        let mut targets = [(target, "\x1B[43m", "\x1B[0m")].repeat(10); // FIXE
+        let mut traversal = SerializerTraversalHighlights{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0, targets: &targets };
+        execute_loop(&mut traversal, *self, 0);
+    }
+
+    /// Returns `true` if an [`Expr`] has no vars or refs
     pub fn is_ground(self)->bool {
         self.variables() == 0
     }
@@ -996,6 +1090,18 @@ pub trait Traversal<A, R> {
     fn add(&mut self, offset: usize, acc: A, sub: R) -> A;
     fn finalize(&mut self, offset: usize, acc: A) -> R;
 }
+
+pub struct PairTraversal<A1, A2, R1, R2, T1, T2> { t1: T1, t2: T2, pd: std::marker::PhantomData<(A1, A2, R1, R2)> }
+
+impl <A1, A2, R1, R2, T1 : Traversal<A1, R1>, T2 : Traversal<A2, R2>> Traversal<(A1, A2), (R1, R2)> for PairTraversal<A1, A2, R1, R2, T1, T2> {
+    fn new_var(&mut self, offset: usize) -> (R1, R2) { (self.t1.new_var(offset), self.t2.new_var(offset)) }
+    fn var_ref(&mut self, offset: usize, i: u8) -> (R1, R2) { (self.t1.var_ref(offset, i), self.t2.var_ref(offset, i)) }
+    fn symbol(&mut self, offset: usize, s: &[u8]) -> (R1, R2) { (self.t1.symbol(offset, s), self.t2.symbol(offset, s)) }
+    fn zero(&mut self, offset: usize, a: u8) -> (A1, A2) { (self.t1.zero(offset, a), self.t2.zero(offset, a)) }
+    fn add(&mut self, offset: usize, acc: (A1, A2), sub: (R1, R2)) -> (A1, A2) { (self.t1.add(offset, acc.0, sub.0), self.t2.add(offset, acc.1, sub.1)) }
+    fn finalize(&mut self, offset: usize, acc: (A1, A2)) -> (R1, R2) { (self.t1.finalize(offset, acc.0), self.t2.finalize(offset, acc.1)) }
+}
+
 #[allow(unused)]
 fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R) {
     match unsafe { byte_item(*e.ptr.byte_add(i)) } {
@@ -1070,6 +1176,54 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
     }
 }
 
+enum Remaining {
+    None,
+    
+}
+
+pub fn execute_loop_truncated<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, m: usize) -> Result<(usize, R), (Vec<(u8, A)>, u8)> {
+let mut stack: Vec<(u8, A)> = Vec::with_capacity(8);
+    let mut j = 0;
+    'putting: loop {
+        if j == m { return Err((stack, 0u8)) }
+        let mut value = match unsafe { byte_item(*e.ptr.byte_add(j)) } {
+            Tag::NewVar => { j += 1; t.new_var(j - 1) }
+            Tag::VarRef(r) => { j += 1; t.var_ref(j - 1, r) }
+            Tag::SymbolSize(s) => {
+                // if j <
+                let slice = unsafe { &*slice_from_raw_parts(e.ptr.byte_add(j + 1), s as usize) };
+                let v = t.symbol(j, slice);
+                j += s as usize + 1;
+                v
+            }
+            Tag::Arity(a) => {
+                let acc = t.zero(j, a);
+                j += 1;
+                stack.push((a, acc));
+                continue 'putting;
+            }
+        };
+
+        'popping: loop {
+            match stack.last_mut() {
+                None => { return Ok((j, value)) }
+                Some(&mut (ref mut k, ref mut acc )) => {
+                    unsafe {
+                        std::ptr::write(k, std::ptr::read(k).wrapping_sub(1));
+                        std::ptr::write(acc, t.add(j, std::ptr::read(acc), value));
+                        if std::ptr::read(k) != 0 { continue 'putting }
+                    }
+                }
+            }
+
+            value = match stack.pop() {
+                Some((_, acc)) => t.finalize(j, acc),
+                None => break 'popping
+            }
+        }
+    }
+}
+
 struct DebugTraversal { string: String, transient: bool }
 #[allow(unused_variables)]
 impl Traversal<(), ()> for DebugTraversal {
@@ -1101,6 +1255,56 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+}
+
+struct SerializerTraversal2<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8 }
+#[allow(unused_variables, unused_must_use)]
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<(), ()> for SerializerTraversal2<'_, Target, F, G> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(i, false).as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+}
+
+struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
+#[allow(unused_variables, unused_must_use)]
+impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<Option<&'static str>, ()> for SerializerTraversalHighlights<'_, '_, Target, F, G> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_variable)(self.n, true).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+        self.n += 1;
+    }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_variable)(i, false).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+    }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write((self.map_symbol)(s).as_bytes());
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+    }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> Option<&'static str> {
+        if self.transient { self.out.write(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
+        self.out.write("(".as_bytes()); self.transient = false;
+        if offset == self.targets[0].0 { let r = Some(self.targets[0].2); self.targets = &self.targets[1..]; r }
+        else { None }
+    }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: Option<&'static str>, sub: ()) -> Option<&'static str> {
+        self.transient = true;
+        acc
+    }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
+        self.out.write(")".as_bytes());
+        if let Some(end) = acc { self.out.write(end.as_bytes()); }
+    }
 }
 
 #[derive(Clone)]
@@ -1145,7 +1349,7 @@ impl ExprZipper {
     pub fn write_move(&mut self, value: &[u8]) -> bool {
         unsafe {
             let l = value.len();
-            std::ptr::copy_nonoverlapping(value.as_ptr(), self.root.ptr.byte_add(self.loc), l);
+            std::ptr::copy(value.as_ptr(), self.root.ptr.byte_add(self.loc), l);
             self.loc += l;
             true
         }
@@ -1210,6 +1414,7 @@ impl ExprZipper {
     pub fn gnext(&mut self, offset: usize) -> bool {
         // let t = self.tag();
         // let ct = self.tag_str();
+        let len = self.trace.len();
         match self.trace[offset..].last_mut() {
             None => { false }
             Some(&mut Breadcrumb { parent: _p, arity: a, seen: ref mut s }) => {
@@ -1217,6 +1422,7 @@ impl ExprZipper {
                 // println!("{} < {}", s, a);
                 if *s < a {
                     *s += 1;
+                    let ss = *s;
 
                     self.loc += if let Tag::SymbolSize(n) = self.tag() { n as usize + 1 } else { 1 };
 
@@ -1229,6 +1435,57 @@ impl ExprZipper {
                 } else {
                     self.trace.pop();
                     self.next()
+                }
+            }
+        }
+    }
+
+    pub fn next_skip(&mut self) -> bool {
+        // let t = self.tag();
+        let ct = self.tag_str();
+        let len = self.trace.len();
+        match self.trace[0..].last_mut() {
+            None => { false }
+            Some(&mut Breadcrumb { parent: p, arity: a, seen: ref mut s }) => {
+                println!("parent {} loc {} tag {}", p, self.loc, ct);
+                println!("{} < {}", s, a);
+                
+                // if p as usize == self.loc {  // begin of expression
+                //     self.loc += match self.tag() {
+                //         Tag::NewVar => { 1 }
+                //         Tag::VarRef(_) => { 1 }
+                //         Tag::SymbolSize(n) => { n as usize + 1 }
+                //         Tag::Arity(_) => { self.subexpr().span().len() }
+                //     };
+                //     self.trace.pop();
+                //     
+                // }
+
+                if *s < a {
+                    *s += 1;
+                    let ss = *s;
+
+                    // self.loc += if let Tag::SymbolSize(n) = self.tag() { n as usize + 1 } else { 1 };
+                    // 
+                    // if let Tag::Arity(a) = self.tag() {
+                    //     self.loc += self.subexpr().span().len();
+                    // }
+
+
+                    self.loc += match self.tag() {
+                        Tag::NewVar => { 1 }
+                        Tag::VarRef(_) => { 1 }
+                        Tag::SymbolSize(n) => { n as usize + 1 }
+                        Tag::Arity(_) => { self.subexpr().span().len() }
+                    };
+
+                    // println!("returned true");
+                    // if ss == a && len == 1 { false }
+                    // else { true }
+                    true
+                } else {
+                    self.trace.pop();
+                    self.next_skip()
                 }
             }
         }
@@ -1544,7 +1801,7 @@ use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
 pub struct ExprMapSolver {
-    sources: *const [Expr],
+    pub sources: Vec<Expr>,
     parents: HashMap<u64, HashSet<u64>>,
     links: HashMap<u64, HashSet<u64>>,
 
@@ -1554,20 +1811,47 @@ pub struct ExprMapSolver {
     ready: HashSet<u64>
 }
 
+pub union AlignedArr<T: Sized, const SZ: usize> {
+    x: std::mem::ManuallyDrop<T>,
+    arr: [u8; SZ],
+}
+impl <T: Sized, const SZ: usize> AlignedArr<T, SZ> {
+    fn inner_mut(&mut self) -> &'static mut T {
+        unsafe { std::mem::transmute(std::ptr::addr_of_mut!(self.x)) }
+    }
+    fn inner_ref(&self) -> &'static T {
+        unsafe { std::mem::transmute(std::ptr::addr_of!(self.x)) }
+    }
+    fn inner(&self) -> T where T : Copy {
+        unsafe { std::ptr::read((&self.x) as *const std::mem::ManuallyDrop<T> as *const T) }
+    }
+    fn inner_cloned(&self) -> T where T : Clone + 'static {
+        let t: &'static T =  unsafe { std::mem::transmute(std::ptr::addr_of!(self.x)) };
+        t.clone()
+    }
+}
 
 macro_rules! local {
     ($name:ident : $t:ty) => {
         thread_local! {
-            static $name: std::cell::UnsafeCell<$t> = unsafe { std::ptr::read(std::cell::UnsafeCell::from_mut(
-                std::mem::MaybeUninit::uninit().assume_init_mut()
-            )) }
+            static $name: std::cell::UnsafeCell<AlignedArr<$t, { std::mem::size_of::<$t>() }>> = std::cell::UnsafeCell::new(
+                AlignedArr { arr: [0; { std::mem::size_of::<$t>() }] });
         }
     };
     ($name:ident = $value:expr) => {
-        unsafe { $name.with(|x| *x.get() = $value) }
+        unsafe { $name.with(|x| *x.get() = AlignedArr{ x: std::mem::ManuallyDrop::new($value) } ) }
     };
     ($name:ident) => {
-        unsafe { $name.with(|x| *x.get()) }
+        unsafe { $name.with(|x| x.get().as_ref().unwrap().inner()) }
+    };
+    (clone $name:ident) => {
+        unsafe { $name.with(|x| x.get().as_ref().unwrap().inner_cloned()) }
+    };
+    (&$name:ident) => {
+        unsafe { ($name.with(|x| x.get().as_ref().unwrap())).inner_ref() }
+    };
+    (&mut$name:ident) => {
+        unsafe { $name.with(|x| x.get().as_mut().unwrap()).inner_mut() }
     }
 }
 
@@ -1587,7 +1871,7 @@ unsafe fn q(i: u64) -> Expr {
 impl ExprMapSolver {
     pub fn new() -> Self {
         Self {
-            sources: &[],
+            sources: vec![],
             parents: HashMap::new(),
             links: HashMap::new(),
 
@@ -1615,12 +1899,22 @@ impl ExprMapSolver {
     unsafe fn add_arcs(&mut self, e: Expr) {
         let sr = std::mem::transmute(self);
 
+        local!(VS : Vec<u64>);
+        local!(VS = vec![]);
         local!(BASE : Expr);
         local!(BASE = e);
 
         traverseh!(Expr, Expr, &'static mut ExprMapSolver, e, sr,
-            |s: &mut &mut ExprMapSolver, o| unsafe{ (*s).add_node(Expr{ ptr: local!(BASE).ptr.add(o) }) },
-            |s: &mut &mut ExprMapSolver, o, i| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
+            |s: &mut &mut ExprMapSolver, o| unsafe{
+                let n = Expr{ ptr: local!(BASE).ptr.add(o) };
+                local!(&mut VS).push(p(n));
+                (*s).add_node(n)
+            },
+            |s: &mut &mut ExprMapSolver, o, i| unsafe{
+                let n = Expr { ptr: local!(BASE).ptr.add(o) };
+                (*s).create_link(q(local!(&VS)[i as usize]), n);
+                (*s).add_node(n)
+            },
             |s: &mut &mut ExprMapSolver, o, c| unsafe{ (*s).add_node(Expr { ptr: local!(BASE).ptr.add(o) }) },
             |s: &mut &mut ExprMapSolver, o, a| unsafe { Expr{ ptr: local!(BASE).ptr.add(o) } },
             |s: &mut &mut ExprMapSolver, o, a, c| unsafe{ (*s).create_arc(a, c); a },
@@ -1628,11 +1922,10 @@ impl ExprMapSolver {
         );
     }
 
-    pub fn solve(&mut self, oes: &[Expr]) -> Result<(), String> {
-        self.sources = oes as *const [Expr];
+    pub fn solve(&mut self) -> Result<(), String> {
         unsafe {
-        oes.into_iter().for_each(|x| self.add_arcs(*x));
-        oes.into_iter().reduce(|x, y| { self.create_link(*x, *y); y });
+        self.sources.clone().iter().for_each(|x| self.add_arcs(*x));
+        self.sources.clone().iter().reduce(|x, y| { self.create_link(*x, *y); y });
 
         'expressions: loop {
             self.finish({
@@ -1650,7 +1943,7 @@ impl ExprMapSolver {
                         break 'expressions
                     }
                 }
-            })?;
+            }, 1)?;
         };
 
         'variables: loop {
@@ -1664,58 +1957,146 @@ impl ExprMapSolver {
                             Tag::SymbolSize(_) => { continue }
                             Tag::Arity(_) => { continue }
                         }
+                        println!("finish {:?} {} {:?}", q(e), e, self.resolve_var(e));
                         break 'first_expr q(e)
                     } else {
                         break 'variables
                     }
                 }
-            })?;
+            }, 1)?;
         };
 
         }
         Ok(())
     }
 
-    fn ret(&mut self, oes: &[Expr]) -> Expr {
-        let representative = oes[0];
-        unsafe {
-            self.solve(oes);
-            self.build_mapping();
-            // representative.substitute_de_bruijn(...);
-            representative
+    pub fn eq(&self) {
+        let representative = unsafe { *self.sources.first().unwrap() };
+        let mut ez = ExprZipper::new(representative);
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {
+                            // println!("unbound {:?} {:?}", unsafe { self.resolve_var(ez.subexpr().ptr as u64) }, ez.subexpr().ptr as u64);
+                            // println!("  {:?}", unsafe { self.subs[&self.var_resolve((1, 0))] });
+                            // subs.push(nv)
+                        }
+                        Some(se) => unsafe {
+                            // println!("bound {:?} {:?} {:?} {:?}", self.resolve_var(ez.subexpr().ptr as u64), se, se.ptr as u64, self.resolve_var(se.ptr as u64));
+                            // subs.push(unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) })
+                        }
+                    }
+                }
+                Tag::VarRef(i) => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {}
+                        Some(se) => {
+                            // let old = subs[i as usize];
+                            // if old.ptr != nv.ptr {
+                            //
+                            // }
+                            // println!("replacing {old:?} by {se:?}");
+                            // subs[i as usize] = unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) };
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if !ez.next() {
+                return;
+            }
+        }
+
+    }
+
+    pub fn ret(&self, oz: &mut ExprZipper) {
+        self.eq();
+        let representative = unsafe { *self.sources.first().unwrap() };
+        let mut ez = ExprZipper::new(representative);
+        let mut subs = vec![];
+        let mut b = item_byte(Tag::NewVar);
+        let nv = Expr{ ptr: &mut b };
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {
+                            println!("unbound {:?} {:?}", unsafe { self.resolve_var(ez.subexpr().ptr as u64) }, ez.subexpr().ptr as u64);
+                            // println!("  {:?}", unsafe { self.subs[&self.var_resolve((1, 0))] });
+                            subs.push(nv)
+                        }
+                        Some(se) => unsafe {
+                            println!("bound {:?} {:?} {:?} {:?}", self.resolve_var(ez.subexpr().ptr as u64), se, se.ptr as u64, self.resolve_var(se.ptr as u64));
+                            subs.push(unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) }) }
+                    }
+                }
+                Tag::VarRef(i) => {
+                    match self.subs.get(&(ez.subexpr().ptr as u64)) {
+                        None => {}
+                        Some(se) => {
+                            let old = subs[i as usize];
+                            // if old.ptr != nv.ptr {
+                            //
+                            // }
+                            println!("replacing {old:?} by {se:?}");
+                            subs[i as usize] = unsafe { (self as *const Self).cast_mut().as_mut().unwrap().descend(*se) };
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if !ez.next() {
+                representative.substitute_de_bruijn(&subs[..], oz);
+                return;
+            }
         }
     }
 
-    unsafe fn finish(&mut self, r: Expr) -> Result<(), String> {
-        if self.complete.contains(&p(r)) { return Ok(()); }
+
+    unsafe fn finish(&mut self, r: Expr, depth: usize) -> Result<(), String> {
+        if self.complete.contains(&p(r)) {
+            println!("{}complete", "  ".repeat(depth));
+            return Ok(()); }
         if let Some(cycle) = self.pointer.get(&p(r)) { return Err(format!("cycle {:?} {:?}", r, cycle)) }
         let mut stack = vec![r];
         self.pointer.insert(p(r), r);
         while let Some(s) = stack.pop() {
+            println!("{}popped {:?} {:?}", "  ".repeat(depth), s, p(s));
             if let Some(di) = r.constant_difference(s) {
                 return Err(format!("conflict {:?} {:?} ({di})", r, s))
             }
             let mut mbtm = self.parents.remove(&p(s));
             if let Some(ref btm) = mbtm {
+                println!("{}evaluating parents", "  ".repeat(depth));
                 for entry in btm.iter() {
-                    self.finish(q(*entry))?
+                    self.finish(q(*entry), depth+1)?
                 }
             }
             match self.links.get(&p(s)) {
-                None => {}
+                None => { println!("{}no link", "  ".repeat(depth)); }
                 Some(btm) => {
+                    print!("{}links {:?} {{", "  ".repeat(depth), btm);
                     for t in btm.into_iter() {
                         if self.complete.contains(&t) || q(*t).difference(r).is_none() { // do variable need to refer to the same?
+                            if self.complete.contains(&t) { print!("C") }
+                            if q(*t).difference(r).is_none() { print!("=") }
+                            print!(", ");
                             self.parents.remove(&t);
                         } else if self.pointer.get(t).is_none() {
+                            print!("C2, ");
                             self.pointer.insert(*t, r);
                             stack.push(q(*t))
                         } else if let Some(di) = self.pointer.get(t).unwrap().difference(r) {
                             return Err(format!("conflict {:?} {:?} ({di})", self.pointer.get(t).unwrap(), r))
                         } else {
+                            print!("C4, ");
                             self.parents.remove(t);
                         }
                     }
+                    println!("}}");
                 }
             }
             if p(s) != p(r) {
@@ -1725,7 +2106,18 @@ impl ExprMapSolver {
                         self.subs.insert(p(s), r);
                     }
                     Tag::VarRef(i) => {
-                        self.subs.insert(p(s), r);
+                        println!("{}adding sub {:?} {:?}", "  ".repeat(depth), p(s), self.resolve_var(p(s)));
+                        if let Tag::NewVar | Tag::VarRef(_) = byte_item(*r.ptr) {
+                            println!("{} {:?} {:?}", "  ".repeat(depth), p(r), self.resolve_var(p(r)));
+                            if self.resolve_var(p(r)).0 < self.resolve_var(p(s)).0 {
+                                self.subs.insert(p(r), s);
+                            } else {
+                                self.subs.insert(p(s), r);
+                            }
+                        } else {
+                            self.subs.insert(p(s), r);
+                        }
+
                     }
                     Tag::SymbolSize(_) => {
                         // equal by virtue of not being constant_different
@@ -1751,40 +2143,44 @@ impl ExprMapSolver {
         Ok(())
     }
 
+    pub unsafe fn abs(&self, v: Expr) -> Expr {
+        let mut buf = vec![0u8; 512];
+        let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+        let mut oz = ExprZipper::new(out);
+
+        let mut vz = ExprZipper::new(v);
+        loop {
+            match vz.item() {
+                Ok(Tag::NewVar | Tag::VarRef(_)) => {
+                    let replacement = format!("{:?}", self.resolve_var(vz.subexpr().ptr as u64));
+                    oz.write_symbol(replacement.as_bytes());
+                    oz.loc += replacement.len() + 1;
+                }
+                Ok(Tag::Arity(k)) => {
+                    oz.write_arity(k);
+                    oz.loc += 1;
+                }
+                Ok(Tag::SymbolSize(_)) => { unreachable!() }
+                Err(s) => {
+                    oz.write_symbol(s);
+                    oz.loc += s.len() + 1;
+                }
+            }
+
+            if !vz.next() {
+                return out
+            }
+        }
+    }
+
     pub unsafe fn build_mapping(&mut self) {
         // safety: we're serially updating v's and looking up v's without modifying keys in subs
         // descend touches self.ready but this is disjoint from what we're iterating over
         for (k, v) in (self as *const Self).cast_mut().as_mut().unwrap().subs.iter_mut() {
             *v = (self as *const Self).cast_mut().as_mut().unwrap().descend(*v);
 
-            let mut buf = vec![0u8; 512];
-            let out = Expr{ ptr: buf.leak().as_mut_ptr() };
-            let mut oz = ExprZipper::new(out);
 
-            let mut vz = ExprZipper::new(*v);
-            loop {
-                match vz.item() {
-                    Ok(Tag::NewVar | Tag::VarRef(_)) => {
-                        let replacement = format!("{:?}", self.resolve_var(vz.subexpr().ptr as u64));
-                        oz.write_symbol(replacement.as_bytes());
-                        oz.loc += replacement.len() + 1;
-                    }
-                    Ok(Tag::Arity(k)) => {
-                        oz.write_arity(k);
-                        oz.loc += 1;
-                    }
-                    Ok(Tag::SymbolSize(_)) => { unreachable!() }
-                    Err(s) => {
-                        oz.write_symbol(s);
-                        oz.loc += s.len() + 1;
-                    }
-                }
-
-                if !vz.next() {
-                    break
-                }
-            }
-            println!("{:?} -> {:?}", self.resolve_var(*k), out);
+            println!("{:?} -> {:?}", self.resolve_var(*k), self.abs(*v));
         }
     }
 
@@ -1801,6 +2197,7 @@ impl ExprMapSolver {
                 Tag::Arity(a) => {
                     let mut buf = vec![0u8; 512];
                     let out = Expr{ ptr: buf.leak().as_mut_ptr() };
+                    self.sources.push(out);
                     let mut oz = ExprZipper::new(out);
                     oz.write_arity(a);
                     oz.loc += 1;
@@ -1818,8 +2215,8 @@ impl ExprMapSolver {
         }
     }
 
-    unsafe fn resolve_var(&self, x: u64) -> (usize, u8) {
-        let srcs = self.sources.as_ref().unwrap();
+    pub unsafe fn resolve_var(&self, x: u64) -> (usize, u8) {
+        let srcs = &self.sources[..];
         if let Some((min_i, min_e)) = srcs.into_iter().map(|e| e.ptr as u64).enumerate().min_by_key(|(i, es)| {
             if *es > x { u64::MAX } else { x - es }
         }) {
@@ -1847,6 +2244,27 @@ impl ExprMapSolver {
         }
     }
 
+    pub unsafe fn var_resolve(&self, y: (usize, u8)) -> u64 {
+        let srcs = &self.sources[..];
+        let to_search = srcs[y.0];
+        local!(yvar : u8);
+        local!(yvar = y.1);
+        let (i, cf) = traverseh!(ops::ControlFlow<usize, ()>, ops::ControlFlow<usize, ()>, u8, to_search, 0,
+            |c: &mut u8, o| { if *c == local!(yvar) { return ControlFlow::Break(o) }; *c += 1; ControlFlow::Continue(()) },
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, _| ControlFlow::Continue(()),
+            |_, _, l, r| { r?; l },
+            |_, _, l| l);
+        assert!(i == y.1);
+        match cf {
+            ControlFlow::Continue(_) => { unreachable!() }
+            ControlFlow::Break(offset) => {
+                to_search.ptr as u64 + offset as u64
+            }
+        }
+    }
+
     unsafe fn subs_or_ready(&mut self, x: u64) -> Expr {
         match self.subs.get(&x) {
             None => {
@@ -1858,5 +2276,488 @@ impl ExprMapSolver {
                 self.descend(*v)
             }
         }
+    }
+}
+
+
+use std::collections::BTreeMap;
+use std::ptr::addr_of_mut;
+use crate::UnificationFailure::{MaxIter, Unsatisfiable};
+
+/// ------------------------------------------------------------------
+/// The “signature” that a concrete term implementation has to satisfy
+/// ------------------------------------------------------------------
+pub trait Term: Clone {
+    /// The host language’s representation for logic variables
+    type TVar: Ord + Clone;
+
+    ///  ▒ var_opt : t -> tvar option
+    fn var_opt(&self) -> Option<Self::TVar>;
+
+    ///  ▒ same_functor : t -> t -> bool
+    fn same_functor(&self, other: &Self) -> bool;
+
+    ///  ▒ args : t -> t list
+    fn args(&self, stack: &mut Vec<Self>);
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ExprEnv {
+    pub n: u8,
+    pub v: u8,
+    pub offset: u32,
+    pub base: Expr
+}
+
+impl ExprEnv {
+    pub fn new(i: u8, e: Expr) -> Self {
+        Self {
+            n: i,
+            v: 0,
+            offset: 0,
+            base: e,
+        }
+    }
+
+    pub fn subsexpr(&self) -> Expr {
+        Expr { ptr: unsafe { self.base.ptr.add(self.offset as usize) } }
+    }
+
+    pub fn show(&self) -> String {
+        let mut v = vec![];
+        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap(),
+                                      |v, i| format!("<{},{}>", self.n, v).leak(), self.offset as usize);
+        // self.subsexpr().serialize2(&mut v, |x| std::str::from_utf8(x).unwrap(),
+        //                               |v, i| format!("<{},{}>", self.n, v).leak());
+        String::from_utf8(v).unwrap()
+    }
+}
+
+impl Term for ExprEnv {
+    type TVar = (u8, u8);
+
+    fn var_opt(&self) -> Option<Self::TVar> {
+        unsafe {
+            match byte_item(*self.base.ptr.add(self.offset as usize)) {
+                Tag::NewVar => { Some((self.n, self.v)) }
+                Tag::VarRef(i) => { Some((self.n, i)) }
+                Tag::SymbolSize(_) => { None }
+                Tag::Arity(_) => { None }
+            }
+        }
+    }
+
+    fn same_functor(&self, other: &Self) -> bool {
+        unsafe {
+            if self.n == other.n && self.offset == other.offset { return true }
+            let lhs = self.subsexpr();
+            let lprefix = lhs.prefix().unwrap_or_else(|x| slice_from_raw_parts(x as *const _, x.len() + 1)).as_ref().unwrap();
+            let rhs = other.subsexpr();
+            let rprefix = rhs.prefix().unwrap_or_else(|x| slice_from_raw_parts(x as *const _, x.len() + 1)).as_ref().unwrap();
+            // performance
+            // if lhs.constant_difference(rhs).is_none() {
+            let count = pathmap::utils::find_prefix_overlap(lprefix, rprefix);
+            if count != 0 && (count == lprefix.len() || count == rprefix.len()) {
+                true
+            } else {
+                // let diff = lhs.constant_difference(rhs).unwrap();
+                // println!("({}) {:?}  !=  {:?}", diff, self.subsexpr(), other.subsexpr());
+                false
+            }
+        }
+    }
+
+    fn args(&self, dest: &mut Vec<Self>) {
+        unsafe {
+            let start_len = dest.len();
+            match byte_item(*self.subsexpr().ptr) {
+                Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
+                Tag::Arity(k) => {
+                    local!(vec : &'static mut Vec<ExprEnv>);
+                    local!(vec = std::mem::transmute(dest));
+                    local!(env : ExprEnv);
+                    local!(env = ExprEnv{
+                        n: self.n,
+                        v: self.v,
+                        offset: self.offset,
+                        base: self.base,
+                    });
+
+                    traverseh!((bool, u32), u32, (u8, bool), self.subsexpr(), (self.v, true),
+                        |(c, t): &mut (u8, bool), o| { *c += 1; o as u32 },
+                        |(c, t): &mut (u8, bool), o, r| o as u32,
+                        |_, o, _| o as u32,
+                        |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
+                        |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
+                            let mut ne = local!(clone env);
+                            ne.offset += y;
+                            local!(&mut vec).push(ne);
+                            local!(&mut env).v = *c
+                        }; x},
+                        |_, _, x: (bool, u32)| x.1);
+
+                    // if PRINT_DEBUG { println!("args {:?} into {:?}", self.subsexpr(), local!(&vec).iter().map(|x| x.subsexpr()).collect::<Vec<_>>()); }
+                    // println!("args {:?} into {:?}", self.subsexpr(), local!(&vec)[start_len..].iter().map(|x| x.subsexpr()).collect::<Vec<_>>());
+                    std::hint::black_box(&vec);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum UnificationFailure {
+    Occurs((u8, u8), ExprEnv),
+    Difference(ExprEnv, ExprEnv),
+    MaxIter(u32),
+    Unsatisfiable((u8, u8), (u8, u8)),
+}
+
+const APPLY_DEPTH: u32 = 64;
+const MAX_UNIFY_ITER: u32 = 100;
+const PRINT_DEBUG: bool = false;
+pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<(u8, u8), ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<(u8, u8), u8>, stack: &mut Vec<(u8, u8)>, assignments: &mut Vec<(u8, u8)>) -> (u8, u8) {
+    let depth = stack.len();
+    if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
+    if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, ez.subexpr()); }
+    unsafe {
+        loop {
+            match ez.item() {
+                Ok(Tag::NewVar) => {
+                    match bindings.get(&(n, original_intros)) {
+                        None => {
+                            if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
+                            // println!("original {original_intros} new {new_intros}");
+                            if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
+                                // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
+                                oz.write_var_ref(pos as u8);
+                            } else {
+                                oz.write_new_var();
+                                new_intros += 1;
+                                assignments.push((n, original_intros));
+                            }
+                            oz.loc += 1;
+                            original_intros += 1;
+
+                        }
+                        Some(rhs) => {
+                            if PRINT_DEBUG { println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros)); }
+                            // println!("stack={stack:?}");
+                            if let Some(introduced) = cycled.get(&(n, original_intros)) {
+                                if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
+                                oz.write_var_ref(*introduced);
+                                // println!("nv cycled contains {:?}", (n, original_intros));
+                                oz.loc += 1;   
+                            } else if stack.contains(&(n, original_intros)) {
+                                cycled.insert((n, original_intros), new_intros);
+                                // println!("nv cycled insert {:?}", (n, original_intros));
+                                oz.write_new_var();
+                                oz.loc += 1;
+                                new_intros += 1;
+                            } else {
+                                stack.push((n, original_intros));
+                                let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
+                                new_intros = nvars_;
+                                stack.pop();
+                            }
+                            original_intros += 1;
+                        }
+                    }
+                }
+                Ok(Tag::VarRef(i)) => {
+                    match bindings.get(&(n, i)) {
+                        None => {
+                            if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
+                            if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
+                                // println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
+                                oz.write_var_ref(pos as u8);
+                            } else {
+                                oz.write_new_var();
+                                new_intros += 1;
+                                assignments.push((n, i)); // this can't be right in general
+                            }
+                            oz.loc += 1;
+                        }
+                        Some(rhs) => {
+                            if PRINT_DEBUG { println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i)); }
+                            // println!("stack={stack:?}");
+                            if let Some(introduced) = cycled.get(&(n, i)) {
+                                // println!("vr cycled contains {:?}", (n, i));
+                                if PRINT_DEBUG { println!("{}cycled _{} for {:?} (ref) rhs={}", "  ".repeat(depth), *introduced+1, (n, i), rhs.show()); }
+                                oz.write_var_ref(*introduced);
+                                oz.loc += 1;
+                            } else if stack.contains(&(n, i)) {
+                                // println!("vr cycled insert {:?}", (n, i));
+                                cycled.insert((n, i), new_intros);
+                                oz.write_new_var();
+                                oz.loc += 1;
+                                new_intros += 1;
+                            } else {
+                                stack.push((n, i));
+                                let (evars_, nvars_) = apply(rhs.n, rhs.v, new_intros, &mut ExprZipper::new(rhs.subsexpr()), bindings, oz, cycled, stack, assignments);
+                                new_intros = nvars_;
+                                stack.pop();
+                            }
+                            // oz.write_var_ref(i);
+                            // oz.loc += 1;
+                        }
+                    }
+                }
+                Ok(Tag::SymbolSize(s)) => {
+                    unreachable!()
+                }
+                Err(slice) => {
+                    if PRINT_DEBUG { println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(slice) }); }
+                    oz.write_symbol(slice);
+                    oz.loc += 1 + slice.len();
+                }
+                Ok(Tag::Arity(a)) => {
+                    if PRINT_DEBUG { println!("{}@ [{}]", "  ".repeat(depth), a); }
+                    oz.write_arity(a);
+                    oz.loc += 1;
+                }
+            }
+
+            if !ez.next() {
+                return (original_intros, new_intros);
+            }
+        }
+    }
+}
+
+fn occurs(x: (u8, u8), e: ExprEnv) -> bool {
+    if x.0 != e.n { return false }
+    local!(t : u8);
+    local!(t = x.1);
+    traverseh!(bool, bool, u8, e.subsexpr(), e.v,
+            |c: &mut u8, _| { let eq = *c == local!(t); *c += 1; eq },
+        |c: &mut u8, _, r| r == local!(t), |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+}
+
+fn dereference(mut t: ExprEnv, bindings: &BTreeMap<(u8, u8), ExprEnv>) -> ExprEnv {
+    if PRINT_DEBUG { println!("derefencing ... (bound to {})", t.show()); }
+    let mut dc = 0;
+    'dereference: loop {
+        match t.var_opt() {
+            None => { break 'dereference }
+            Some(vt) => {
+                match bindings.get(&vt) {
+                    None => { break 'dereference }
+                    Some(ot) => {
+                        if PRINT_DEBUG { println!("following {} bound to {}", t.show(), ot.show()); }
+                        t = *ot;
+                        if dc > 5 { panic!("deref loop") }
+                        else { dc += 1 }
+                    }
+                }
+            }
+        }
+    }
+    t
+}
+
+pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
+                -> Result<BTreeMap<(u8, u8), ExprEnv>, UnificationFailure>
+{
+    let mut original = (sx.first().unwrap().clone(), sy.first().unwrap().clone());
+    let mut bindings: BTreeMap<(u8, u8), ExprEnv> = BTreeMap::new();
+    let mut iterations = 0;
+
+    while let (Some(x), Some(y)) = (sx.pop(), sy.pop()) {
+        if PRINT_DEBUG {
+            println!("step {iterations}");
+            bindings.iter().for_each(|(k, v)| {
+                // let ov = vec![0u8; 512];
+                // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+                println!("  binding {:?} +{} {}", *k, v.v, v.show());
+                // println!("output {:?}", o);
+
+            });
+            println!();
+        }
+
+        if iterations > MAX_UNIFY_ITER { 
+            print!("#");
+            unsafe {
+                println!("{}  U  {}", serialize(original.0.base.span().as_ref().unwrap()),
+                                      serialize(original.1.base.span().as_ref().unwrap()));
+                std::process::exit(0)
+            }
+            return Err(MaxIter(iterations)) }
+        iterations += 1;
+        if PRINT_DEBUG {
+            println!("popping");
+            println!("x: {}, sx : {:?}", x.show(), sx.len());
+            println!("y: {}, sy : {:?}", y.show(), sy.len());
+        }
+        match (x.var_opt(), y.var_opt()) {
+            (None, None) => {
+                // println!("NV NV");
+                if x.same_functor(&y) {
+                    x.args(&mut sx);
+                    y.args(&mut sy);
+                    assert_eq!(sx.len(), sy.len(), "len({}) != len({})", x.show(), y.show());
+                } else {
+                    if PRINT_DEBUG { println!("diff {x:?}  != {y:?}"); }
+                    return Err(UnificationFailure::Difference(x, y));
+                }
+            }
+
+            (Some(vx), None) => {
+                if occurs(vx, y)  { return Err(UnificationFailure::Occurs(vx, y)) }
+                // println!("V NV");
+                let bx = bindings.get(&vx).cloned();
+                match bx {
+                    Some(mut t) => {
+                        if PRINT_DEBUG { println!("derefencing {vx:?} (bound to {})", t.show()); }
+                        t = dereference(t, &bindings);
+
+                        match t.var_opt() {
+                        Some(vx2) => {
+                            if PRINT_DEBUG { println!("x {vx:?} bound to {} ({:?}), inserting {}", t.show(), vx2, y.show()); }
+                            // if let Some(bound) = bindings.get(&vx2) {
+                            //     if occurs(vx2, *bound)  { return Err(UnificationFailure::Occurs(vx2, *bound)) }
+                            //     sx.push(*bound);
+                            //     sy.push(y);
+                            //     continue
+                            // }
+                            if occurs(vx2, y)  { return Err(UnificationFailure::Occurs(vx2, y)) }
+                            bindings.insert(vx2, y.clone());
+                            // sx.push(x);
+                            // sy.push(y);
+                        }
+                        None => {
+                            sx.push(t);
+                            sy.push(y);
+                        }
+                    } },
+                    None => {
+                        if occurs(vx, y)  { return Err(UnificationFailure::Occurs(vx, y)) }
+                        bindings.insert(vx, y);
+                        // mgu[vx] = 1
+                    }
+                }
+            }
+
+            (None, Some(vy)) => {
+                if occurs(vy, x)  { return Err(UnificationFailure::Occurs(vy, x)) }
+                // println!("NV V");
+                match bindings.get(&vy).cloned() {
+                    Some(mut t) => {
+                        t = dereference(t, &bindings);
+
+                        match t.var_opt() {
+                            Some(vy2) => {
+                                if PRINT_DEBUG { println!("y {vy:?} bound to {} ({:?}), inserting {}", t.show(), vy2, x.show()); }
+                                // if let Some(bound) = bindings.get(&vy2) {
+                                //     if occurs(vy2, *bound)  { return Err(UnificationFailure::Occurs(vy2, *bound)) }
+                                //     sx.push(x);
+                                //     sy.push(*bound);
+                                //     continue
+                                // }
+                                if occurs(vy2, x)  { return Err(UnificationFailure::Occurs(vy2, x)) }
+                                bindings.insert(vy2, x.clone());
+                                // sx.push(x);
+                                // sy.push(y);
+                            }
+                            None => {
+                                sx.push(x);
+                                sy.push(t);
+                            }
+                        }
+                    },
+                    None => {
+                        if occurs(vy, x)  { return Err(UnificationFailure::Occurs(vy, x)) }
+                        bindings.insert(vy, x);
+                    }
+                }
+            }
+
+            (Some(vx), Some(vy)) => {
+                // println!("V  V");
+                let bx = bindings.get(&vx).cloned();
+                let by = bindings.get(&vy).cloned();
+
+                match (bx, by) {
+                    (None, None) => {
+                        if PRINT_DEBUG { println!("free free; bind {vx:?} to {}", y.show()); }
+                        if vx != vy { bindings.insert(vx, y); }
+                    }
+                    (Some(mut t), None) => {
+                        if PRINT_DEBUG { println!("bound free; bind {vy:?} to {}", t.show()); }
+                        t = dereference(t, &bindings);
+                        match t.var_opt() {
+                            None => {
+                                if occurs(vy, t)  { return Err(UnificationFailure::Occurs(vy, t)) }
+                                bindings.insert(vy, t); }
+                            Some(vt) => { if vy != vt { bindings.insert(vy, t); } }
+                        }
+                        // bindings.insert(vy, x);
+                    }
+                    (None, Some(mut t)) => {
+                        if PRINT_DEBUG { println!("free bound; bind {vx:?} to {}", t.show()); }
+                        t = dereference(t, &bindings);
+                        match t.var_opt() {
+                            None => {
+                                if occurs(vx, t)  { return Err(UnificationFailure::Occurs(vx, t)) }
+                                bindings.insert(vx, t); }
+                            Some(vt) => { if vx != vt { bindings.insert(vx, t); } }
+                        }
+                        // bindings.insert(vx, y);
+                    }
+                    (Some(tx), Some(ty)) => {
+                        // $x <- POS ($x $b)
+                        // $y <- POS ($x $b)
+                        // => $x == $y
+                        // HACK; false
+                        // if tx.n == ty.n && tx.offset == ty.offset { continue }
+                        if tx.n == ty.n && tx.offset == ty.offset {
+                            // println!("HACK1");
+                            unsafe {
+                                if let Tag::NewVar = byte_item(*tx.subsexpr().ptr) {
+                                    if let Tag::NewVar = byte_item(*ty.subsexpr().ptr) {
+                                        continue
+                                    }
+                                }
+                            if let Tag::VarRef(i) = byte_item(*tx.subsexpr().ptr) {
+                                if let Tag::VarRef(j) = byte_item(*ty.subsexpr().ptr) {
+                                    if i == j { continue }
+                                }
+                            }
+                            }
+                            if occurs(vx, tx)  { return Err(UnificationFailure::Occurs(vx, tx)) }
+                            if occurs(vy, ty)  { return Err(UnificationFailure::Occurs(vy, ty)) }
+                        }
+                        if let (Some(vx_), Some(vy_)) = (tx.var_opt(), ty.var_opt()) {
+                            // println!("HACK2");
+                            // println!("yes yes push {} {}", tx.show(), ty.show());
+                            // println!("             {} {}", x.show(), y.show());
+                            if vx == vx_ && vy == vy_ && vx != vy { return Err(Unsatisfiable(vx, vy)) }
+                            if vx == vy_ && vy == vx_ {
+                                // bindings.insert(vy, tx);
+                                sx.push(tx);
+                                sy.push(y);
+                                sx.push(x);
+                                sy.push(ty);
+                                continue
+                            }
+                        }
+                        if PRINT_DEBUG {
+                            println!("bound bound; push {} {}", tx.show(), ty.show());
+                            println!("             {} {}", x.show(), y.show());
+                        }
+                        sx.push(tx);
+                        sy.push(ty);
+                    }
+                }
+            }
+        }
+    }
+
+    if sx.is_empty() && sy.is_empty() {
+        Ok(bindings)
+    } else {
+        unreachable!()
     }
 }

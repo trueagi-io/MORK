@@ -217,7 +217,7 @@ fn bench_5() {
     println!("symbols backup took {}", restore_symbols_start.elapsed().as_secs());
     println!("{:?}", s.symbol_table().get_sym(b"SPO"));
     println!("{:?}", s.symbol_table().get_sym(b"IL9R-207"));
-    let bucket_map::serialization::Tables { to_symbol, to_bytes } = s.symbol_table().reveal_tables();
+    let bucket_map::Tables { to_symbol, to_bytes } = s.symbol_table().reveal_tables();
     println!("to_symbol.len() = {}; to_bytes.len() = {}", to_symbol.len(), to_bytes.len());
     println!("to_symbol.first().unwrap().val_count() = {:?}; to_bytes.first().unwrap().val_count() = {:?}", to_symbol.last().unwrap().val_count(), to_bytes.last().unwrap().val_count());
 

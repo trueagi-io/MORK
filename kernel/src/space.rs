@@ -17,7 +17,7 @@ use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
-use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperForking, ZipperWriting, ZipperCreation, ZipperIteration};
+use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperForking, ZipperWriting, ZipperCreation, ZipperIteration, ZipperPathBuffer};
 use tokio::runtime;
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
@@ -981,6 +981,52 @@ where
         }
         Ok(i)
 }
+
+pub(crate) fn token_bfs_impl<Rz>(token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, Expr)>
+where
+    Rz: Zipper + ZipperAbsolutePath + ZipperMoving + ZipperIteration + ZipperPathBuffer + ZipperForking<()>
+{
+
+    // let mut stack = vec![0; 1];
+    // stack[0] = ACTION;
+    // 
+    // let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+    // let shared = pathmap::utils::find_prefix_overlap(&token[..], prefix);
+    // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(pattern, prefix.len())[..]);
+    // // println!("show {}", show_stack(&stack[..]));
+    // stack.reserve(4096);
+
+    rz.reserve_buffers(4096, 64);
+
+    rz.descend_until();
+
+    let cm = rz.child_mask();
+    let mut it = cm.iter();
+
+    let mut res = vec![];
+
+    while let Some(b) = it.next() {
+        rz.descend_to_byte(b);
+
+        let mut rzc = rz.fork_read_zipper();
+        rzc.to_next_val();
+
+        //GOAT!!!!!! Should not leak!!!!!!
+        let e = Expr { ptr: rzc.origin_path().to_vec().leak().as_ptr().cast_mut() };
+        drop(rzc);
+
+        if e.unifiable(pattern) {
+            let v = rz.origin_path().to_vec();
+            // println!("token {:?}", &v[..]);
+            // println!("expr  {:?}", e);
+            res.push((v, e));
+        }
+        rz.ascend_byte();
+    }
+
+    res
+}
+
 impl DefaultSpace {
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
         let mut reader = self.new_reader(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }, &())?;
@@ -1365,9 +1411,6 @@ impl DefaultSpace {
     }
 
 
-
-
-
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);
         // counters.print_histogram_by_depth();
@@ -1675,6 +1718,43 @@ fn iter_reset_expr(){
     }
 
     assert_eq!(first,second)
+}
+
+#[cfg(test)]
+#[test]
+fn bfs_test() {
+    const EXPRS: &str = r#"(first_name John)
+(last_name Smith)
+(is_alive true)
+(age 27)
+(address (street_address 21 2nd Street))
+(address (city New York))
+(address (state NY))
+(address (postal_code 10021-3100))
+(phone_numbers (0 (type home)))
+(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (1 (type office)))
+(phone_numbers (1 (number 646 555-4567)))
+(children (0 Catherine))
+(children (1 Thomas))
+(children (2 Trevor))
+(spouse null)
+"#;
+
+    let space = DefaultSpace::new();
+    let pattern = expr!(space, "[2] $ $");
+    let template = expr!(space, "[2] $ $");
+    let mut writer = space.new_writer(unsafe { &*template.prefix().unwrap() }, &()).unwrap();
+    space.load_sexpr(EXPRS.as_bytes(), pattern, template, &mut writer).unwrap();
+    drop(writer);
+
+    let mut reader = space.new_reader(unsafe { &*template.prefix().unwrap_or(template.span()) }, &()).unwrap();
+
+    println!("{:?}", space.token_bfs(&[], expr!(space, "$"), &mut reader));
+
+    // let [(t1, _), (t2, _)] = &space.token_bfs(&[], expr!(space, "$"), &mut reader)[..] else { panic!() };
+    // println!("{:?}", space.token_bfs(&t1[..], expr!(space, "$"), &mut reader));
+    // println!("{:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
 }
 
 pub struct Retry;

@@ -65,7 +65,7 @@ use mork::{expr, sexpr};
   unsafe fn as_btree(shared_mapping : &SharedMapping) ->(BTreeMap<Vec<u8>, [u8;8]>, BTreeMap<[u8;8], Vec<u8>>) {
     let mut out = BTreeMap::new();
     let mut out2= BTreeMap::new();
-    let bucket_map::serialization::Tables { to_symbol, to_bytes } = shared_mapping.reveal_tables();
+    let bucket_map::Tables { to_symbol, to_bytes } = shared_mapping.reveal_tables();
     for each in 0..bucket_map::MAX_WRITER_THREADS {
       for (path, value) in to_symbol[each].iter()
       {

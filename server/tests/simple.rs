@@ -6,7 +6,7 @@
 //! server, and the rest of the tests will wait until they confirm the server is alive
 //! ===================================================================================
 
-use std::{/* os::unix::thread, */ os::unix::thread, time::{Duration, Instant}};
+use std::{time::{Duration, Instant}};
 use tokio::task;
 use reqwest::{Client, Error};
 
@@ -598,6 +598,7 @@ async fn clear_request_test() -> Result<(), Error> {
 async fn children_request_test() -> Result<(), Error> {
     decl_lit!{space_expr!() => "(children_test $v)"}
     decl_lit!{file_expr!() => "$v"}
+    decl_lit!{test_expr!() => "(children_test (parent $a $b))"}
 
     const UPLOAD_URL: &str = concat!(
         server_url!(),
@@ -619,7 +620,7 @@ async fn children_request_test() -> Result<(), Error> {
     const CHILDREN_URL: &str = concat!(
         server_url!(),
         "/", "children",
-        "/", space_expr!(),
+        "/", test_expr!(),
     );
     wait_for_server().await.unwrap();
 

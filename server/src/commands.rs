@@ -100,13 +100,10 @@ fn do_bfs(ctx: &MorkService, mut reader: ReadPermission, mut expr: Vec<u8>) -> R
     let mut writer = std::io::BufWriter::new(&mut buffer);
 
     for expr_bytes in result_paths {
-        //GOAT, for some reason Expr::serialize doesn't behave like it seems it should...
-        // serialize_sexpr_into(&expr_bytes.0[..], &mut writer, ctx.0.space.symbol_table())
-        //     .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+        println!("RESULT = {:?}", &expr_bytes.0[..]);
 
-        //GOAT, this is temporary until we can actually get serializer to work
-        writer.write(&expr_bytes.0[..])?;
-        writer.write(&[b'\n'])?;
+        serialize_sexpr_into(&expr_bytes.0[..], &mut writer, ctx.0.space.symbol_table())
+            .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
     }
     writer.flush()?;
     drop(writer);

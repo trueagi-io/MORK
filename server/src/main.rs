@@ -501,6 +501,7 @@ impl Service<Request<IncomingBody>> for MorkService {
         #[cfg(not(feature="neo4j"))]
         dispatch!{
             | GET => BusywaitCmd
+            | GET => ChildrenCmd
             | GET => ClearCmd
             | GET => CopyCmd
             | GET => CountCmd
@@ -519,6 +520,7 @@ impl Service<Request<IncomingBody>> for MorkService {
         #[cfg(feature="neo4j")]
         dispatch!{
             | GET => BusywaitCmd
+            | GET => ChildrenCmd
             | GET => ClearCmd
             | GET => CopyCmd
             | GET => CountCmd

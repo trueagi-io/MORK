@@ -593,6 +593,63 @@ async fn clear_request_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests the "children" command
+#[tokio::test]
+async fn children_request_test() -> Result<(), Error> {
+    decl_lit!{space_expr!() => "(children_test $v)"}
+    decl_lit!{file_expr!() => "$v"}
+
+    const UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", file_expr!(),
+        "/", space_expr!(),
+    );
+    const PAYLOAD: &str = "(female Liz)\
+                            \n(male Tom)\
+                            \n(male Bob)\
+                            \n(parent Tom Liz)\
+                            \n(parent Tom Bob)\
+    \n";
+    const STATUS_URL: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", space_expr!(),
+    );
+    const CHILDREN_URL: &str = concat!(
+        server_url!(),
+        "/", "children",
+        "/", space_expr!(),
+    );
+    wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    //First upload a space
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    println!("Upload response: {}", response.text().await?);
+
+    // Wait until the server has finished import
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+    println!("Finished loading space");
+
+    // Test the "children" command
+    let response = reqwest::get(CHILDREN_URL).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_text = response.text().await?;
+    println!("Children response:\n{}", response_text);
+
+    //GOAT need to check the response is correct, when I can figure out why the serializer runs off the rails
+
+    Ok(())
+}
+
 /// Tests the "transform" command
 #[tokio::test]
 async fn transform_basic_request_test() -> Result<(), Error> {

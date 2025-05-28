@@ -1061,22 +1061,29 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
             template.substitute(refs, &mut oz);
 
             // &buffer[constant_template_prefix.len()..oz.loc]
-            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
-                #[cfg(feature="interning")]
-                {
-                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                    // println!("symbol {symbol:?}, bytes {mstr:?}");
-                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-                }
-                #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-            });
-            w.write(&[b'\n']).map_err(|_| f())?;
-
+            serialize_sexpr_into(&buffer, w, sm).map_err(|_| f())?;
             Ok(())
         })
 }
+
+pub fn serialize_sexpr_into<W : std::io::Write>(src_buf: &[u8], dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
+
+    Expr{ ptr: src_buf.as_ptr().cast_mut() }.serialize(dst, |s| {
+        #[cfg(feature="interning")]
+        {
+            let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+            let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+            // println!("symbol {symbol:?}, bytes {mstr:?}");
+            unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+        }
+        #[cfg(not(feature="interning"))]
+        unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+    });
+    dst.write(&[b'\n'])?;
+
+    Ok(())
+}
+
 impl DefaultSpace {
     pub fn backup_symbols<OutFilePath : AsRef<std::path::Path>>(&self, #[allow(unused_variables)]path: OutFilePath) -> Result<(), std::io::Error>  {
         #[cfg(feature="interning")]

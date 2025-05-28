@@ -4,9 +4,8 @@ use std::future::Future;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 
-use bytes::buf::Writer;
-use mork::Space;
-use pathmap::zipper::{ZipperAbsolutePath, ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
+use mork::{Space, space::serialize_sexpr_into};
+use pathmap::zipper::{ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -50,6 +49,69 @@ impl CommandDefinition for BusywaitCmd {
         }).await;
         Ok("ACK. Waiting".into())
     }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// children
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Exports a representative set of children from the specified expression.  Returns at most 256 results
+///
+/// QUESTIONS:
+///     Do we want to take a format?  For now we just assume s-exprs.
+///     Do we want to take a template, to allow the returned exprs to be formatted more compactly?
+pub struct ChildrenCmd;
+
+impl CommandDefinition for ChildrenCmd {
+    const NAME: &'static str = "children";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression to traverse within the space",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] { &[] }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+
+        let expr = cmd.args[0].as_expr().to_vec();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
+
+        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+            do_bfs(&ctx, reader, expr)
+        }).await??;
+
+        thread.unwrap().finalize().await;
+        println!("Children command successful"); // TODO log this!
+
+        Ok(out)
+    }
+}
+
+fn do_bfs(ctx: &MorkService, mut reader: ReadPermission, mut expr: Vec<u8>) -> Result<Bytes, CommandError> {
+
+    let result_paths = ctx.0.space.token_bfs(&[], mork_bytestring::Expr { ptr: expr.as_mut_ptr() }, &mut reader);
+
+    let mut buffer = Vec::with_capacity(4096);
+    let mut writer = std::io::BufWriter::new(&mut buffer);
+
+    for expr_bytes in result_paths {
+        //GOAT, for some reason Expr::serialize doesn't behave like it seems it should...
+        // serialize_sexpr_into(&expr_bytes.0[..], &mut writer, ctx.0.space.symbol_table())
+        //     .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+
+        //GOAT, this is temporary until we can actually get serializer to work
+        writer.write(&expr_bytes.0[..])?;
+        writer.write(&[b'\n'])?;
+    }
+    writer.flush()?;
+    drop(writer);
+
+    Ok(hyper::body::Bytes::from(buffer))
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

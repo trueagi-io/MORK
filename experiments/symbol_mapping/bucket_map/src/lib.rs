@@ -23,7 +23,6 @@ use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr
 use pathmap::trie_map::BytesTrieMap;
 
 mod handle;
-use handle::*;
 pub use handle::SharedMappingHandle;
 pub use handle::WritePermit;
 

@@ -245,23 +245,23 @@ use super::*;
     let handle = SharedMapping::new();
 
     let writer = handle.try_aquire_permission().unwrap();
-  
+
     for each in 0..LEN {
       writer.get_sym_or_insert(&FLAT[0..each]);
     }
-  
+
     let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("serialize_long.zip");
-  
+
     handle.serialize(&path).unwrap();
     let load = SharedMapping::deserialize(&path).unwrap();
-    
+
     core::assert_eq!(
       handle.to_bytes[0].0.read().unwrap().val_count(),
       load.to_bytes[0].0.read().unwrap().val_count()
     );
     load.to_bytes[0].0.read().unwrap().read_zipper().into_cata_side_effect(|_mask,_accs,val : Option<&ThinBytes>,_path|{
       match val {
-        Some(id) => core::assert!(unsafe {&(*id.as_raw_slice())[..]}.iter().all(|c| c.is_ascii_alphanumeric())),
+        Some(id) => core::assert!(unsafe {&*id.as_raw_slice()}.iter().all(|c| c.is_ascii_alphanumeric())),
         None => (),
       };
     });
@@ -275,7 +275,7 @@ use super::*;
   fn trivial_serialize() {
 
     let path = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".tmp").join("trivial_serialize.zip");
-    
+
     const ALPHA_NUM : &'static [u8] = b"abcdefghijklmnopqrstuvwxyz\
                                         ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                                         0123456789\
@@ -286,7 +286,7 @@ use super::*;
                                         ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                                         0123456789\
                                       ";
-    
+
     let mapping = SharedMapping::new();
     static GO : std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let mut handles = Vec::new();

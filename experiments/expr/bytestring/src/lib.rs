@@ -1075,6 +1075,11 @@ impl Expr {
         let mut traversal = SerializerTraversalHighlights{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0, targets: &targets };
         execute_loop(&mut traversal, *self, 0);
     }
+
+    /// Returns `true` if an [`Expr`] has no vars or refs
+    pub fn is_ground(self)->bool {
+        self.variables() == 0
+    }
 }
 
 pub trait Traversal<A, R> {
@@ -1496,6 +1501,9 @@ impl ExprZipper {
     pub fn reset(&mut self) -> bool {
         self.loc = 0;
         unsafe { self.trace.set_len(0); }
+        if let Tag::Arity(a) = unsafe { byte_item(*self.root.ptr) } {
+            self.trace.push(Breadcrumb {parent: 0, arity:a, seen : 0})
+        }
         true
     }
 

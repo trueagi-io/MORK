@@ -593,12 +593,13 @@ async fn clear_request_test() -> Result<(), Error> {
     Ok(())
 }
 
-/// Tests the "children" command
+/// Tests the "explore" command
 #[tokio::test]
-async fn children_request_test() -> Result<(), Error> {
-    decl_lit!{space_expr!() => "(children_test $v)"}
+async fn explore_request_test() -> Result<(), Error> {
+    decl_lit!{space_expr!() => "(explore_test $v)"}
     decl_lit!{file_expr!() => "$v"}
-    decl_lit!{test_expr!() => "(children_test (parent $a $b))"}
+    // decl_lit!{test_expr!() => "(explore_test (parent $a $b))"}
+    decl_lit!{test_expr!() => "(explore_test $)"}
 
     const UPLOAD_URL: &str = concat!(
         server_url!(),
@@ -617,10 +618,11 @@ async fn children_request_test() -> Result<(), Error> {
         "/", "status",
         "/", space_expr!(),
     );
-    const CHILDREN_URL: &str = concat!(
+    const EXPLORE_URL: &str = concat!(
         server_url!(),
-        "/", "children",
+        "/", "explore",
         "/", test_expr!(),
+        "/", // Add a trailing '/' to delineate zero-length token, to begin exploration
     );
     wait_for_server().await.unwrap();
 
@@ -638,15 +640,43 @@ async fn children_request_test() -> Result<(), Error> {
     wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
     println!("Finished loading space");
 
-    // Test the "children" command
-    let response = reqwest::get(CHILDREN_URL).await?;
+    // Test the "explore" command
+    let response = reqwest::get(format!("{EXPLORE_URL}/")).await?;
     if !response.status().is_success() {
         panic!("Error response: {} - {}", response.status(), response.text().await?)
     }
-    let response_text = response.text().await?;
-    println!("Children response:\n{}", response_text);
+    let response_text = response.bytes().await?;
+    println!("0.0 Explore response:\n{:?}", response_text);
 
-    //GOAT need to check the response is correct, when I can figure out why the serializer runs off the rails
+    let response = reqwest::get(format!("{EXPLORE_URL}\x02/")).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_text = response.bytes().await?;
+    println!("1.0 Explore response:\n{:?}", response_text);
+
+    let response = reqwest::get(format!("{EXPLORE_URL}\x03/")).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_text = response.bytes().await?;
+    println!("1.1 Explore response:\n{:?}", response_text);
+
+    let response = reqwest::get(format!("{EXPLORE_URL}{}/", urlencoding::encode_binary(b"\x02\xc8\0\0\0\0\0\0\0\x07"))).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_text = response.bytes().await?;
+    println!("2.0 Explore response:\n{:?}", response_text);
+
+    let response = reqwest::get(format!("{EXPLORE_URL}{}/", urlencoding::encode_binary(b"\x02\xc8\0\0\0\0\0\0\0\x05"))).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_text = response.bytes().await?;
+    println!("2.1 Explore response:\n{:?}", response_text);
+
+    //TODO: it would be nice to parse these responses and feed them forward rather than just inputting the known paths
 
     Ok(())
 }

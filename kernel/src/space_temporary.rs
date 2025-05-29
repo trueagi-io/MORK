@@ -138,11 +138,28 @@ pub trait Space {
         load_json_impl(sm, &mut wz, src_data).map_err(ParseError)
     }
 
-    fn token_bfs<'s>(&'s self, token: &[u8], pattern: Expr, reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, Expr)> {
+    /// Explore a limited number of paths below a focus position
+    ///
+    /// `focus_token` represents a location within `pattern` and thus accessible from `pattern_reader`.  Externally,
+    /// it is an opaque token.  Internally, it is simply a relative PathMap path, althoug the format may change in
+    /// the future.
+    ///
+    /// Usage:
+    /// 1. Start exploration from the `pattern` by passing `&[]` as `focus_token`.
+    /// 2. This will return a vector of, at most, 256 disjoint result sets.  Each result set is represented by a
+    ///  pair of `(focus_token, sample_expr)`. The `sample_expr` represents one expression from within the set,
+    ///  although the chosen expression is arbitrary and can't be relied upon.
+    /// 3. The `focus_token` can be used to recursively continue exploration by calling the method again using
+    ///  the same `pattern` and `pattern_reader`, but with the new `focus_token`.  Subsequent results are now relative
+    ///  to the prior result set.
+    /// 4. A zero-length result vector means the `sample_expr` that was paired with the `focus_token` is a singleton
+    ///  within its result set.  A zero-length result vector when `focus_token == &[]` means the subspace is empty
+    ///
+    fn token_bfs<'s>(&'s self, focus_token: &[u8], pattern: Expr, pattern_reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, Expr)> {
         token_bfs_impl(
-            token,
+            focus_token,
             pattern,
-            self.read_zipper(reader)
+            self.read_zipper(pattern_reader)
         )
     }
 

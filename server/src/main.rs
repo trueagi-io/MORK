@@ -317,12 +317,15 @@ fn parse_path(space: &ServerSpace, in_str: &str, arg_types: &[ArgDef]) -> Result
                 vals.push(ArgVal::UInt(val));
             },
             ArgType::Path => {
-                let (path, rem) = split_bytes(remaining);
-                if path.len() == 0 {
-                    return Err(format!("missing argument `{}` at position {i}", arg.name).into())
+                match split_bytes(remaining) {
+                    Some((path, rem)) => {
+                        remaining = rem;
+                        vals.push(ArgVal::Path(path.to_vec()));
+                    },
+                    None => {
+                        return Err(format!("missing argument `{}` at position {i}", arg.name).into())
+                    }
                 }
-                remaining = rem;
-                vals.push(ArgVal::Path(path.to_vec()));
             },
             ArgType::String => {
                 let (string, rem) = split_str(remaining)?;
@@ -370,10 +373,13 @@ fn split_uint(in_str: &str) -> Result<(u64, &str), BoxedErr> {
 }
 
 /// Splits a buffer of bytes as the next substring in a '/' separated argument path
-fn split_bytes(in_str: &str) -> (Cow<'_, [u8]>, &str) {
+fn split_bytes(in_str: &str) -> Option<(Cow<'_, [u8]>, &str)> {
     let (val_str, remaining) = in_str.split_once('/').unwrap_or((in_str, ""));
     let bytes = urlencoding::decode_binary(val_str.as_bytes());
-    (bytes, remaining)
+    if bytes.len() == 0 && !in_str.contains('/') {
+        return None
+    }
+    Some((bytes, remaining))
 }
 
 /// Splits the next substring in a '/' separated argument path
@@ -501,10 +507,10 @@ impl Service<Request<IncomingBody>> for MorkService {
         #[cfg(not(feature="neo4j"))]
         dispatch!{
             | GET => BusywaitCmd
-            | GET => ChildrenCmd
             | GET => ClearCmd
             | GET => CopyCmd
             | GET => CountCmd
+            | GET => ExploreCmd
             | GET => ExportCmd
             | GET => ImportCmd
             | GET => StatusCmd
@@ -520,10 +526,10 @@ impl Service<Request<IncomingBody>> for MorkService {
         #[cfg(feature="neo4j")]
         dispatch!{
             | GET => BusywaitCmd
-            | GET => ChildrenCmd
             | GET => ClearCmd
             | GET => CopyCmd
             | GET => CountCmd
+            | GET => ExploreCmd
             | GET => ExportCmd
             | GET => ImportCmd
             | GET => StatusCmd

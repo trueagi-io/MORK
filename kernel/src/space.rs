@@ -982,7 +982,7 @@ where
         Ok(i)
 }
 
-pub(crate) fn token_bfs_impl<Rz>(token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, Expr)>
+pub(crate) fn token_bfs_impl<Rz>(focus_token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, Expr)>
 where
     Rz: Zipper + ZipperAbsolutePath + ZipperMoving + ZipperIteration + ZipperPathBuffer + ZipperForking<()>
 {
@@ -996,8 +996,7 @@ where
     // // println!("show {}", show_stack(&stack[..]));
     // stack.reserve(4096);
 
-    rz.reserve_buffers(4096, 64);
-
+    rz.move_to_path(focus_token);
     rz.descend_until();
 
     let cm = rz.child_mask();
@@ -1016,7 +1015,7 @@ where
         drop(rzc);
 
         if e.unifiable(pattern) {
-            let v = rz.origin_path().to_vec();
+            let v = rz.path().to_vec();
             // println!("token {:?}", &v[..]);
             // println!("expr  {:?}", e);
             res.push((v, e));
@@ -1061,14 +1060,15 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
             template.substitute(refs, &mut oz);
 
             // &buffer[constant_template_prefix.len()..oz.loc]
-            serialize_sexpr_into(&buffer, w, sm).map_err(|_| f())?;
+            serialize_sexpr_into(buffer.as_ptr().cast_mut(), w, sm).map_err(|_| f())?;
+            w.write(&[b'\n']).map_err(|_| f())?;
             Ok(())
         })
 }
 
-pub fn serialize_sexpr_into<W : std::io::Write>(src_buf: &[u8], dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
+pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
 
-    Expr{ ptr: src_buf.as_ptr().cast_mut() }.serialize(dst, |s| {
+    Expr{ ptr: src_expr_ptr }.serialize(dst, |s| {
         #[cfg(feature="interning")]
         {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
@@ -1079,7 +1079,6 @@ pub fn serialize_sexpr_into<W : std::io::Write>(src_buf: &[u8], dst: &mut W, sm:
         #[cfg(not(feature="interning"))]
         unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
     });
-    dst.write(&[b'\n'])?;
 
     Ok(())
 }
@@ -1346,7 +1345,7 @@ impl DefaultSpace {
         let dsts = comma_fun_args_asserted(self, rtz.subexpr());
 
         assert!(rtz.next_child());
-        let mut res = rtz.subexpr();
+        let res = rtz.subexpr();
 
         self.transform_multi(&dsts[..], res).1
     }
@@ -1695,7 +1694,7 @@ fn comma_fun_args_asserted(s : &impl Space, e : Expr)->Vec<Expr> {
 #[cfg(test)]
 #[test]
 fn iter_reset_expr(){
-    let mut s = DefaultSpace::new();
+    let s = DefaultSpace::new();
     let e = expr!(&s, "[3] a [2] b c d");
     let mut ez = ExprZipper::new(e);
 
@@ -1730,23 +1729,22 @@ fn iter_reset_expr(){
 #[cfg(test)]
 #[test]
 fn bfs_test() {
-    const EXPRS: &str = r#"(first_name John)
-(last_name Smith)
-(is_alive true)
-(age 27)
-(address (street_address 21 2nd Street))
-(address (city New York))
-(address (state NY))
-(address (postal_code 10021-3100))
-(phone_numbers (0 (type home)))
-(phone_numbers (0 (number 212 555-1234)))
-(phone_numbers (1 (type office)))
-(phone_numbers (1 (number 646 555-4567)))
-(children (0 Catherine))
-(children (1 Thomas))
-(children (2 Trevor))
-(spouse null)
-"#;
+    const EXPRS: &str = r#"
+        (first_name John)
+        (last_name Smith)
+        (is_alive true)
+        (address (street_address 21 2nd Street))
+        (address (city New York))
+        (address (state NY))
+        (address (postal_code 10021-3100))
+        (phone_numbers (0 (type home)))
+        (phone_numbers (0 (number 212 555-1234)))
+        (phone_numbers (1 (type office)))
+        (phone_numbers (1 (number 646 555-4567)))
+        (children (0 Catherine))
+        (children (1 Thomas))
+        (children (2 Trevor))
+    "#;
 
     let space = DefaultSpace::new();
     let pattern = expr!(space, "[2] $ $");
@@ -1756,12 +1754,11 @@ fn bfs_test() {
     drop(writer);
 
     let mut reader = space.new_reader(unsafe { &*template.prefix().unwrap_or(template.span()) }, &()).unwrap();
-
-    println!("{:?}", space.token_bfs(&[], expr!(space, "$"), &mut reader));
-
-    // let [(t1, _), (t2, _)] = &space.token_bfs(&[], expr!(space, "$"), &mut reader)[..] else { panic!() };
-    // println!("{:?}", space.token_bfs(&t1[..], expr!(space, "$"), &mut reader));
-    // println!("{:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
+    let prime_results = space.token_bfs(&[], expr!(space, "$"), &mut reader);
+    println!("Prime {:?}", space.token_bfs(&[], expr!(space, "$"), &mut reader));
+    let [(t1, _), (t2, _), ..] = &prime_results[..] else { panic!() };
+    println!("L1.0 {:?}", space.token_bfs(t1, expr!(space, "$"), &mut reader));
+    println!("L1.1 {:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
 }
 
 pub struct Retry;

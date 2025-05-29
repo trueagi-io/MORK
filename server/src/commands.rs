@@ -52,66 +52,6 @@ impl CommandDefinition for BusywaitCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// children
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// Exports a representative set of children from the specified expression.  Returns at most 256 results
-///
-/// QUESTIONS:
-///     Do we want to take a format?  For now we just assume s-exprs.
-///     Do we want to take a template, to allow the returned exprs to be formatted more compactly?
-pub struct ChildrenCmd;
-
-impl CommandDefinition for ChildrenCmd {
-    const NAME: &'static str = "children";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::Expr,
-            name: "expr",
-            desc: "The expression to traverse within the space",
-            required: true
-        }]
-    }
-    fn properties() -> &'static [PropDef] { &[] }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-
-        let expr = cmd.args[0].as_expr().to_vec();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
-        let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
-
-        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_bfs(&ctx, reader, expr)
-        }).await??;
-
-        thread.unwrap().finalize().await;
-        println!("Children command successful"); // TODO log this!
-
-        Ok(out)
-    }
-}
-
-fn do_bfs(ctx: &MorkService, mut reader: ReadPermission, mut expr: Vec<u8>) -> Result<Bytes, CommandError> {
-
-    let result_paths = ctx.0.space.token_bfs(&[], mork_bytestring::Expr { ptr: expr.as_mut_ptr() }, &mut reader);
-
-    let mut buffer = Vec::with_capacity(4096);
-    let mut writer = std::io::BufWriter::new(&mut buffer);
-
-    for expr_bytes in result_paths {
-        println!("RESULT = {:?}", &expr_bytes.0[..]);
-
-        serialize_sexpr_into(&expr_bytes.0[..], &mut writer, ctx.0.space.symbol_table())
-            .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
-    }
-    writer.flush()?;
-    drop(writer);
-
-    Ok(hyper::body::Bytes::from(buffer))
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // clear
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
@@ -244,6 +184,98 @@ async fn do_count(ctx: &MorkService, thread: WorkThreadHandle, _cmd: &Command, m
     thread.finalize().await;
     println!("Count command successful"); //GOAT Log this!
     Ok(())
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// explore
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Explore a limited number of paths below a focus position, within an expression's subspace
+///
+/// `focus_token` represents a location within `pattern` and thus accessible from `pattern_reader`.  It should
+/// be treated as opaque bytes.
+///
+/// Usage:
+/// 1. Start exploration from the `expr` by passing an empty `focus_token` (use a trailing '/').
+/// 2. This will return at most 256 pairs.  Each pair represents a disjoint set of values in the subspace at or
+///  below the position defined by the `focus_token` that was passed in.  Each pair includes:
+///  `(focus_token, sample_expr)`. The `sample_expr` represents one arbitrarily chosen expression from within
+///  the set.
+/// 3. The pair's `focus_token` can be used to recursively continue exploration by calling the method again using
+///  the same `pattern` and `pattern_reader`, but with the new `focus_token`.  Subsequent results are now relative
+///  to the prior result set.
+/// 4. A "()" response means the `sample_expr` that was paired with the prior call's `focus_token` is a singleton
+///  within its result set.  A "()" response when `focus_token` is empty means the expression's subspace is empty
+pub struct ExploreCmd;
+
+impl CommandDefinition for ExploreCmd {
+    const NAME: &'static str = "explore";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression within the space, from which to begin traversal",
+            required: true
+        },
+        ArgDef{
+            arg_type: ArgType::Path,
+            name: "focus_token",
+            desc: "An encoded representation of a subset of the subspace matched by the expression.  Pass a zero-length string to begin exploration",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] { &[] }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+
+        let expr = cmd.args[0].as_expr().to_vec();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
+
+        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+            do_bfs(&ctx, cmd, reader, expr)
+        }).await??;
+
+        thread.unwrap().finalize().await;
+        println!("Explore command successful"); // TODO log this!
+
+        Ok(out)
+    }
+}
+
+fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr: Vec<u8>) -> Result<Bytes, CommandError> {
+
+    let focus_token = cmd.args[1].as_path();
+    let result_paths = ctx.0.space.token_bfs(focus_token, mork_bytestring::Expr { ptr: expr.as_mut_ptr() }, &mut reader);
+
+    let mut buffer = Vec::with_capacity(4096);
+    let mut writer = std::io::BufWriter::new(&mut buffer);
+
+    let mut first = true;
+    writer.write(b"(")?;
+    for (new_tok, expr) in result_paths {
+        if first {
+            first = false
+        } else {
+            writer.write(b", ")?;
+        }
+
+        writer.write(b"(\"")?;
+        writer.write(&new_tok[..])?;
+        writer.write(b"\", ")?;
+
+        serialize_sexpr_into(expr.ptr, &mut writer, ctx.0.space.symbol_table())
+            .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+
+        writer.write(b")")?;
+    }
+    writer.write(b")")?;
+
+    writer.flush()?;
+    drop(writer);
+
+    Ok(hyper::body::Bytes::from(buffer))
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***

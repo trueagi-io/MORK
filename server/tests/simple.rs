@@ -878,7 +878,6 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
 #[tokio::test]
 async fn metta_thread_basic() -> Result<(), Error> {
     decl_lit!{def_expr!()           => "(def $loc $step $p $t)"        }
-    decl_lit!{exec_expr!()           => "(exec $loc $p $t)"            }
     decl_lit!{in_expr!()             => "((metta_thread_basic in)  $v)"}
     decl_lit!{out_expr!()            => "((metta_thread_basic out) $v)"}
     decl_lit!{id_pattern_template!() => "$v"                           }
@@ -912,14 +911,14 @@ async fn metta_thread_basic() -> Result<(), Error> {
     , "\n     (, ((metta_thread_basic in) (val $x $y))"
     , "\n        (def metta_thread_basic 1 $p $t)"
     , "\n     )"
-    , "\n     (, (exec (metta_thread_basic state) (, (val $y $x)) (,))"
-    , "\n        (exec metta_thread_basic $p $t)"
+    , "\n     (, (exec ((metta_thread_basic state) \"cleanup\") (, (val $y $x)) (,))"
+    , "\n        (exec (metta_thread_basic \"asap\") $p $t)"
     , "\n        ((metta_thread_basic out) (val $x $y))"
     , "\n     )"
     , "\n)"
 
     , "\n(def metta_thread_basic 1"
-    , "\n     (, (exec (metta_thread_basic state) (, (val $u $v)) (,)) "
+    , "\n     (, (exec ((metta_thread_basic state) $p) (, (val $u $v)) (,)) "
     , "\n     )"
     , "\n     (, ((metta_thread_basic out) (val $u $v))"
     , "\n     )"
@@ -931,28 +930,11 @@ async fn metta_thread_basic() -> Result<(), Error> {
         "/", "(def metta_thread_basic $step $p $t)",
     );
 
-    const EXEC_UPLOAD_URL: &str = concat!(
-        server_url!(),
-        "/", "upload",
-        "/", exec_expr!(),
-        "/", exec_expr!(),
-    );
-    const EXEC_UPLOAD_PAYLOAD : &str = concat!(""
-    , "\n(exec metta_thread_basic (, (def metta_thread_basic 0 $p $t) )"
-    , "\n                         (, (exec metta_thread_basic $p $t) )"
-    , "\n)"
-    );
-    const EXEC_UPLOAD_STATUS: &str = concat!( 
-        server_url!(),
-        "/", "status",
-        "/", "(exec metta_thread_basic)",
-    );
-
-
     const METTA_THREAD_RUNNER : &str = concat!(
         server_url!(),
-        "/", "metta_thread",
-        "/", "metta_thread_basic"
+        "/",  "metta_thread",
+        "/" , "(exec ($t_id \"asap\")   (, (def $t_id 0 $p $t) )   (, (exec ($t_id \"asap\") $p $t) )   )",
+        "/?", "location=metta_thread_basic"
     );
     const METTA_THREAD_RUNNER_STATUS: &str = concat!( 
         server_url!(),
@@ -964,7 +946,8 @@ async fn metta_thread_basic() -> Result<(), Error> {
     const METTA_THREAD_CLEAR_STATE : &str = concat!(
         server_url!(),
         "/", "metta_thread",
-        "/", "(metta_thread_basic state)"
+        "/", "(exec ($t_id \"asap\") (,) (,))",
+        "/?", "location=(metta_thread_basic state)"
     );
     const METTA_THREAD_STATE_STATUS: &str = concat!( 
         server_url!(),
@@ -976,17 +959,8 @@ async fn metta_thread_basic() -> Result<(), Error> {
         server_url!(),
         "/", "export",
         "/", out_expr!(),
-        // "/", id_pattern_template!(), //dbg
         "/", id_pattern_template!(),
     );
-
-    const EXPORT_URL_DBG : &str = concat!(
-        server_url!(),
-        "/", "export",
-        "/", exec_expr!(),
-        "/", exec_expr!(),
-    );
-
 
     wait_for_server().await.unwrap();
 
@@ -1005,16 +979,8 @@ async fn metta_thread_basic() -> Result<(), Error> {
     }
     println!("Def Upload response: {}", response.text().await.unwrap());
 
-    // upload exec
-    let response = reqwest::Client::new().post(EXEC_UPLOAD_URL).body(EXEC_UPLOAD_PAYLOAD).send().await.unwrap();
-    if !response.status().is_success() {
-        panic!("Error response: {} - {}", response.status(), response.text().await.unwrap())
-    }
-    println!("Exec Upload response: {}", response.text().await.unwrap());
-
     wait_for_url_eq_status(UPLOAD_STATUS,      "pathClear").await.unwrap();
     wait_for_url_eq_status(DEF_UPLOAD_STATUS,  "pathClear").await.unwrap();
-    wait_for_url_eq_status(EXEC_UPLOAD_STATUS, "pathClear").await.unwrap();
 
     // exec runner
     let response = reqwest::get(METTA_THREAD_RUNNER).await.unwrap();
@@ -1022,8 +988,6 @@ async fn metta_thread_basic() -> Result<(), Error> {
         panic!("Error response: {} - {}", response.status(), response.text().await.unwrap())
     }
     println!("Exec Runner response: {}", response.text().await.unwrap());
-
-    // tokio::time::sleep(core::time::Duration::from_millis(5)).await;
 
     wait_for_url_eq_status(METTA_THREAD_RUNNER_STATUS, "pathClear").await.unwrap();
 

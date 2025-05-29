@@ -1443,6 +1443,7 @@ pub enum ExecSyntaxError {
     ExpectedArity4(String),
     ExpectedCommaListPatterns(String),
     ExpectedCommaListTemplates(String),
+    ExpectedGroundPriority(String),
 }
 
 /// the `Writer` return in the Option of `status_lock` argument needs to be passed to the paired return continuation.
@@ -1630,7 +1631,7 @@ pub fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<P
     let dsts = exec_ez.subexpr();
     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
 
-    Ok(PatternsTemplatesExprs { pattterns: srcs, templates: dsts })
+    Ok(PatternsTemplatesExprs { patterns: srcs, templates: dsts })
 }
 
 type PatternExpr = Expr;
@@ -1641,16 +1642,18 @@ type TemplatesExpr = Expr;
 /// the inner [`(PatternsExpr, TemplatesExpr)`] is guaranteed to have expr lists of the form `[<len>] , ...<Patterns | Templates>)`
 #[derive(Clone, Copy)]
 pub struct PatternsTemplatesExprs {
-    pattterns : PatternsExpr,
+    patterns : PatternsExpr,
     templates : TemplatesExpr,
 }
 impl PatternsTemplatesExprs {
+    #[doc(hidden)]
+    pub fn new(patterns : Expr, templates : Expr) -> Self {Self { patterns: patterns, templates }}
     pub fn inner_raw(&self) -> (PatternsExpr, TemplatesExpr) {
-        (self.pattterns, self.templates)
+        (self.patterns, self.templates)
     }
     pub fn collect_inner(self) -> (Vec<PatternExpr>, Vec<TemplateExpr>) {
 
-        ( fun_args(ExprZipper::new(self.pattterns))
+        ( fun_args(ExprZipper::new(self.patterns))
         , fun_args(ExprZipper::new(self.templates))
         )
 

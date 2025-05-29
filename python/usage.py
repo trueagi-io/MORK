@@ -10,7 +10,7 @@ from client import MORK, ManagedMORK
 
 class Example(unittest.TestCase):
     def setUp(self):
-        self.ins = ManagedMORK.connect(binary_path="../target/debug/mork_server")
+        self.ins = ManagedMORK.start(binary_path="../target/debug/mork_server")
 
     def tearDown(self):
         self.ins.cleanup()
@@ -23,18 +23,18 @@ class Example(unittest.TestCase):
                 with ins.work_at(dataset) as scope:
                     scope.sexpr_import(f"https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")
 
-                    downloaded = ins.download("(Individuals $i (Fullname $name))", "$name")
+                    downloaded = scope.download("(Individuals $i (Fullname $name))", "$name")
                     print("download", downloaded.data)
 
-                    ins.transform(("(Individuals $i (Id $id))", "(Individuals $i (Fullname $name))"), ("(hasName $id $name)", "(hasId $name $id)"))
+                    scope.transform(("(Individuals $i (Id $id))", "(Individuals $i (Fullname $name))"), ("(hasName $id $name)", "(hasId $name $id)"))
 
-                    ins.transform(("(Individuals $i (Id $id))", "(Individuals $i (Sex \"M\"))"), ("(male $id)",))
-                    ins.transform(("(Individuals $i (Id $id))", "(Individuals $i (Sex \"F\"))"), ("(female $id)",))
+                    scope.transform(("(Individuals $i (Id $id))", "(Individuals $i (Sex \"M\"))"), ("(male $id)",))
+                    scope.transform(("(Individuals $i (Id $id))", "(Individuals $i (Sex \"F\"))"), ("(female $id)",))
 
-                    father_t = ins.transform(("(Relations $r (Husband $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
+                    father_t = scope.transform(("(Relations $r (Husband $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
                     # mother_t = father_t.try_when_done(lambda: ins.transform(("(Relations $r (Wife $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",)))
 
-                    mother_t = ins.transform(("(Relations $r (Wife $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
+                    mother_t = scope.transform(("(Relations $r (Wife $id))", "(Relations $r (Children $lci $cid))"), ("(parent $id $cid)",))
         for i, item in enumerate(ins.history):
             print(i, str(item))
 
@@ -49,3 +49,6 @@ if __name__ == '__main__':
     # runner.run(suite)
 
     unittest.main()
+
+    # (exec ($t 0) (,) (, Handle))
+    # (exec ($t 1) (, Handle) (, Output))

@@ -58,6 +58,7 @@ class MORK:
                 raise self.error
             if self.data is not None:
                 return self.data
+            # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
@@ -267,7 +268,7 @@ class MORK:
         """
         Creates a new scoped subspace to work inside of
         """
-        return MORK(**kwargs, namespace=f"({name} {{}})", finalization=finalization, parent=self, history=self.history)
+        return MORK(**kwargs, namespace=self.ns.format(f"({name} {{}})"), finalization=finalization, parent=self, history=self.history)
 
     def __enter__(self):
         # io = self.ns.format("$x")

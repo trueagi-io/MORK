@@ -12,7 +12,7 @@ use std::time::Instant;
 use mork_frontend::he_parser::Atom;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperSubtries};
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
+use mork_bytestring::{byte_item, Expr, ExprZipper, OwnedExpr, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
 use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -982,7 +982,7 @@ where
         Ok(i)
 }
 
-pub(crate) fn token_bfs_impl<Rz>(focus_token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, Expr)>
+pub(crate) fn token_bfs_impl<Rz>(focus_token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, OwnedExpr)>
 where
     Rz: Zipper + ZipperAbsolutePath + ZipperMoving + ZipperIteration + ZipperPathBuffer + ZipperForking<()>
 {
@@ -1010,11 +1010,10 @@ where
         let mut rzc = rz.fork_read_zipper();
         rzc.to_next_val();
 
-        //GOAT!!!!!! Should not leak!!!!!!
-        let e = Expr { ptr: rzc.origin_path().to_vec().leak().as_ptr().cast_mut() };
+        let e = OwnedExpr::from(rzc.origin_path());
         drop(rzc);
 
-        if e.unifiable(pattern) {
+        if e.borrow().unifiable(pattern) {
             let v = rz.path().to_vec();
             // println!("token {:?}", &v[..]);
             // println!("expr  {:?}", e);
@@ -1469,12 +1468,11 @@ where S : 'static
 
     // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
     let status_location = sexpr_to_path(_self.symbol_table(), &format!("(exec {})", e)).unwrap();
-    let Some((status_writer, status_sink)) = status_lock(_self, status_location) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
+    let Some((status_writer, status_sink)) = status_lock(_self, status_location.into()) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
 
     // (exec <location> $program_counter $patterns $templates)
-    let mut prefix_e_vec = sexpr_to_path(_self.symbol_table(), &format!("(exec {} $ $)", e)).unwrap();
-    let prefix_e = Expr{ ptr : prefix_e_vec.as_mut_ptr() };
-
+    let prefix_e_vec = sexpr_to_path(_self.symbol_table(), &format!("(exec {} $ $)", e)).unwrap();
+    let prefix_e = prefix_e_vec.borrow();
 
     let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
 

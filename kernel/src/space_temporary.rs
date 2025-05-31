@@ -6,7 +6,7 @@ use alloc::borrow::Cow;
 
 use bucket_map::{SharedMapping, SharedMappingHandle};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
-use mork_bytestring::{Expr, ExprZipper};
+use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 
@@ -19,7 +19,6 @@ pub type SExprCount     = usize;
 pub type PathCount      = usize;
 pub type AttributeCount = usize;
 pub type NodeCount      = usize;
-pub type OwnedExpr      = Vec<u8>;
 
 // One should not depend on the string representation of debug as per standard lib. this gives us the room to make these types better later.
 #[allow(unused)]
@@ -155,7 +154,7 @@ pub trait Space {
     /// 4. A zero-length result vector means the `sample_expr` that was paired with the `focus_token` is a singleton
     ///  within its result set.  A zero-length result vector when `focus_token == &[]` means the subspace is empty
     ///
-    fn token_bfs<'s>(&'s self, focus_token: &[u8], pattern: Expr, pattern_reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, Expr)> {
+    fn token_bfs<'s>(&'s self, focus_token: &[u8], pattern: Expr, pattern_reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, OwnedExpr)> {
         token_bfs_impl(
             focus_token,
             pattern,
@@ -235,7 +234,7 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
                 if result.is_some() {
                     return Err(ParseError(format!("Found multiple S-Expressions in: {data}")))
                 }
-                result = Some(stack[..ez.loc].to_vec());
+                result = Some(stack[..ez.loc].into());
             }
             Err(ParserError::InputFinished) => { break }
             Err(other) => { return Err(ParseError(format!("Internal Parse error: {other:?}"))) }

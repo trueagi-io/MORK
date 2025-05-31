@@ -4,6 +4,8 @@ pub mod prefix;
 mod space_temporary;
 pub use space_temporary::*;
 
+pub use mork_bytestring::{Expr, OwnedExpr};
+
 #[cfg(test)]
 mod tests {
     use std::fs::File;

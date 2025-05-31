@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 
+use mork::OwnedExpr;
 use mork::{Space, space::serialize_sexpr_into};
 use pathmap::zipper::{ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
 use mork_bytestring::Tag;
@@ -75,7 +76,7 @@ impl CommandDefinition for ClearCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let expr = cmd.args[0].as_expr();
+        let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let mut writer = ctx.0.space.new_writer_async(prefix, &()).await?;
 
@@ -115,11 +116,11 @@ impl CommandDefinition for CopyCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let src_expr = cmd.args[0].as_expr();
+        let src_expr = cmd.args[0].as_expr_bytes();
         let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_till_last_constant();
         let mut reader = ctx.0.space.new_reader_async(src_prefix, &()).await?;
 
-        let dst_expr = cmd.args[1].as_expr();
+        let dst_expr = cmd.args[1].as_expr_bytes();
         let dst_prefix = derive_prefix_from_expr_slice(&dst_expr).till_constant_to_till_last_constant();
         let mut writer = ctx.0.space.new_writer_async(dst_prefix, &()).await?;
 
@@ -153,7 +154,7 @@ impl CommandDefinition for CountCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let expr = cmd.args[0].as_expr();
+        let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
 
@@ -230,7 +231,7 @@ impl CommandDefinition for ExploreCmd {
     fn properties() -> &'static [PropDef] { &[] }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
 
-        let expr = cmd.args[0].as_expr().to_vec();
+        let expr = cmd.args[0].as_expr_bytes().to_vec();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
 
@@ -266,7 +267,7 @@ fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr:
         writer.write(&new_tok[..])?;
         writer.write(b"\", ")?;
 
-        serialize_sexpr_into(expr.ptr, &mut writer, ctx.0.space.symbol_table())
+        serialize_sexpr_into(expr.borrow().ptr, &mut writer, ctx.0.space.symbol_table())
             .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
 
         writer.write(b")")?;
@@ -692,8 +693,8 @@ impl CommandDefinition for MettaThreadCmd {
         let bad_request = |s : &str| Err(CommandError::external(StatusCode::BAD_REQUEST, s));
 
         let initial_sexpr = cmd.args[0].as_str().to_owned();
-        let Ok(mut initial_expr) = ctx.0.space.sexpr_to_expr(&initial_sexpr) else { return bad_request("malformed priority sexpr") };
-        let initial_expr_raw = mork_bytestring::Expr{ ptr : initial_expr.as_mut_ptr() };
+        let Ok(initial_expr) = ctx.0.space.sexpr_to_expr(&initial_sexpr) else { return bad_request("malformed priority sexpr") };
+        let initial_expr_raw = initial_expr.borrow();
         // Validate shape of initial
         '_validate_initial : {
             let malformed_exec = || Err(CommandError::external(StatusCode::BAD_REQUEST, "malformed initial_exec, expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"));
@@ -738,20 +739,20 @@ impl CommandDefinition for MettaThreadCmd {
                 cmd.cmd_id.to_string()
             },
         };
-        
-        let Ok(mut expr) = ctx.0.space.sexpr_to_expr(&location_sexpr) else { return bad_request("malformed location sexpr") };
+
+        let Ok(expr) = ctx.0.space.sexpr_to_expr(&location_sexpr) else { return bad_request("malformed location sexpr") };
 
         // //////////
         // GUARDS //
         // ////////
-        let location = mork_bytestring::Expr { ptr: expr.as_mut_ptr()};
+        let location = expr.borrow();
         if !location.is_ground() { return Err(CommandError::external(StatusCode::BAD_REQUEST, "Location was not a ground expression."));};
 
         // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
         let status_location_sexpr = format!("(exec {})", location_sexpr);
         let status_location = <_>::sexpr_to_expr(&ctx.0.space, &status_location_sexpr).unwrap();
 
-        let Ok(status_writer) = (&ctx.0.space).new_writer(&status_location, &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
+        let Ok(status_writer) = (&ctx.0.space).new_writer(status_location.as_bytes(), &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
 
         // //////////////
         // BUILD TASK //
@@ -763,7 +764,7 @@ impl CommandDefinition for MettaThreadCmd {
         initial_expr_raw
         .substitute_one_de_bruijn(
             0, 
-            mork_bytestring::Expr { ptr: expr.as_mut_ptr() }, 
+            expr.borrow(), 
             &mut oz
         );
 
@@ -782,7 +783,7 @@ impl CommandDefinition for MettaThreadCmd {
         // TODO! JOURNAL INSERTION of INITIAL_EXEC
 
         // (exec (<location> $priority) $patterns $templates)
-        let mut prefix_e_vec =  ctx.0.space.sexpr_to_expr(&format!("(exec ({} $) $ $)", location_sexpr)).unwrap();
+        let prefix_e_vec =  ctx.0.space.sexpr_to_expr(&format!("(exec ({} $) $ $)", location_sexpr)).unwrap();
 
         let task = async move|server_space : &ServerSpace, status_writer | {
 
@@ -793,7 +794,7 @@ impl CommandDefinition for MettaThreadCmd {
             #[cfg(debug_assertions)]
             let mut loops_left = 500;
 
-            let prefix = unsafe { mork_bytestring::Expr{ ptr : prefix_e_vec.as_mut_ptr() }.prefix().unwrap().as_ref().unwrap() };
+            let prefix = unsafe { prefix_e_vec.borrow().prefix().unwrap().as_ref().unwrap() };
             let mut retry = false;
             // the invariant is that buffer should always be reset with at least the prefix
             let mut buffer = Vec::from(prefix);
@@ -891,7 +892,7 @@ impl CommandDefinition for MettaThreadCmd {
 
 
             if let Err(syntax_error) = status_result {
-                    let _ = server_space.set_user_status(status_location, match syntax_error {
+                    let _ = server_space.set_user_status(status_location.as_bytes(), match syntax_error {
                         mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
                         mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; offending expr : `{}`", e)),
                         mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; offending expr : `{}`", e)),
@@ -1014,21 +1015,21 @@ impl CommandDefinition for MettaThreadSuspendCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
         let exec_loc_sexpr = cmd.args[0].as_str().to_owned();
-        let Ok(mut exec_loc_expr)  = ctx.0.space.sexpr_to_expr(&exec_loc_sexpr)  else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for exec location : {:?}", exec_loc_sexpr))); };
-        if !(mork_bytestring::Expr{ptr : exec_loc_expr.as_mut_ptr()}).is_ground() {
+        let Ok(exec_loc_expr)  = ctx.0.space.sexpr_to_expr(&exec_loc_sexpr)  else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for exec location : {:?}", exec_loc_sexpr))); };
+        if !exec_loc_expr.borrow().is_ground() {
             return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Exec location must be ground : {}", exec_loc_sexpr)));
         }
 
         let suspend_loc_sexpr = cmd.args[1].as_str().to_owned();
-        let Ok(mut suspend_loc_expr)  = ctx.0.space.sexpr_to_expr(&suspend_loc_sexpr) else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for suspend location : {:?}", exec_loc_sexpr))); };
-        if !(mork_bytestring::Expr{ptr : suspend_loc_expr.as_mut_ptr()}).is_ground() {
+        let Ok(suspend_loc_expr)  = ctx.0.space.sexpr_to_expr(&suspend_loc_sexpr) else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for suspend location : {:?}", exec_loc_sexpr))); };
+        if !suspend_loc_expr.borrow().is_ground() {
             return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Freeze location must be ground : {}", exec_loc_sexpr)));
         }
 
 
         let suspend_prefix_sexpr = format!("({} $x)", suspend_loc_sexpr);
         let suspend_prefix_expr  = ctx.0.space.sexpr_to_expr(&suspend_prefix_sexpr).unwrap();
-        let suspend_prefix =  derive_prefix_from_expr_slice(&suspend_prefix_expr).till_constant_to_full();
+        let suspend_prefix =  derive_prefix_from_expr_slice(suspend_prefix_expr.as_bytes()).till_constant_to_full();
 
         let Ok(mut suspend_writer) = ctx.0.space.new_writer_async(suspend_prefix, &()).await else {
             return Err(CommandError::external(StatusCode::CONFLICT, format!("Conflict at suspend location : {}", suspend_prefix_sexpr)));
@@ -1044,7 +1045,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
 
         let exec_prefix_sexpr = format!("(exec ({} $) $ $)", exec_loc_sexpr);
         let exec_prefix_expr  = ctx.0.space.sexpr_to_expr(&exec_prefix_sexpr).unwrap();
-        let exec_prefix       =  derive_prefix_from_expr_slice(&exec_prefix_expr).till_constant_to_full();
+        let exec_prefix       =  derive_prefix_from_expr_slice(exec_prefix_expr.as_bytes()).till_constant_to_full();
         let mut exec_loc_writer = loop {
             if let Ok(exec_writer) = ctx.0.space.new_writer(exec_prefix, &()) {
                 break exec_writer;
@@ -1052,7 +1053,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
         };
 
         // if this fails, we have successfully blocked the thread
-        if let Ok(_status) = ctx.0.space.new_reader(&status_loc_expr, &()) {
+        if let Ok(_status) = ctx.0.space.new_reader(status_loc_expr.as_bytes(), &()) {
             return Err(CommandError::external(StatusCode::GONE, format!("The thread has already stopped, suspend location has been cleared : {}", suspend_prefix_sexpr)));
         };
 
@@ -1061,7 +1062,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
             return Err(CommandError::external(StatusCode::GONE, format!("The thread has already been exhausted, suspend location has been cleared : {}", suspend_prefix_sexpr)));
         };
 
-        suspend_wz.descend_to(exec_prefix_expr);
+        suspend_wz.descend_to(exec_prefix_expr.as_bytes());
         suspend_wz.graft_map(pats_templates);
 
         Ok(Bytes::from(format!("Ack. Thread {} cleared, now frozen at `({} (exec ({} $priorities) $patterns $templates))`", exec_loc_sexpr, suspend_loc_sexpr, exec_loc_sexpr)))
@@ -1092,7 +1093,7 @@ impl CommandDefinition for StatusCmd {
         &[]
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-        let expr = cmd.args[0].as_expr();
+        let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
 
         let status = ctx.0.space.get_status(&prefix);
@@ -1400,11 +1401,8 @@ fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>
     use mork_bytestring::Tag;
 
 
-    let mut expr = space.sexpr_to_expr(input).map_err(|_| TransformMultiMultiError::ParseError)?;
-    let expr_ = 
-        mork_bytestring::Expr { ptr : expr.as_mut_ptr() };
-    let mut expr_z = mork_bytestring::ExprZipper::new(expr_);
-
+    let expr = space.sexpr_to_expr(input).map_err(|_| TransformMultiMultiError::ParseError)?;
+    let mut expr_z = mork_bytestring::ExprZipper::new(expr.borrow());
 
     let Ok(Tag::Arity(3)) = expr_z.item() else { return  Err(TransformMultiMultiError::ExpectedArity3AsFirstByte);};
 
@@ -1671,7 +1669,7 @@ pub enum ArgVal {
     Flag,
     Int(i64),
     UInt(u64),
-    Expr(Vec<u8>),
+    Expr(OwnedExpr),
     Path(Vec<u8>),
     String(String),
 }
@@ -1701,9 +1699,9 @@ impl ArgVal {
             _ => unreachable!()
         }
     }
-    pub fn as_expr(&self) -> &[u8] {
+    pub fn as_expr_bytes(&self) -> &[u8] {
         match self {
-            Self::Expr(expr) => &*expr,
+            Self::Expr(expr) => expr.as_bytes(),
             _ => unreachable!()
         }
     }
@@ -1759,7 +1757,7 @@ fn prefix_assertions() {
     macro_rules! prefix_to_var { ($EXPR:ident :expr ; $PREFIX:ident : prefix ; $SEXPR:literal) => {
         let se      = $SEXPR;
         let $EXPR   = space.sexpr_to_expr(se).unwrap();
-        let $PREFIX = derive_prefix_from_expr_slice(& $EXPR);
+        let $PREFIX = derive_prefix_from_expr_slice(& $EXPR.as_bytes());
     }; }
 
     prefix_to_var!(e1 : expr ; pe1 : prefix ; "a");

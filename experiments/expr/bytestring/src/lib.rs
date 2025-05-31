@@ -121,6 +121,10 @@ pub struct Expr {
     pub ptr: *mut u8,
 }
 
+/// An owned object with an `Expr` interface
+#[derive(Clone, PartialEq, Eq)]
+pub struct OwnedExpr (Box<[u8]>);
+
 #[derive(Clone, Debug)]
 pub enum ExtractFailure {
     IntroducedVar(),
@@ -1079,6 +1083,46 @@ impl Expr {
     /// Returns `true` if an [`Expr`] has no vars or refs
     pub fn is_ground(self)->bool {
         self.variables() == 0
+    }
+}
+
+impl OwnedExpr {
+    /// Borrow the `OwnedExpr` as a borrowed `Expr`
+    #[inline]
+    pub fn borrow(&self) -> Expr {
+        Expr{ ptr: self.0.as_ptr().cast_mut()}
+    }
+    /// Borrow the inner bytes in the expression
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl<B: AsRef<[u8]>> From<B> for OwnedExpr {
+    #[inline]
+    fn from(bytes: B) -> Self {
+        // Hopefully the compiler will eliminate the intermediate Vec
+        Self(bytes.as_ref().to_vec().into_boxed_slice())
+    }
+}
+
+impl From<OwnedExpr> for Vec<u8> {
+    #[inline]
+    fn from(expr: OwnedExpr) -> Self {
+        Vec::from(expr.0)
+    }
+}
+
+impl Debug for OwnedExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<B: AsRef<[u8]>> PartialEq<B> for OwnedExpr {
+    fn eq(&self, other: &B) -> bool {
+        self.as_bytes() == other.as_ref()
     }
 }
 

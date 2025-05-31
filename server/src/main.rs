@@ -30,7 +30,7 @@ use commands::*;
 mod status_map;
 mod server_space;
 use server_space::*;
-use mork::Space;
+use mork::{Space, OwnedExpr};
 
 mod resource_store;
 use resource_store::*;
@@ -303,7 +303,7 @@ fn parse_path(space: &ServerSpace, in_str: &str, arg_types: &[ArgDef]) -> Result
                 remaining = rem;
                 let expr = space.sexpr_to_expr(&expr_str)
                     .map_err(|e| BoxedErr::from(format!("Failed to parse expression: {e:?}")))?;
-                vals.push(ArgVal::Expr(expr));
+                vals.push(ArgVal::Expr(expr.into()));
             },
             ArgType::Flag => { unreachable!() }, //Flags only make sense as optional properties
             ArgType::Int => {
@@ -449,7 +449,7 @@ fn get_query_key_str<'a>(in_str: &'a str, key: &str) -> Result<Option<Cow<'a, st
 }
 
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
-fn get_query_key_expr<'a>(space: &ServerSpace, in_str: &'a str, key: &str) -> Result<Option<Vec<u8>>, BoxedErr> {
+fn get_query_key_expr<'a>(space: &ServerSpace, in_str: &'a str, key: &str) -> Result<Option<OwnedExpr>, BoxedErr> {
     match get_query_key_str(in_str, key)? {
         Some(expr_str) => {
             space.sexpr_to_expr(&expr_str)

@@ -390,7 +390,7 @@ async fn import_request_test() -> Result<(), Error> {
     // assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary"); // we need to ensure tests simulate latency somehow for this to be deterministic
 
     //Now spin until we get a "pathClear" status
-    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+    wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
     println!("Finished loading space");
 
     //Finally, check that we got the right data in the path by using the count command

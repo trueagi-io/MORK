@@ -16,6 +16,7 @@ use bytes::BytesMut;
 use hyper::{Request, StatusCode};
 use hyper::body::{Incoming as IncomingBody, Bytes};
 use http_body_util::BodyExt;
+use url::Url;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
 use super::status_map::{StatusRecord, FetchError, ParseError};
@@ -457,32 +458,61 @@ impl CommandDefinition for ImportCmd {
 
 async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: Vec<u8>, template: Vec<u8>, mut writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
+    let url = Url::parse(file_uri)?;
 
     let space_prefix = derive_prefix_from_expr_slice(&template).till_constant_to_till_last_constant().to_owned();
 
-    // Do the remote fetching
-    //========================
-    let mut response = ctx.0.http_client.get(&*file_uri).send().await?;
-    if !response.status().is_success() {
-        //User-facing error
-        println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
-        let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
-        return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
-    }
+    let file_path = if url.scheme() == "file" {
 
-    let mut file_writer = BufWriter::new(File::create(file_resource.path()?).await?);
+        // If a `file://` url was provided, then see if we can resolve it to a path and that the path exists
+        //========================
+        #[cfg(feature="local_files")]
+        {
+            let file_path = match url.to_file_path() {
+                Ok(file_path) => file_path,
+                Err(e) => {
+                    let fetch_err = FetchError::new(StatusCode::BAD_REQUEST, format!("Failed to parse URL as a file path: {e:?}"));
+                    return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
+                }
+            };
+            if !file_path.is_file() {
+                let fetch_err = FetchError::new(StatusCode::BAD_REQUEST, format!("Failed to open file at path: {file_path:?}"));
+                return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
+            }
+            file_path
+        }
+        #[cfg(not(feature="local_files"))]
+        {
+            println!("Illegal attempt to import local file using url: {file_uri}"); //GOAT, log this!!
+            let fetch_err = FetchError::new(StatusCode::BAD_REQUEST, format!("File URLs aren't supported because the MORK server was compiled without `local_files` support"));
+            return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
+        }
+    } else {
 
-    //GOAT!!!  We need to communicate back to the user if the download craps out in the middle
-    while let Some(chunk) = response.chunk().await? {
-        file_writer.write(&*chunk).await?;
-    }
-    file_writer.flush().await?;
+        // Otherwise fetch the url from a remote server
+        //========================
+        let mut response = ctx.0.http_client.get(&*file_uri).send().await?;
+        if !response.status().is_success() {
+            //User-facing error
+            println!("Import Failed. unable to fetch remote resource: {}", response.status()); //GOAT, log this failure to fetch remote resource
+            let fetch_err = FetchError::new(response.status(), format!("Failed to load remote resource: {}", response.status()));
+            return ctx.0.space.set_user_status(space_prefix, StatusRecord::FetchError(fetch_err))
+        }
 
-    println!("Successful download from '{}', file saved to '{:?}'", file_uri, file_resource.path()?); //GOAT Log this sucessful completion
+        let mut file_writer = BufWriter::new(File::create(file_resource.path()?).await?);
+
+        //GOAT!!!  We need to communicate back to the user if the download craps out in the middle
+        while let Some(chunk) = response.chunk().await? {
+            file_writer.write(&*chunk).await?;
+        }
+        file_writer.flush().await?;
+
+        println!("Successful download from '{}', file saved to '{:?}'", file_uri, file_resource.path()?); //GOAT Log this sucessful completion
+        file_resource.path()?.to_owned()
+    };
 
     // Do the Parsing
     //========================
-    let file_path = file_resource.path()?.to_owned();
     let file_type = match detect_file_type(&file_path, file_uri) {
         Ok(file_type) => file_type,
         Err(err) => {

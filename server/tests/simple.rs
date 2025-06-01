@@ -93,6 +93,59 @@ async fn simple_request_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests map access contention using the busywait command
+#[tokio::test]
+async fn busywait_contention_test() -> Result<(), Error> {
+    decl_lit!{top_expr!() => "(busywait_contention_test $v)"}
+
+    const TOP_READER: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "500",
+        "/?", "expr1=", top_expr!()
+    );
+    const TOP_WRITER: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "500",
+        "/?", "expr1=", top_expr!(),
+        "&", "writer1"
+    );
+    wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    //Take a reader
+    let response = reqwest::get(TOP_READER).await?;
+    if response.status().is_success() {
+        let body = response.text().await?;
+        println!("Response, first top-reader: {}", body);
+    } else {
+        panic!("Failed to take top-reader: {}", response.status());
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await; //Just to make sure they don't land in the wrong order
+
+    //Make sure we can't take a writer to the same path
+    let response = reqwest::get(TOP_WRITER).await?;
+    if response.status().is_success() {
+        panic!("Should not be allowed to get top-writer with top-reader outstanding: {}", response.status());
+    } else {
+        println!("Failed to take top-writer, which is correct: {}", response.status());
+    }
+
+    //Now make sure we can take a reader
+    let response = reqwest::get(TOP_READER).await?;
+    if response.status().is_success() {
+        let body = response.text().await?;
+        println!("Response, sucessful second top-reader: {}", body);
+    } else {
+        panic!("Failed to second take top-reader: {}", response.status());
+    }
+
+    Ok(())
+}
+
 /// Opens many client requests at the same time, saturating the server's capacity very quickly
 ///
 /// Ignored because it interferes with other tests

@@ -3,6 +3,7 @@ use core::pin::Pin;
 use std::future::Future;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::any::Any;
 
 use mork::OwnedExpr;
 use mork::{Space, space::serialize_sexpr_into};
@@ -42,11 +43,41 @@ impl CommandDefinition for BusywaitCmd {
             required: true
         }]
     }
-    fn properties() -> &'static [PropDef] { &[] }
-    async fn work(_ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    fn properties() -> &'static [PropDef] {
+        &[PropDef {
+            arg_type: ArgType::Expr,
+            name: "expr1",
+            desc: "An expression to lock for the duration of the busy-wait",
+            required: false
+        },
+        PropDef {
+            arg_type: ArgType::Flag,
+            name: "writer1",
+            desc: "Holds write permission over expr1 if set, otherwise takes a read permission",
+            required: false
+        }]
+    }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+
+        let expr1 = cmd.properties[0].as_ref().map(|prop| prop.as_expr_bytes());
+        let writer1 = cmd.properties[1].is_some();
+
+        let expr1 = match expr1 {
+            Some(expr) => {
+                let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
+                if writer1 {
+                    Some(Box::new(ctx.0.space.new_writer_async(prefix, &()).await?) as Box<dyn Any + Send + Sync>)
+                } else {
+                    Some(Box::new(ctx.0.space.new_reader_async(prefix, &()).await?) as Box<dyn Any + Send + Sync>)
+                }
+            },
+            None => None
+        };
+
         thread.unwrap().dispatch_blocking_task(cmd, move |cmd| {
             let millis = cmd.args[0].as_u64();
             std::thread::sleep(std::time::Duration::from_millis(millis));
+            drop(expr1);
             Ok(())
         }).await;
         Ok("ACK. Waiting".into())

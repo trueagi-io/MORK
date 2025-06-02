@@ -37,47 +37,48 @@ class MORK:
             self.server = server
             try:
                 self.response = request(self.method, server.base + self.subdir, **self.kwargs)
-                if self.response and self.response.status_code == 200:
-                    self.data = "ok"
-
             except (RequestException, ConnectionError) as e:
                 self.error = e
                 raise e
 
-        def result(self):
+        def poll_clear(self):
             """
-            Retrieve the result from a previously dispatched request.
+            Poll the status path.
 
             Returns:
-                Any: The result data.
-                None: If the result is not yet ready.
+                (clear: bool, metadata: Any)
             """
             if self.server is None:
                 raise RuntimeError(f"Must dispatch a request before it can be polled")
-            if self.error is not None:
-                raise self.error
-            if self.data is not None:
-                return self.data
+
             # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
                 return_status = status_info['status']
                 if return_status == "pathForbiddenTemporary":
-                    return None
+                    return (False, "")
                 elif return_status == "pathClear":
-                    return "ok"
+                    return (True, "")
                 else:
-                    return return_status #TODO: Add handler for command-specific results
+                    return (False, return_status) #TODO: Add handler for command-specific results
+            return (False, status_response.status_code)
 
-        def poll_for_result(self):
+        def block(self, delay=0.005, base=2, max_attempts=16):
             """
             Continue to poll until a request has returned a result or failed
+
+            Polls according to delay*base^attempt for attempt < max_attempts (else raises StopIteration)
             """
-            while self.result() is None:
-                time.sleep(0.005)
-            self.data = self.result()
-            return self.data
+            is_clear, meta = self.poll_clear()
+            attempt = 1
+            while not is_clear:
+                time.sleep(delay*base**attempt)
+                is_clear, meta = self.poll_clear()
+                attempt += 1
+                if attempt > max_attempts:
+                    raise StopIteration
+            return meta
 
         def __str__(self):
             return str(vars(self))
@@ -93,6 +94,9 @@ class MORK:
             self.data = data
             super().__init__("post", f"/upload/{quote(self.pattern)}/{quote(self.template)}/", data=self.data, headers={"Content-Type": "text/plain"})
 
+        def poll_clear(self):
+            return (True, "upload already blocks")
+
     class Download(Request):
         """
         A request to download data from the server
@@ -106,8 +110,12 @@ class MORK:
 
         def dispatch(self, server):
             super().dispatch(server)
+            print("download", self.response.status_code)
             if self.response and self.response.status_code == 200:
                 self.data = self.response.text
+
+        def poll_clear(self):
+            return (True, "download already blocks")
 
     class Clear(Request):
         """
@@ -115,6 +123,7 @@ class MORK:
         """
         def __init__(self, expr):
             self.expr = expr
+            self.status_loc = expr
             super().__init__("get", f"/clear/{quote(self.expr)}/")
 
     class Stop(Request):
@@ -156,9 +165,17 @@ class MORK:
             self.status_loc = template
             super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
 
-        def dispatch(self, server):
-            super().dispatch(server)
-            self.data = None
+    class Export(Request):
+        """
+        A request to export data to a file
+        """
+        #TODO: Specify format
+        def __init__(self, pattern, template, file_uri):
+            self.pattern = pattern
+            self.template = template
+            self.status_loc = template
+            self.uri = file_uri
+            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
 
     class Transform(Request):
         """
@@ -171,26 +188,10 @@ class MORK:
             self.status_loc = templates[0] #GOAT, is there a better location expr to use?
             super().__init__("post", f"/transform_multi_multi/", data=self.payload, headers={"Content-Type": "text/plain"})
 
-        def dispatch(self, server):
-            super().dispatch(server)
-            self.data = None
-
-    def transform(self, patterns, templates):
-        """
-        Initiate a transform and return when it is complete
-        """
-        cmd = self.Transform(tuple(map(self.ns.format, patterns)), tuple(map(self.ns.format, templates)))
-        self.history.append(cmd)
-        cmd.dispatch(self)
-        cmd.poll_for_result()
-        return cmd
-
-    def and_clear(self):
-        """
-        Calling this method will cause the expression subspace to be cleared when exiting the `with` block
-        """
-        self.finalization += ("clear",)
-        return self
+    class Explore(Request):
+        def __init__(self, pattern, token=""):
+            self.pattern = pattern
+            super().__init__("get", f"/explore/{quote(self.pattern)}/{token}/")
 
     def __init__(self, base_url: Optional[str] = os.environ.get("MORK_URL"), namespace = "{}", finalization = (), parent=None, history=None):
         if base_url is None:
@@ -210,13 +211,29 @@ class MORK:
             if status_req.response is None or status_req.response.status_code != 200:
                 raise ConnectionError(f"Failed to connect to MORK server at {base_url}")
 
-    def upload(self, data):
+    def transform(self, patterns, templates):
         """
-        Upload `data` to the server
+        Initiate a transform
+        """
+        cmd = self.Transform(tuple(map(self.ns.format, patterns)), tuple(map(self.ns.format, templates)))
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
+    def upload_(self, data):
+        """
+        Upload `data` to the scope
         """
         #TODO: Specify format
-        io = self.ns.format("$x")
-        cmd = self.Upload("$x", io, data)
+        return self.upload("$x", "$x", data)
+
+    def upload(self, pattern, template, data):
+        """
+        Upload `data` matching `pattern` to the server formatted in `template`
+        """
+        #TODO: Specify format
+        io = self.ns.format(template)
+        cmd = self.Upload(pattern, io, data)
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd
@@ -225,12 +242,7 @@ class MORK:
         """
         Download everything in the scope
         """
-        #TODO: Specify format
-        io = self.ns.format("$x")
-        cmd = self.Download(io, "$x")
-        self.history.append(cmd)
-        cmd.dispatch(self)
-        return cmd
+        return self.download("$x", "$x")
 
     def download(self, pattern, template):
         """
@@ -243,20 +255,35 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
-    def sexpr_import(self, file_uri):
+    def sexpr_export_(self, file_uri):
+        return self.sexpr_export("$x", "$x", file_uri)
+
+    def sexpr_export(self, pattern, template, file_uri):
         """
-        Import s-expressions from the specified URI
+        Export items from `pattern` in the space and format them in `file` using `template`
         """
-        io = self.ns.format("$x")
-        cmd = self.Import("$x", io, file_uri)
+        io = self.ns.format(pattern)
+        cmd = self.Export(io, template, file_uri)
         self.history.append(cmd)
         cmd.dispatch(self)
-        cmd.poll_for_result()
+        return cmd
+
+    def sexpr_import_(self, file_uri):
+        return self.sexpr_import("$x", "$x", file_uri)
+
+    def sexpr_import(self, pattern, template, file_uri):
+        """
+        Import s-expressions from the specified URI match `pattern` into `template`
+        """
+        io = self.ns.format(template)
+        cmd = self.Import(pattern, io, file_uri)
+        self.history.append(cmd)
+        cmd.dispatch(self)
         return cmd
 
     def clear(self):
         """
-        Clear the the entire scoped subspace
+        Clear the entire scoped subspace
         """
         io = self.ns.format("$x")
         cmd = self.Clear(io)
@@ -278,7 +305,7 @@ class MORK:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if "clear" in self.finalization: self.clear()
+        if "clear" in self.finalization: self.clear().block()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
 
@@ -300,6 +327,13 @@ class MORK:
 
     def and_stop(self):
         self.finalization += ("stop",)
+        return self
+
+    def and_clear(self):
+        """
+        Calling this method will cause the expression subspace to be cleared when exiting the `with` block
+        """
+        self.finalization += ("clear",)
         return self
 
 #GOAT: What is this for?
@@ -415,12 +449,11 @@ def _main():
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("main").and_clear() as ins:
             print("entered")
-            ins.upload("(foo 1)\n(foo 2)\n")
+            ins.upload_("(foo 1)\n(foo 2)\n")
 
             print("data", ins.download_().data)
 
-            imp = ins.sexpr_import("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta")
-            print("imp", imp.response.text)
+            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").block()
 
             print("data", ins.download_().data)
 

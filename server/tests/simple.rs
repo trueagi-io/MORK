@@ -477,13 +477,15 @@ async fn export_request_test() -> Result<(), Error> {
         "/", "export",
         "/", space_expr!(),
         "/", file_expr!(),
+        // "/?", "uri=file:///tmp/mork.metta"
     );
     const EXPORT_RAW_URL: &str = concat!(
         server_url!(),
         "/", "export",
         "/", space_expr!(),
         "/", file_expr!(),
-        "/?", "format=raw"
+        "/?", "format=raw",
+        // "&", "uri=file:///tmp/mork.raw"
     );
     wait_for_server().await.unwrap();
 

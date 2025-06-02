@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use tokio::sync::Notify;
 
-use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use http_body_util::{combinators::BoxBody, BodyExt, Full};
 
 use hyper::service::Service;
 use hyper::{Method, Request, Response, StatusCode, Uri};
@@ -164,7 +164,7 @@ impl MorkService {
             match self.0.workers.assign_worker() {
                 Some(work_thread) => Some(work_thread),
                 None => {
-                    let response = MorkServerError::log_err(StatusCode::SERVICE_UNAVAILABLE, "Rejected Connection: Busy").error_response();
+                    let response = MorkServerError::log_err(StatusCode::SERVICE_UNAVAILABLE, "Rejected Connection: Busy", None).error_response();
                     return Box::pin(async { Ok(response) })
                 }
             }
@@ -205,37 +205,47 @@ async fn got_cntl_c() {
 pub struct MorkServerError {
     /// The http status code to return to the client
     status_code: StatusCode,
+    /// A helpful debug message to return to the client
+    user_desc: String
 }
 
 impl MorkServerError {
     /// Creates a new MorkServerError and logs the error immediately to the logs
     #[inline]
-    pub fn log_err<Desc: core::fmt::Display>(status_code: StatusCode, log_description: Desc) -> Self {
-        println!("{}", log_description); //GOAT Log this
-        Self {status_code}
+    pub fn log_err<Desc: Clone + core::fmt::Display>(status_code: StatusCode, log_desc: Desc, user_desc: Option<Desc>) -> Self {
+        let user_desc = match user_desc {
+            Some(user_desc) => user_desc,
+            None => log_desc.clone(),
+        };
+        Self::log_internal_err(status_code, log_desc, user_desc)
+    }
+    #[inline]
+    pub fn log_internal_err<Desc: Clone + core::fmt::Display>(status_code: StatusCode, log_desc: Desc, user_desc: Desc) -> Self {
+        println!("{}", log_desc); //GOAT Log this
+        Self {status_code, user_desc: user_desc.to_string()}
     }
     /// Creates a new MorkServerError originating from a command, and logs the error immediately to the logs
     #[inline]
     pub fn cmd_err(cmd_err: CommandError, cmd: &Command) -> Self {
         match cmd_err {
             CommandError::Internal(err) => {
-                Self::log_err(StatusCode::INTERNAL_SERVER_ERROR, format!("Error: \"{err}\" while executing command: {}", cmd.def.name()))
+                Self::log_internal_err(StatusCode::INTERNAL_SERVER_ERROR, format!("Error: \"{err}\" while executing command: {}", cmd.def.name()), "".to_string(),)
             },
             CommandError::External(err) => {
-                Self::log_err(err.status_code, err.log_message)
+                Self::log_err(err.status_code, err.log_message, err.user_message)
             }
         }
     }
     /// Constructs a corresponding HTTP error response for the `MorkServerError`
     #[inline]
     pub fn error_response(&self) -> Response<BoxBody<Bytes, hyper::Error>> {
-        error_response(self.status_code)
+        error_response(self.status_code, &self.user_desc)
     }
 }
 
 /// Utility function to make an error response
-fn error_response(status_code: StatusCode) -> Response<BoxBody<Bytes, hyper::Error>> {
-    let response_body = Empty::<Bytes>::new()
+fn error_response(status_code: StatusCode, response_body: &str) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let response_body = Full::new(Bytes::from(response_body.to_string()))
         .map_err(|never| match never {})
         .boxed();
     let mut response = Response::new(response_body);
@@ -252,7 +262,7 @@ fn ok_response<T: Into<Bytes>>(chunk: T) -> Response<BoxBody<Bytes, hyper::Error
 
 /// Returns and logs a "Bad Request"
 fn bad_request_err(e: <MorkService as Service<Request<IncomingBody>>>::Error) -> <MorkService as Service<Request<IncomingBody>>>::Future {
-    let response = MorkServerError::log_err(StatusCode::BAD_REQUEST, format!("Failed to parse request args: {e:?}")).error_response();
+    let response = MorkServerError::log_err(StatusCode::BAD_REQUEST, format!("Failed to parse request args: {e:?}"), None).error_response();
     Box::pin(async { Ok(response) })
 }
 
@@ -498,7 +508,7 @@ impl Service<Request<IncomingBody>> for MorkService {
                 )*
                     // Return 404 Not Found for other routes.
                     _ => {
-                        let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path())).error_response();
+                        let response = MorkServerError::log_err(StatusCode::NOT_FOUND, format!("Unknown URL: {}", req.uri().path()), None).error_response();
                         return Box::pin(async { Ok(response) })
                     }
                 }

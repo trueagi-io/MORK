@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
+use std::path::PathBuf;
 
 use mork::OwnedExpr;
 use mork::{Space, space::serialize_sexpr_into};
@@ -338,27 +339,57 @@ impl CommandDefinition for ExportCmd {
         }]
     }
     fn properties() -> &'static [PropDef] {
-        &[
-            PropDef {
-                arg_type: ArgType::String,
-                name: "format",
-                desc: "The format to export, default is metta S-Expressions",
-                required: false
-            }
-        ]
+        &[PropDef {
+            arg_type: ArgType::String,
+            name: "format",
+            desc: "The format to export, default is metta S-Expressions",
+            required: false
+        },
+        PropDef {
+            arg_type: ArgType::String,
+            name: "uri",
+            desc: "A file url to export to.  If this property is provided then the returned body won't contain any result data",
+            required: false
+        }]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
 
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
-        .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
         let pat_reader = ctx.0.space.new_reader_async(&derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant(), &()).await?;
 
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
+        //Unpack the "uri" argument into a file path, if one was provided
+        let file_path = match cmd.properties[1].as_ref() {
+            Some(file_uri) => {
+                #[cfg(feature="local_files")]
+                {
+                    let url = Url::parse(file_uri.as_str())?;
+
+                    if url.scheme() != "file" {
+                        return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Export command only supports `file` URLs in `uri` property")))
+                    }
+                    match url.to_file_path() {
+                        Ok(file_path) => Some(file_path),
+                        Err(e) => {
+                            return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Failed to parse URL as a file path: {e:?}")))
+                        }
+                    }
+                }
+                #[cfg(not(feature="local_files"))]
+                {
+                    println!("Illegal attempt to export to local file using url: {file_uri:?}"); //GOAT, log this!!
+                    return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("File URLs aren't supported because the MORK server was compiled without `local_files` support")))
+                }
+            },
+            None => None
+        };
+
         let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
-            do_export(&ctx, (pat_reader, pattern), template, format)
+            do_export(&ctx, (pat_reader, pattern), template, format, file_path)
         }).await??;
 
         thread.unwrap().finalize().await;
@@ -369,28 +400,22 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, (mut reader, mut pattern): (ReadPermission, Vec<u8>), mut template: Vec<u8>, format: DataFormat) -> Result<Bytes, CommandError> {
-
-    let buffer = match format {
-        DataFormat::Metta => {
-            let mut buffer = Vec::with_capacity(4096);
-            let mut writer = std::io::BufWriter::new(&mut buffer);
-            ctx.0.space.dump_as_sexpr(&mut writer, (&mut reader, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }), mork_bytestring::Expr { ptr: template.as_mut_ptr() }).map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, Vec<u8>), template: Vec<u8>, format: DataFormat, file_path: Option<PathBuf>) -> Result<Bytes, CommandError> {
+    let buffer = match &file_path {
+        Some(file_path) => {
+            // The rendered output will go to a file
+            let file = std::fs::File::create(&file_path)?;
+            let mut writer = std::io::BufWriter::new(file);
+            dump_as_format(ctx, &mut writer, (reader, pattern), template, format)?;
             writer.flush()?;
             drop(writer);
-            buffer
+            format!("Output written to file: {file_path:?}").into_bytes()
         },
-        DataFormat::Csv |
-        DataFormat::Json => {
-            b"Export Error: Unimplemented Export Format".to_vec()
-        },
-        DataFormat::Raw => {
+        None => {
+            // The rendered output will be returned directly
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            let mut rz = ctx.0.space.read_zipper(&mut reader);
-            while rz.to_next_val() {
-                writeln!(writer, "{:?}", rz.path()).map_err(|e|CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
-            }
+            dump_as_format(ctx, &mut writer, (reader, pattern), template, format)?;
             writer.flush()?;
             drop(writer);
             buffer
@@ -398,6 +423,25 @@ fn do_export(ctx: &MorkService, (mut reader, mut pattern): (ReadPermission, Vec<
     };
 
     Ok(hyper::body::Bytes::from(buffer))
+}
+
+fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, mut pattern): (ReadPermission, Vec<u8>), mut template: Vec<u8>, format: DataFormat) -> Result<(), CommandError> {
+    match format {
+        DataFormat::Metta => {
+            ctx.0.space.dump_as_sexpr(writer, (&mut reader, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }), mork_bytestring::Expr { ptr: template.as_mut_ptr() }).map_err(|e| CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+        },
+        DataFormat::Csv |
+        DataFormat::Json => {
+            writer.write(b"Export Error: Unimplemented Export Format")?;
+        },
+        DataFormat::Raw => {
+            let mut rz = ctx.0.space.read_zipper(&mut reader);
+            while rz.to_next_val() {
+                writeln!(writer, "{:?}", rz.path()).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
+            }
+        }
+    };
+    Ok(())
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -594,7 +638,7 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, mut 
             println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
-            println!("Inimplemnted Import from raw format");
+            return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Unimplemnted Import from raw format")))
         }
     }
     Ok(())
@@ -1678,15 +1722,14 @@ pub enum CommandError {
 
 #[derive(Clone, Debug)]
 pub struct ExternalError {
+    pub(crate) user_message: Option<String>,
     pub(crate) log_message: String,
     pub(crate) status_code: StatusCode,
 }
 
 impl ExternalError {
     pub fn new<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
-        Self {
-            status_code, log_message: log_message.into()
-        }
+        Self { status_code, log_message: log_message.into(), user_message: None, }
     }
 }
 
@@ -1695,7 +1738,7 @@ impl CommandError {
         Self::Internal(desc.into())
     }
     pub fn external<M: Into<String>>(status_code: StatusCode, log_message: M) -> Self {
-        Self::External(ExternalError{ status_code, log_message: log_message.into() })
+        Self::External(ExternalError{ status_code, log_message: log_message.into(), user_message: None })
     }
     pub fn from_status_record<M: Into<String>>(status_record: StatusRecord, log_message: M) -> Self {
         match status_record {

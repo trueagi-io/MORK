@@ -20,8 +20,7 @@ def preprocessing(server, datasets=("royal92", "lordOfTheRings", "adameve", "sim
                     .block()
                 scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",))
 
-    print("loc", __file__)
-    ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file:///home/adam/Projects/MORK/python/simple_all.metta")
+    ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file://" + __file__.rpartition("/")[0] + "/simple_all.metta")
 
     for i, item in enumerate(ins.history):
         print("preprocessing event", i, str(item))

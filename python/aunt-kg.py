@@ -26,11 +26,8 @@ def preprocessing(server, datasets=("royal92", "lordOfTheRings", "adameve", "sim
         print("preprocessing event", i, str(item))
 
 def _main():
-    server = ManagedMORK.start(binary_path="../target/release/mork_server")
-
-    preprocessing(server)
-
-    server.cleanup()
+    with ManagedMORK.start(binary_path="../target/release/mork_server").and_terminate() as server:
+        preprocessing(server)
 
 if __name__ == '__main__':
     _main()

@@ -135,7 +135,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                         stack.pop();
                         stack.push(last);
                     }
-                    loc.ascend(1);
+                    loc.ascend_byte();
                 } else {
                     unreachable!()
                 }
@@ -156,7 +156,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                 if loc.descend_to_byte(b) {
                     transition(stack, loc, f);
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             }
         }
         ITER_ARITIES => {
@@ -174,7 +174,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                         stack.pop();
                         stack.push(last);
                     }
-                    loc.ascend(1);
+                    loc.ascend_byte();
                 } else {
                     unreachable!()
                 }
@@ -319,8 +319,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         while let Some(b) = it.next() {
             if let Tag::SymbolSize(s) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
+                if loc.descend_to_byte(b) {
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = s;
                     last = last.offset(1); *last = lastv;
@@ -329,7 +328,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!()
             }
@@ -347,11 +346,10 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
-            let buf = [b];
-            if loc.descend_to(buf) {
+            if loc.descend_to_byte(b) {
                 referential_transition(last, loc, references, f);
             }
-            loc.ascend(1);
+            loc.ascend_byte();
         }
     };
     (ITER_ARITIES $recursive:expr) => {
@@ -360,8 +358,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         while let Some(b) = it.next() {
             if let Tag::Arity(a) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
+                if loc.descend_to_byte(b) {
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = a;
                     last = last.offset(1); *last = lastv;
@@ -370,7 +367,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!()
             }

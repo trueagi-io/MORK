@@ -18,8 +18,10 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
         "/", in_expr!(),
     );
     const UPLOAD_PAYLOAD : &str = concat!(""
-        , "\n(",data!()," (foo 1))"
-        , "\n(",data!()," (foo 2))"
+    // , "\n(",data!()," T)" // this one causes a segfault if done 
+    , "\n(",data!()," (foo 1))"
+    , "\n(",data!()," (foo 2))"
+    , "\n(",data!()," T)"
     );
     const UPLOAD_STATUS: &str = concat!( 
         server_url!(),
@@ -30,7 +32,7 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
 
     const METTA_UPLOAD_EXECS : &str =concat!(""
     , "\n(exec (",data!()," 0)   (, (",data!()," (foo $x)))   (, (",data!()," (bar $x)) )   )"
-    , "\n(exec (",data!()," 0)   (,)                          (, (",data!()," ran_exec) )   )" // this won't write anything unless empty pattern always accepts
+    , "\n(exec (",data!()," 0)   (, (",data!()," T))          (, (",data!()," ran_exec) )   )" // this won't write anything unless empty pattern always accepts
     );
     const METTA_UPLOAD_EXECS_URL : &str =concat!(
         server_url!(),
@@ -111,11 +113,12 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
 
 
     const OUT_LIST : &str = concat!(""
+    , "(data T)\n"
+    , "(data ran_exec)\n"
     , "(data (foo 1))\n"
     , "(data (foo 2))\n"
     , "(data (bar 1))\n"
     , "(data (bar 2))\n"
-    // , "(data ran_exec)\n" // the pattern behavior is different
     );
     core::assert_eq!(
         OUT_LIST,

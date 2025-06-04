@@ -767,16 +767,19 @@ impl CommandDefinition for MettaThreadCmd {
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
-        &[ArgDef{
-            arg_type: ArgType::String,
-            name: "initial_exec",
-            desc: "The initial_exec must be of the form\
-                  \nwhere initial_exec is `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`\
-                  \n<priority> must be a ground term.\
-                  \nThe $location will be substituted with a ground term based on the location property argument of the metta_thread_command.\
-                  ",
-            required: true
-        }]
+        &[
+            // // substitution related code (for reference when it gets implemented)
+                // ArgDef{
+                //     arg_type: ArgType::String,
+                //     name: "initial_exec",
+                //     desc: "The initial_exec must be of the form\
+                //           \nwhere initial_exec is `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`\
+                //           \n<priority> must be a ground term.\
+                //           \nThe $location will be substituted with a ground term based on the location property argument of the metta_thread_command.\
+                //           ",
+                //     required: true
+                // }
+        ]
     }
     fn properties() -> &'static [PropDef] {
         &[
@@ -797,48 +800,48 @@ impl CommandDefinition for MettaThreadCmd {
 
         let bad_request = |s : &str| Err(CommandError::external(StatusCode::BAD_REQUEST, s));
 
-        let initial_sexpr = cmd.args[0].as_str().to_owned();
-        let Ok(initial_expr) = ctx.0.space.sexpr_to_expr(&initial_sexpr) else { return bad_request("malformed priority sexpr") };
-        let initial_expr_raw = initial_expr.borrow();
-        // Validate shape of initial
-        '_validate_initial : {
-            let malformed_exec = || Err(CommandError::external(StatusCode::BAD_REQUEST, "malformed initial_exec, expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"));
-            let mut initial_ez = mork_bytestring::ExprZipper::new(initial_expr_raw);
-            let Ok(mork_bytestring::Tag::Arity(4)) = initial_ez.item() else { return malformed_exec(); };
-            initial_ez.next();
-            // exec
-            if unsafe { initial_ez.subexpr().span().as_ref().unwrap() } !=  unsafe { mork::expr!(ctx.0.space, "exec").span().as_ref().unwrap() } { return malformed_exec();};
-            initial_ez.next();
+        // // substitution related code (for reference when it gets implemented)
+            // let initial_sexpr = cmd.args[0].as_str().to_owned();
+            // let Ok(initial_expr) = ctx.0.space.sexpr_to_expr(&initial_sexpr) else { return bad_request("malformed priority sexpr") };
+            // let initial_expr_raw = initial_expr.borrow();
+            // Validate shape of initial
+            // '_validate_initial : {
+            //     let malformed_exec = || Err(CommandError::external(StatusCode::BAD_REQUEST, "malformed initial_exec, expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"));
+            //     let mut initial_ez = mork_bytestring::ExprZipper::new(initial_expr_raw);
+            //     let Ok(mork_bytestring::Tag::Arity(4)) = initial_ez.item() else { return malformed_exec(); };
+            //     initial_ez.next();
+            //     // exec
+            //     if unsafe { initial_ez.subexpr().span().as_ref().unwrap() } !=  unsafe { mork::expr!(ctx.0.space, "exec").span().as_ref().unwrap() } { return malformed_exec();};
+            //     initial_ez.next();
 
-            // ($loc <priority>)
-            let Ok(mork_bytestring::Tag::Arity(2)) = initial_ez.item() else { return malformed_exec(); };
-            '_loc_priority : {
-                let mut sub = mork_bytestring::ExprZipper::new(initial_ez.subexpr());
-                sub.next();
-                let Ok(Tag::NewVar) = sub.item() else { return malformed_exec(); };
-                sub.next();
-                if !sub.subexpr().is_ground() { return malformed_exec(); }
-            }
-            initial_ez.next_child();
+            //     // ($loc <priority>)
+            //     let Ok(mork_bytestring::Tag::Arity(2)) = initial_ez.item() else { return malformed_exec(); };
+            //     '_loc_priority : {
+            //         let mut sub = mork_bytestring::ExprZipper::new(initial_ez.subexpr());
+            //         sub.next();
+            //         let Ok(Tag::NewVar) = sub.item() else { return malformed_exec(); };
+            //         sub.next();
+            //         if !sub.subexpr().is_ground() { return malformed_exec(); }
+            //     }
+            //     initial_ez.next_child();
 
-            if let Err(e) = check_pattern_template(&ctx.0.space, &mut initial_ez) {
-                match e {
-                    mork::space::ExecSyntaxError::ExpectedArity4(_)             => unreachable!("Already checked"),
-                    mork::space::ExecSyntaxError::ExpectedCommaListPatterns(_)  => return bad_request("the initial_exec pattern list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-                    mork::space::ExecSyntaxError::ExpectedCommaListTemplates(_) => return bad_request("the initial_exec template list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-                    mork::space::ExecSyntaxError::ExpectedGroundPriority(_)     => return bad_request("the initial_exec priority was not ground; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-                };
-            };
-        }
+            //     if let Err(e) = check_pattern_template(&ctx.0.space, &mut initial_ez) {
+            //         match e {
+            //             mork::space::ExecSyntaxError::ExpectedArity4(_)             => unreachable!("Already checked"),
+            //             mork::space::ExecSyntaxError::ExpectedCommaListPatterns(_)  => return bad_request("the initial_exec pattern list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
+            //             mork::space::ExecSyntaxError::ExpectedCommaListTemplates(_) => return bad_request("the initial_exec template list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
+            //             mork::space::ExecSyntaxError::ExpectedGroundPriority(_)     => return bad_request("the initial_exec priority was not ground; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
+            //         };
+            //     };
+            // }
 
         let location_sexpr = match &cmd.properties[0] {
             Some(prop) => prop.as_str().to_owned(),
             None       => {
                 return Err(CommandError::external(StatusCode::NOT_IMPLEMENTED,
                     "Thread ID substitution is work in progress,\
-                    \nuntil it is fully implemented use a hardcoded constant (say \"task_name\") for the <location> as a convention,\
-                    \nand use the command property `location` with that constant specified (`.../?location=task_name`),\
-                    \nthe `$location` in the `initial_exec` must still be a variable."
+                    \nuntil it is fully implemented use a hardcoded constant , for example \"task_name\", for the <location> as a convention,\
+                    \nand use the command property `location` with that constant specified (`.../?location=task_name`)."
                 ));
                 #[allow(unreachable_code /* hopefully we will have this in the near future removed*/)]
                 cmd.cmd_id.to_string()
@@ -863,29 +866,30 @@ impl CommandDefinition for MettaThreadCmd {
         // BUILD TASK //
         // ////////////
 
-        // insert initial
-        let mut substitution_buffer = vec![0u8;4096];
-        let mut oz = mork_bytestring::ExprZipper::new(mork_bytestring::Expr{ptr : substitution_buffer.as_mut_ptr()});
-        initial_expr_raw
-        .substitute_one_de_bruijn(
-            0, 
-            expr.borrow(), 
-            &mut oz
-        );
+        // // substitution related code (for reference when it gets implemented)
+            // // insert initial
+            // let mut substitution_buffer = vec![0u8;4096];
+            // let mut oz = mork_bytestring::ExprZipper::new(mork_bytestring::Expr{ptr : substitution_buffer.as_mut_ptr()});
+            // initial_expr_raw
+            // .substitute_one_de_bruijn(
+            //     0, 
+            //     expr.borrow(), 
+            //     &mut oz
+            // );
 
-        let mut attempts_left = 1000;
-        loop {
-            if attempts_left == 0 {
-                return Err(CommandError::external(StatusCode::CONFLICT, "Location was under heavy contention, could not insert initial_exec"));
-            }
-            attempts_left -=1;
-            let span = unsafe { &*mork_bytestring::Expr{ptr:substitution_buffer.as_mut_ptr()}.span() };
-            if let Ok(mut w) = ctx.0.space.new_writer_async(span, &()).await {
-                ctx.0.space.write_zipper(&mut w).set_value(());
-                break;
-            }
-        }
-        // TODO! JOURNAL INSERTION of INITIAL_EXEC
+            // let mut attempts_left = 1000;
+            // loop {
+            //     if attempts_left == 0 {
+            //         return Err(CommandError::external(StatusCode::CONFLICT, "Location was under heavy contention, could not insert initial_exec"));
+            //     }
+            //     attempts_left -=1;
+            //     let span = unsafe { &*mork_bytestring::Expr{ptr:substitution_buffer.as_mut_ptr()}.span() };
+            //     if let Ok(mut w) = ctx.0.space.new_writer_async(span, &()).await {
+            //         ctx.0.space.write_zipper(&mut w).set_value(());
+            //         break;
+            //     }
+            // }
+            // // TODO! JOURNAL INSERTION of INITIAL_EXEC
 
         // (exec (<location> $priority) $patterns $templates)
         let prefix_e_vec =  ctx.0.space.sexpr_to_expr(&format!("(exec ({} $) $ $)", location_sexpr)).unwrap();
@@ -908,7 +912,14 @@ impl CommandDefinition for MettaThreadCmd {
             // PROCESS //
             // /////////
 
+            const DBG_PRINTLN : bool = false;
+
+            if DBG_PRINTLN { println!("\tPREFIX :{:?}", prefix) }
+
+
             let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
+                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tPROCESS")};
+
                 #[cfg(debug_assertions)]
                 { 
                     if loops_left == 0 { println!("TEST TOO LONG"); return } loops_left -= 1
@@ -930,11 +941,13 @@ impl CommandDefinition for MettaThreadCmd {
                 let mut rz = exec_wz.fork_read_zipper();
                 rz.descend_to(&buffer[prefix.len()..]);
 
+
                 if !rz.to_next_val() { 
                     if retry {
                         // ////////////////////
                         // LOOP TO BEGINING //
                         // //////////////////
+                        #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tLOOP TO BEGINING")};
                         buffer.truncate(prefix.len());
                         tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
                         continue 'process_execs;
@@ -943,12 +956,15 @@ impl CommandDefinition for MettaThreadCmd {
                     // /////////////////////////////////////
                     // SUCCESSFUL CONSUMING OF ALL EXECS //
                     // ///////////////////////////////////
+                    #[cfg(debug_assertions)] if DBG_PRINTLN { println!("\tSUCCESSFUL CONSUMING OF ALL EXECS")};
                     break 'process_execs Ok(())
                 }
                 // remember expr
                 buffer.truncate(prefix.len());
                 buffer.extend_from_slice(rz.path());
                 drop(rz);
+
+                if DBG_PRINTLN { println!("\tBUFFER :{:?}", buffer) }
 
                 // remove expr in case of success
                 exec_wz.descend_to(&buffer[prefix.len()..]);
@@ -967,6 +983,7 @@ impl CommandDefinition for MettaThreadCmd {
                     // /////////
                     // RETRY //
                     // ///////
+                    #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tRETRY")};
 
                     // undo the removal on failure and retry
                     let mut exec_permission = 'get_writer : loop { 
@@ -990,7 +1007,9 @@ impl CommandDefinition for MettaThreadCmd {
                 // ////////////////////////////
                 // ALL PERMISSIONS ACQUIRED //
                 // //////////////////////////
-                server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
+                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tALL PERMISSIONS ACQUIRED | WRITER_COUNT : {} | READER_COUNT : {}", writers.len(), readers.len())};
+                let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
+                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("RES : {:?}", res)};
                 retry = false;
                 buffer.truncate(prefix.len());
             };

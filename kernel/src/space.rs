@@ -1214,7 +1214,6 @@ where
                 referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
 
-
                     // Remy : This check is potentially expensive, but at least it makes dangling constant not an issue.
                     //        I would like a better alternative.
                     let skip = !loc.is_value() && e.is_ground();
@@ -1443,123 +1442,6 @@ pub enum ExecSyntaxError {
     ExpectedCommaListPatterns(String),
     ExpectedCommaListTemplates(String),
     ExpectedGroundPriority(String),
-}
-
-/// the `Writer` return in the Option of `status_lock` argument needs to be passed to the paired return continuation.
-/// The Writer should will be the location of the StatusLock
-/// 
-/// unfortunately this is just a hook to inline the code, the lifetimes are too difficult to describe with just types
-pub fn metta_calculus_localized<'s, S : Space<Auth = ()> + ?Sized>(
-    _self: &'s S, 
-    // `location`` is turned into an owned value before returning the future
-    location : Expr,
-    status_lock : impl FnOnce(&'s S, Vec<u8>)->
-        Option<
-            ( S::Writer<'s>
-            , Box<dyn for<'b> FnOnce(&'b S, S::Writer<'b>, Result<(),ExecSyntaxError>) + Send + Sync + 'static>
-            )
-        >
-        + 'static
-) ->  Result<(S::Writer<'s>, impl AsyncFnOnce(&'s S, S::Writer<'s>) + 'static), MettaCalculusLocalizedError>
-where S : 'static
-{
-    if location.is_ground() {return Err(MettaCalculusLocalizedError::LocationWasNotAConstantExpression);};
-    let e = mork_bytestring::serialize(unsafe { location.span().as_ref() }.unwrap());
-
-    // the uniqueness of this status_loc guarantees that this MeTTa-thread is the only consumer of the current thread
-    let status_location = sexpr_to_path(_self.symbol_table(), &format!("(exec {})", e)).unwrap();
-    let Some((status_writer, status_sink)) = status_lock(_self, status_location.into()) else { return Err(MettaCalculusLocalizedError::LocationWasAlreadyDispatchedOnAnotherThread) };
-
-    // (exec <location> $program_counter $patterns $templates)
-    let prefix_e_vec = sexpr_to_path(_self.symbol_table(), &format!("(exec {} $ $)", e)).unwrap();
-    let prefix_e = prefix_e_vec.borrow();
-
-    let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
-
-    let mut retry = false;
-    // the invariant is that buffer should always be reset with at least the prefix
-    let mut buffer = Vec::from(prefix);
-
-    Ok((status_writer ,async move|_self : &'s S, status_writer | {
-        let status_result : Result<(), ExecSyntaxError> = loop {
-            debug_assert!(buffer.len() >= prefix.len());
-            debug_assert_eq!(&buffer[..prefix.len()], prefix);
-    
-            let mut exec_permission = 'get_writer : loop { 
-                match _self.new_writer(&prefix, &()) {
-                    Ok(writer) => break 'get_writer writer,
-                    Err(_) => { 
-                        tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                        continue 'get_writer;
-                    } 
-                };
-            };
-
-            let mut exec_wz = _self.write_zipper(&mut exec_permission);
-            let mut rz = exec_wz.fork_read_zipper();
-            rz.descend_to(&buffer[prefix.len()..]);
-    
-            if !rz.to_next_val() {
-                if retry {
-                    buffer.truncate(prefix.len());
-                    tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                    continue;
-                }
-    
-                // Done
-                break Ok(())
-            }
-    
-            // remember expr
-            buffer.truncate(prefix.len());
-            buffer.extend_from_slice(rz.path());
-            drop(rz);
-    
-            // remove expr in case of success
-            exec_wz.descend_to(&buffer[prefix.len()..]);
-            exec_wz.remove_value();
-            drop(exec_wz);
-            drop(exec_permission);
-    
-    
-    
-            let exec_expr = Expr{ ptr: buffer.as_mut_ptr() };
-            let (patterns, templates) = match localized_exec_match(_self, exec_expr) {
-                Ok(ok) => ok,
-                Err(exec_syntax_error) => break Err(exec_syntax_error),
-            }.collect_inner();
-    
-            let (mut readers, mut writers) = match aquire_interpret_localized_permissions(_self, &patterns, &templates) {
-                Ok(ok) => ok,
-                Err(Retry) => {
-                    // undo the removal on failure and retry
-                    let mut exec_permission = 'get_writer : loop { 
-                        match _self.new_writer(&prefix, &()) {
-                            Ok(writer) => break 'get_writer writer,
-                            Err(_) => { 
-                                tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                                continue 'get_writer;
-                            } 
-                        };
-                    };
-                    let mut exec_wz = _self.write_zipper(&mut exec_permission);
-                    exec_wz.descend_to(&buffer[prefix.len()..]);
-                    exec_wz.set_value(());
-    
-                    retry = true;
-                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                    continue;
-                },
-            };
-    
-            _self.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
-            retry = false;
-            buffer.truncate(prefix.len());
-        };
-    
-        status_sink(_self, status_writer, status_result);
-    }))
-
 }
 
 #[doc = "hidden"]

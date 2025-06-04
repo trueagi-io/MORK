@@ -172,32 +172,16 @@ pub trait Space {
         core::debug_assert_eq!(patterns.len(), pattern_readers.len());
         core::debug_assert_eq!(template.len(), template_writer.len());
 
-        let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
+        // until dangling paths are fixed, the aquisition order matters, writers first, then readers
+
+        // FIRST THE WRITERS
         let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
         let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
 
+        // SECOND THE READERS
+        let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
+
         transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
-    }
-
-    /// the `Writer` return in the Option of `status_lock` argument needs to be passed to the paired return continuation.
-    /// The Writer should will be the location of the StatusLock
-    /// 
-    /// unfortunately this is just a hook to inline the code, the lifetimes are too difficult to describe with just types
-    fn metta_calculus_localized<'s>(
-        &'s self, 
-        location : Expr,
-        status_lock : impl FnOnce(&'s Self, Vec<u8>)->
-        Option<
-            ( Self::Writer<'s>
-            , Box<dyn for<'b> FnOnce(&'b Self, Self::Writer<'b>, Result<(), crate::space::ExecSyntaxError>) + Send + Sync +'static>
-            )
-        >
-        + 'static,
-    ) ->  Result<(Self::Writer<'s>, impl AsyncFnOnce(&'s Self, Self::Writer<'s>) + 'static), crate::space::MettaCalculusLocalizedError>
-
-        where Self : Space<Auth = ()> + 'static,
-    {
-        space::metta_calculus_localized(self, location, status_lock)
     }
 
     #[cfg(feature="neo4j")]

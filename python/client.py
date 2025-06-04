@@ -368,6 +368,9 @@ class ManagedMORK(MORK):
         Returns:
             Self: a ManagedMORK instance
         """
+        if not os.path.isfile(binary_path):
+            raise RuntimeError(f"Can't connect to running server, and no server binary found at path: {binary_path}")
+
         print("Starting server from binary")
         bin_hash = b32encode(abs(hash(binary_path)).to_bytes(8)).decode("ascii")
         print("bin hash", bin_hash)

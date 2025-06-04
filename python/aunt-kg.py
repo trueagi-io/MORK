@@ -1,7 +1,14 @@
 from client import MORK, ManagedMORK
 
 
-def preprocessing(server, datasets=("royal92", "lordOfTheRings", "adameve", "simpsons")):
+DATASETS = (
+    "royal92",
+    "lordOfTheRings",
+    "adameve",
+    "simpsons",
+)
+
+def preprocessing(server, datasets=DATASETS):
     with server.work_at("aunt-kg") as ins:
         for dataset in datasets:
             with ins.work_at(dataset) as scope:
@@ -26,7 +33,7 @@ def preprocessing(server, datasets=("royal92", "lordOfTheRings", "adameve", "sim
         print("preprocessing event", i, str(item))
 
 def _main():
-    with ManagedMORK.start(binary_path="../target/release/mork_server").and_terminate() as server:
+    with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
         preprocessing(server)
 
 if __name__ == '__main__':

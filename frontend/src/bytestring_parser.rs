@@ -13,10 +13,10 @@ fn isDigit(c: u8) -> bool {
   c == b'5' || c == b'6' || c == b'7' || c == b'8' || c == b'9'
 }
 
-#[derive(Debug)]
-pub enum ParserError {
+#[derive(Debug, PartialEq, Eq)]
+pub enum ParserErrorType {
   TooManyVars,
-  ExpressionNestingTooDeep,
+  ArityTooLong,
   SymbolTableError,
   UnexpectedEOF,
   InputFinished,
@@ -26,21 +26,34 @@ pub enum ParserError {
   OtherIOErr,
 }
 
-impl From<std::io::Error> for ParserError {
+#[derive(Debug)]
+pub struct ParserError {
+  pub error_type: ParserErrorType,
+  pub byte_idx: usize,
+  pub line_idx: Option<usize>,
+}
+
+impl ParserError {
+  pub fn new(byte_idx: usize, error_type: ParserErrorType) -> Self {
+    Self {line_idx: None, byte_idx, error_type}
+  }
+}
+
+impl From<std::io::Error> for ParserErrorType {
   fn from(io_err: std::io::Error) -> Self {
     match io_err.kind() {
-      std::io::ErrorKind::UnexpectedEof => ParserError::UnexpectedEOF,
-      _ => ParserError::OtherIOErr,
+      std::io::ErrorKind::UnexpectedEof => ParserErrorType::UnexpectedEOF,
+      _ => ParserErrorType::OtherIOErr,
     }
   }
 }
 
-impl From<EncodeError> for ParserError {
+impl From<EncodeError> for ParserErrorType {
   fn from(encode_err: EncodeError) -> Self {
     match encode_err {
       EncodeError::InvalidSymbolSize => Self::SymbolTableError,
       EncodeError::TooManyVars => Self::TooManyVars,
-      EncodeError::ExprNestingTooDeep => Self::ExpressionNestingTooDeep,
+      EncodeError::ArityTooLong => Self::ArityTooLong,
     }
   }
 }
@@ -65,7 +78,12 @@ impl<SrcStream: BufRead + Read> ParseContext<SrcStream> {
     Self{ src, byte_idx: 0, var_indices: vec![], var_names: vec![], tmp_buf: vec![] }
   }
 
-  /// Returns index of the 
+  ///
+  pub fn error_here(&self, error_type: ParserErrorType) -> ParserError {
+    ParserError::new(self.byte_idx, error_type)
+  }
+
+  /// Returns the current byte_idx
   pub fn byte_idx(&self) -> usize {
     self.byte_idx
   }
@@ -74,7 +92,7 @@ impl<SrcStream: BufRead + Read> ParseContext<SrcStream> {
   fn peek(&mut self) -> Result<u8, ParserError> {
     let reader_buf = self.src.fill_buf().unwrap();
     if reader_buf.len() == 0 {
-      Err(ParserError::UnexpectedEOF)
+      Err(self.error_here(ParserErrorType::UnexpectedEOF))
     } else {
       Ok(unsafe{ *reader_buf.get_unchecked(0) })
     }
@@ -83,7 +101,7 @@ impl<SrcStream: BufRead + Read> ParseContext<SrcStream> {
   #[inline(always)]
   fn next(&mut self) -> Result<u8, ParserError> {
     let mut c: u8 = 0;
-    self.src.read_exact(core::slice::from_mut(&mut c)).map_err(|e| ParserError::from(e))?;
+    self.src.read_exact(core::slice::from_mut(&mut c)).map_err(|e| self.error_here(ParserErrorType::from(e)))?;
     self.byte_idx += 1;
     Ok(c)
     //GOAT old impl
@@ -129,7 +147,7 @@ impl<SrcStream: BufRead + Read> ParseContext<SrcStream> {
       self.tmp_buf.clear();
       Ok(None)
     } else {
-      Err(ParserError::TooManyVars)
+      Err(self.error_here(ParserErrorType::TooManyVars))
     }
   }
 }
@@ -144,7 +162,6 @@ pub trait Parser {
     self.sexpr_(it, target)
   }
   fn sexpr_<SrcStream: BufRead + Read>(&mut self, it: &mut ParseContext<SrcStream>, target: &mut ExprZipper) -> Result<(), ParserError> {
-    use ParserError::*;
 
     while it.has_next() {
       match it.peek()? {
@@ -178,8 +195,9 @@ pub trait Parser {
                 self.sexpr_(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
-                  if let Tag::Arity(a) = byte_item(*p) { *p = Tag::Arity(a + 1).encode_as_byte()?; }
-                  else { return Err(NotArity) }
+                  if let Tag::Arity(a) = byte_item(*p) { *p = Tag::Arity(a + 1).encode_as_byte()
+                    .map_err(|e| it.error_here(ParserErrorType::from(e)))?; }
+                  else { return Err(it.error_here(ParserErrorType::NotArity) ) }
                 }
               }
             }
@@ -187,7 +205,7 @@ pub trait Parser {
           it.next()?;
           return Ok(())
         }
-        b')' => { return Err(UnexpectedRightBracket) }
+        b')' => { return Err(it.error_here(ParserErrorType::UnexpectedRightBracket)) }
         _ => {
           it.tmp_buf.clear();
           if it.has_next() && it.peek()? == b'"' {
@@ -197,7 +215,7 @@ pub trait Parser {
                 b'"' => { break }
                 b'\\' => {
                   if it.has_next() { it.next_to_tmp_buf()?; }
-                  else { return Err(UnfinishedEscapeSequence) }
+                  else { return Err(it.error_here(ParserErrorType::UnfinishedEscapeSequence)) }
                 }
                 _ => {}
               }
@@ -219,6 +237,6 @@ pub trait Parser {
         }
       }
     }
-    Err(InputFinished)
+    Err(it.error_here(ParserErrorType::InputFinished))
   }
 }

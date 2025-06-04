@@ -4,7 +4,11 @@ from client import MORK, ManagedMORK
 DATASETS = (
     "royal92",
     "lordOfTheRings",
+<<<<<<< HEAD
     "adameve",
+=======
+    # "adameve", Currently fails to parse with "ArityTooLong" error
+>>>>>>> eb6263d (Adding byte and line numbers to ParseError type, and propagating them all the way through to Python)
     "simpsons",
 )
 

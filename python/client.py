@@ -61,8 +61,10 @@ class MORK:
                 elif return_status == "pathClear":
                     return (True, "")
                 else:
-                    return (True, return_status)
-            return (True, "error: httpStatus = " + status_response.status_code)
+                    return (True, status_info)
+            # http error
+            status_info = {'httpErr': status_response}
+            return (True, status_info)
 
         def block(self, delay=0.005, base=2, max_attempts=16):
             """
@@ -172,7 +174,7 @@ class MORK:
             is_finished, result = super().poll()
             # All non-empty results from `import` are errors
             if is_finished and result != "":
-                if result.startswith("error: httpStatus"):
+                if 'httpErr' in result:
                     raise ConnectionError(result)
                 raise RuntimeError(result)
             return (is_finished, result)

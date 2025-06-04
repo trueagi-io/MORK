@@ -5,7 +5,7 @@ use std::io::{BufRead, Read};
 use alloc::borrow::Cow;
 
 use bucket_map::{SharedMapping, SharedMappingHandle};
-use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
 use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
@@ -220,8 +220,13 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
                 }
                 result = Some(stack[..ez.loc].into());
             }
-            Err(ParserError::InputFinished) => { break }
-            Err(other) => { return Err(ParseError(format!("Internal Parse error: {other:?}"))) }
+            Err(err) => {
+                if err.error_type == ParserErrorType::InputFinished {
+                    break
+                } else {
+                    return Err(ParseError(format!("{err:?}")))
+                }
+            }
         }
     }
 

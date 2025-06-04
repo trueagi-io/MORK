@@ -1,10 +1,9 @@
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
-use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
 use mork::{expr, Space};
 use mork::space::DefaultSpace;
-use mork_bytestring::{item_byte, Tag};
 
 // Remy : Adam, You seem does not seem to like using the test framework for benchmarks, I'm sure you have reasons.
 //        I'd like to avoid breaking your code on refactoring, I'm sure there is a more elegant solution using conditional compilation,

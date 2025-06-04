@@ -41,12 +41,12 @@ class MORK:
                 self.error = e
                 raise e
 
-        def poll_clear(self):
+        def poll(self):
             """
             Poll the status path.
 
             Returns:
-                (clear: bool, metadata: Any)
+                (finished: bool, metadata: Any)
             """
             if self.server is None:
                 raise RuntimeError(f"Must dispatch a request before it can be polled")
@@ -61,20 +61,23 @@ class MORK:
                 elif return_status == "pathClear":
                     return (True, "")
                 else:
-                    return (False, return_status) #TODO: Add handler for command-specific results
-            return (False, status_response.status_code)
+                    return (True, return_status)
+            return (True, "error: httpStatus = " + status_response.status_code)
 
         def block(self, delay=0.005, base=2, max_attempts=16):
             """
             Continue to poll until a request has returned a result or failed
 
             Polls according to delay*base^attempt for attempt < max_attempts (else raises StopIteration)
+
+            Returns:
+                metadata: Any
             """
-            is_clear, meta = self.poll_clear()
+            is_finished, meta = self.poll()
             attempt = 1
-            while not is_clear:
+            while not is_finished:
                 time.sleep(delay*base**attempt)
-                is_clear, meta = self.poll_clear()
+                is_finished, meta = self.poll()
                 attempt += 1
                 if attempt > max_attempts:
                     raise StopIteration
@@ -94,7 +97,7 @@ class MORK:
             self.data = data
             super().__init__("post", f"/upload/{quote(self.pattern)}/{quote(self.template)}/", data=self.data, headers={"Content-Type": "text/plain"})
 
-        def poll_clear(self):
+        def poll(self):
             return (True, "upload already blocks")
 
     class Download(Request):
@@ -114,7 +117,7 @@ class MORK:
             if self.response and self.response.status_code == 200:
                 self.data = self.response.text
 
-        def poll_clear(self):
+        def poll(self):
             return (True, "download already blocks")
 
     class Clear(Request):
@@ -164,6 +167,15 @@ class MORK:
             self.uri = file_uri
             self.status_loc = template
             super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
+
+        def poll(self):
+            is_finished, result = super().poll()
+            # All non-empty results from `import` are errors
+            if is_finished and result != "":
+                if result.startswith("error: httpStatus"):
+                    raise ConnectionError(result)
+                raise RuntimeError(result)
+            return (is_finished, result)
 
     class Export(Request):
         """

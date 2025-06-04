@@ -4,7 +4,7 @@ from client import MORK, ManagedMORK
 DATASETS = (
     "royal92",
     "lordOfTheRings",
-    "adameve",
+    # "adameve", Currently fails to parse with "ExpressionNestedTooDeep" error
     "simpsons",
 )
 

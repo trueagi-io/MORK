@@ -1,6 +1,6 @@
 use std::io::{BufRead, Read};
 
-use mork_bytestring::{ExprZipper, Tag, item_byte, byte_item};
+use mork_bytestring::{ExprZipper, Tag, byte_item, EncodeError};
 
 #[allow(non_snake_case)]
 fn isWhitespace(c: u8) -> bool {
@@ -16,6 +16,8 @@ fn isDigit(c: u8) -> bool {
 #[derive(Debug)]
 pub enum ParserError {
   TooManyVars,
+  ExpressionNestingTooDeep,
+  SymbolTableError,
   UnexpectedEOF,
   InputFinished,
   NotArity,
@@ -29,6 +31,16 @@ impl From<std::io::Error> for ParserError {
     match io_err.kind() {
       std::io::ErrorKind::UnexpectedEof => ParserError::UnexpectedEOF,
       _ => ParserError::OtherIOErr,
+    }
+  }
+}
+
+impl From<EncodeError> for ParserError {
+  fn from(encode_err: EncodeError) -> Self {
+    match encode_err {
+      EncodeError::InvalidSymbolSize => Self::SymbolTableError,
+      EncodeError::TooManyVars => Self::TooManyVars,
+      EncodeError::ExprNestingTooDeep => Self::ExpressionNestingTooDeep,
     }
   }
 }
@@ -166,7 +178,7 @@ pub trait Parser {
                 self.sexpr_(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
-                  if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }
+                  if let Tag::Arity(a) = byte_item(*p) { *p = Tag::Arity(a + 1).encode_as_byte()?; }
                   else { return Err(NotArity) }
                 }
               }

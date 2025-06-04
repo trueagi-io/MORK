@@ -12,7 +12,7 @@ use std::time::Instant;
 use mork_frontend::he_parser::Atom;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperSubtries};
-use mork_bytestring::{byte_item, Expr, ExprZipper, OwnedExpr, ExtractFailure, item_byte, parse, serialize, Tag, traverseh};
+use mork_bytestring::{byte_item, Expr, ExprZipper, OwnedExpr, ExtractFailure, parse, serialize, Tag, traverseh};
 use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -74,38 +74,38 @@ impl Space for DefaultSpace {
 }
 
 const SIZES: [u64; 4] = {
-    use mork_bytestring::{item_byte, Tag};
+    use mork_bytestring::Tag;
 
     let mut ret = [0u64; 4];
     let mut size = 1;
     while size < 64 {
-        let k = item_byte(Tag::SymbolSize(size));
+        let k = Tag::SymbolSize(size).byte();
         ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
         size += 1;
     }
     ret
 };
 const ARITIES: [u64; 4] = {
-    use mork_bytestring::{item_byte, Tag};
+    use mork_bytestring::Tag;
 
     let mut ret = [0u64; 4];
     let mut arity = 1;
     while arity < 64 {
-        let k = item_byte(Tag::Arity(arity));
+        let k = Tag::Arity(arity).byte();
         ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
         arity += 1;
     }
     ret
 };
 const VARS: [u64; 4] = {
-    use mork_bytestring::{item_byte, Tag};
+    use mork_bytestring::Tag;
 
     let mut ret = [0u64; 4];
-    let nv_byte = item_byte(Tag::NewVar);
+    let nv_byte = Tag::NewVar.byte();
     ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
     let mut size = 0;
     while size < 64 {
-        let k = item_byte(Tag::VarRef(size));
+        let k = Tag::VarRef(size).byte();
         ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
         size += 1;
     }
@@ -294,7 +294,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         let mut v = [0; 64];
         for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 $recursive;
             }
@@ -311,7 +311,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 referential_transition(last, loc, references, f);
             }
@@ -323,7 +323,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (ITER_ARITY $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -334,7 +334,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -520,10 +520,10 @@ pub struct SpaceTranscriber<'a, 'c, WZ> {
 
 impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving + ZipperWriting<()> {
     #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) {
-        use mork_bytestring::{Tag, item_byte};
+        use mork_bytestring::Tag;
 
         let token = self.pdp.tokenizer(s.into().as_bytes());
-        let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
+        let mut path = vec![Tag::SymbolSize(token.len() as u8).byte()];
         path.extend(token);
         self.wz.descend_to(&path[..]);
         self.wz.set_value(());
@@ -532,11 +532,11 @@ impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving 
 }
 impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving + ZipperWriting<()> {
     #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
-        use mork_bytestring::{Tag, item_byte};
+        use mork_bytestring::Tag;
 
-        if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+        if first { self.wz.descend_to(&[Tag::Arity(2).byte()]); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
-        self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+        self.wz.descend_to(&[Tag::SymbolSize(token.len() as u8).byte()]);
         self.wz.descend_to(token);
     }
     #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
@@ -545,12 +545,12 @@ impl <'a, 'c, WZ> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'c, W
     }
     #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.path_count += 1; }
     #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
-        use mork_bytestring::{Tag, item_byte};
+        use mork_bytestring::Tag;
 
-        if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
+        if first { self.wz.descend_to(&[Tag::Arity(2).byte()]); }
         let token = self.pdp.tokenizer(k.to_string().as_bytes());
         // let token = k.to_string();
-        self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+        self.wz.descend_to(&[Tag::SymbolSize(token.len() as u8).byte()]);
         self.wz.descend_to(token);
     }
     #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
@@ -808,7 +808,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
         use neo4rs::*;
-        use mork_bytestring::{Tag, item_byte};
+        use mork_bytestring::Tag;
         let graph = Graph::new(uri, user, pass).unwrap();
 
         let mut pdp = ParDataParser::new(sm);
@@ -816,8 +816,8 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         let mut nodes = 0;
         let mut attributes = 0;
 
-        wz.descend_to_byte(item_byte(Tag::Arity(4)));
-        wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
+        wz.descend_to_byte(Tag::Arity(4).byte());
+        wz.descend_to_byte(Tag::SymbolSize(sa_symbol.len() as _).byte());
         wz.descend_to(sa_symbol);
 
         let guard = rt.enter();
@@ -827,14 +827,14 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
         while let Ok(Some(row)) = rt.block_on(result.next()) {
             let s: i64 = row.get("id(s)").unwrap();
             let internal_s = pdp.tokenizer(&s.to_be_bytes());
-            wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
+            wz.descend_to_byte(Tag::SymbolSize(internal_s.len() as _).byte());
             wz.descend_to(internal_s);
 
             let a: BoltMap = row.get("s").unwrap();
 
             for (bs, bt) in a.value.iter() {
                 let internal_k = pdp.tokenizer(bs.value.as_bytes());
-                wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_k.len() as _)));
+                wz.descend_to_byte(Tag::SymbolSize(internal_k.len() as _).byte());
                 wz.descend_to(internal_k);
 
                 let BoltType::String(bv) = bt else { unreachable!() };
@@ -842,7 +842,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                     for chunk in bv.value[1..bv.value.len()-1].split(", ") {
                         let c = if chunk.starts_with("\"") && chunk.ends_with("\"") { &chunk[1..chunk.len()-1] } else { chunk };
                         let internal_v = pdp.tokenizer(c.as_bytes());
-                        wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                        wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                         wz.descend_to(internal_v);
 
                         wz.set_value(());
@@ -851,7 +851,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                     }
                 } else {
                     let internal_v = pdp.tokenizer(bv.value.as_bytes());
-                    wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                    wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                     wz.descend_to(internal_v);
 
                     wz.set_value(());
@@ -888,7 +888,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
         use neo4rs::*;
-        use mork_bytestring::{Tag, item_byte};
+        use mork_bytestring::Tag;
         let graph = Graph::new(uri, user, pass).unwrap();
 
         let mut pdp = ParDataParser::new(&sm);
@@ -896,8 +896,8 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         let mut nodes = 0;
         let mut labels = 0;
 
-        wz.descend_to_byte(item_byte(Tag::Arity(3)));
-        wz.descend_to_byte(item_byte(Tag::SymbolSize(sa_symbol.len() as _)));
+        wz.descend_to_byte(Tag::Arity(3).byte());
+        wz.descend_to_byte(Tag::SymbolSize(sa_symbol.len() as _).byte());
         wz.descend_to(sa_symbol);
 
         let guard = rt.enter();
@@ -907,7 +907,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
         while let Ok(Some(row)) = rt.block_on(result.next()) {
             let s: i64 = row.get("id(s)").unwrap();
             let internal_s = pdp.tokenizer(&s.to_be_bytes());
-            wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_s.len() as _)));
+            wz.descend_to_byte(Tag::SymbolSize(internal_s.len() as _).byte());
             wz.descend_to(internal_s);
 
             let a: BoltList = row.get("labels(s)").unwrap();
@@ -916,7 +916,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
                 let BoltType::String(bv) = bl else { unreachable!() };
 
                 let internal_v = pdp.tokenizer(bv.value.as_bytes());
-                wz.descend_to_byte(item_byte(Tag::SymbolSize(internal_v.len() as _)));
+                wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                 wz.descend_to(internal_v);
 
                 wz.set_value(());

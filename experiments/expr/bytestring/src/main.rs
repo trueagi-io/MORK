@@ -1,7 +1,8 @@
 #[allow(unused_imports)]
 use std::{fmt::{format, Formatter}, mem, ptr::slice_from_raw_parts, str::Utf8Error};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+
 use mork_bytestring::*;
+
 #[allow(unused)]
 fn traverse(ez: &mut ExprZipper) {
     loop {
@@ -41,8 +42,8 @@ fn traverse(ez: &mut ExprZipper) {
 #[test]
 fn subexpr() {
     // (foo $ (200 201))
-    let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::NewVar),
-                                item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'\xc8', item_byte(Tag::SymbolSize(1)), b'\xc9'];
+    let mut e = vec![Tag::Arity(3).byte(), Tag::SymbolSize(3).byte(), b'f', b'o', b'o', Tag::NewVar.byte(),
+                                Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'\xc8', Tag::SymbolSize(1).byte(), b'\xc9'];
     let mut ez = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
     assert!(ez.next());
     assert!(ez.next());
@@ -57,10 +58,10 @@ fn subexpr() {
 fn children() {
     {
         // (= (func $) (add`0 (123456789 _1)))
-        let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                         item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+        let mut e = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'=',
+                         Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'f', b'u', b'n', b'c', Tag::NewVar.byte(),
+                         Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'a', b'd', b'd', 0,
+                         Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), 7, 91, 205, 21, Tag::VarRef(0).byte()];
         let mut ecz = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
         assert!(ecz.item_str() == "[3]" && ecz.loc == 0);
         assert!(ecz.next_child());
@@ -76,14 +77,14 @@ fn children() {
         //(, (f (A $ $) (B $ $ _4))
         //   (g (B _3 _4 _4) (C $ _5) (C _5 _5)))
         let mut e = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar), item_byte(Tag::VarRef(3)),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(2)), item_byte(Tag::VarRef(3)), item_byte(Tag::VarRef(3)),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::NewVar), item_byte(Tag::VarRef(4)),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::VarRef(4)), item_byte(Tag::VarRef(4)),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'A', Tag::NewVar.byte(), Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte(), Tag::VarRef(3).byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(2).byte(), Tag::VarRef(3).byte(), Tag::VarRef(3).byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'C', Tag::NewVar.byte(), Tag::VarRef(4).byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'C', Tag::VarRef(4).byte(), Tag::VarRef(4).byte(),
         ];
         let mut ecz = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
         assert_eq!(ecz.root.string(), "(, (f (A $ $) (B $ $ _4)) (g (B _3 _4 _4) (C $ _5) (C _5 _5)))");
@@ -134,13 +135,13 @@ fn children() {
 fn substitute() {
     // only used when there's just data substituted in, no variables
     // (F foo); (Bar $ $)
-    let mut data = vec![vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'F', item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o'],
-                                    vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'B', b'a', b'r', item_byte(Tag::NewVar), item_byte(Tag::NewVar)]];
+    let mut data = vec![vec![Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'F', Tag::SymbolSize(3).byte(), b'f', b'o', b'o'],
+                                    vec![Tag::Arity(3).byte(), Tag::SymbolSize(3).byte(), b'B', b'a', b'r', Tag::NewVar.byte(), Tag::NewVar.byte()]];
     let se = data.iter_mut().map(|i| Expr{ ptr: i.as_mut_ptr() }).collect::<Vec<Expr>>();
     // (image (Rel $ $) (Im _2))
-    let mut exprv = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'i', b'm', b'a', b'g', b'e',
-                                    item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'R', b'e', b'l', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-                                    item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(2)), b'I', b'm', item_byte(Tag::VarRef(1))];
+    let mut exprv = vec![Tag::Arity(3).byte(), Tag::SymbolSize(5).byte(), b'i', b'm', b'a', b'g', b'e',
+                                    Tag::Arity(3).byte(), Tag::SymbolSize(3).byte(), b'R', b'e', b'l', Tag::NewVar.byte(), Tag::NewVar.byte(),
+                                    Tag::Arity(2).byte(), Tag::SymbolSize(2).byte(), b'I', b'm', Tag::VarRef(1).byte()];
     let expr = Expr { ptr: exprv.as_mut_ptr() };
     let mut buffer = vec![0u8; 100];
 
@@ -158,14 +159,14 @@ fn substitute() {
 #[test]
 fn de_bruijn() {
     let mut r1v = vec![
-        item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-        item_byte(Tag::NewVar),
-        item_byte(Tag::VarRef(0))
+        Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+        Tag::NewVar.byte(),
+        Tag::VarRef(0).byte()
     ];
     let r1 = Expr{ ptr: r1v.as_mut_ptr() };
     {
         // assert(r1.substReIndex(Seq($)) == r1)
-        let mut s1v = vec![item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
         let o = Expr { ptr: buffer.as_mut_ptr() };
@@ -181,19 +182,19 @@ fn de_bruijn() {
     {
         // assert(r1.substReIndex(Seq(Expr(a, $, $))) == Expr(f, Expr(a, $, $), Expr(a, _1, _2)))
         let mut s1v = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar)
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte()
         ];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::VarRef(1))
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::VarRef(0).byte(),
+            Tag::VarRef(1).byte()
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -209,33 +210,33 @@ fn de_bruijn() {
     }
 
     let mut r2v = vec![
-        item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'f',
-        item_byte(Tag::NewVar),
-        item_byte(Tag::NewVar),
-        item_byte(Tag::VarRef(0))
+        Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'f',
+        Tag::NewVar.byte(),
+        Tag::NewVar.byte(),
+        Tag::VarRef(0).byte()
     ];
     let r2 = Expr{ ptr: r2v.as_mut_ptr() };
     {
         // assert(r2.substReIndex(Seq(Expr(a, $, $), A)) == Expr(f, Expr(a, $, $), A, Expr(a, _1, _2)))
         let mut s1v = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar)
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte()
         ];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
         let mut s2v = vec![
-            item_byte(Tag::SymbolSize(1)), b'A'
+            Tag::SymbolSize(1).byte(), b'A'
         ];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::SymbolSize(1)), b'A',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::VarRef(1))
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte(),
+            Tag::SymbolSize(1).byte(), b'A',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::VarRef(0).byte(),
+            Tag::VarRef(1).byte()
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -252,24 +253,24 @@ fn de_bruijn() {
     {
         // assert(r2.substReIndex(Seq(Expr(a, $, $), $)) == Expr(f, Expr(a, $, $), $, Expr(a, _1, _2)))
         let mut s1v = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar)
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte()
         ];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
         let mut s2v = vec![
-            item_byte(Tag::NewVar)
+            Tag::NewVar.byte()
         ];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::VarRef(1))
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::VarRef(0).byte(),
+            Tag::VarRef(1).byte()
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -286,24 +287,24 @@ fn de_bruijn() {
     {
         // assert(r2.substReIndex(Seq(Expr(a, $, _1), $)) == Expr(f, Expr(a, $, _1), $, Expr(a, _1, _1)))
         let mut s1v = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::VarRef(0))
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::VarRef(0).byte()
         ];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
         let mut s2v = vec![
-            item_byte(Tag::NewVar)
+            Tag::NewVar.byte()
         ];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::VarRef(0))
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::VarRef(0).byte(),
+            Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::VarRef(0).byte(),
+            Tag::VarRef(0).byte()
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -319,34 +320,34 @@ fn de_bruijn() {
     }
 
     let mut r3v = vec![
-        item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-        item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-        item_byte(Tag::NewVar),
-        item_byte(Tag::NewVar),
-        item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-        item_byte(Tag::VarRef(1)),
-        item_byte(Tag::NewVar),
-        item_byte(Tag::VarRef(2))
+        Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+        Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+        Tag::NewVar.byte(),
+        Tag::NewVar.byte(),
+        Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+        Tag::VarRef(1).byte(),
+        Tag::NewVar.byte(),
+        Tag::VarRef(2).byte()
     ];
     // (, (f $ $) (g _2 $ _3))
     let r3 = Expr{ ptr: r3v.as_mut_ptr() };
     {
         // assert(r3.substReIndex(Seq(a, b, c)) == Expr(`,`, Expr(f, a, b), Expr(g, b, c, c)))
-        let mut s1v = vec![item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut s1v = vec![Tag::SymbolSize(1).byte(), b'a'];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::SymbolSize(1)), b'b'];
+        let mut s2v = vec![Tag::SymbolSize(1).byte(), b'b'];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::SymbolSize(1)), b'c'];
+        let mut s3v = vec![Tag::SymbolSize(1).byte(), b'c'];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::SymbolSize(1)), b'b',
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::SymbolSize(1)), b'b',
-            item_byte(Tag::SymbolSize(1)), b'c',
-            item_byte(Tag::SymbolSize(1)), b'c',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::SymbolSize(1).byte(), b'b',
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::SymbolSize(1).byte(), b'b',
+            Tag::SymbolSize(1).byte(), b'c',
+            Tag::SymbolSize(1).byte(), b'c',
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -362,21 +363,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq(a, $, c)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, c, c)))
-        let mut s1v = vec![item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut s1v = vec![Tag::SymbolSize(1).byte(), b'a'];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::NewVar)];
+        let mut s2v = vec![Tag::NewVar.byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::SymbolSize(1)), b'c'];
+        let mut s3v = vec![Tag::SymbolSize(1).byte(), b'c'];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::SymbolSize(1)), b'c',
-            item_byte(Tag::SymbolSize(1)), b'c',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::VarRef(0).byte(),
+            Tag::SymbolSize(1).byte(), b'c',
+            Tag::SymbolSize(1).byte(), b'c',
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -392,21 +393,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq(a, $, $)) == Expr(`,`, Expr(f, a, $), Expr(g, _1, $, _2)))
-        let mut s1v = vec![item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut s1v = vec![Tag::SymbolSize(1).byte(), b'a'];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::NewVar)];
+        let mut s2v = vec![Tag::NewVar.byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::NewVar)];
+        let mut s3v = vec![Tag::NewVar.byte()];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::VarRef(0)),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::VarRef(1)),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::VarRef(0).byte(),
+            Tag::NewVar.byte(),
+            Tag::VarRef(1).byte(),
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -422,11 +423,11 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq($, $, $)) == Expr(`,`, Expr(f, $, $), Expr(g, _2, $, _3)))
-        let mut s1v = vec![item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::NewVar)];
+        let mut s2v = vec![Tag::NewVar.byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::NewVar)];
+        let mut s3v = vec![Tag::NewVar.byte()];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
         let o = Expr { ptr: buffer.as_mut_ptr() };
@@ -441,21 +442,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq(a, Expr(B, $, $), c)) == Expr(`,`, Expr(f, a, Expr(B, $, $)), Expr(g, Expr(B, _1, _2), c, c)))
-        let mut s1v = vec![item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut s1v = vec![Tag::SymbolSize(1).byte(), b'a'];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar)];
+        let mut s2v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::SymbolSize(1)), b'c'];
+        let mut s3v = vec![Tag::SymbolSize(1).byte(), b'c'];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(0)), item_byte(Tag::VarRef(1)),
-            item_byte(Tag::SymbolSize(1)), b'c',
-            item_byte(Tag::SymbolSize(1)), b'c',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(0).byte(), Tag::VarRef(1).byte(),
+            Tag::SymbolSize(1).byte(), b'c',
+            Tag::SymbolSize(1).byte(), b'c',
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -471,21 +472,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq($, Expr(B, $, $), $)) == Expr(`,`, Expr(f, $, Expr(B, $, $)), Expr(g, Expr(B, _2, _3), $, _4)))
-        let mut s1v = vec![item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar)];
+        let mut s2v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::NewVar)];
+        let mut s3v = vec![Tag::NewVar.byte()];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(1)), item_byte(Tag::VarRef(2)),
-            item_byte(Tag::NewVar),
-            item_byte(Tag::VarRef(3)),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(1).byte(), Tag::VarRef(2).byte(),
+            Tag::NewVar.byte(),
+            Tag::VarRef(3).byte(),
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -501,21 +502,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq($, Expr(B, $, _1), c)) == Expr(`,`, Expr(f, $, Expr(B, $, _2)), Expr(g, Expr(B, _2, _2), c, c)))
-        let mut s1v = vec![item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))];
+        let mut s2v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::VarRef(0).byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::SymbolSize(1)), b'c'];
+        let mut s3v = vec![Tag::SymbolSize(1).byte(), b'c'];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::VarRef(1)),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(1)), item_byte(Tag::VarRef(1)),
-            item_byte(Tag::SymbolSize(1)), b'c',
-            item_byte(Tag::SymbolSize(1)), b'c',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::VarRef(1).byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(1).byte(), Tag::VarRef(1).byte(),
+            Tag::SymbolSize(1).byte(), b'c',
+            Tag::SymbolSize(1).byte(), b'c',
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -531,21 +532,21 @@ fn de_bruijn() {
     }
     {
         // assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, _1), c)) == Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, _3)), Expr(g, Expr(B, _3, _3), c, c)))
-        let mut s1v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'A', Tag::NewVar.byte(), Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))];
+        let mut s2v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::VarRef(0).byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::SymbolSize(1)), b'c'];
+        let mut s3v = vec![Tag::SymbolSize(1).byte(), b'c'];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::VarRef(2)),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(2)), item_byte(Tag::VarRef(2)),
-            item_byte(Tag::SymbolSize(1)), b'c',
-            item_byte(Tag::SymbolSize(1)), b'c',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'A', Tag::NewVar.byte(), Tag::NewVar.byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::VarRef(2).byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(2).byte(), Tag::VarRef(2).byte(),
+            Tag::SymbolSize(1).byte(), b'c',
+            Tag::SymbolSize(1).byte(), b'c',
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -562,21 +563,21 @@ fn de_bruijn() {
     {
         // assert(r3.substReIndex(Seq(Expr(A, $, $), Expr(B, $, $, _2), Expr(C, $, _1))) ==
         //                        Expr(`,`, Expr(f, Expr(A, $, $), Expr(B, $, $, _4)), Expr(g, Expr(B, _3, _4, _4), Expr(C, $, _5), Expr(C, _5, _5))))
-        let mut s1v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar)];
+        let mut s1v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'A', Tag::NewVar.byte(), Tag::NewVar.byte()];
         let s1 = Expr{ ptr: s1v.as_mut_ptr() };
-        let mut s2v = vec![item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar), item_byte(Tag::VarRef(1))];
+        let mut s2v = vec![Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte(), Tag::VarRef(1).byte()];
         let s2 = Expr{ ptr: s2v.as_mut_ptr() };
-        let mut s3v = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))];
+        let mut s3v = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'C', Tag::NewVar.byte(), Tag::VarRef(0).byte()];
         let s3 = Expr{ ptr: s3v.as_mut_ptr() };
         let mut targetv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b',',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'f',
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'A', item_byte(Tag::NewVar), item_byte(Tag::NewVar),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::NewVar), item_byte(Tag::NewVar), item_byte(Tag::VarRef(3)),
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'g',
-            item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(1)), b'B', item_byte(Tag::VarRef(2)), item_byte(Tag::VarRef(3)), item_byte(Tag::VarRef(3)),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::NewVar), item_byte(Tag::VarRef(4)),
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'C', item_byte(Tag::VarRef(4)), item_byte(Tag::VarRef(4)),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b',',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'f',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'A', Tag::NewVar.byte(), Tag::NewVar.byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::NewVar.byte(), Tag::NewVar.byte(), Tag::VarRef(3).byte(),
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'g',
+            Tag::Arity(4).byte(), Tag::SymbolSize(1).byte(), b'B', Tag::VarRef(2).byte(), Tag::VarRef(3).byte(), Tag::VarRef(3).byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'C', Tag::NewVar.byte(), Tag::VarRef(4).byte(),
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'C', Tag::VarRef(4).byte(), Tag::VarRef(4).byte(),
         ];
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         let mut buffer = vec![0u8; 100];
@@ -621,7 +622,7 @@ fn de_bruijn() {
         let mut targetv = parse!("[2] [2] flip [3] = $ [4] L $ $ $ [2] axiom [3] = [4] L _2 _3 _4 _1");
         let target = Expr{ ptr: targetv.as_mut_ptr() };
         src.substitute_de_bruijn(&[
-            Expr{ ptr: vec![item_byte(Tag::NewVar)].leak().as_mut_ptr() },
+            Expr{ ptr: vec![Tag::NewVar.byte()].leak().as_mut_ptr() },
             Expr{ ptr: parse!("[4] L $ $ $").as_mut_ptr() }
         ], &mut ExprZipper::new(o));
 
@@ -843,20 +844,20 @@ fn data_matching() {
     {
         // (a $ $) extract_data (a foo bar) == [foo, bar]
         let mut pv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar)
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte()
         ];
         let p = Expr { ptr: pv.as_mut_ptr() };
         let mut dv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o',
-            item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::SymbolSize(3).byte(), b'f', b'o', b'o',
+            Tag::SymbolSize(3).byte(), b'b', b'a', b'r',
         ];
         let d = Expr { ptr: dv.as_mut_ptr() };
-        let mut sv1 = vec![item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o'];
+        let mut sv1 = vec![Tag::SymbolSize(3).byte(), b'f', b'o', b'o'];
         let s1 = Expr { ptr: sv1.as_mut_ptr() };
-        let mut sv2 = vec![item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r'];
+        let mut sv2 = vec![Tag::SymbolSize(3).byte(), b'b', b'a', b'r'];
         let s2 = Expr { ptr: sv2.as_mut_ptr() };
         let vs = vec![s1, s2];
         match p.extract_data(&mut ExprZipper::new(d)) {
@@ -867,24 +868,24 @@ fn data_matching() {
     {
         // (a $ $) extract_data (a foo (bar baz)) == [foo, (bar baz)]
         let mut pv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::NewVar)
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::NewVar.byte()
         ];
         let p = Expr { ptr: pv.as_mut_ptr() };
         let mut dv = vec![
-            item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o',
-            item_byte(Tag::Arity(2)),
-            item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r',
-            item_byte(Tag::SymbolSize(3)), b'b', b'a', b'z',
+            Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'a',
+            Tag::SymbolSize(3).byte(), b'f', b'o', b'o',
+            Tag::Arity(2).byte(),
+            Tag::SymbolSize(3).byte(), b'b', b'a', b'r',
+            Tag::SymbolSize(3).byte(), b'b', b'a', b'z',
         ];
         let d = Expr { ptr: dv.as_mut_ptr() };
-        let mut sv1 = vec![item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o'];
+        let mut sv1 = vec![Tag::SymbolSize(3).byte(), b'f', b'o', b'o'];
         let s1 = Expr { ptr: sv1.as_mut_ptr() };
-        let mut sv2 = vec![item_byte(Tag::Arity(2)),
-                           item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r',
-                           item_byte(Tag::SymbolSize(3)), b'b', b'a', b'z'];
+        let mut sv2 = vec![Tag::Arity(2).byte(),
+                           Tag::SymbolSize(3).byte(), b'b', b'a', b'r',
+                           Tag::SymbolSize(3).byte(), b'b', b'a', b'z'];
         let s2 = Expr { ptr: sv2.as_mut_ptr() };
         let vs = vec![s1, s2];
         match p.extract_data(&mut ExprZipper::new(d)) {
@@ -896,44 +897,44 @@ fn data_matching() {
     {
         // (a $ b (cux $ $ z) c) extract_data (a (foo (bar baz)) b (cux x y z) c) == [(foo (bar baz)), x, y]
         let mut pv = vec![
-            item_byte(Tag::Arity(5)),
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::NewVar),
-            item_byte(Tag::SymbolSize(1)), b'b',
-            item_byte(Tag::Arity(4)),
-                item_byte(Tag::SymbolSize(3)), b'c', b'u', b'x',
-                item_byte(Tag::NewVar),
-                item_byte(Tag::NewVar),
-                item_byte(Tag::SymbolSize(1)), b'z',
-            item_byte(Tag::SymbolSize(1)), b'c'
+            Tag::Arity(5).byte(),
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::NewVar.byte(),
+            Tag::SymbolSize(1).byte(), b'b',
+            Tag::Arity(4).byte(),
+                Tag::SymbolSize(3).byte(), b'c', b'u', b'x',
+                Tag::NewVar.byte(),
+                Tag::NewVar.byte(),
+                Tag::SymbolSize(1).byte(), b'z',
+            Tag::SymbolSize(1).byte(), b'c'
         ];
         let p = Expr { ptr: pv.as_mut_ptr() };
         let mut dv = vec![
-            item_byte(Tag::Arity(5)),
-            item_byte(Tag::SymbolSize(1)), b'a',
-            item_byte(Tag::Arity(2)),
-                item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o',
-                item_byte(Tag::Arity(2)),
-                    item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r',
-                    item_byte(Tag::SymbolSize(3)), b'b', b'a', b'z',
-            item_byte(Tag::SymbolSize(1)), b'b',
-            item_byte(Tag::Arity(4)),
-                item_byte(Tag::SymbolSize(3)), b'c', b'u', b'x',
-                item_byte(Tag::SymbolSize(1)), b'x',
-                item_byte(Tag::SymbolSize(1)), b'y',
-                item_byte(Tag::SymbolSize(1)), b'z',
-            item_byte(Tag::SymbolSize(1)), b'c'
+            Tag::Arity(5).byte(),
+            Tag::SymbolSize(1).byte(), b'a',
+            Tag::Arity(2).byte(),
+                Tag::SymbolSize(3).byte(), b'f', b'o', b'o',
+                Tag::Arity(2).byte(),
+                    Tag::SymbolSize(3).byte(), b'b', b'a', b'r',
+                    Tag::SymbolSize(3).byte(), b'b', b'a', b'z',
+            Tag::SymbolSize(1).byte(), b'b',
+            Tag::Arity(4).byte(),
+                Tag::SymbolSize(3).byte(), b'c', b'u', b'x',
+                Tag::SymbolSize(1).byte(), b'x',
+                Tag::SymbolSize(1).byte(), b'y',
+                Tag::SymbolSize(1).byte(), b'z',
+            Tag::SymbolSize(1).byte(), b'c'
         ];
         let d = Expr { ptr: dv.as_mut_ptr() };
-        let mut sv1 = vec![item_byte(Tag::Arity(2)),
-                           item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o',
-                           item_byte(Tag::Arity(2)),
-                           item_byte(Tag::SymbolSize(3)), b'b', b'a', b'r',
-                           item_byte(Tag::SymbolSize(3)), b'b', b'a', b'z'];
+        let mut sv1 = vec![Tag::Arity(2).byte(),
+                           Tag::SymbolSize(3).byte(), b'f', b'o', b'o',
+                           Tag::Arity(2).byte(),
+                           Tag::SymbolSize(3).byte(), b'b', b'a', b'r',
+                           Tag::SymbolSize(3).byte(), b'b', b'a', b'z'];
         let s1 = Expr { ptr: sv1.as_mut_ptr() };
-        let mut sv2 = vec![item_byte(Tag::SymbolSize(1)), b'x'];
+        let mut sv2 = vec![Tag::SymbolSize(1).byte(), b'x'];
         let s2 = Expr { ptr: sv2.as_mut_ptr() };
-        let mut sv3 = vec![item_byte(Tag::SymbolSize(1)), b'y'];
+        let mut sv3 = vec![Tag::SymbolSize(1).byte(), b'y'];
         let s3 = Expr { ptr: sv3.as_mut_ptr() };
         let vs = vec![s1, s2, s3];
         match p.extract_data(&mut ExprZipper::new(d)) {
@@ -946,10 +947,10 @@ fn data_matching() {
 #[test]
 fn counts() {
     // (= (func $) (add`0 (123456789 _1)))
-    let mut ev = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+    let mut ev = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'=',
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'f', b'u', b'n', b'c', Tag::NewVar.byte(),
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'a', b'd', b'd', 0,
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), 7, 91, 205, 21, Tag::VarRef(0).byte()];
     let e = Expr { ptr: ev.as_mut_ptr() };
     assert!(e.size() == 10 && e.symbols() == 4 && e.leaves() == 6 && e.newvars() == 1);
 }
@@ -957,26 +958,26 @@ fn counts() {
 #[test]
 fn unbound() {
     {
-        let mut ev = vec![item_byte(Tag::Arity(3)),
-                      item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
-                      item_byte(Tag::NewVar),
-                      item_byte(Tag::VarRef(0))];
+        let mut ev = vec![Tag::Arity(3).byte(),
+                      Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'a', Tag::NewVar.byte(),
+                      Tag::NewVar.byte(),
+                      Tag::VarRef(0).byte()];
         let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(!e.has_unbound());
     }
     {
-        let mut ev = vec![item_byte(Tag::Arity(3)),
-                          item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
-                          item_byte(Tag::NewVar),
-                          item_byte(Tag::VarRef(1))];
+        let mut ev = vec![Tag::Arity(3).byte(),
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'a', Tag::NewVar.byte(),
+                          Tag::NewVar.byte(),
+                          Tag::VarRef(1).byte()];
         let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(!e.has_unbound());
     }
     {
-        let mut ev = vec![item_byte(Tag::Arity(3)),
-                          item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'a', item_byte(Tag::NewVar),
-                          item_byte(Tag::NewVar),
-                          item_byte(Tag::VarRef(2))];
+        let mut ev = vec![Tag::Arity(3).byte(),
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'a', Tag::NewVar.byte(),
+                          Tag::NewVar.byte(),
+                          Tag::VarRef(2).byte()];
         let e = Expr { ptr: ev.as_mut_ptr() };
         assert!(e.has_unbound());
     }
@@ -1027,17 +1028,17 @@ fn unification() {
         //     [2][2] $ a [2] _1  a  unification
         //     [2][2] b $ [2]  b _1  ==>
         //     [2][2] b a [2]  b  a
-        let mut lhsv = vec![item_byte(Tag::Arity(2)),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::NewVar), item_byte(Tag::SymbolSize(1)), b'a',
-                            item_byte(Tag::Arity(2)), item_byte(Tag::VarRef(0)), item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut lhsv = vec![Tag::Arity(2).byte(),
+                            Tag::Arity(2).byte(), Tag::NewVar.byte(), Tag::SymbolSize(1).byte(), b'a',
+                            Tag::Arity(2).byte(), Tag::VarRef(0).byte(), Tag::SymbolSize(1).byte(), b'a'];
         let lhs = Expr{ ptr: lhsv.as_mut_ptr() };
-        let mut rhsv = vec![item_byte(Tag::Arity(2)),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::NewVar),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::VarRef(0))];
+        let mut rhsv = vec![Tag::Arity(2).byte(),
+                            Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::NewVar.byte(),
+                            Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::VarRef(0).byte()];
         let rhs = Expr{ ptr: rhsv.as_mut_ptr() };
-        let mut rv = vec![item_byte(Tag::Arity(2)),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::SymbolSize(1)), b'a',
-                            item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::SymbolSize(1)), b'a'];
+        let mut rv = vec![Tag::Arity(2).byte(),
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::SymbolSize(1).byte(), b'a',
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::SymbolSize(1).byte(), b'a'];
         let r = Expr{ ptr: rv.as_mut_ptr() };
         match lhs.unification(rhs, Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
@@ -1048,20 +1049,20 @@ fn unification() {
         // [3] $       a _1        unification
         // [3] [2] b $ $ [2] $ _1  ==>
         // [3] [2] b $ a [2] b _1
-        let mut lhsv = vec![item_byte(Tag::Arity(3)),
-                            item_byte(Tag::NewVar),
-                            item_byte(Tag::SymbolSize(1)), b'a',
-                            item_byte(Tag::VarRef(0))];
+        let mut lhsv = vec![Tag::Arity(3).byte(),
+                            Tag::NewVar.byte(),
+                            Tag::SymbolSize(1).byte(), b'a',
+                            Tag::VarRef(0).byte()];
         let lhs = Expr{ ptr: lhsv.as_mut_ptr() };
-        let mut rhsv = vec![item_byte(Tag::Arity(3)),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::NewVar),
-                            item_byte(Tag::NewVar),
-                            item_byte(Tag::Arity(2)), item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))];
+        let mut rhsv = vec![Tag::Arity(3).byte(),
+                            Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::NewVar.byte(),
+                            Tag::NewVar.byte(),
+                            Tag::Arity(2).byte(), Tag::NewVar.byte(), Tag::VarRef(0).byte()];
         let rhs = Expr{ ptr: rhsv.as_mut_ptr() };
-        let mut rv = vec![item_byte(Tag::Arity(3)),
-                          item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::NewVar),
-                          item_byte(Tag::SymbolSize(1)), b'a',
-                          item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'b', item_byte(Tag::VarRef(0))];
+        let mut rv = vec![Tag::Arity(3).byte(),
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::NewVar.byte(),
+                          Tag::SymbolSize(1).byte(), b'a',
+                          Tag::Arity(2).byte(), Tag::SymbolSize(1).byte(), b'b', Tag::VarRef(0).byte()];
         let r = Expr{ ptr: rv.as_mut_ptr() };
         match lhs.unification(rhs, Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }) {
             Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
@@ -1256,10 +1257,10 @@ fn transform() {
 #[test]
 fn to_string() {
     // (= (func $) (add`0 (123456789 _1)))
-    let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+    let mut e = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'=',
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'f', b'u', b'n', b'c', Tag::NewVar.byte(),
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'a', b'd', b'd', 0,
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), 7, 91, 205, 21, Tag::VarRef(0).byte()];
     // note the \0 is missing
     let ez = ExprZipper::new(Expr { ptr: e.as_mut_ptr() });
     let s = "(= (func $) (add\x00 (\\x7\\x5b\\xcd\\x15 _1)))";
@@ -1270,34 +1271,34 @@ fn to_string() {
 #[test]
 fn parsing() {
     let data = parse!("[3] $ [3] $ foo _1 _2");
-    assert_eq!(data, [item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::VarRef(0)), item_byte(Tag::VarRef(1))]);
+    assert_eq!(data, [Tag::Arity(3).byte(), Tag::NewVar.byte(), Tag::Arity(3).byte(), Tag::NewVar.byte(), Tag::SymbolSize(3).byte(), b'f', b'o', b'o', Tag::VarRef(0).byte(), Tag::VarRef(1).byte()]);
 }
 
 #[test]
 fn serializing() {
-    let data = serialize(&[item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::Arity(3)), item_byte(Tag::NewVar), item_byte(Tag::SymbolSize(3)), b'f', b'o', b'o', item_byte(Tag::VarRef(0)), item_byte(Tag::VarRef(1))]);
+    let data = serialize(&[Tag::Arity(3).byte(), Tag::NewVar.byte(), Tag::Arity(3).byte(), Tag::NewVar.byte(), Tag::SymbolSize(3).byte(), b'f', b'o', b'o', Tag::VarRef(0).byte(), Tag::VarRef(1).byte()]);
     assert_eq!(data, "[3] $ [3] $ foo _1 _2");
 
-    let e = serialize(vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                     item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))].as_slice());
+    let e = serialize(vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'=',
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'f', b'u', b'n', b'c', Tag::NewVar.byte(),
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'a', b'd', b'd', 0,
+                     Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), 7, 91, 205, 21, Tag::VarRef(0).byte()].as_slice());
     assert_eq!(e, "[3] = [2] func $ [2] add\\x00 [2] \\x07[\\xCD\\x15 _1");
 }
 
 #[test]
 fn prefix() {
-    let mut ev = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'=',
-                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'f', b'u', b'n', b'c', item_byte(Tag::NewVar),
-                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), b'a', b'd', b'd', 0,
-                           item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(4)), 7, 91, 205, 21, item_byte(Tag::VarRef(0))];
+    let mut ev = vec![Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'=',
+                           Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'f', b'u', b'n', b'c', Tag::NewVar.byte(),
+                           Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), b'a', b'd', b'd', 0,
+                           Tag::Arity(2).byte(), Tag::SymbolSize(4).byte(), 7, 91, 205, 21, Tag::VarRef(0).byte()];
     let e = Expr { ptr: ev.as_mut_ptr() };
 
     let Ok(proper) = e.prefix() else { panic!() };
     let s = serialize(unsafe { &*proper });
     assert_eq!(s, "[3] = [2] func");
 
-    let mut ev = vec![item_byte(Tag::NewVar)];
+    let mut ev = vec![Tag::NewVar.byte()];
     let e = Expr { ptr: ev.as_mut_ptr() };
     let Ok(proper) = e.prefix() else { panic!() };
     assert!(unsafe { &*proper }.is_empty());
@@ -1743,14 +1744,14 @@ fn unify_other() {
 }
 
 fn main() {
-    const names: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
+    const NAMES: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
     let mut yv = parse!(r"[3] [2] f $ [3] h $ [2] f a _2");
     let y = Expr { ptr: yv.as_mut_ptr() };
 
     let mut s = vec![];
 
     y.serialize_highlight(&mut s, |s| { std::str::from_utf8(s).unwrap() }, |v, _intro|
-        format!("\x1B[4m{}\x1B[24m", names[v as usize]).leak(), 1);
+        format!("\x1B[4m{}\x1B[24m", NAMES[v as usize]).leak(), 1);
     println!("{}", std::str::from_utf8(&s[..]).unwrap());
 
 }

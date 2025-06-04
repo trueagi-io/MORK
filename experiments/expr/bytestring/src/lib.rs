@@ -1,3 +1,4 @@
+
 #[allow(unused_imports)]
 use std::{
     fmt::{format, Debug, Formatter, Write}, 
@@ -5,9 +6,35 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::iter::empty;
+use std::collections::{HashMap, HashSet};
 use smallvec::SmallVec;
+
+/// Used instead of the '?' operator, but can work inside of const functions
+macro_rules! const_try {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(err) => return Err(err),
+        }
+    };
+}
+
+/// An error condition that may be encountered when trying to represent an expression as a path
+pub enum EncodeError {
+    InvalidSymbolSize,
+    TooManyVars,
+    ExprNestingTooDeep,
+}
+
+impl Debug for EncodeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSymbolSize => write!(f, "InvalidSymbolSize"),
+            Self::TooManyVars => write!(f, "TooManyVars"),
+            Self::ExprNestingTooDeep => write!(f, "ExprNestingTooDeep"),
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
@@ -26,28 +53,54 @@ pub enum Tag {
     // U64,
 }
 
-// [2] <u64> '8 0 0 0 1 2
-// [2] shortStr '19 a d a ...
+impl Tag {
 
-// [2] <u64> '8 0 0 0 1 2
+    /// Encodes a `Tag` as a `u8`
+    ///
+    /// ### Examples
+    /// [2] <u64> '8 0 0 0 1 2
+    /// [2] shortStr '19 a d a ...
+    ///
+    /// [2] <u64> '8 0 0 0 1 2
+    ///
+    /// [2] 64bytes [2] 64bytes [2] ... [2] 64bytes 64bytes
+    /// [63] 64bytes 64bytes 62x.. 64bytes [63] 64bytes 62x.. 64bytes [63] ... [63] ...
+    ///
+    /// Discrimination <-> Compression
+    /// High discrimination +speed -memory
+    /// - classify "be unique" as soon as possible
+    /// - bring discriminating information to the front (tags)
+    /// High compression -speed +memory
+    /// - stay shared as long as possible
+    /// - bring shared information to the front (bulk)
+    ///
+    pub const fn encode_as_byte(self) -> Result<u8, EncodeError> {
+        match self {
+            Tag::NewVar => { Ok( 0b1100_0000 | 0 ) }
+            Tag::SymbolSize(s) => if s > 0 && s < 64 {
+                Ok( 0b1100_0000 | s )
+            } else {
+                Err(EncodeError::InvalidSymbolSize)
+            },
+            Tag::VarRef(i) => if i < 64 {
+                Ok( 0b1000_0000 | i )
+            } else {
+                Err(EncodeError::TooManyVars)
+            },
+            Tag::Arity(a) => if a < 64 { 
+                Ok( 0b0000_0000 | a )
+            } else {
+                Err(EncodeError::ExprNestingTooDeep)
+            }
+        }
+    }
 
-// [2] 64bytes [2] 64bytes [2] ... [2] 64bytes 64bytes
-// [63] 64bytes 64bytes 62x.. 64bytes [63] 64bytes 62x.. 64bytes [63] ... [63] ...
-
-// Discrimination <-> Compression
-// High discrimination +speed -memory
-// - classify "be unique" as soon as possible
-// - bring discriminating information to the front (tags)
-// High compression -speed +memory
-// - stay shared as long as possible
-// - bring shared information to the front (bulk)
-
-pub const fn item_byte(b: Tag) -> u8 {
-    match b {
-        Tag::NewVar => { 0b1100_0000 | 0 }
-        Tag::SymbolSize(s) => { debug_assert!(s > 0 && s < 64); 0b1100_0000 | s }
-        Tag::VarRef(i) => { debug_assert!(i < 64); 0b1000_0000 | i }
-        Tag::Arity(a) => { debug_assert!(a < 64); 0b0000_0000 | a }
+    /// Same behavior as [Tag::encode_as_byte] but panics on errors
+    pub const fn byte(self) -> u8 {
+        match self.encode_as_byte() {
+            Ok(byte) => byte,
+            Err(_) => panic!("Encode error")
+        }
     }
 }
 
@@ -530,7 +583,7 @@ impl Expr {
     }
 
     pub fn substitute_one_de_bruijn(self, idx: u8, substitution: Expr, oz: &mut ExprZipper) -> *const [u8] {
-        let mut var: u8 = item_byte(Tag::NewVar);
+        let mut var: u8 = Tag::NewVar.encode_as_byte().unwrap();
         let nvs = self.newvars();
         let mut vars = vec![Expr{ ptr: &mut var }; nvs];
         vars[idx as usize] = substitution;
@@ -912,13 +965,13 @@ impl Expr {
     }
 
     pub fn transform(self, pattern: Expr, template: Expr) -> Result<Expr, ExtractFailure> {
-        let mut transformation = vec![item_byte(Tag::Arity(2))];
+        let mut transformation = vec![Tag::Arity(2).encode_as_byte().unwrap()];
         transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
         transformation.reserve(512);
-        let mut data = vec![item_byte(Tag::Arity(2))];
+        let mut data = vec![Tag::Arity(2).encode_as_byte().unwrap()];
         data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
-        data.push(item_byte(Tag::NewVar));
+        data.push(Tag::NewVar.encode_as_byte().unwrap());
         println!("lhs {:?}", Expr{ ptr: transformation.as_mut_ptr() });
         println!("rhs {:?}", Expr{ ptr: data.as_mut_ptr() });
         data.reserve(512);
@@ -948,10 +1001,10 @@ impl Expr {
     // }
 
     pub fn transformed(self, template: Expr, pattern: Expr) -> Result<Expr, ExtractFailure> {
-        let mut transformation = vec![item_byte(Tag::Arity(2))];
+        let mut transformation = vec![Tag::Arity(2).encode_as_byte().unwrap()];
         transformation.extend_from_slice(unsafe { template.span().as_ref().unwrap() });
         transformation.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
-        let mut data = vec![item_byte(Tag::Arity(2)), item_byte(Tag::NewVar)];
+        let mut data = vec![Tag::Arity(2).encode_as_byte().unwrap(), Tag::NewVar.encode_as_byte().unwrap()];
         data.extend_from_slice(unsafe { self.span().as_ref().unwrap() });
         unsafe {
             let e = Expr{ ptr: data.as_mut_ptr().add(2)};
@@ -1386,7 +1439,7 @@ impl ExprZipper {
 
     pub fn write_arity(&mut self, arity: u8) -> bool {
         unsafe {
-            *self.root.ptr.byte_add(self.loc) = item_byte(Tag::Arity(arity));
+            *self.root.ptr.byte_add(self.loc) = Tag::Arity(arity).encode_as_byte().unwrap();
             true
         }
     }
@@ -1405,20 +1458,20 @@ impl ExprZipper {
             let l = value.len();
             debug_assert!(l < 64);
             let w = self.root.ptr.byte_add(self.loc);
-            *w = item_byte(Tag::SymbolSize(l as u8));
+            *w = Tag::SymbolSize(l as u8).encode_as_byte().unwrap();
             std::ptr::copy_nonoverlapping(value.as_ptr(), w.byte_add(1), l);
             true
         }
     }
     pub fn write_new_var(&mut self) -> bool {
         unsafe {
-            *self.root.ptr.byte_add(self.loc) = item_byte(Tag::NewVar);
+            *self.root.ptr.byte_add(self.loc) = Tag::NewVar.encode_as_byte().unwrap();
             true
         }
     }
     pub fn write_var_ref(&mut self, index: u8) -> bool {
         unsafe {
-            *self.root.ptr.byte_add(self.loc) = item_byte(Tag::VarRef(index));
+            *self.root.ptr.byte_add(self.loc) = Tag::VarRef(index).encode_as_byte().unwrap();
             true
         }
     }
@@ -1651,7 +1704,10 @@ const fn digit_value(b: u8) -> u8 {
 macro_rules! parse {
     ($s:literal) => {{
         const N: usize = mork_bytestring::compute_length($s);
-        const ARR: [u8; N] = mork_bytestring::parse::<N>($s);
+        const ARR: [u8; N] = match mork_bytestring::parse::<N>($s) {
+            Ok(arr) => arr,
+            Err(e) => panic!("parse error")
+        };
         ARR
     }};
 }
@@ -1705,7 +1761,7 @@ pub const fn compute_length(s: &str) -> usize {
     n
 }
 
-pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
+pub const fn parse<const N: usize>(s: &str) -> Result<[u8; N], EncodeError> {
     let bytes = s.as_bytes();
     let len = bytes.len();
     let mut arr = [0u8; N];
@@ -1733,7 +1789,7 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
             }
             if i < len && bytes[i] == b']' {
                 i += 1; // Skip ']'
-                arr[pos] = item_byte(Tag::Arity(num));
+                arr[pos] = const_try!(Tag::Arity(num).encode_as_byte());
                 pos += 1;
             } else {
                 // Handle error: expected ']'
@@ -1741,7 +1797,7 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
             }
         } else if b == b'$' {
             i += 1; // Skip '$'
-            arr[pos] = item_byte(Tag::NewVar);
+            arr[pos] = const_try!(Tag::NewVar.encode_as_byte());
             pos += 1;
         } else if b == b'_' {
             // Parse _number
@@ -1752,9 +1808,9 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
                 i += 1;
             }
             if num > 0 {
-                arr[pos] = item_byte(Tag::VarRef(num - 1));
+                arr[pos] = const_try!(Tag::VarRef(num - 1).encode_as_byte());
             } else {
-                arr[pos] = item_byte(Tag::VarRef(0));
+                arr[pos] = const_try!(Tag::VarRef(0).encode_as_byte());
             }
             pos += 1;
         } else {
@@ -1766,7 +1822,7 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
                 i += 1;
             }
             // Insert item_byte(Tag::SymbolSize(word_len))
-            arr[pos] = item_byte(Tag::SymbolSize(word_len));
+            arr[pos] = const_try!(Tag::SymbolSize(word_len).encode_as_byte());
             pos += 1;
             // Copy the word bytes
             let mut j = 0;
@@ -1778,7 +1834,7 @@ pub const fn parse<const N: usize>(s: &str) -> [u8; N] {
         }
     }
 
-    arr
+    Ok(arr)
 }
 
 
@@ -2057,10 +2113,10 @@ impl ExprMapSolver {
 
     pub fn ret(&self, oz: &mut ExprZipper) {
         self.eq();
-        let representative = unsafe { *self.sources.first().unwrap() };
+        let representative = *self.sources.first().unwrap();
         let mut ez = ExprZipper::new(representative);
         let mut subs = vec![];
-        let mut b = item_byte(Tag::NewVar);
+        let mut b = Tag::NewVar.encode_as_byte().unwrap();
         let nv = Expr{ ptr: &mut b };
         loop {
             match ez.tag() {

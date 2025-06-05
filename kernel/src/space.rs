@@ -1182,10 +1182,16 @@ where
         let mut tmp_wz = tmp_union_map.write_zipper();
         for each_rz in pattern_rzs {
             tmp_wz.reset();
-            if tmp_wz.descend_to(each_rz.origin_path()) {
-                continue;
-            };
-            tmp_wz.graft(each_rz);
+
+            //GOAT, This is not correct because grafting at a deeper point will create scaffolding path,
+            // but that's not the same as bring over the whole source subtrie
+            // if tmp_wz.descend_to(each_rz.origin_path()) {
+            //     continue;
+            // };
+            // tmp_wz.graft(each_rz);
+
+            tmp_wz.descend_to(each_rz.origin_path());
+            tmp_wz.join(each_rz);
         }
         drop(tmp_wz);
 

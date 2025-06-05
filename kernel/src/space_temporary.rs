@@ -168,6 +168,7 @@ pub trait Space {
         pattern_readers : &mut[Self::Reader<'s>],
         template : &[Expr],
         template_writer : &mut [Self::Writer<'s>],
+        union_reader_values : BytesTrieMap<()>,
     ) -> (usize, bool) {
         core::debug_assert_eq!(patterns.len(), pattern_readers.len());
         core::debug_assert_eq!(template.len(), template_writer.len());
@@ -181,7 +182,7 @@ pub trait Space {
         // SECOND THE READERS
         let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
 
-        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
+        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs, union_reader_values)
     }
 
     #[cfg(feature="neo4j")]

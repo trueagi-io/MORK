@@ -120,6 +120,7 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
     , "(data (bar 1))\n"
     , "(data (bar 2))\n"
     );
+    core::assert_eq!(export_response_text.lines().count(), 6);
     core::assert_eq!(
         OUT_LIST,
         export_response_text
@@ -307,6 +308,7 @@ async fn metta_thread_basic_works_without_substitution() -> Result<(), Error> {
     , "(val g h)\n"
     , "(val h g)\n"
     );
+    core::assert_eq!(export_response_text.lines().count(), 8);
     core::assert_eq!(
         OUT_LIST,
         export_response_text

@@ -183,7 +183,7 @@ use pathmap::zipper::ZipperWriting;
 // }
 
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
+use mork_frontend::bytestring_parser::{Parser, ParserErrorType, ParseContext};
 use pathmap::trie_map::BytesTrieMap;
 
 struct DataParser {
@@ -254,8 +254,13 @@ fn main() {
                 ExprZipper::new(ez.root).traverse(0); println!();
                 black_box(ez.root);
             }
-            Err(ParserError::InputFinished) => { break }
-            Err(other) => { panic!("{:?}", other) }
+            Err(err) => {
+                if err.error_type == ParserErrorType::InputFinished {
+                    break
+                } else {
+                    panic!("{:?}", err)
+                }
+            }
         }
         i += 1;
     }

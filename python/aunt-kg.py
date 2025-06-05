@@ -4,7 +4,7 @@ from client import MORK, ManagedMORK
 DATASETS = (
     "royal92",
     "lordOfTheRings",
-    # "adameve", Currently fails to parse with "ExpressionNestedTooDeep" error
+    "adameve",
     "simpsons",
 )
 
@@ -13,7 +13,7 @@ def preprocessing(server, datasets=DATASETS):
         for dataset in datasets:
             with ins.work_at(dataset) as scope:
                 with scope.work_at("src") as src:
-                    src.sexpr_import_(f"https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")\
+                    src.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")\
                         .block()
                     downloaded = src.download("(Individuals $i (Fullname $name))", "$name")
                     print("names", dataset, downloaded.data)
@@ -34,6 +34,7 @@ def preprocessing(server, datasets=DATASETS):
 
 def _main():
     with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
+        server.clear().block()
         preprocessing(server)
 
 if __name__ == '__main__':

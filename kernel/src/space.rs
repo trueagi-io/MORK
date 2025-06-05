@@ -13,7 +13,7 @@ use mork_frontend::he_parser::Atom;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use pathmap::zipper::{ProductZipper, ZipperSubtries};
 use mork_bytestring::{byte_item, Expr, ExprZipper, OwnedExpr, ExtractFailure, parse, serialize, Tag, traverseh};
-use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
@@ -974,8 +974,14 @@ where
                     wz.set_value(());
                     wz.reset();
                 }
-                Err(ParserError::InputFinished) => { break }
-                Err(other) => { return Err(other) }
+                Err(mut err) => {
+                    if err.error_type == ParserErrorType::InputFinished {
+                        break
+                    } else {
+                        err.line_idx = Some(i);
+                        return Err(err)
+                    }
+                }
             }
             i += 1;
         }

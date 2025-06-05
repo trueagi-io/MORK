@@ -23,7 +23,7 @@ macro_rules! const_try {
 pub enum EncodeError {
     InvalidSymbolSize,
     TooManyVars,
-    ExprNestingTooDeep,
+    ArityTooLong,
 }
 
 impl Debug for EncodeError {
@@ -31,7 +31,7 @@ impl Debug for EncodeError {
         match self {
             Self::InvalidSymbolSize => write!(f, "InvalidSymbolSize"),
             Self::TooManyVars => write!(f, "TooManyVars"),
-            Self::ExprNestingTooDeep => write!(f, "ExprNestingTooDeep"),
+            Self::ArityTooLong => write!(f, "ArityTooLong"),
         }
     }
 }
@@ -87,10 +87,10 @@ impl Tag {
             } else {
                 Err(EncodeError::TooManyVars)
             },
-            Tag::Arity(a) => if a < 64 { 
+            Tag::Arity(a) => if a < 64 {
                 Ok( 0b0000_0000 | a )
             } else {
-                Err(EncodeError::ExprNestingTooDeep)
+                Err(EncodeError::ArityTooLong)
             }
         }
     }

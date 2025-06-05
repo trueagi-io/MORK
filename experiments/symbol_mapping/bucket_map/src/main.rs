@@ -5,7 +5,7 @@ use pathmap::ring::Lattice;
 use bucket_map::*;
 use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
-use mork_frontend::bytestring_parser::{Parser, ParserError, ParseContext};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
 use pathmap::trie_map::BytesTrieMap;
 // use pathmap::zipper::WriteZipper;
 // use bstr::ByteSlice;
@@ -328,8 +328,13 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
-            Err(ParserError::InputFinished) => { break }
-            Err(other) => { panic!("{:?}", other) }
+            Err(err) => {
+                if err.error_type == ParserErrorType::InputFinished{
+                    break
+                } else {
+                    panic!("{:?}", err)
+                }
+            }
         }
         i += 1;
     }

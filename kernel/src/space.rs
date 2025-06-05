@@ -1054,7 +1054,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
 {
         let mut buffer = [0u8; 4096];
 
-        query_multi_impl(&[pattern], &[pattern_rz],|refs, _loc| {
+        query_multi_impl(&[pattern], &[pattern_rz], BytesTrieMap::new(),|refs, _loc| {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
             template.substitute(refs, &mut oz);
 
@@ -1142,13 +1142,14 @@ impl DefaultSpace {
                 self.read_zipper(reader)
         }).collect::<Vec<_>>();
 
-        query_multi_impl(patterns, &rzs , effect)
+        query_multi_impl(patterns, &rzs, BytesTrieMap::new() , effect)
     }
 }
 pub(crate) fn query_multi_impl<'s, RZ, E: Copy, F: FnMut(&[Expr], Expr) -> Result<(), E>>
 (
     patterns    : &[Expr],
     pattern_rzs : &[RZ],
+    mut union_reader_values : BytesTrieMap<()>,
     mut effect  : F,
 ) -> Result<usize, E>
 where
@@ -1165,31 +1166,30 @@ where
             );
         }
 
-        //Graft all the remaining read zippers into temporary maps in order to work around the
-        // fact that product zippers can't handle factor zippers beginning in the middle of nodes
-        // Also, we need to preserve the original origin path
-        //TODO: this can be simplified when prefix zippers can handle factors that start in the
-        // middle of nodes and we have the ability to supply a prefix (origin) path on a product
-        // zipper factor
-        let mut tmp_maps = vec![];
+        // we could use join_into/join instead of having this tmp_map with grafts, but my assumption is that graft is simpler/more performant (we could bench this!).
+        // In the short term it also protects against some panics from product zipper (those need to get fixed, the separate temporary maps where a workaround for this issue).
+        let mut tmp_map = BytesTrieMap::new(); 
+        let mut tmp_wz = tmp_map.write_zipper();
         for each_rz in pattern_rzs {
-            let mut btm = BytesTrieMap::new();
-            let zh = btm.zipper_head();
-            if !each_rz.path_exists() { return Ok(0) }
-            zh.write_zipper_at_exclusive_path(each_rz.origin_path()).unwrap().graft(each_rz);
-            drop(zh);
-            tmp_maps.push(btm);
-        }
+            // if !each_rz.path_exists() { return Ok(0) } // this protects you from a product zipper bug, but makes self reference to extracted values impossible ...
 
-        let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
-        let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
+            tmp_wz.descend_to(each_rz.origin_path());
+            tmp_wz.graft(each_rz);
+            tmp_wz.reset();
+        }
+        drop(tmp_wz);
+        
+        // the grafts would have _replaced_ the values we wanted to add in, so we finally join_into/join to keep everything.
+        // union_reader_values.join_into(tmp_map); // (Remy : 2025 06 05) join_into is causing panincs 
+        union_reader_values = union_reader_values.join(&tmp_map); // (Remy : 2025 06 05) once join_into is fixed we should use that right?.
+
+
+        let [pat_0, pat_rest @ ..] = patterns else { return Ok(0); };
 
         let mut prz = ProductZipper::new(
-            tmp_0.read_zipper_at_path(make_prefix(pat_0)), 
-            tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
-                tmp_m.read_zipper_at_path(make_prefix(p))
-            }
-        ));
+            union_reader_values.read_zipper_at_path(make_prefix(pat_0)), 
+            pat_rest.into_iter().map(|p| union_reader_values.read_zipper_at_path(make_prefix(p)))
+        );
 
         prz.reserve_path_buffer(4096);
 
@@ -1257,16 +1257,17 @@ impl DefaultSpace {
 
 
 
-        self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..])
+        self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..], BytesTrieMap::new())
     }
 }
 #[inline(always)]
 pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
-    patterns          : &[Expr],
-    pattern_rzs       : &[RZ],
-    templates         : &[Expr],
-    template_prefixes : &[&[u8]],
-    template_wzs      : &mut [WZ]
+    patterns            : &[Expr],
+    pattern_rzs         : &[RZ],
+    templates           : &[Expr],
+    template_prefixes   : &[&[u8]],
+    template_wzs        : &mut [WZ],
+    union_reader_values : BytesTrieMap<()>,
 ) -> (usize, bool)
     where
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
@@ -1275,7 +1276,7 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
         let mut buffer = [0u8; 512];
 
         let mut any_new = false;
-        let touched = query_multi_impl(patterns, pattern_rzs, |refs, _loc| {
+        let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
             for i in 0..template_wzs.len() {
                 let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });

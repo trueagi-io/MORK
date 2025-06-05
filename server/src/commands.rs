@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use mork::OwnedExpr;
 use mork::{Space, space::serialize_sexpr_into};
+use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
 use mork_bytestring::Tag;
 use tokio::fs::File;
@@ -912,7 +913,7 @@ impl CommandDefinition for MettaThreadCmd {
             // PROCESS //
             // /////////
 
-            const DBG_PRINTLN : bool = false;
+            const DBG_PRINTLN : bool = true;
 
             if DBG_PRINTLN { println!("\tPREFIX :{:?}", prefix) }
 
@@ -1007,8 +1008,12 @@ impl CommandDefinition for MettaThreadCmd {
                 // ////////////////////////////
                 // ALL PERMISSIONS ACQUIRED //
                 // //////////////////////////
+                let mut union_in_map = BytesTrieMap::new();
+                union_in_map.insert(&buffer, ()); // this should allows reading "self" exec
+                debug_assert!(union_in_map.contains_path(&buffer));
+
                 #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tALL PERMISSIONS ACQUIRED | WRITER_COUNT : {} | READER_COUNT : {}", writers.len(), readers.len())};
-                let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..]);
+                let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..], union_in_map);
                 #[cfg(debug_assertions)] if DBG_PRINTLN {println!("RES : {:?}", res)};
                 retry = false;
                 buffer.truncate(prefix.len());
@@ -1413,7 +1418,7 @@ impl PatternTemplateArgs {
         let pattern_exprs = slices_to_exprs(&patterns);
         let template_exprs = slices_to_exprs(&templates);
 
-        ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);   
+        ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers, BytesTrieMap::new());   
     }
     #[allow(unused)]
     fn is_read_write(&self) -> bool {
@@ -1946,7 +1951,7 @@ async fn misbehaving_transform() -> Result<(), ()> {
     let mut writer = prefix_writers(&s, &[&template]).await.unwrap();
     core::assert!(writer.len() == 1);
 
-    s.transform_multi_multi( &[] , &mut [], &[ mork_bytestring::Expr{ptr: template.as_mut_ptr()}], &mut writer);
+    s.transform_multi_multi( &[] , &mut [], &[ mork_bytestring::Expr{ptr: template.as_mut_ptr()}], &mut writer, BytesTrieMap::new());
 
     drop(writer);
 

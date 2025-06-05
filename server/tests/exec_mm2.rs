@@ -18,10 +18,9 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
         "/", in_expr!(),
     );
     const UPLOAD_PAYLOAD : &str = concat!(""
-    // , "\n(",data!()," T)" // this one causes a segfault if done 
+    , "\n(",data!()," T)"
     , "\n(",data!()," (foo 1))"
     , "\n(",data!()," (foo 2))"
-    , "\n(",data!()," T)"
     );
     const UPLOAD_STATUS: &str = concat!( 
         server_url!(),

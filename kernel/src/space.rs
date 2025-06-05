@@ -1191,7 +1191,7 @@ where
             // tmp_wz.graft(each_rz);
 
             tmp_wz.descend_to(each_rz.origin_path());
-            tmp_wz.join(each_rz);
+            tmp_wz.graft(each_rz);
         }
         drop(tmp_wz);
 
@@ -1234,6 +1234,55 @@ where
         ));
 
         prz.reserve_path_buffer(4096);
+
+
+
+        //goat ugh.  this code below should be more correct and behave equivalently, but in reality it fails some additional tests.
+
+        // //Graft all the remaining read zippers into temporary maps in order to work around the
+        // // fact that product zippers can't handle factor zippers beginning in the middle of nodes
+        // // Also, we need to preserve the original origin path
+        // //TODO: this can be simplified when prefix zippers can handle factors that start in the
+        // // middle of nodes and we have the ability to supply a prefix (origin) path on a product
+        // // zipper factor
+        // let mut tmp_maps = vec![];
+        // for each in patterns {
+        //     let each_rz = union_reader_values.read_zipper_at_borrowed_path(make_prefix(each));
+        //     let mut btm = BytesTrieMap::new();
+
+        //     //GOAT, I remember Adam saying that the factors need full origin paths, but empirically the tests
+        //     // all fail when we have origin paths, and most of them succeed when we don't have them.
+        //     //
+        //     // btm.write_zipper_at_path(each_rz.origin_path()).graft(&each_rz);
+        //     btm.write_zipper().graft(&each_rz);
+
+        //     tmp_maps.push(btm);
+        // }
+
+        // // let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
+        // // let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
+        // let tmp_0 = tmp_maps.remove(0);
+
+        // let mut prz = ProductZipper::new(
+        //     {
+        //         tmp_0.read_zipper()
+        //         //GOAT NOTE: I descend the new zipper once it's created.  I think that's equivalent to
+        //         // pre-descending the primary factor, but it's an unspecified corner of the API where I'm
+        //         // not totally sure how to spec what the zipper's root should be.  So let's not do it to
+        //         // avoid ambiguity.
+        //     }, 
+        //     tmp_maps.iter().map(|tmp_m| {
+        //         tmp_m.read_zipper()
+        //         //GOAT NOTE: Descending a zipper here is definitely not the right thing to do... It's equivalent
+        //         // to undoing the tmp_maps work-around.
+        //     }
+        // ));
+
+        // prz.reserve_path_buffer(4096);
+        // // prz.descend_to(make_prefix(pat_0));
+
+
+
 
         let mut stack = vec![0; 1];
         stack[0] = ACTION;

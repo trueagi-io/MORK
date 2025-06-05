@@ -1209,9 +1209,15 @@ where
         let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
 
         let mut prz = ProductZipper::new(
-            tmp_0.read_zipper_at_path(make_prefix(pat_0)), 
+            {
+                let mut rz = tmp_0.read_zipper();
+                rz.descend_to(make_prefix(pat_0));
+                rz
+            }, 
             tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
-                tmp_m.read_zipper_at_path(make_prefix(p))
+                let mut rz = tmp_m.read_zipper();
+                rz.descend_to(make_prefix(p));
+                rz
             }
         ));
 

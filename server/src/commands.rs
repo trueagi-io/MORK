@@ -286,26 +286,39 @@ fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr:
 
     let mut buffer = Vec::with_capacity(4096);
     let mut writer = std::io::BufWriter::new(&mut buffer);
+    let mut expr_buffer = Vec::with_capacity(4096);
 
     let mut first = true;
-    writer.write(b"(")?;
+    writer.write(b"[")?;
     for (new_tok, expr) in result_paths {
         if first {
             first = false
         } else {
-            writer.write(b", ")?;
+            writer.write(b",\n")?;
         }
 
-        writer.write(b"(\"")?;
-        writer.write(&new_tok[..])?;
-        writer.write(b"\", ")?;
+        writer.write(b"{\"token\": [")?;
 
-        serialize_sexpr_into(expr.borrow().ptr, &mut writer, ctx.0.space.symbol_table())
+        let mut inner_first = true;
+        for &byte in new_tok.iter() {
+            if inner_first {
+                inner_first = false
+            } else {
+                writer.write(b", ")?;
+            }
+            writer.write(format!("{}", byte as u16).as_bytes())?;
+        }
+
+        writer.write(b"], \"expr\": ")?;
+
+        serialize_sexpr_into(expr.borrow().ptr, &mut expr_buffer, ctx.0.space.symbol_table())
             .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+        writer.write(serde_json::to_string(std::str::from_utf8(&expr_buffer[..])?)?.as_bytes())?;
+        expr_buffer.clear();
 
-        writer.write(b")")?;
+        writer.write(b"}")?;
     }
-    writer.write(b")")?;
+    writer.write(b"]")?;
 
     writer.flush()?;
     drop(writer);

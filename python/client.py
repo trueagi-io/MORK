@@ -6,7 +6,7 @@ from time import monotonic_ns, sleep
 from base64 import b32encode
 import re
 from io import StringIO, FileIO
-from urllib.parse import quote
+from urllib.parse import quote, quote_from_bytes
 
 import requests
 from requests import request, RequestException
@@ -207,6 +207,68 @@ class MORK:
             self.pattern = pattern
             super().__init__("get", f"/explore/{quote(self.pattern)}/{token}/")
 
+        def dispatch(self, server):
+            super().dispatch(server)
+            if self.response and self.response.status_code == 200:
+                self.data = json.loads(self.response.text)
+
+        def values(self):
+            return [d["expr"] for d in self.data]
+
+        def descend(self, i):
+            return type(self)(self.pattern, quote_from_bytes(bytes(self.data[i]["token"])))
+
+        def _children(self):
+            for d in self.data:
+                yield type(self)(self.pattern, quote_from_bytes(bytes(d["token"])))
+
+        def levels(self):
+
+            frontier = [self]
+            while True:
+                for c in frontier:
+                    c.dispatch(self.server)
+                yield frontier
+                frontier = [child for c in frontier for child in c._children()]
+                if not frontier:
+                    break
+
+        def forward(self):
+            # still buggy
+            children = self._children()
+            values = self.values()
+
+            def traverse(n):
+                n.dispatch(self.server)
+                n_children = n._children()
+                n_values = n.values()
+
+                for n_idx, n_child in enumerate(n_children):
+                    if n_idx > 0: yield n_values[n_idx]
+                    yield from traverse(n_child)
+
+            for value, child in zip(values, children):
+                yield value
+                yield from traverse(child)
+
+        def backward(self):
+            # still buggy
+            children = list(self._children())
+            values = self.values()
+
+            def traverse(n):
+                n.dispatch(self.server)
+                n_children = list(n._children())
+                n_values = n.values()
+                for n_idx, n_child in enumerate(reversed(n_children)):
+                    yield from traverse(n_child)
+                    yield n_values[-n_idx - 1]
+
+            for value, child in zip(reversed(values), reversed(children)):
+                yield from traverse(child)
+                yield value
+
+
     def __init__(self, base_url: Optional[str] = os.environ.get("MORK_URL"), namespace = "{}", finalization = (), parent=None, history=None):
         if base_url is None:
             base_url = "http://127.0.0.1:8000"
@@ -301,6 +363,13 @@ class MORK:
         """
         io = self.ns.format("$x")
         cmd = self.Clear(io)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
+    def explore_(self):
+        io = self.ns.format("$x")
+        cmd = self.Explore(io)
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd

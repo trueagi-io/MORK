@@ -142,9 +142,9 @@ mod tests {
         let mut i = 0;
         s.query(expr!(s, "[2] child_results $x"), |_, e| {
             match i {
-                0 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
-                1 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
-                2 => { assert_eq!(sexpr!(s, e), "(child_results Trevor)") }
+                0 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
+                1 => { assert_eq!(sexpr!(s, e), "(child_results Trevor)") }
+                2 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
                 _ => { assert!(false) }
             }
             i += 1;
@@ -199,7 +199,9 @@ mod tests {
 
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
-        println!("{}", String::from_utf8(res).unwrap());
+        let out = String::from_utf8(res).unwrap();
+        assert_eq!(out.lines().count(), 4);
+        println!("{}", out);
     }
 
     #[test]
@@ -251,6 +253,7 @@ mod tests {
         s.dump_sexpr(expr!(s, "$v"), expr!(s, "$v"), &mut output).unwrap();
         let out_string = String::from_utf8_lossy(&output);
         //println!("{out_string}");
+        assert_eq!(out_string.lines().count(), 4);
         assert_eq!(
             "(root (Sound (Sound (Duck Quack))))\
             \n(root (Sound (Sound (Human BlaBla))))\
@@ -297,7 +300,17 @@ mod tests {
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
         println!("\nRESULTS\n");
-        println!("{}", String::from_utf8(v).unwrap());
+        let res = String::from_utf8(v).unwrap();
+
+        assert_eq!(res.lines().count(), 3);
+        core::assert_eq!(
+            res, 
+            "(! (add result) ((S Z) (S Z)))\n\
+             (? (add $) (Z $) (! _1 _2))\n\
+             (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
+        );
+        
+        println!("{}", res);
     }
 
     #[test]
@@ -430,6 +443,8 @@ mod tests {
             // #[cfg(test)]
             // println!("{:?}", s.dump_raw_at_root());
 
+        assert_eq!(out.lines().count(), 2);
+        assert_eq!(out, "(val a b)\n(swaped-val (val a b) (val b a))\n");
         println!("RESULTS:\n{}", out);
     }
 
@@ -468,6 +483,24 @@ mod tests {
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
 
         let out = String::from(std::str::from_utf8(&writer).unwrap());
+
+        assert_eq!(out.lines().count(), 13);
+        assert_eq!(out,
+            "(val a b)\n\
+            (val b a)\n\
+            (val c d)\n\
+            (val d c)\n\
+            (val e f)\n\
+            (val f e)\n\
+            (val g h)\n\
+            (val h g)\n\
+            (swapped b a)\n\
+            (swapped d c)\n\
+            (swapped f e)\n\
+            (swapped h g)\n\
+            (def (metta_thread_basic 2) (, (swapped $ $)) (, (val _1 _2)))\n\
+            "
+        );
 
         println!("RESULTS:\n{}", out);
     }

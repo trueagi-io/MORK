@@ -1,4 +1,21 @@
-//! Bucket map attemps to tackle the symbol mapping problem by spreading the load to as many buckets as possible with a simple and efficient method to spit the keys
+//! Bucket map attemps to tackle the symbol mapping problem by spreading the load to as many buckets
+//! as possible with a simple and efficient method to spit the keys
+//!
+//! # Algorithm Overview
+//!
+//! The [`SharedMapping`] contains [`MAX_WRITER_THREADS`] append-only linked lists of [`Slab`] objects, where
+//! each `Slab` is a contiguous block of memory containing the symbol.  The `Slab` lists start are at [SharedMapping::permissions].
+//!
+//! The [`Symbol`] type is a fixed-size (8-Bytes) reference to a symbol in the symbol table.
+//!
+//! The [SharedMapping::to_bytes] contains maps (PathMaps) to map from [`Symbol`] to a byte pointer in the [Slab]s
+//! ([ThinBytes] type).  The symbol's `permission_idx` selects which PathMap to perform the lookup in.
+//!
+//! The [SharedMapping::to_symbol] contains maps (PathMaps) to map from raw symbol bytes to a [`Symbol`] handle.
+//! The `MAX_WRITER_THREADS` pathmaps use a Pearson hash on the first 8 Bytes of the symbol to reduce contention
+//! over the `PathMaps`  TODO: We may want to revisit the first 8-Byte behavior if we end up with symbols that
+//! all contain the same prefix, e.g. a namespace.
+//!
 
 extern crate alloc;
 
@@ -7,43 +24,61 @@ use pathmap::trie_map::BytesTrieMap;
 
 mod handle;
 use handle::*;
+pub use handle::SharedMappingHandle;
+pub use handle::WritePermit;
 
 mod symbol_backing;
 use symbol_backing::*;
 
+#[cfg(feature = "debug_api")]
+pub use symbol_backing::ThinBytes;
+
+mod serialization;
+
+#[cfg(feature = "debug_api")]
+pub use serialization::Tables;
 
 const U64_BYTES : usize = u64::BITS as usize / 8;
 
-/// the positive values less than (1 << 63) are reserved for symbols, the negative values are leaft for other purposes.
-type Symbol = i64;
+/// Uniquely identifies a symbol in the table
+///
+/// [0, 1]: unused
+/// [2]: permission_idx.  Identifies which list in [SharedMapping::permissions] contains the symbol
+/// [3..=7]: unique symbol id within slab list.  Corresponds to insertion order in list
+///
+type Symbol = [u8;SYM_LEN];
+#[doc(hidden)]
+pub const SYM_LEN : usize = 8;
 
-/// it's importand theat the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
+/// it's important that the top bit is NOT set, as that would suggest it is a De Bruijn Level reference
 const MAX_WRITER_THREAD_INDEX : usize = i8::MAX as usize;
-const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
+#[doc(hidden)]
+pub const MAX_WRITER_THREADS : usize = MAX_WRITER_THREAD_INDEX+1;
+const SYMBOL_THREAD_PERMIT_BYTE_POS : usize = 2;
 
 /// We don't want locks to implicitly cause chache misses because they are too close together.
 #[repr(align(64 /* bytes; cache line */))]
-struct AlignCache<T>(T);
-type AlignArray<T> = [AlignCache<T>; MAX_WRITER_THREAD_INDEX+1];
+pub(crate) struct AlignCache<T>(pub(crate) T);
+type AlignArray<T> = [AlignCache<T>; MAX_WRITER_THREADS];
 
 
 #[repr(u64)]
 enum SharedMappingFlags {
   KeepSlabsAlive = 1 << 0,
-  HeapAlocated   = 1 << 1,
+  HeapAllocated   = 1 << 1,
 }
-const PEARSON_BOUND : usize = 8;
+pub(crate) const PEARSON_BOUND : usize = 8;
 
 /// The [`SharedMapping`] is the datatype that holds buckets to split the maps that hold the symbols to reduce contention bewteen multiple threads.
 /// There can be a maximum of 128 threads that can write.
 
 pub struct SharedMapping {
-  pub(crate) count            : AtomicU64,
-  pub(crate) flags            : AtomicU64,
-  pub(crate) permissions      : AlignArray<ThreadPermission>,
-  pub(crate) to_symbol        : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
-  /// the path is a Symbol as __native endian bytes__.
-  pub(crate) to_bytes         : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
+  pub(crate) count             : AtomicU64,
+  pub(crate) flags             : AtomicU64,
+  pub(crate) permissions       : AlignArray<ThreadPermission>,
+  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
+  /// the path is a Symbol as __big endian bytes__.
+  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
 }
 
 impl SharedMapping {
@@ -51,22 +86,26 @@ impl SharedMapping {
   pub fn new()->SharedMappingHandle {
     unsafe {
       let ptr = alloc::alloc::alloc(alloc::alloc::Layout::new::<MaybeUninit<SharedMapping>>()) as *mut MaybeUninit<SharedMapping>;
-      SharedMapping::init(ptr, SharedMappingFlags::HeapAlocated as u64)
+      SharedMapping::init(ptr, SharedMappingFlags::HeapAllocated as u64)
     }
   }
 
-  /// This is unsafe because this could be done inside a stack frame, whick makes safety guarantees more difficult.
+  /// This is unsafe because this could be done inside a stack frame, which makes safety guarantees more difficult.
   /// This has been made public for use in initializing a static.
-  pub unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
-    let inner = (*uninit).as_mut_ptr();
+  pub const unsafe fn init(uninit : *mut MaybeUninit<SharedMapping>, init_flags: u64)-> SharedMappingHandle {
     unsafe {
+      let inner = (*uninit).as_mut_ptr();
+
       (*inner).count = AtomicU64::new(1);
       (*inner).flags = AtomicU64::new(init_flags);
 
-      for each in 0..=MAX_WRITER_THREAD_INDEX {
-        (&raw mut (*inner).permissions[each]).write(AlignCache(ThreadPermission::init(each as u8)));
-        (&raw mut (*inner).to_symbol[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
-        (&raw mut (*inner).to_bytes[each]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+      let mut i = 0;
+      while i <= MAX_WRITER_THREAD_INDEX {
+        (&raw mut (*inner).permissions[i]).write(AlignCache(ThreadPermission::init(i as u8)));
+        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+
+        i+=1;
       }
       SharedMappingHandle( core::ptr::NonNull::new_unchecked(inner) )
     }
@@ -74,13 +113,13 @@ impl SharedMapping {
 
   /// Aquire the bytes associated with a [`Symbol`]
   pub fn get_bytes(&self, sym: Symbol)-> Option<&[u8]> {
-    if sym <= 0 {
+    if sym[SYMBOL_THREAD_PERMIT_BYTE_POS] > i8::MIN as u8 {
       return None;
     }
-    let bucket = (sym as u64) >> U64_BYTES-1;
+    let bucket = sym[SYMBOL_THREAD_PERMIT_BYTE_POS];
 
     '_lock_scope : {
-      self.to_bytes[bucket as usize].0.read().unwrap().get(&sym.to_ne_bytes()[..])
+      self.to_bytes[bucket as usize].0.read().unwrap().get(sym)
     }.map(|t| unsafe {&*t.as_raw_slice()})
   }
 
@@ -89,8 +128,6 @@ impl SharedMapping {
   pub unsafe fn keep_slabs_alive(&self) {
     self.flags.store(SharedMappingFlags::KeepSlabsAlive as u64, atomic::Ordering::Release);
   }
-  
-
 
   /// try to get a [`Symbol`] if it is already in the map.
   /// If one requires a guaranteed [`Symbol`], then consider creating a [`WritePermit`] and using [`WritePermit::get_or_insert`].
@@ -104,9 +141,10 @@ impl SharedMapping {
       let lock_guard = trie_lock.read().unwrap();
 
       lock_guard.get(bytes).copied()
-    }    
+    }
   }
 }
+
 
 impl core::ops::Drop for SharedMapping {
   fn drop(&mut self) {
@@ -126,24 +164,24 @@ impl core::ops::Drop for SharedMapping {
 
 /// Represents the data that a thread can access after aquiring a [`WritePermit`], a thread can only have access to one permit.
 /// each Thread permit has an index built into the top byte of it's `next_symbol` field.
-struct ThreadPermission{
+pub(crate) struct ThreadPermission{
   // flags : AtomicU64,
   /// [`std::thread::ThreadId`] holds an [`std::num::NonZeroU64`]. this Atomic represents an `Option<std::num::NonZeroU64>` where `Option::None == 0`
-  thread_id : AtomicU64, 
+  pub(crate) thread_id : AtomicU64, 
   /// the leading byte represents the "thread number"
   /// the rest represents the symbol count
-  next_symbol : AtomicU64,
+  pub(crate) next_symbol : AtomicU64,
   /// this value should be null if a symbol table is not initialized
-  symbol_table_start   : std::sync::atomic::AtomicPtr<Slab>,
+  pub(crate) symbol_table_start   : std::sync::atomic::AtomicPtr<Slab>,
   /// this value should be null if a symbol table is not initialized
-  symbol_table_last : std::sync::atomic::AtomicPtr<Slab>,
+  pub(crate) symbol_table_last : std::sync::atomic::AtomicPtr<Slab>,
 }
 
 
 impl ThreadPermission {
-  fn init(index : u8) -> ThreadPermission {
+  const fn init(index : u8) -> ThreadPermission {
     core::debug_assert!(index < 0b_1000_0000, "The top bit of a symbol must be kept off.");
-    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS)};
+    let next_symbol_val = if index == 0 {1 /* We want to leave the 0 case clear, as that represents the De Bruijn variable introduction */} else {(index as u64) << (u64::BITS - u8::BITS*3 /* leave the top two bytes free for encoding in the pathmap the type/len, the third byte has the map index, the last 5 bytes leave the possibility for 2^40 symbols */)};
     ThreadPermission {
       thread_id: AtomicU64::new(0),
       next_symbol: AtomicU64::new(next_symbol_val),

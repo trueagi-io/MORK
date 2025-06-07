@@ -824,6 +824,7 @@ impl Tokenizer {
         self.tokens.push(TokenDescr{ regex, constr: constr })
     }
 
+    #[allow(unused)]
     /// Returns the constructor function associated with an exact regex string, or None if the Tokenizer
     /// does not contain the specified regex
     pub(crate) fn find_exact(&self, regex_str: &str) -> Option<Rc<AtomConstr>> {

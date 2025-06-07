@@ -11,5 +11,3 @@ bnum = "0.11.0"
 # [target.wasm32-wasi]
 # runner = "wasmtime"
 
-[build]
-rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat"

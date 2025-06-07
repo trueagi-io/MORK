@@ -16,10 +16,12 @@ pub enum Error {
     UnexpectedEndOfJson,
     ExceededDepthLimit,
     FailedUtf8Parsing,
+    #[allow(unused)]
     WrongType(String),
 }
 
 impl Error {
+    #[allow(unused)]
     pub fn wrong_type(expected: &str) -> Self {
         Error::WrongType(expected.into())
     }
@@ -77,7 +79,7 @@ pub (crate) trait Transcriber {
     fn end(&mut self) -> ();
 }
 
-
+#[allow(unused)]
 pub(crate) struct DebugTranscriber;
 impl Transcriber for DebugTranscriber {
     fn begin(&mut self) -> () { println!("begin") }
@@ -98,7 +100,9 @@ impl Transcriber for DebugTranscriber {
     fn end(&mut self) -> () { println!("end") }
 }
 
+#[allow(unused)]
 pub(crate) struct WriteTranscriber<W : Write>{ pub w: W }
+#[allow(unused_variables)]
 impl <W : Write> Transcriber for WriteTranscriber<W> {
     fn begin(&mut self) -> () { }
     fn descend_index(&mut self, i: usize, first: bool) -> () { if first { self.w.write("[".as_bytes()).unwrap(); }; }
@@ -323,6 +327,7 @@ macro_rules! expect_number {
         // Cap on how many iterations we do while reading to u64
         // in order to avoid an overflow.
         loop {
+            #[allow(unreachable_code)]
             if $mantissa >= MAX_PRECISION {
                 panic!("max precision exceeded");
                 // result = $parser.read_big_number(num)?;
@@ -498,9 +503,9 @@ impl<'a> Parser<'a> {
     fn read_hexdec_digit(&mut self) -> Result<u16> {
         let ch = expect_byte!(self);
         Ok(match ch {
-            b'0' ..= b'9' => (ch - b'0'),
-            b'a' ..= b'f' => (ch + 10 - b'a'),
-            b'A' ..= b'F' => (ch + 10 - b'A'),
+            b'0' ..= b'9' => ch - b'0',
+            b'a' ..= b'f' => ch + 10 - b'a',
+            b'A' ..= b'F' => ch + 10 - b'A',
             _             => return self.unexpected_character(),
         } as u16)
     }
@@ -753,9 +758,9 @@ impl<'a> Parser<'a> {
                     t.write_number(false, mantissa, exponent);
                 },
                 b'1' ..= b'9' => {
-                    let mut mantissa = 0; let mut exponent = 0;
-                    expect_number!(self, mantissa, exponent, ch);
-                    t.write_number(false, mantissa, exponent);
+                    let mut _mantissa = 0; let mut exponent = 0;
+                    expect_number!(self, _mantissa, exponent, ch);
+                    t.write_number(false, _mantissa, exponent);
                 },
                 b'-' => {
                     let ch = expect_byte!(self);
@@ -769,9 +774,9 @@ impl<'a> Parser<'a> {
                             t.write_number(true, mantissa, exponent);
                         },
                         b'1' ..= b'9' => {
-                            let mut mantissa = 0; let mut exponent = 0;
-                            expect_number!(self, mantissa, exponent, ch);
-                            t.write_number(true, mantissa, exponent);
+                            let mut _mantissa = 0; let mut exponent = 0;
+                            expect_number!(self, _mantissa, exponent, ch);
+                            t.write_number(true, _mantissa, exponent);
                         },
                         _    => return self.unexpected_character()
                     };

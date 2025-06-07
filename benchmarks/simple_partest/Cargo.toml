@@ -1,0 +1,17 @@
+[package]
+name = "simple_partest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pathmap = { workspace=true }
+clap = { version= "4.5.20", features = ["derive"] }
+
+[features]
+default = []
+pathmap_read = []
+pathmap_write = []
+write_ints = []
+contiguous_test = []
+interleaved_test = []
+alloc_test = []

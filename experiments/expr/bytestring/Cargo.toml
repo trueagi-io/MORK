@@ -5,6 +5,5 @@ edition = "2021"
 
 [dependencies]
 smallvec = "1.13.2"
-
-[build]
-rustflags = "-C opt-level=3 -C target-cpu=native"
+freeze = { workspace = true }
+pathmap = { workspace = true }

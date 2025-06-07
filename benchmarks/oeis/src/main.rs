@@ -1,50 +1,12 @@
 use std::io::Read;
 use std::time::Instant;
-use mork_bytestring::*;
+use std::usize;
 use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{Zipper, ReadZipper, WriteZipper};
-use num::{BigInt, zero};
+use pathmap::zipper::{Zipper, ZipperValues, ZipperMoving, ZipperWriting, ZipperCreation};
+use num::BigInt;
 
-
-struct CfIter<'a> {
-    i: u8,
-    w: u64,
-    mask: &'a [u64; 4]
-}
-
-impl <'a> CfIter<'a> {
-    fn new(mask: &'a [u64; 4]) -> Self {
-        Self {
-            i: 0,
-            w: mask[0],
-            mask: mask
-        }
-    }
-}
-
-impl <'a> Iterator for CfIter<'a> {
-    type Item = u8;
-
-    fn next(&mut self) -> Option<u8> {
-        loop {
-            if self.w != 0 {
-                let wi = self.w.trailing_zeros() as u8;
-                self.w ^= 1u64 << wi;
-                let index = self.i*64 + wi;
-                return Some(index)
-            } else if self.i < 3 {
-                self.i += 1;
-                self.w = *unsafe{ self.mask.get_unchecked(self.i as usize) };
-            } else {
-                return None
-            }
-        }
-    }
-}
-
-fn drop_symbol_head_byte(loc: &mut WriteZipper<usize>) {
-    let m = loc.child_mask();
-    let mut it = CfIter::new(&m);
+fn drop_symbol_head_byte<Z: ZipperWriting<usize> + Zipper + ZipperMoving>(loc: &mut Z) {
+    let mut it = loc.child_mask().iter();
 
     let p = loc.path().to_vec();
     while let Some(b) = it.next() {
@@ -69,6 +31,7 @@ fn encode_seq<F : Iterator<Item=BigInt>>(iter: F) -> Vec<u8> {
     v
 }
 
+#[allow(unused)]
 fn decode_seq(s: &[u8]) -> Vec<BigInt> {
     let mut v = vec![];
     let mut i = 0;
@@ -83,6 +46,7 @@ fn decode_seq(s: &[u8]) -> Vec<BigInt> {
 
 fn main() {
     let mut file = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/oeis/stripped")
+    // let mut file = std::fs::File::open("/Users/admin/Desktop/stripped")
         .expect("Should have been able to read the file");
     let mut s = String::new();
     file.read_to_string(&mut s).unwrap();
@@ -112,9 +76,9 @@ fn main() {
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
         buildz.descend_to(&s[..]);
-        match buildz.get_value() {
+        match buildz.value() {
             None => { buildz.set_value(i); }
-            Some(v) => { /* keep the smallest integer sequence */ }
+            Some(_v) => { /* keep the smallest integer sequence */ }
         }
         buildz.ascend(s.len());
     }
@@ -123,16 +87,18 @@ fn main() {
     println!("building took {} ms", t0.elapsed().as_millis());
 
     const MAX_OFFSET: u8 = 10;
+    let map_head = m.zipper_head();
     for i in 1..(MAX_OFFSET + 1) {
         let k = &[i];
         let t1 = Instant::now();
-        let mut z1 = unsafe{ m.write_zipper_at_exclusive_path_unchecked(k) };
+        let mut z1 = unsafe{ map_head.write_zipper_at_exclusive_path_unchecked(k) };
 
-        z1.graft(&m.read_zipper_at_path(&[i - 1]));
+        z1.graft(&map_head.read_zipper_at_path(&[i - 1]).unwrap());
         drop_symbol_head_byte(&mut z1);
 
         println!("drophead {i} took {} ms", t1.elapsed().as_millis());
     }
+    drop(map_head);
 
     for i in 0..(MAX_OFFSET + 1) {
         println!("total seqs from {} {}", i, m.read_zipper_at_path(&[i]).val_count());

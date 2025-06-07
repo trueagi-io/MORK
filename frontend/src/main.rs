@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-use std::{fs, mem, ptr};
-use std::hint::black_box;
-use std::io::{BufReader, Read};
-use std::time::Instant;
+#[allow(unused_imports)]
+use std::{collections::HashMap, fs, hint::black_box, io::{BufReader, Read}, mem, ptr, time::Instant};
+use pathmap::zipper::ZipperWriting;
 
 
 // use typed_arena::Arena;
@@ -203,7 +201,7 @@ impl DataParser {
 
     const EMPTY: &'static [u8] = &[];
 }
-
+#[allow(unused)]
 fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
     let ir = u64::from_be(i);
     unsafe { ptr::write_unaligned(buffer as *mut u64, ir) };
@@ -212,10 +210,11 @@ fn gen_key<'a>(i: u64, buffer: *mut u8) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(buffer.byte_offset((8 - l) as isize), l) }
 }
 
-use pathmap::zipper::WriteZipper;
+// use pathmap::zipper::WriteZipper;
 impl Parser for DataParser {
     fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8] {
         return unsafe { std::mem::transmute(s) };
+        #[allow(unreachable_code)]
         if s.len() == 0 { return Self::EMPTY }
         let mut z = self.symbols.write_zipper_at_path(s);
         let r = z.get_value_or_insert_with(|| {
@@ -236,7 +235,7 @@ fn main() {
         .expect("Should have been able to read the file");
     // let slice = unsafe { memmap2::Mmap::map(&file).unwrap() };
     let mut v = vec![];
-    file.read_to_end(&mut v);
+    file.read_to_end(&mut v).unwrap();
     let slice = &v[..];
     let mut it = Context::new(&slice);
     let mut parser = DataParser::new();
@@ -246,22 +245,20 @@ fn main() {
     let mut i = 0;
     let mut stack = [0; 2 << 19];
     loop {
-        unsafe {
-            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
-            match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => {
-                    // btm.insert(&stack[..ez.loc], ());
-                    // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
-                    // println!("{:?}", stack);
-                    ExprZipper::new(ez.root).traverse(0); println!();
-                    black_box(ez.root);
-                }
-                Err(ParserError::InputFinished) => { break }
-                Err(other) => { panic!("{:?}", other) }
+        let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+        match parser.sexpr(&mut it, &mut ez) {
+            Ok(()) => {
+                // btm.insert(&stack[..ez.loc], ());
+                // unsafe { println!("{}", std::str::from_utf8_unchecked(&stack[..])); }
+                // println!("{:?}", stack);
+                ExprZipper::new(ez.root).traverse(0); println!();
+                black_box(ez.root);
             }
-            i += 1;
-            it.variables.clear();
+            Err(ParserError::InputFinished) => { break }
+            Err(other) => { panic!("{:?}", other) }
         }
+        i += 1;
+        it.variables.clear();
     }
     println!("built {}", i);
     println!("took {} ms", t0.elapsed().as_millis()); // 4GB, 6 seconds

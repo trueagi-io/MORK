@@ -1723,7 +1723,10 @@ impl DefaultSpace {
     }
 
     pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
-        self.query_multi(&[pattern], |refs, e| { effect(refs.unwrap(), e); Ok::<(), ()>(()) } ).unwrap();
+        self.query_multi(&[pattern], |refs, e| {
+            effect(refs.unwrap(), e);
+            Ok::<(), ()>(())
+        } ).unwrap();
     }
 
     //GOAT, what is the value of this function??  Is this just a scaffolding for the tests, or should we try

@@ -571,3 +571,5 @@
 //     // println!("#symbols {}", self.sm.symbol_count());
 //     std::process::exit(0)
 // }
+
+fn main() {}

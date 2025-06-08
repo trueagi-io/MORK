@@ -360,7 +360,14 @@ mod tests {
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
-        core::assert_eq!("(result-pc0 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n", &String::from_utf8(v).unwrap())
+        let out = String::from_utf8(v).unwrap();
+        assert_eq!(out.lines().count(), 3);
+        core::assert_eq!(
+            "(result-pc0 (exec PC0 (, (exec $ $ $)) (, (result-pc0 (exec _1 _2 _3)))))\n\
+            (result-pc0 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
+            (result-pc1 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
+            ", &out
+        )
     }
     
     #[test]

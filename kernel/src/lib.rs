@@ -41,7 +41,7 @@ mod tests {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_csv(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap(), 2);
+        assert_eq!(s.load_csv(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',').unwrap(), 2);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());

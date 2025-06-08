@@ -5,7 +5,7 @@ use std::ptr;
 use std::ptr::slice_from_raw_parts_mut;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
@@ -199,7 +199,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             let size = stack.pop().unwrap();
             let mut v = vec![];
             for _ in 0..size { v.push(stack.pop().unwrap()) }
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+            if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
                 if loc.descend_to(&v[..]) {
                     transition(stack, loc, f);
                 }
@@ -218,7 +218,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+            if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
                 if loc.descend_to(&v[..]) {
                     transition(stack, loc, f);
                 }
@@ -230,7 +230,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+            if loc.descend_to_byte(Tag::Arity(arity).byte()) {
                 transition(stack, loc, f);
             }
             loc.ascend_byte();
@@ -243,7 +243,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+            if loc.descend_to_byte(Tag::Arity(arity).byte()) {
                 transition(stack, loc, f);
             }
             loc.ascend_byte();
@@ -389,7 +389,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         let mut v = [0; 64];
         for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 $recursive;
             }
@@ -406,7 +406,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 referential_transition(last, loc, references, f);
             }
@@ -418,7 +418,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
     };
     (ITER_ARITY $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -429,7 +429,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -648,17 +648,17 @@ impl Parser for DataParser {
 fn main() {
     // SETUP PROCEDURE?
     for size in 1..64 {
-        let k = item_byte(Tag::SymbolSize(size));
+        let k = Tag::SymbolSize(size).byte();
         unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
     for arity in 1..64 {
-        let k = item_byte(Tag::Arity(arity));
+        let k = Tag::Arity(arity).byte();
         unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
-    let nv_byte = item_byte(Tag::NewVar);
+    let nv_byte = Tag::NewVar.byte();
     unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
     for size in 0..64 {
-        let k = item_byte(Tag::VarRef(size));
+        let k = Tag::VarRef(size).byte();
         unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
 
@@ -686,10 +686,11 @@ fn main() {
                 // println!("{:?}", ez.root);
                 space.insert(&stack[..ez.loc], ());
             }
-            Err(ParserError::InputFinished) => break,
-            Err(other) => {
+            Err(err) => if err.error_type == ParserErrorType::InputFinished {
+                break
+            } else {
                 let loc = it.byte_idx();
-                panic!("{:?} (byte {}, line {})", other, loc, buf[..loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
+                panic!("Parse Error {:?} (byte {}, line {})", err, loc, buf[..loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
             }
         }
         i += 1;

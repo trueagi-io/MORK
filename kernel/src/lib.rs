@@ -42,7 +42,7 @@ mod tests {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = DefaultSpace::new();
-        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap(), 2);
+        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',').unwrap(), 2);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
@@ -337,9 +337,9 @@ mod tests {
 
         let string = std::str::from_utf8(&v).unwrap();
         dbg!( string );
-        
+
         core::assert_eq!(v.len(), 0);
-        
+
     }
     #[test]
     fn metta_calculus_test_clears_two_execs() {
@@ -380,8 +380,9 @@ mod tests {
         core::assert_ne!(&out, "c\n");
     }
 
+
     #[test]
-    fn transform_multi_multi_() {
+    fn transform_multi_multi_ignoring_second_template() {
         let mut s = DefaultSpace::new();
                 const SPACE_EXPRS: &str = 
         concat!
@@ -390,11 +391,7 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        s.transform_multi_multi_simple(&[expr!(s, "[3] val $ $")], 
-        &[
-            expr!(s, "[2] 0 _1"), 
-            expr!(s, "[2] 1 _2")]
-        );
+        s.transform_multi_multi_simple(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
@@ -405,7 +402,7 @@ mod tests {
 
         println!("{}", out);
 
-        let vals = ["(0 a)","(1 b)","(val a b)"];
+        let vals = ["a","b","(val a b)"];
         for each in vals {
             assert!(out.lines().any(|i| i == each))
         }

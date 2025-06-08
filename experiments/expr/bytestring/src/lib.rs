@@ -2116,7 +2116,7 @@ impl ExprMapSolver {
         let representative = *self.sources.first().unwrap();
         let mut ez = ExprZipper::new(representative);
         let mut subs = vec![];
-        let mut b = Tag::NewVar.encode_as_byte().unwrap();
+        let mut b = Tag::NewVar.byte();
         let nv = Expr{ ptr: &mut b };
         loop {
             match ez.tag() {

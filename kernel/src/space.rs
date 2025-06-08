@@ -5,22 +5,22 @@ use std::io::{BufRead, Write};
 use std::sync::Once;
 use std::{mem, process, ptr};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null_mut};
+use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts};
 use std::time::Instant;
 use mork_frontend::he_parser::Atom;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use pathmap::zipper::{ProductZipper, ZipperSubtries};
-use mork_bytestring::{byte_item, Expr, ExprZipper, OwnedExpr, ExtractFailure, parse, serialize, Tag, traverseh};
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
+use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExtractFailure, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure};
+use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
-use pathmap::zipper::{ReadZipperTracked, ZipperMoving, ZipperReadOnlySubtries, WriteZipperTracked, Zipper, ZipperHeadOwned, ZipperAbsolutePath, ZipperForking, ZipperWriting, ZipperCreation, ZipperIteration, ZipperPathBuffer};
-use tokio::runtime;
+use pathmap::zipper::*;
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
+use log::*;
 
 use crate::sexpr_to_path;
 pub use crate::space_temporary::{
@@ -158,10 +158,12 @@ fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
     }).unwrap()
 }
 
-fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[Expr], &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<Expr>, f: &mut F) {
+fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[ExprEnv], u8, &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<ExprEnv>, introduced: u8, f: &mut F) {
     unsafe {
     macro_rules! unroll {
-    (ACTION $recursive:expr) => { f(&references[..], loc); };
+    (ACTION $recursive:expr) => {
+        trace!(target: "transition", "introduced {} in {}", introduced, serialize(loc.origin_path()));
+        f(&references[..], introduced, loc); };
     (ITER_AT_DEPTH $recursive:expr) => {
         let level = *last; last = last.offset(-1);
 
@@ -180,7 +182,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         while i > 0 {
             if i == level {
-                referential_transition(last, loc, references, f);
+                referential_transition(last, loc, references, introduced, f);
                 if loc.to_next_sibling_byte() {
                 } else {
                     assert!(loc.ascend_byte());
@@ -203,13 +205,13 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (ITER_NESTED $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
         if arity == 0 {
-          referential_transition(last, loc, references, f);
+          referential_transition(last, loc, references, introduced, f);
         } else {
             for _ in 0..arity-1 {
                 last = last.offset(1);
                 *last = ITER_EXPR;
             }
-            unroll!(ITER_EXPR referential_transition(last, loc, references, f));
+            unroll!(ITER_EXPR referential_transition(last, loc, references, introduced, f));
 
             last = last.offset(-(arity as isize - 1));
         }
@@ -226,7 +228,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = s;
                     last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, f);
+                    referential_transition(last, loc, references, introduced, f);
                     last = last.offset(-1);
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
@@ -251,7 +253,10 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         while let Some(b) = it.next() {
             let buf = [b];
             if loc.descend_to(buf) {
-                referential_transition(last, loc, references, f);
+                let intro = if matches!(byte_item(b), Tag::NewVar) {
+                    introduced + 1
+                } else { introduced };
+                referential_transition(last, loc, references, intro, f);
             }
             loc.ascend_byte();
         }
@@ -267,7 +272,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = a;
                     last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, f);
+                    referential_transition(last, loc, references, introduced, f);
                     last = last.offset(-1);
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
@@ -313,7 +318,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
 
         if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
-                referential_transition(last, loc, references, f);
+                referential_transition(last, loc, references, introduced, f);
             }
             loc.ascend(size as usize);
         }
@@ -324,7 +329,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (ITER_ARITY $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
         if loc.descend_to_byte(Tag::Arity(arity).byte()) {
-            referential_transition(last, loc, references, f);
+            referential_transition(last, loc, references, introduced, f);
         }
         loc.ascend_byte();
         last = last.offset(1); *last = arity;
@@ -335,7 +340,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         unroll!(ITER_VARIABLES $recursive);
 
         if loc.descend_to_byte(Tag::Arity(arity).byte()) {
-            referential_transition(last, loc, references, f);
+            referential_transition(last, loc, references, introduced, f);
         }
         loc.ascend_byte();
         last = last.offset(1); *last = arity;
@@ -343,7 +348,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     (BEGIN_RANGE $recursive:expr) => {
         // references.push((loc.path().len() as u32, 0));
         let p = loc.origin_path();
-        references.push(Expr { ptr: p.as_ptr().cast_mut().offset(p.len() as _) });
+        references.push(ExprEnv { n: 0, v: introduced, offset: p.len() as u32, base: Expr{ ptr: p.as_ptr().cast_mut() } });
         $recursive;
         references.pop();
     };
@@ -354,7 +359,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (REFER_RANGE $recursive:expr) => {
         let index = *last; last = last.offset(-1);
-        let subexpr = references[index as usize];
+        let subexpr = references[index as usize].subsexpr();
         let mut ez = ExprZipper::new(subexpr);
         #[allow(unused_mut)]
         let mut v0 = last;
@@ -420,13 +425,42 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
-    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f)));
+    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
     // unroll!(CALL referential_transition(last, loc, references, f));
     }
 }
 
+fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
+    let mut v = vec![];
+    loop {
+        match ez.item() {
+            Ok(Tag::NewVar) => {
+                v.push(BEGIN_RANGE);
+                v.push(ITER_EXPR);
+                v.push(FINALIZE_RANGE);
+            }
+            Ok(Tag::VarRef(r)) => {
+                v.push(REFER_RANGE);
+                v.push(r);
+            }
+            Ok(Tag::SymbolSize(_)) => { unreachable!() }
+            Err(s) => {
+                v.push(ITER_VAR_SYMBOL);
+                v.push(s.len() as u8);
+                v.extend(s);
+            }
+            Ok(Tag::Arity(a)) => {
+                v.push(ITER_VAR_ARITY);
+                v.push(a);
+            }
+        }
+        if !ez.next() {
+            v.reverse();
+            return v
+        }
+    }
+}
 
-#[allow(unused_variables)]
 fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Vec<u8> {
     let mut v = mork_bytestring::traverseh!((), (), (Vec<u8>, usize), e, (vec![], from),
         |(v, from): &mut (Vec<u8>, usize), o| {
@@ -441,6 +475,7 @@ fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Ve
             v.push(i);
         },
         |(v, from): &mut (Vec<u8>, usize), o, s: &[u8]| {
+            // likely wrong, what happens if `from` lies inside of a symbol?
             if o < *from { return }
             v.push(ITER_VAR_SYMBOL);
             v.push(s.len() as u8);
@@ -641,66 +676,117 @@ impl DefaultSpace {
         println!("val count {}", self.map.read_zipper_at_borrowed_path(&[]).unwrap().val_count());
     }
 
-    pub fn load_csv_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr) -> Result<usize, String> {
+    pub fn load_csv_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr, seperator: u8) -> Result<usize, String> {
         let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
-        self.load_csv(src, pattern, template, &mut writer).map_err(|e| format!("{:?}",e))
+        self.load_csv(src, pattern, template, &mut writer, seperator).map_err(|e| format!("{:?}",e))
     }
+
+    /*
+        pub fn load_csv<R : Read>(&mut self, prefix: Prefix, mut r: R, sm: &mut SymbolMapping, separator: u8) -> Result<usize, String> {
+        let mut i = 0;
+        let mut buf = vec![];
+        let mut stack = [0u8; 2048];
+
+        match r.read_to_end(&mut buf) {
+            Ok(read) => {
+                let mut wz = self.btm.write_zipper_at_path(prefix.path());
+                for sv in buf.split(|&x| x == b'\n') {
+                    if sv.len() == 0 { continue }
+                    let mut a = 0;
+                    let e = Expr{ ptr: stack.as_mut_ptr() };
+                    let mut ez = ExprZipper::new(e);
+                    ez.loc += 1;
+                    let rown = sm.tokenizer(unsafe { String::from_utf8_unchecked(i.to_string().into_bytes()) });
+                    ez.write_symbol(&rown[..]);
+                    ez.loc += rown.len() + 1;
+                    a += 1;
+                    for symbol in sv.split(|&x| x == separator) {
+                        let internal = sm.tokenizer(unsafe { String::from_utf8_unchecked(symbol.to_vec()) });
+                        ez.write_symbol(&internal[..]);
+                        ez.loc += internal.len() + 1;
+                        a += 1;
+                    }
+                    let total = ez.loc;
+                    ez.reset();
+                    ez.write_arity(a);
+                    wz.descend_to(&stack[..total]);
+                    wz.set_value(());
+                    wz.reset();
+                    i += 1;
+                }
+            }
+            Err(e) => { return Err(format!("{:?}", e)) }
+        }
+
+        Ok(i)
+    }
+     */
 }
+
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     sm       : &SharedMappingHandle,
     mut src  : SrcStream,
     pattern  : Expr,
     template : Expr,
     mut wz   : WZ,
-) -> Result<crate::space::PathCount, ()>
+    seperator: u8,
+) -> Result<crate::space::PathCount, String>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's,
         SrcStream: BufRead,
 {
-        let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-        let mut src_line = vec![];
+    let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+    let mut src_line = vec![];
 
-        #[allow(unused_mut)]
-        let mut buf = [0u8; 2048];
+    #[allow(unused_mut)]
+    let mut buf = [0u8; 2048];
 
-        let mut i = 0;
-        let mut stack = [0u8; 2048];
-        let mut pdp = ParDataParser::new(sm);
+    let mut i = 0usize;
+    let mut stack = [0u8; 2048];
+    let mut pdp = ParDataParser::new(sm);
 
-        while src.read_until(b'\n', &mut src_line).unwrap() > 0  {
-            debug_assert_eq!(src_line[src_line.len()-1], b'\n');
-            let sv = &src_line[..src_line.len()-1];
-            if sv.len() == 0 { continue }
-            let mut a = 0;
-            let e = Expr{ ptr: stack.as_mut_ptr() };
-            let mut ez = ExprZipper::new(e);
-            ez.loc += 1;
-            for symbol in sv.split(|&x| x == b',') {
-                let internal = pdp.tokenizer(symbol);
-                ez.write_symbol(&internal[..]);
-                ez.loc += internal.len() + 1;
-                a += 1;
-            }
-            let total = ez.loc;
-            ez.reset();
-            ez.write_arity(a);
+    while src.read_until(b'\n', &mut src_line).unwrap() > 0  {
+        debug_assert_eq!(src_line[src_line.len()-1], b'\n');
+        let sv = &src_line[..src_line.len()-1];
+        if sv.len() == 0 { continue }
+        let mut a = 0;
+        let e = Expr{ ptr: stack.as_mut_ptr() };
+        let mut ez = ExprZipper::new(e);
+        ez.loc += 1;
+        let num = pdp.tokenizer(i.to_string().as_bytes());
+        // ez.write_symbol(i.to_be_bytes().as_slice());
+        ez.write_symbol(num);
+        // ez.loc += 9;
+        ez.loc += num.len() + 1;
 
-            let data = &stack[..total];
-            let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
-            match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
-                Ok(()) => {}
-                Err(_e) => { continue }
-            }
-            let new_data = &buf[..oz.loc];
-            wz.descend_to(&new_data[constant_template_prefix.len()..]);
-            wz.set_value(());
-            wz.reset();
-            i += 1;
-            src_line.clear();
+        for symbol in sv.split(|&x| x == seperator) {
+            let internal = pdp.tokenizer(symbol);
+            ez.write_symbol(&internal[..]);
+            ez.loc += internal.len() + 1;
+            a += 1;
         }
+        let total = ez.loc;
+        ez.reset();
+        ez.write_arity(a + 1);
 
-        Ok(i)
+        let data = &stack[..total];
+        let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
+        match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+            Ok(()) => {}
+            Err(_e) => { continue }
+        }
+        let new_data = &buf[..oz.loc];
+        wz.descend_to(&new_data[constant_template_prefix.len()..]);
+        wz.set_value(());
+        wz.reset();
+        i += 1;
+        src_line.clear();
+    }
+
+    Ok(i)
+
 }
+
 impl DefaultSpace {
     pub fn load_json(&mut self, r: &str) -> Result<PathCount, String> {
         let mut writer = self.new_writer(&[], &())?;
@@ -718,6 +804,66 @@ pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r:
     p.parse(&mut st).map_err(|e| format!("{e}"))?;
     Ok(st.path_count)
 }
+
+    //GOAT, re-integrate this
+    //
+    // pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
+    //     let mut wz = self.write_zipper_unchecked();
+    //     let mut lines = 0usize;
+    //     let mut count = 0usize;
+    //     let mut pdp = ParDataParser::new(&self.sm);
+    //     let spo_symbol = pdp.tokenizer("JSONL".as_bytes());
+    //     let mut path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(spo_symbol.len() as u8))];
+    //     path.extend_from_slice(spo_symbol);
+    //     wz.descend_to(&path[..]);
+    //     for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
+    //         wz.descend_to(lines.to_be_bytes());
+    //         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+    //         let mut p = crate::json_parser::Parser::new(line);
+    //         p.parse(&mut st).unwrap();
+    //         count += st.count;
+    //         lines += 1;
+    //         wz.ascend(8);
+    //         if lines > 0 && lines % 1000_000 == 0 {
+    //             println!("parsed {} JSON lines ({} paths)", lines, count);
+    //         }
+    //     }
+    //     Ok((lines, count))
+    // }
+
+    // pub fn load_jsonl_par(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
+    //     let mut wz = self.write_zipper_unchecked();
+    //     let mut lines = 0usize;
+    //     let mut count = 0usize;
+    //     let mut pdp = ParDataParser::new(&self.sm);
+    //     let spo_symbol = pdp.tokenizer("JSONL".as_bytes());
+    //     let mut path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(spo_symbol.len() as u8))];
+    //     path.extend_from_slice(spo_symbol);
+    //     wz.descend_to(&path[..]);
+    //     for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
+    //         wz.descend_to(lines.to_be_bytes());
+    //         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+    //         let mut p = crate::json_parser::Parser::new(line);
+    //         p.parse(&mut st).unwrap();
+    //         count += st.count;
+    //         lines += 1;
+    //         wz.ascend(8);
+    //         if lines > 0 && lines % 1000_000 == 0 {
+    //             println!("parsed {} JSON lines ({} paths)", lines, count);
+    //         }
+    //     }
+    //     Ok((lines, count))
+    // }
+
+    // pub fn load_json_(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+    //     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
+    //     let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+
+    //     let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+    //     let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+    //     p.parse(&mut st).unwrap();
+    //     Ok(st.count)
+    // }
 
 impl DefaultSpace {
     #[cfg(feature="neo4j")]
@@ -1047,7 +1193,6 @@ impl DefaultSpace {
     }
 }
 pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy>(
-    #[allow(unused_variables)]
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
@@ -1058,17 +1203,25 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
     where
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
 {
-        let mut buffer = [0u8; 4096];
+    let mut buffer = [0u8; 4096];
 
-        query_multi_impl(&[pattern], &[pattern_rz], BytesTrieMap::new(),|refs, _loc| {
-            let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            template.substitute(refs, &mut oz);
+    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, loc| {
+        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
-            // &buffer[constant_template_prefix.len()..oz.loc]
-            serialize_sexpr_into(buffer.as_ptr().cast_mut(), w, sm).map_err(|_| f())?;
-            w.write(&[b'\n']).map_err(|_| f())?;
-            Ok(())
-        })
+        match refs_bindings {
+            Ok(refs) => {
+                template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+            }
+            Err((ref bindings, ti, ni)) => {
+                mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+            }
+        }
+
+        // &buffer[constant_template_prefix.len()..oz.loc]
+        serialize_sexpr_into(buffer.as_ptr().cast_mut(), w, sm).map_err(|_| f())?;
+        w.write(&[b'\n']).map_err(|_| f())?;
+        Ok(())
+    })
 }
 
 pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
@@ -1122,7 +1275,23 @@ impl DefaultSpace {
         Ok(())
     }
 
-    pub fn backup_paths<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
+    pub fn backup_tree<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
+        unimplemented!()
+        // pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
+        //     self.btm.read_zipper(), |_v| 0, path).map(|_tree| ())
+    }
+
+    pub fn restore_tree(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+        unimplemented!()
+        // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(path)?;
+        // let mut rz = tree.read_zipper();
+        // while rz.to_next_val() {
+        //     self.btm.insert(rz.path(), ());
+        // }
+        // Ok(())
+    }
+
+    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         let mut reader = self.new_reader(&[], &()).unwrap();
         let rz = self.read_zipper(&mut reader);
@@ -1136,33 +1305,33 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-
-    pub fn query_multi<T : Copy, F : FnMut(&[Expr], Expr) -> Result<(), T>>(&self, patterns: &[Expr], effect: F) -> Result<usize, T> {
-        let mut readers = patterns.iter().map(
-            |p| {
-                self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
+    pub fn query_multi<E: Copy, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), E>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, E> {
+        let mut readers = patterns.iter().map(|p| {
+            self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
 
-        let rzs = readers.iter_mut().map(
-            |reader| {
+        let rzs = readers.iter_mut().map(|reader| {
                 self.read_zipper(reader)
         }).collect::<Vec<_>>();
 
-        query_multi_impl(patterns, &rzs, BytesTrieMap::new() , effect)
+        query_multi_impl(patterns, &rzs, effect)
     }
 }
-pub(crate) fn query_multi_impl<'s, RZ, E: Copy, F: FnMut(&[Expr], Expr) -> Result<(), E>>
+
+pub(crate) fn query_multi_impl<'s, RZ, E, F>
 (
     patterns    : &[Expr],
     pattern_rzs : &[RZ],
-    mut union_reader_values : BytesTrieMap<()>,
     mut effect  : F,
 ) -> Result<usize, E>
 where
-    RZ :  ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
+    E: Copy,
+    RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), E>,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
+        //Sanity check.  Confirm the pattern read zippers match the expression paths
         core::debug_assert_eq!(patterns.len(), pattern_rzs.len());
         #[cfg(debug_assertions)]
         for i in 0..patterns.len() {
@@ -1172,115 +1341,41 @@ where
             );
         }
 
-        // //////////////////////
-        // MAKE READ COPY MAP //
-        // ////////////////////
+        let [pat_0, pat_rest @ ..] = patterns else { return Ok(0); };
+        let [rz0, rz_rest @ ..] = pattern_rzs else { return Ok(0); };
 
-        // we could use join_into/join instead of having this tmp_map with grafts, but my assumption is that graft is simpler/more performant (we could bench this!).
-        // In the short term it also protects against some panics from product zipper (those need to get fixed, the separate temporary maps where a workaround for this issue).
-        let mut tmp_union_map = BytesTrieMap::new(); 
-        let mut tmp_wz = tmp_union_map.write_zipper();
-        for each_rz in pattern_rzs {
-            tmp_wz.reset();
+        let first_pattern_prefix = make_prefix(pat_0);
+        if !rz0.path_exists() { return Ok(0); }
 
-            //GOAT, This is not correct because grafting at a deeper point will create scaffolding path,
-            // but that's not the same as bring over the whole source subtrie
-            // if tmp_wz.descend_to(each_rz.origin_path()) {
-            //     continue;
-            // };
-            // tmp_wz.graft(each_rz);
-
-            tmp_wz.descend_to(each_rz.origin_path());
-            tmp_wz.graft(each_rz);
+        //GOAT??  What is the theory behind this code???
+        //It looks like it's composing an expression made out of all the pattern expressions
+        let mut virtual_path = vec![Tag::Arity(patterns.len() as u8).byte()];
+        let mut pattern_expr = virtual_path.clone();
+        for pattern in patterns.iter() {
+            pattern_expr.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() })
         }
-        drop(tmp_wz);
+        virtual_path.extend_from_slice(first_pattern_prefix);
 
-        // the grafts would have _replaced_ the values we wanted to add in, so we finally join_into/join to keep everything.
-        // union_reader_values.join_into(tmp_map); // (Remy : 2025 06 05) join_into is causing panincs 
-        union_reader_values = union_reader_values.join(&tmp_union_map); // (Remy : 2025 06 05) once join_into is fixed we should use that right?.
+        //Make a temp map for the first pattern
+        let mut first_temp_map = BytesTrieMap::new();
+        first_temp_map.write_zipper_at_path(&virtual_path[..]).graft(rz0);
+        let mut first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
 
-        // //////////////////////////////////////////////////////////////////
-        // PRODUCT ZIPPER NEEDS SEPARATE MAPS DUE TO IMPLEMENTATION ISSUE //
-        // ////////////////////////////////////////////////////////////////
-
-        //Graft all the remaining read zippers into temporary maps in order to work around the
-        // fact that product zippers can't handle factor zippers beginning in the middle of nodes
-        // Also, we need to preserve the original origin path
-        //TODO: this can be simplified when prefix zippers can handle factors that start in the
-        // middle of nodes and we have the ability to supply a prefix (origin) path on a product
-        // zipper factor
+        //Make temp maps for the rest of the patterns
         let mut tmp_maps = vec![];
-        for each in patterns {
-            let each_rz = union_reader_values.read_zipper_at_borrowed_path(make_prefix(each));
-            let mut btm = BytesTrieMap::new();
-            btm.write_zipper_at_path(each_rz.origin_path()).graft(&each_rz);
-            tmp_maps.push(btm);
+        for (rz, pat) in rz_rest.iter().zip(pat_rest) {
+            let mut temp_map = BytesTrieMap::new();
+            let prefix = make_prefix(pat);
+            if !rz.path_exists() { return Ok(0) }
+            temp_map.write_zipper_at_path(prefix).graft(rz);
+            tmp_maps.push(temp_map);
         }
-
-        let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
-        let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
-
-        let mut prz = ProductZipper::new(
-            {
-                let mut rz = tmp_0.read_zipper();
-                rz.descend_to(make_prefix(pat_0));
-                rz
-            }, 
-            tmp_rest.iter().zip(pat_rest).map(|(tmp_m, p)| {
-                let mut rz = tmp_m.read_zipper();
-                rz.descend_to(make_prefix(p));
-                rz
-            }
-        ));
-
+        let mut prz = ProductZipper::new(first_rz, patterns[1..].iter().enumerate().map(|(i, p)| {
+            // let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
+            // tmp_maps[i].read_zipper_at_path(prefix)
+            tmp_maps[i].read_zipper()
+        }));
         prz.reserve_path_buffer(4096);
-
-
-
-        //goat ugh.  this code below should be more correct and behave equivalently, but in reality it fails some additional tests.
-
-        // //Graft all the remaining read zippers into temporary maps in order to work around the
-        // // fact that product zippers can't handle factor zippers beginning in the middle of nodes
-        // // Also, we need to preserve the original origin path
-        // //TODO: this can be simplified when prefix zippers can handle factors that start in the
-        // // middle of nodes and we have the ability to supply a prefix (origin) path on a product
-        // // zipper factor
-        // let mut tmp_maps = vec![];
-        // for each in patterns {
-        //     let each_rz = union_reader_values.read_zipper_at_borrowed_path(make_prefix(each));
-        //     let mut btm = BytesTrieMap::new();
-
-        //     //GOAT, I remember Adam saying that the factors need full origin paths, but empirically the tests
-        //     // all fail when we have origin paths, and most of them succeed when we don't have them.
-        //     //
-        //     // btm.write_zipper_at_path(each_rz.origin_path()).graft(&each_rz);
-        //     btm.write_zipper().graft(&each_rz);
-
-        //     tmp_maps.push(btm);
-        // }
-
-        // // let [pat_0, pat_rest @ ..] = patterns            else { return Ok(0); };
-        // // let [tmp_0, tmp_rest @ ..] = tmp_maps.as_slice() else { return Ok(0); };
-        // let tmp_0 = tmp_maps.remove(0);
-
-        // let mut prz = ProductZipper::new(
-        //     {
-        //         tmp_0.read_zipper()
-        //         //GOAT NOTE: I descend the new zipper once it's created.  I think that's equivalent to
-        //         // pre-descending the primary factor, but it's an unspecified corner of the API where I'm
-        //         // not totally sure how to spec what the zipper's root should be.  So let's not do it to
-        //         // avoid ambiguity.
-        //     }, 
-        //     tmp_maps.iter().map(|tmp_m| {
-        //         tmp_m.read_zipper()
-        //         //GOAT NOTE: Descending a zipper here is definitely not the right thing to do... It's equivalent
-        //         // to undoing the tmp_maps work-around.
-        //     }
-        // ));
-
-        // prz.reserve_path_buffer(4096);
-        // // prz.descend_to(make_prefix(pat_0));
-
 
 
 
@@ -1288,28 +1383,67 @@ where
         stack[0] = ACTION;
 
         for pattern in patterns.iter().rev() {
-            let prefix = unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() };
-            stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
+            let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+            stack.extend_from_slice(&referential_bidirectional_matching_stack(&mut ExprZipper::new(*pattern))[..]);
+            // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
         }
         stack.reserve(4096);
 
-        let mut references: Vec<Expr> = vec![];
+        let mut references: Vec<ExprEnv> = vec![];
         let mut candidate = 0;
 
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
             static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
         }
+
+        let pat = Expr { ptr: pattern_expr.as_mut_ptr() };
+        let pat_newvars = pat.newvars();
+        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(&pattern_expr[..]));
+
+
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, &mut |refs, loc| {
+                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, introduced, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
 
-                    // Remy : This check is potentially expensive, but at least it makes dangling constant not an issue.
-                    //        I would like a better alternative.
-                    let skip = !loc.is_value() && e.is_ground();
-                    if !skip {
-                        match effect(refs, e) {
+                    //GOAT, from server branch prior to merge
+                    //
+                    // // Remy : This check is potentially expensive, but at least it makes dangling constant not an issue.
+                    // //        I would like a better alternative.
+                    // let skip = !loc.is_value() && e.is_ground();
+                    // if !skip {
+                    //     match effect(refs, e) {
+                    //         Ok(()) => {}
+                    //         Err(t) => {
+                    //             let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
+                    //             unsafe { std::ptr::write(t_ptr as *mut E, t) };
+                    //             RET.set(t_ptr);
+                    //             unsafe { longjmp(a, 1) }
+
+                    if true  { // introduced != 0
+                        // println!("pattern nvs {:?}", pat.newvars());
+                        let bindings = unify(vec![ExprEnv::new(1, pat)], vec![ExprEnv::new(0, e)]);
+                        match bindings {
+                            Ok(bs) => {
+                                match effect(Err((bs, introduced, pat_newvars as u8)), e) {
+                                    Ok(()) => {}
+                                    Err(t) => {
+                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
+                                        unsafe { std::ptr::write(t_ptr as *mut E, t) };
+                                        RET.set(t_ptr);
+                                        unsafe { longjmp(a, 1) }
+                                    }
+                                }
+                                unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+
+                            }
+                            Err(failed) => {
+                                trace!(target: "query_multi", "failed {:?}", failed)
+                            }
+                        }
+                    } else {
+                        match effect(Ok(refs), e) {
                             Ok(()) => {}
                             Err(t) => {
                                 let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
@@ -1318,8 +1452,8 @@ where
                                 unsafe { longjmp(a, 1) }
                             }
                         }
+                        unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
                     }
-                    unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
                 })
             }
         });
@@ -1338,27 +1472,19 @@ where
 impl DefaultSpace {
     pub fn transform_multi_multi_simple(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
 
-        let mut readers = patterns.iter().map(|e|
-            self.new_reader(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
-        ).collect::<Vec<_>>();
+        let (read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(patterns, templates, &()).unwrap();
 
-        let mut writers = templates.iter().map(|e| 
-            self.new_writer(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
-        ).collect::<Vec<_>>();
-
-
-
-        self.transform_multi_multi(patterns, &mut readers[..], templates, &mut writers[..], BytesTrieMap::new())
+        self.transform_multi_multi(patterns, &read_map, templates, &template_prefixes, &mut writers)
     }
 }
-#[inline(always)]
+
+#[inline]
 pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
     patterns            : &[Expr],
     pattern_rzs         : &[RZ],
     templates           : &[Expr],
-    template_prefixes   : &[&[u8]],
+    template_prefixes   : &[(&[u8], usize, usize)],
     template_wzs        : &mut [WZ],
-    union_reader_values : BytesTrieMap<()>,
 ) -> (usize, bool)
     where
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
@@ -1366,22 +1492,228 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
 {
         let mut buffer = [0u8; 512];
 
+        //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
+        //--------------------------------------------------
+        // let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
+        // let mut subsumption = vec![0; templates.len()];
+        // // x abc y ab z   =>  0 3 2 3 4 
+        // // x ab y abc z   =>  0 1 2 1 4
+
+        // // x abc y ab z a   =>  0 5 2 5 4 5 
+        // // x ab y abc z a   =>  0 5 2 5 4 5
+
+        // // a x abc y ab z   =>  0 1 0 3 0 4
+        // // a x ab y abc z   =>  0 1 0 3 0 4
+
+        // // abc x a y ab z   =>  2 1 2 3 2 5
+        // // ab x a y abc z   =>  2 1 2 3 2 5
+        // for (i, e) in templates.iter().enumerate() {
+        //     template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
+        //     subsumption[i] = i;
+        //     for j in 0..i {
+        //         let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
+        //         if o == template_prefixes[j].len() { // i prefix of j (or equal) 
+        //             subsumption[i] = j;
+        //             break
+        //         }
+        //     }
+        // }
+        // let mut placements = subsumption.clone();
+        // let read_copy = self.btm.clone();
+        // let mut template_wzs: Vec<_> = vec![];
+        // // let mut write_copy = self.btm.clone();
+        // template_prefixes.iter().enumerate().for_each(|(i, x)| {
+        //     if subsumption[i] == i {
+        //         // placements[i] = template_wzs.len();
+        //         template_wzs.push(self.write_zipper_at_unchecked(x));
+        //         // template_wzs.push(write_copy.write_zipper_at_path(x));
+        //     }
+        // });
+        // for i in 0..subsumption.len() {
+        //     subsumption[i] = placements[subsumption[i]]
+        // }
+        // trace!(target: "transform", "templates {:?}", templates);
+        // trace!(target: "transform", "prefixes {:?}", template_prefixes);
+        // trace!(target: "transform", "subsumption {:?}", subsumption);
+        //--------------------------------------------------
+
+
+        //Make a copy map for all of the sources we need to 
+
+
+        //GOAT From server branch prior to merge
+        //--------------------------------------------------
+        // let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
+        //     for i in 0..template_wzs.len() {
+        //         let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
+        //         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+        //         template.substitute(refs, &mut oz);
+        //         wz.descend_to(&buffer[prefix.len()..oz.loc]);
+        //--------------------------------------------------
+
+
+
         let mut any_new = false;
-        let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
-            for i in 0..template_wzs.len() {
-                let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
+        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
+            // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+
+            for (i, ((template_full_path, incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+
+                let wz = &mut template_wzs[*wz_idx];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-                template.substitute(refs, &mut oz);
-                wz.descend_to(&buffer[prefix.len()..oz.loc]);
+
+                trace!(target: "transform", "{i} template {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+                match refs_bindings {
+                    Ok(refs) => {
+                        trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
+                        template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                    }
+                    Err((ref bindings, ti, ni)) => {
+                        #[cfg(debug_assertions)]
+                        {
+                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                        }
+
+                        mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                    }
+                }
+                // loc.transformed(template,)
+                trace!(target: "transform", "{i} out {:?}", oz.root);
+                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+//GOAT, here is where I'm unsure
+//This is the original
+                //wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+
+                wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
+
+                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
+                // println!("insert path {}", serialize(&buffer[..oz.loc]));
                 any_new |= wz.set_value(()).is_none();
                 wz.reset();
+                // THIS DOES WORK v
+                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
+
             }
             Result::<(),()>::Ok(())
         }).unwrap();
         (touched, any_new)
 }
 
+//GOAT, There should NOT be two functions that are so close in implementation without a very very very good reason
+pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
+    patterns            : &[Expr],
+    pattern_rzs         : &[RZ],
+    templates           : &[Expr],
+    template_prefixes   : &[(&[u8], usize, usize)],
+    template_wzs        : &mut [WZ],
+) -> (usize, bool)
+    where
+    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    WZ : ZipperMoving + ZipperWriting<()>
+{
+
+        let mut buffer = [0u8; 512];
+
+        //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
+        //--------------------------------------------------
+        // let mut template_prefixes = vec![slice_from_raw_parts(null(), 0); templates.len()];
+        // let mut subsumption = vec![0; templates.len()];
+        // // x abc y ab z   =>  0 3 2 3 4
+        // // x ab y abc z   =>  0 1 2 1 4
+
+        // // x abc y ab z a   =>  0 5 2 5 4 5
+        // // x ab y abc z a   =>  0 5 2 5 4 5
+
+        // // a x abc y ab z   =>  0 1 0 3 0 4
+        // // a x ab y abc z   =>  0 1 0 3 0 4
+
+        // // abc x a y ab z   =>  2 1 2 3 2 5
+        // // ab x a y abc z   =>  2 1 2 3 2 5
+        // for (i, e) in templates.iter().enumerate() {
+        //     template_prefixes[i] = e.prefix().unwrap_or_else(|x| e.span());
+        //     subsumption[i] = i;
+        //     for j in 0..i {
+        //         let o = unsafe {
+        //             pathmap::utils::find_prefix_overlap(template_prefixes[i].as_ref().unwrap_unchecked(),
+        //                                                 template_prefixes[j].as_ref().unwrap_unchecked()) };
+        //         if o == template_prefixes[j].len() { // i prefix of j (or equal)
+        //             subsumption[i] = j;
+        //             break
+        //         }
+        //     }
+        // }
+        // let template_prefixes: &[&[u8]] = unsafe { std::mem::transmute(&template_prefixes[..]) };
+        // let mut placements = subsumption.clone();
+        // let mut read_copy = self.btm.clone();
+        // read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
+        // let mut template_wzs: Vec<_> = vec![];
+        // // let mut write_copy = self.btm.clone();
+        // template_prefixes.iter().enumerate().for_each(|(i, x)| {
+        //     if subsumption[i] == i {
+        //         // placements[i] = template_wzs.len();
+        //         template_wzs.push(self.write_zipper_at_unchecked(x));
+        //         // template_wzs.push(write_copy.write_zipper_at_path(x));
+        //     }
+        // });
+        // for i in 0..subsumption.len() {
+        //     subsumption[i] = placements[subsumption[i]]
+        // }
+        // trace!(target: "transform", "templates {:?}", templates);
+        // trace!(target: "transform", "prefixes {:?}", template_prefixes);
+        // trace!(target: "transform", "subsumption {:?}", subsumption);
+
+        let mut any_new = false;
+        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
+            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+
+            for (i, ((template_full_path, incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+
+                let wz = &mut template_wzs[*wz_idx];
+                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+
+                trace!(target: "transform", "{i} template {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+                match refs_bindings {
+                    Ok(refs) => {
+                        trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
+                        template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                    }
+                    Err((ref bindings, ti, ni)) => {
+                        #[cfg(debug_assertions)]
+                        {
+                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                        }
+                        template.shift(ti, &mut ExprZipper::new(*template));
+                        trace!(target: "transform", "total introduced {:?}", ti);
+                        mork_bytestring::apply(1, ni as u8, ti, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                    }
+                }
+                // loc.transformed(template,)
+                trace!(target: "transform", "{i} out {:?}", oz.root);
+                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+
+//GOAT, here is where I'm unsure
+//This is the original
+                //wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+
+                wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
+
+                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
+                // println!("insert path {}", serialize(&buffer[..oz.loc]));
+                any_new |= wz.set_value(()).is_none();
+                wz.reset();
+                // THIS DOES WORK v
+                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
+
+            }
+            Ok::<(), ()>(())
+        }).unwrap();
+        drop(template_prefixes);
+        (touched, any_new)
+}
+
 impl DefaultSpace {
+
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {
         self.transform_multi_multi_simple(patterns, &[template])
     }
@@ -1390,15 +1722,18 @@ impl DefaultSpace {
         self.transform_multi_multi_simple(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[Expr], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
-        let _ = self.query_multi(&[pattern], |refs, e| { effect(refs, e); Ok::<(), ()>(()) } ).unwrap();
+    pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
+        self.query_multi(&[pattern], |refs, e| { effect(refs.unwrap(), e); Ok::<(), ()>(()) } ).unwrap();
     }
 
+    //GOAT, what is the value of this function??  Is this just a scaffolding for the tests, or should we try
+    // to make this part of the interface by giving it reasonable error pathways?
+    //
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) {
         let mut rtz = ExprZipper::new(rt);
-        println!("interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
+        info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
         assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
         assert!(rtz.next());
         assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
@@ -1406,23 +1741,68 @@ impl DefaultSpace {
         let loc = rtz.subexpr();
 
         assert!(rtz.next_child());
-        let srcs = comma_fun_args_asserted(self, rtz.subexpr());
 
+        //GOAT, old server branch code from before the merge
+        //
+        // let srcs = comma_fun_args_asserted(self, rtz.subexpr());
+
+        // assert!(rtz.next_child());
+        // let dsts = comma_fun_args_asserted(self, rtz.subexpr());
+
+        // // #[cfg(test)]{
+        // //     println!("SRCS");
+        // //     for each in &srcs {
+        // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+        // //     }
+        // //     println!("DSTS");
+        // //     for each in &dsts {
+        // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+        // //     }
+        // // }
+
+        // self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
+
+
+        let mut srcz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
+        let mut srcs = Vec::with_capacity(n as usize - 1);
+        srcz.next();
+        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for i in 0..n as usize - 1 {
+            srcz.next_child();
+            srcs.push(srcz.subexpr());
+        }
         assert!(rtz.next_child());
-        let dsts = comma_fun_args_asserted(self, rtz.subexpr());
+        let mut dstz = ExprZipper::new(rtz.subexpr());
+        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+        let mut dsts = Vec::with_capacity(m as usize - 1);
+        dstz.next();
+        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+        for j in 0..m as usize - 1 {
+            dstz.next_child();
+            // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
+            // println!("dst {:?}", dstz.subexpr());
+            dsts.push(dstz.subexpr());
+        }
 
-        // #[cfg(test)]{
-        //     println!("SRCS");
-        //     for each in &srcs {
-        //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-        //     }
-        //     println!("DSTS");
-        //     for each in &dsts {
-        //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-        //     }
-        // }
+        let (mut read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(&srcs[..], &dsts[..], &()).unwrap();
 
-        self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
+        //Insert the self expression into the read_map
+        read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
+
+        //GOAT, when we unify `transform_multi_multi_impl` with `transform_multi_multi_impl_`, we ought to call `transform_multi_multi` here
+        // rather than this copy-pasta
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
+        let pattern_rzs: Vec<_> = srcs.iter().map(|pat| {
+            let path = make_prefix(pat);
+            read_map.read_zipper_at_borrowed_path(path)
+        }).collect();
+
+        let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
+
+        let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &template_prefixes, &mut template_wzs);
+        trace!(target: "interpret", "{:?}", res);
     }
 
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
@@ -1453,16 +1833,16 @@ impl DefaultSpace {
     // pub fn datalog(&mut self, statements: &[Expr]) {
     //     let last_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 0];
     //     let current_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 1];
-    //
+    
     //     for statement in statements {
     //         let patterns = f(statement);
     //         let last_wrapped_patterns = patterns;
     //         let template = g(statement);
     //         let current_wrapped_template = template;
     //         self.transform_multi(last_wrapped_patterns, current_wrapped_template);
-    //
+    
     //     }
-    //
+    
     //     loop {
     //         match self.btm.write_zipper_at_path(&current_wrapped[..]).join_into(&mut self.btm.write_zipper_at_path(&last_wrapped[..])) {
     //             AlgebraicStatus::Element => {}
@@ -1473,6 +1853,8 @@ impl DefaultSpace {
     // }
 
     pub fn metta_calculus(&mut self) {
+        // MC CMD "TEXEC THREAD0"
+
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
 
@@ -1504,8 +1886,31 @@ impl DefaultSpace {
 
             self.interpret(Expr{ ptr: buffer.as_mut_ptr() });
         }
+
     }
 
+    // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
+    //     let Ok(prefix) = e.prefix() else {
+    //         return (vec![], vec![e])
+    //     };
+    //
+    //     let mut rz = self.btm.read_zipper_at_path(unsafe { prefix.as_ref().unwrap() });
+    //     rz.descend_to([0; 4096]);
+    //     rz.reset();
+    //
+    //     if rz.path_exists() {
+    //         let mut buf = vec![];
+    //         let mut es = vec![];
+    //
+    //         rz.descend_until();
+    //
+    //         // rz.child_mask()
+    //
+    //         (buf, es)
+    //     } else {
+    //         (vec![], vec![])
+    //     }
+    // }
 
     pub fn done(self) -> ! {
         // let counters = pathmap::counters::Counters::count_ocupancy(&self.btm);

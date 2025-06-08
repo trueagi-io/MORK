@@ -635,7 +635,7 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, mut 
             // println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            let count = space.load_csv(src, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_csv(src, pattern_expr, template_expr, writer, b',').map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
@@ -897,139 +897,139 @@ impl CommandDefinition for MettaThreadCmd {
 
         let task = async move|server_space : &ServerSpace, status_writer | {
 
-            // ////////////////
-            // BUILD BUFFER //
-            // //////////////
+            // // ////////////////
+            // // BUILD BUFFER //
+            // // //////////////
 
-            #[cfg(debug_assertions)]
-            let mut loops_left = 500;
+            // #[cfg(debug_assertions)]
+            // let mut loops_left = 500;
 
-            let prefix = unsafe { prefix_e_vec.borrow().prefix().unwrap().as_ref().unwrap() };
-            let mut retry = false;
-            // the invariant is that buffer should always be reset with at least the prefix
-            let mut buffer = Vec::from(prefix);
+            // let prefix = unsafe { prefix_e_vec.borrow().prefix().unwrap().as_ref().unwrap() };
+            // let mut retry = false;
+            // // the invariant is that buffer should always be reset with at least the prefix
+            // let mut buffer = Vec::from(prefix);
 
-            // ///////////
-            // PROCESS //
-            // /////////
+            // // ///////////
+            // // PROCESS //
+            // // /////////
 
-            const DBG_PRINTLN : bool = true;
+            // const DBG_PRINTLN : bool = true;
 
-            if DBG_PRINTLN { println!("\tPREFIX :{:?}", prefix) }
-
-
-            let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
-                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tPROCESS")};
-
-                #[cfg(debug_assertions)]
-                { 
-                    if loops_left == 0 { println!("TEST TOO LONG"); return } loops_left -= 1
-                }
-                debug_assert!(buffer.len() >= prefix.len());
-                debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-                let mut exec_permission = 'get_writer : loop { 
-                    match server_space.new_writer(&prefix, &()) {
-                        Ok(writer) => break 'get_writer writer,
-                        Err(_) => { 
-                            tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                            continue 'get_writer;
-                        } 
-                    };
-                };
-
-                let mut exec_wz = server_space.write_zipper(&mut exec_permission);
-                let mut rz = exec_wz.fork_read_zipper();
-                rz.descend_to(&buffer[prefix.len()..]);
+            // if DBG_PRINTLN { println!("\tPREFIX :{:?}", prefix) }
 
 
-                if !rz.to_next_val() { 
-                    if retry {
-                        // ////////////////////
-                        // LOOP TO BEGINING //
-                        // //////////////////
-                        #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tLOOP TO BEGINING")};
-                        buffer.truncate(prefix.len());
-                        tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                        continue 'process_execs;
-                    }
+            // let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
+            //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tPROCESS")};
 
-                    // /////////////////////////////////////
-                    // SUCCESSFUL CONSUMING OF ALL EXECS //
-                    // ///////////////////////////////////
-                    #[cfg(debug_assertions)] if DBG_PRINTLN { println!("\tSUCCESSFUL CONSUMING OF ALL EXECS")};
-                    break 'process_execs Ok(())
-                }
-                // remember expr
-                buffer.truncate(prefix.len());
-                buffer.extend_from_slice(rz.path());
-                drop(rz);
+            //     #[cfg(debug_assertions)]
+            //     { 
+            //         if loops_left == 0 { println!("TEST TOO LONG"); return } loops_left -= 1
+            //     }
+            //     debug_assert!(buffer.len() >= prefix.len());
+            //     debug_assert_eq!(&buffer[..prefix.len()], prefix);
 
-                if DBG_PRINTLN { println!("\tBUFFER :{:?}", buffer) }
+            //     let mut exec_permission = 'get_writer : loop { 
+            //         match server_space.new_writer(&prefix, &()) {
+            //             Ok(writer) => break 'get_writer writer,
+            //             Err(_) => { 
+            //                 tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+            //                 continue 'get_writer;
+            //             } 
+            //         };
+            //     };
 
-                // remove expr in case of success
-                exec_wz.descend_to(&buffer[prefix.len()..]);
-                exec_wz.remove_value();
-                drop(exec_wz);
-                drop(exec_permission);
+            //     let mut exec_wz = server_space.write_zipper(&mut exec_permission);
+            //     let mut rz = exec_wz.fork_read_zipper();
+            //     rz.descend_to(&buffer[prefix.len()..]);
 
 
-                let exec_expr = mork_bytestring::Expr{ ptr: buffer.as_mut_ptr() };
-                let (patterns, templates) = match localized_with_priority_exec_match(server_space, exec_expr) {
-                    Ok(ok) => ok,
-                    Err(exec_syntax_error) => break 'process_execs Err(exec_syntax_error),
-                }.collect_inner();
+            //     if !rz.to_next_val() { 
+            //         if retry {
+            //             // ////////////////////
+            //             // LOOP TO BEGINING //
+            //             // //////////////////
+            //             #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tLOOP TO BEGINING")};
+            //             buffer.truncate(prefix.len());
+            //             tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+            //             continue 'process_execs;
+            //         }
 
-                let Ok((mut readers, mut writers)) = mork::space::aquire_interpret_localized_permissions(server_space, &patterns, &templates) else {
-                    // /////////
-                    // RETRY //
-                    // ///////
-                    #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tRETRY")};
+            //         // /////////////////////////////////////
+            //         // SUCCESSFUL CONSUMING OF ALL EXECS //
+            //         // ///////////////////////////////////
+            //         #[cfg(debug_assertions)] if DBG_PRINTLN { println!("\tSUCCESSFUL CONSUMING OF ALL EXECS")};
+            //         break 'process_execs Ok(())
+            //     }
+            //     // remember expr
+            //     buffer.truncate(prefix.len());
+            //     buffer.extend_from_slice(rz.path());
+            //     drop(rz);
 
-                    // undo the removal on failure and retry
-                    let mut exec_permission = 'get_writer : loop { 
-                        match server_space.new_writer(&prefix, &()) {
-                            Ok(writer) => break 'get_writer writer,
-                            Err(_) => { 
-                                tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                                continue 'get_writer;
-                            } 
-                        };
-                    };
-                    let mut exec_wz = server_space.write_zipper(&mut exec_permission);
-                    exec_wz.descend_to(&buffer[prefix.len()..]);
-                    exec_wz.set_value(());
+            //     if DBG_PRINTLN { println!("\tBUFFER :{:?}", buffer) }
 
-                    retry = true;
-                    tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                    continue 'process_execs;
-                };
-
-                // ////////////////////////////
-                // ALL PERMISSIONS ACQUIRED //
-                // //////////////////////////
-                let mut union_in_map = BytesTrieMap::new();
-                union_in_map.insert(&buffer, ()); // this should allows reading "self" exec
-                debug_assert!(union_in_map.contains_path(&buffer));
-
-                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tALL PERMISSIONS ACQUIRED | WRITER_COUNT : {} | READER_COUNT : {}", writers.len(), readers.len())};
-                let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..], union_in_map);
-                #[cfg(debug_assertions)] if DBG_PRINTLN {println!("RES : {:?}", res)};
-                retry = false;
-                buffer.truncate(prefix.len());
-            };
+            //     // remove expr in case of success
+            //     exec_wz.descend_to(&buffer[prefix.len()..]);
+            //     exec_wz.remove_value();
+            //     drop(exec_wz);
+            //     drop(exec_permission);
 
 
-            if let Err(syntax_error) = status_result {
-                    let _ = server_space.set_user_status(status_location.as_bytes(), match syntax_error {
-                        mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
-                        mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; offending expr : `{}`", e)),
-                        mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; offending expr : `{}`", e)),
-                        mork::space::ExecSyntaxError::ExpectedGroundPriority(e)     => StatusRecord::ExecSyntaxError(format!("the exec priority was not ground; offending expr : {}", e)),});
-            };
+            //     let exec_expr = mork_bytestring::Expr{ ptr: buffer.as_mut_ptr() };
+            //     let (patterns, templates) = match localized_with_priority_exec_match(server_space, exec_expr) {
+            //         Ok(ok) => ok,
+            //         Err(exec_syntax_error) => break 'process_execs Err(exec_syntax_error),
+            //     }.collect_inner();
 
-            // Free MeTTa Thread location explicty after everything is done.
-            drop(status_writer);
+            //     let Ok((mut readers, mut writers)) = mork::space::aquire_interpret_localized_permissions(server_space, &patterns, &templates) else {
+            //         // /////////
+            //         // RETRY //
+            //         // ///////
+            //         #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tRETRY")};
+
+            //         // undo the removal on failure and retry
+            //         let mut exec_permission = 'get_writer : loop { 
+            //             match server_space.new_writer(&prefix, &()) {
+            //                 Ok(writer) => break 'get_writer writer,
+            //                 Err(_) => { 
+            //                     tokio::time::sleep(core::time::Duration::from_millis(1)).await;
+            //                     continue 'get_writer;
+            //                 } 
+            //             };
+            //         };
+            //         let mut exec_wz = server_space.write_zipper(&mut exec_permission);
+            //         exec_wz.descend_to(&buffer[prefix.len()..]);
+            //         exec_wz.set_value(());
+
+            //         retry = true;
+            //         tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
+            //         continue 'process_execs;
+            //     };
+
+            //     // ////////////////////////////
+            //     // ALL PERMISSIONS ACQUIRED //
+            //     // //////////////////////////
+            //     let mut union_in_map = BytesTrieMap::new();
+            //     union_in_map.insert(&buffer, ()); // this should allows reading "self" exec
+            //     debug_assert!(union_in_map.contains_path(&buffer));
+
+            //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tALL PERMISSIONS ACQUIRED | WRITER_COUNT : {} | READER_COUNT : {}", writers.len(), readers.len())};
+            //     let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..], union_in_map);
+            //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("RES : {:?}", res)};
+            //     retry = false;
+            //     buffer.truncate(prefix.len());
+            // };
+
+
+            // if let Err(syntax_error) = status_result {
+            //         let _ = server_space.set_user_status(status_location.as_bytes(), match syntax_error {
+            //             mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
+            //             mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; offending expr : `{}`", e)),
+            //             mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; offending expr : `{}`", e)),
+            //             mork::space::ExecSyntaxError::ExpectedGroundPriority(e)     => StatusRecord::ExecSyntaxError(format!("the exec priority was not ground; offending expr : {}", e)),});
+            // };
+
+            // // Free MeTTa Thread location explicty after everything is done.
+            // drop(status_writer);
         };
 
         thread.dispatch_blocking_task(cmd, move |_| {
@@ -1406,76 +1406,78 @@ impl CommandDefinition for TransformMultiMultiCmd {
     }
 }
 
-struct PatternTemplateArgs {
-    patterns  : Vec<Vec<u8>>,
-    readers   : Vec<ReadPermission>,
-    templates : Vec<Vec<u8>>,
-    writers   : Vec<WritePermission>
-}
-impl PatternTemplateArgs {
-    fn dispatch_transform(self, ctx : &MorkService) {
-        let PatternTemplateArgs { patterns, mut readers, templates, mut writers } = self;
-        let pattern_exprs = slices_to_exprs(&patterns);
-        let template_exprs = slices_to_exprs(&templates);
+//GOAT, this structure is superseded by something from Kernel, e.g. "TransformPermissions"
 
-        ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers, BytesTrieMap::new());   
-    }
-    #[allow(unused)]
-    fn is_read_write(&self) -> bool {
-        self.patterns.len()== self.readers.len()
-        && self.templates.len() == self.writers.len() 
-        && self.patterns.len()  > 0
-        && self.templates.len() > 0
-    }
-    #[allow(unused)]
-    fn is_read(&self) -> bool {
-        self.patterns.len()== self.readers.len()
-        && self.writers.len()  == 0
-        && self.patterns.len()  > 0 
-        && self.templates.len() > 0
-    }
-    #[allow(unused)]
-    fn is_write(&self) -> bool {
-        self.templates.len() == self.writers.len() 
-        && self.readers.len()  == 0
-        && self.patterns.len()  > 0
-        && self.templates.len() > 0
-    }
-}
+// struct PatternTemplateArgs {
+//     patterns  : Vec<Vec<u8>>,
+//     readers   : Vec<ReadPermission>,
+//     templates : Vec<Vec<u8>>,
+//     writers   : Vec<WritePermission>
+// }
+// impl PatternTemplateArgs {
+//     fn dispatch_transform(self, ctx : &MorkService) {
+//         let PatternTemplateArgs { patterns, mut readers, templates, mut writers } = self;
+//         let pattern_exprs = slices_to_exprs(&patterns);
+//         let template_exprs = slices_to_exprs(&templates);
+
+//         ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);
+//     }
+//     #[allow(unused)]
+//     fn is_read_write(&self) -> bool {
+//         self.patterns.len()== self.readers.len()
+//         && self.templates.len() == self.writers.len() 
+//         && self.patterns.len()  > 0
+//         && self.templates.len() > 0
+//     }
+//     #[allow(unused)]
+//     fn is_read(&self) -> bool {
+//         self.patterns.len()== self.readers.len()
+//         && self.writers.len()  == 0
+//         && self.patterns.len()  > 0 
+//         && self.templates.len() > 0
+//     }
+//     #[allow(unused)]
+//     fn is_write(&self) -> bool {
+//         self.templates.len() == self.writers.len() 
+//         && self.readers.len()  == 0
+//         && self.patterns.len()  > 0
+//         && self.templates.len() > 0
+//     }
+// }
 
 
-async fn prep_transform_multi_multi(ctx: &ServerSpace, src : &str) -> Result<PatternTemplateArgs, CommandError> {
-        let (patterns, templates) = pattern_template_args(
-            &ctx, src
-        ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+// async fn prep_transform_multi_multi(ctx: &ServerSpace, src : &str) -> Result<PatternTemplateArgs, CommandError> {
+//         let (patterns, templates) = pattern_template_args(
+//             &ctx, src
+//         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let readers = prefix_readers(&ctx, &patterns).await?;
-        let writers = prefix_writers(&ctx, &templates).await?;
+//         let readers = prefix_readers(&ctx, &patterns).await?;
+//         let writers = prefix_writers(&ctx, &templates).await?;
 
-        Ok(PatternTemplateArgs { patterns, readers, templates, writers })
-}
-async fn prefix_readers(ctx : &ServerSpace, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
-    let mut readers = Vec::with_capacity(patterns.len());
-    for pattern in patterns {
-        if pattern.as_ref().is_empty() {
-            return Err(CommandError::internal(String::from("unexpected empty Expr")));
-        }
-        let reader = ctx.new_reader_async(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &()).await?;
-        readers.push(reader);
-    }
-    Ok(readers)
-}
-async fn prefix_writers(ctx : &ServerSpace, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
-    let mut writers = Vec::with_capacity(templates.len());
-    for template in templates {
-        if template.as_ref().is_empty() {
-            return Err(CommandError::internal(String::from("unexpected empty Expr")));
-        }
-        let writer = ctx.new_writer_async(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &()).await?;
-        writers.push(writer);
-    }
-    Ok(writers)
-}
+//         Ok(PatternTemplateArgs { patterns, readers, templates, writers })
+// }
+// async fn prefix_readers(ctx : &ServerSpace, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
+//     let mut readers = Vec::with_capacity(patterns.len());
+//     for pattern in patterns {
+//         if pattern.as_ref().is_empty() {
+//             return Err(CommandError::internal(String::from("unexpected empty Expr")));
+//         }
+//         let reader = ctx.new_reader_async(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &()).await?;
+//         readers.push(reader);
+//     }
+//     Ok(readers)
+// }
+// async fn prefix_writers(ctx : &ServerSpace, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
+//     let mut writers = Vec::with_capacity(templates.len());
+//     for template in templates {
+//         if template.as_ref().is_empty() {
+//             return Err(CommandError::internal(String::from("unexpected empty Expr")));
+//         }
+//         let writer = ctx.new_writer_async(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &()).await?;
+//         writers.push(writer);
+//     }
+//     Ok(writers)
+// }
 fn slices_to_exprs(slices : &[impl AsRef<[u8]>])->Vec<mork_bytestring::Expr>{
     slices.into_iter().map(|pattern| mork_bytestring::Expr { ptr : pattern.as_ref().as_ptr() as *mut _ }).collect()
 }

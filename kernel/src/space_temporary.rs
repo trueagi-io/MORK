@@ -1,6 +1,7 @@
 
 extern crate alloc;
 use std::io::{BufRead, Read};
+use log::*;
 
 use alloc::borrow::Cow;
 
@@ -9,9 +10,13 @@ use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, Parser
 use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
-
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
+    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
+};
+
+#[cfg(feature="neo4j")]
+use crate::space::{
+    load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl
 };
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
@@ -121,13 +126,15 @@ pub trait Space {
         pattern         : Expr,
         template        : Expr,
         template_writer : &mut Self::Writer<'s>,
+        separator       : u8,
     ) -> Result<PathCount, ParseError> {
         load_csv_impl(
             &self.symbol_table(), 
             src_data,
             pattern,
             template,
-            self.write_zipper(template_writer)
+            self.write_zipper(template_writer),
+            separator,
         ).map_err(|_| ParseError("UnexpectedParseError".to_string()))
     }
 
@@ -162,27 +169,102 @@ pub trait Space {
         )
     }
 
+    /// Acquires the minimum set of permissions needed to perform a transform by applying the necessary
+    /// subsumption logic
+    ///
+    /// GOAT, look at the inchoate commented-out `TransformPermissions` object below for an explanation of the
+    /// return value.  The idea is a new `TransformPermissions` object will be returned from this function.
+    ///
+    /// **WANRNING** GOAT  I think there is a race inside this function because it's possible for the readers
+    /// to all be acquired, and succeed at making the `read_map`, then another operation transforms the writers
+    /// in the interim, releases them, and then this function acquires the writers, but the data in the writer
+    /// paths is now different from what it was when the readers were acquired...  I don't have a strong enough
+    /// handle on the MM2 theory to know if this is allowable.
+    fn acquire_transform_permissions<'s>(
+        &'s self,
+        patterns            : &[Expr],
+        templates           : &[Expr],
+        auth                : &Self::Auth,
+    ) -> Result<(BytesTrieMap<()>, Vec<(&[u8], usize, usize)>, Vec<<Self as Space>::Writer<'_>>), Self::PermissionErr> {
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
+        //Make the "ReadMap" by copying each pattern from the space
+        let mut read_map = BytesTrieMap::new();
+        for pat in patterns {
+            let path = make_prefix(pat);
+
+            let mut reader = self.new_reader(path, auth)?;
+            let rz = self.read_zipper(&mut reader);
+
+            let mut wz = read_map.write_zipper_at_path(path);
+            wz.graft(&rz);
+        }
+
+        //Make a vec of template paths, sorted from shortest to longest
+        // `(path, template_idx, writer_slot_idx)`
+        let mut template_path_table: Vec<(&[u8], usize, usize)> = templates.iter().enumerate().map(|(i, template)|{
+            let path = make_prefix(template);
+            (path, i, 0)
+        }).collect();
+        template_path_table.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+
+        //Find the set of least-common-denominator template prefixes
+        let mut writer_slots: Vec<&[u8]> = Vec::with_capacity(templates.len());
+        for (path, template_idx, writer_slot_idx) in template_path_table.iter_mut() {
+            let mut subsumed = false;
+            for (slot_idx, slot_path) in writer_slots.iter().enumerate() {
+                let overlap = pathmap::utils::find_prefix_overlap(path, slot_path);
+                if overlap == slot_path.len() {
+                    *writer_slot_idx = slot_idx;
+                    subsumed = true;
+                    break
+                }
+            }
+            if !subsumed {
+                *writer_slot_idx = writer_slots.len();
+                writer_slots.push(path);
+            }
+        }
+
+        //Untangle the prefixes
+        // `(full_path, incremental_path_start, writer_idx)`
+        let mut template_prefixes = vec![(&[][..], 0, 0); templates.len()];
+        for (full_path, template_idx, writer_slot_idx) in template_path_table {
+            let incremental_path_start = writer_slots[writer_slot_idx].len();
+            template_prefixes[template_idx] = (full_path, incremental_path_start, writer_slot_idx);
+        }
+
+        //Acquire writers at each slot, knowing we any conflicts are with external clients
+        let mut writers = Vec::with_capacity(writer_slots.len());
+        for path in writer_slots {
+            let writer = self.new_writer(path, auth)?;
+            writers.push(writer);
+        }
+
+        trace!(target: "transform", "templates {:?}", templates);
+        trace!(target: "transform", "prefixes {:?}", template_prefixes);
+
+        Ok((read_map, template_prefixes, writers))
+    }
+
     fn transform_multi_multi<'s>(
         &'s self,
         patterns : &[Expr],
-        pattern_readers : &mut[Self::Reader<'s>],
-        template : &[Expr],
-        template_writer : &mut [Self::Writer<'s>],
-        union_reader_values : BytesTrieMap<()>,
+        read_map: &BytesTrieMap<()>,
+        templates : &[Expr],
+        template_prefixes : &[(&[u8], usize, usize)],
+        writers : &mut [Self::Writer<'s>],
     ) -> (usize, bool) {
-        core::debug_assert_eq!(patterns.len(), pattern_readers.len());
-        core::debug_assert_eq!(template.len(), template_writer.len());
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
-        // until dangling paths are fixed, the aquisition order matters, writers first, then readers
+        let pattern_rzs: Vec<_> = patterns.iter().map(|pat| {
+            let path = make_prefix(pat);
+            read_map.read_zipper_at_borrowed_path(path)
+        }).collect();
 
-        // FIRST THE WRITERS
-        let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
-        let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
+        let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        // SECOND THE READERS
-        let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
-
-        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs, union_reader_values)
+        transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs)
     }
 
     #[cfg(feature="neo4j")]
@@ -206,6 +288,21 @@ pub trait Space {
         load_neo4j_node_labels_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodeLabelsError)
     }
 }
+
+//GOAT, come back here and make `acquire_transform_permissions` easier to use.
+
+// /// Returns `(read_map, template_prefixes, writers)`:
+// /// * `read_map`: A PathMap in which all readers can be acquired
+// /// * `template_prefixes`: A vec of `(full_path, incremental_path_start, writer_idx)`, corresponding to `templates` where:
+// ///  - `full_path`: The `Expr` from `templates`, rendered as a path prefix
+// ///  - `incremental_path_start`: The index in `full_path` for the start of the part of the path that is not subsumed
+// ///  - `writer_idx`: The index into `writers` for the write permssion to use for this expr
+// /// * `writers`: A vector of [Space::Writer] permission objects
+// pub struct TransformPermissions<S: Space> {
+//     read_map: BytesTrieMap<()>,
+//     template_prefixes: Vec<(&[u8], usize, usize)>,
+//     Vec<<Self as Space>::Writer<'_>>
+// }
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
     let mut it = ParseContext::new(data.as_bytes());

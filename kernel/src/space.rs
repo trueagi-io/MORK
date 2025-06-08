@@ -1,28 +1,17 @@
 use core::assert_eq;
 use core::result::Result::{Err, Ok};
-use std::future::Future;
 use std::io::{BufRead, Write};
-use std::sync::Once;
-use std::{mem, process, ptr};
-use std::any::Any;
+use std::process;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts};
-use std::time::Instant;
-use mork_frontend::he_parser::Atom;
-use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExtractFailure, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure};
+use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, serialize, Tag, ExprEnv, unify};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
-use crate::json_parser::Transcriber;
-use crate::prefix::Prefix;
 use log::*;
 
-use crate::sexpr_to_path;
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -149,7 +138,6 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
-#[allow(unused)]
 fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
     s.as_ref().iter().copied().map(label).reduce(|mut x, y| {
         x.push(' ');
@@ -361,8 +349,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
         let index = *last; last = last.offset(-1);
         let subexpr = references[index as usize].subsexpr();
         let mut ez = ExprZipper::new(subexpr);
-        #[allow(unused_mut)]
-        let mut v0 = last;
+        let v0 = last;
         loop {
             match ez.item() {
                 Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
@@ -738,7 +725,6 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
     let mut src_line = vec![];
 
-    #[allow(unused_mut)]
     let mut buf = [0u8; 2048];
 
     let mut i = 0usize;
@@ -769,9 +755,9 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
         ez.reset();
         ez.write_arity(a + 1);
 
-        let data = &stack[..total];
-        let mut oz = ExprZipper::new(Expr{ ptr: buf.as_ptr().cast_mut() });
-        match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+        let data = &mut stack[..total];
+        let mut oz = ExprZipper::new(Expr{ ptr: buf.as_mut_ptr() });
+        match (Expr{ ptr: data.as_mut_ptr() }.transformData(pattern, template, &mut oz)) {
             Ok(()) => {}
             Err(_e) => { continue }
         }
@@ -1099,7 +1085,6 @@ where
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
 
-        #[allow(unused_mut)]
         let mut buffer = [0u8; 4096];
         let mut it = ParseContext::new(src);
         let mut i = 0;
@@ -1109,9 +1094,9 @@ where
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
-                    let data = &stack[..ez.loc];
-                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_ptr().cast_mut() });
-                    match (Expr{ ptr: data.as_ptr().cast_mut() }.transformData(pattern, template, &mut oz)) {
+                    let data = &mut stack[..ez.loc];
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                    match (Expr{ ptr: data.as_mut_ptr() }.transformData(pattern, template, &mut oz)) {
                         Ok(()) => {}
                         Err(_e) => { continue }
                     }
@@ -1205,7 +1190,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
 {
     let mut buffer = [0u8; 4096];
 
-    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, loc| {
+    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         match refs_bindings {
@@ -1218,7 +1203,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
         }
 
         // &buffer[constant_template_prefix.len()..oz.loc]
-        serialize_sexpr_into(buffer.as_ptr().cast_mut(), w, sm).map_err(|_| f())?;
+        serialize_sexpr_into(buffer.as_mut_ptr(), w, sm).map_err(|_| f())?;
         w.write(&[b'\n']).map_err(|_| f())?;
         Ok(())
     })
@@ -1305,7 +1290,7 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-    pub fn query_multi<E: Copy, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), E>>(&self, patterns: &[Expr], mut effect: F) -> Result<usize, E> {
+    pub fn query_multi<E: Copy, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), E>>(&self, patterns: &[Expr], effect: F) -> Result<usize, E> {
         let mut readers = patterns.iter().map(|p| {
             self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
@@ -1359,7 +1344,7 @@ where
         //Make a temp map for the first pattern
         let mut first_temp_map = BytesTrieMap::new();
         first_temp_map.write_zipper_at_path(&virtual_path[..]).graft(rz0);
-        let mut first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
+        let first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
 
         //Make temp maps for the rest of the patterns
         let mut tmp_maps = vec![];
@@ -1370,7 +1355,7 @@ where
             temp_map.write_zipper_at_path(prefix).graft(rz);
             tmp_maps.push(temp_map);
         }
-        let mut prz = ProductZipper::new(first_rz, patterns[1..].iter().enumerate().map(|(i, p)| {
+        let mut prz = ProductZipper::new(first_rz, patterns[1..].iter().enumerate().map(|(i, _p)| {
             // let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
             // tmp_maps[i].read_zipper_at_path(prefix)
             tmp_maps[i].read_zipper()
@@ -1383,7 +1368,7 @@ where
         stack[0] = ACTION;
 
         for pattern in patterns.iter().rev() {
-            let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
+            // let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
             stack.extend_from_slice(&referential_bidirectional_matching_stack(&mut ExprZipper::new(*pattern))[..]);
             // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
         }
@@ -1421,7 +1406,7 @@ where
                     //             RET.set(t_ptr);
                     //             unsafe { longjmp(a, 1) }
 
-                    if true  { // introduced != 0
+                    if false  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
                         let bindings = unify(vec![ExprEnv::new(1, pat)], vec![ExprEnv::new(0, e)]);
                         match bindings {
@@ -1460,8 +1445,7 @@ where
         RET.with(|mptr| {
             if mptr.get().is_null() { Ok(candidate) }
             else {
-                #[allow(unused_unsafe)]
-                let tref = unsafe { mptr.get() };
+                let tref = mptr.get();
                 let t = unsafe { std::ptr::read(tref as _) };
                 unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<E>()) };
                 Err(t)
@@ -1708,7 +1692,7 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
             }
             Ok::<(), ()>(())
         }).unwrap();
-        drop(template_prefixes);
+
         (touched, any_new)
 }
 
@@ -1741,7 +1725,7 @@ impl DefaultSpace {
         assert!(rtz.next());
         assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
         assert!(rtz.next());
-        let loc = rtz.subexpr();
+        // let loc = rtz.subexpr();
 
         assert!(rtz.next_child());
 
@@ -1771,7 +1755,7 @@ impl DefaultSpace {
         let mut srcs = Vec::with_capacity(n as usize - 1);
         srcz.next();
         assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for i in 0..n as usize - 1 {
+        for _ in 0..n as usize - 1 {
             srcz.next_child();
             srcs.push(srcz.subexpr());
         }
@@ -1781,7 +1765,7 @@ impl DefaultSpace {
         let mut dsts = Vec::with_capacity(m as usize - 1);
         dstz.next();
         assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for j in 0..m as usize - 1 {
+        for _ in 0..m as usize - 1 {
             dstz.next_child();
             // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
             // println!("dst {:?}", dstz.subexpr());
@@ -1942,7 +1926,7 @@ pub struct RawDump(Vec<Vec<u8>>);
 impl core::fmt::Debug for RawDump {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
         for line in self.0.iter() {
-            writeln!(f, "{line:?}");
+            writeln!(f, "{line:?}")?;
         }
         Ok(())
     }

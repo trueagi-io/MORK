@@ -3,15 +3,13 @@ extern crate alloc;
 use std::io::{BufRead, Read};
 use log::*;
 
-use alloc::borrow::Cow;
-
-use bucket_map::{SharedMapping, SharedMappingHandle};
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
+use bucket_map::SharedMappingHandle;
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
 use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
+    dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -185,7 +183,7 @@ pub trait Space {
         patterns            : &[Expr],
         templates           : &[Expr],
         auth                : &Self::Auth,
-    ) -> Result<(BytesTrieMap<()>, Vec<(&[u8], usize, usize)>, Vec<<Self as Space>::Writer<'_>>), Self::PermissionErr> {
+    ) -> Result<(BytesTrieMap<()>, Vec<(&[u8], usize, usize)>, Vec<<Self as Space>::Writer<'s>>), Self::PermissionErr> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         //Make the "ReadMap" by copying each pattern from the space
@@ -210,7 +208,7 @@ pub trait Space {
 
         //Find the set of least-common-denominator template prefixes
         let mut writer_slots: Vec<&[u8]> = Vec::with_capacity(templates.len());
-        for (path, template_idx, writer_slot_idx) in template_path_table.iter_mut() {
+        for (path, _template_idx, writer_slot_idx) in template_path_table.iter_mut() {
             let mut subsumed = false;
             for (slot_idx, slot_path) in writer_slots.iter().enumerate() {
                 let overlap = pathmap::utils::find_prefix_overlap(path, slot_path);

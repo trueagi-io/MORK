@@ -1926,16 +1926,27 @@ impl DefaultSpace {
 
     // just a helper method for debuging
     #[cfg(test)]
-    pub fn dump_raw_at_root(&self)->Vec<Vec<u8>> {
+    pub fn dump_raw_at_root(&self) -> RawDump {
         let mut rz = self.new_reader(&[], &()).unwrap();
         let mut out = Vec::new();
         while rz.to_next_val() {
             out.push(rz.origin_path().to_vec());
         }
-        out
+        RawDump(out)
     }
 }
 
+/// Used in debugging, for conveniently dumping the contents of a space
+pub struct RawDump(Vec<Vec<u8>>);
+
+impl core::fmt::Debug for RawDump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
+        for line in self.0.iter() {
+            writeln!(f, "{line:?}");
+        }
+        Ok(())
+    }
+}
 
 pub enum ExecSyntaxError {
     ExpectedArity4(String),

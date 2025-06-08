@@ -436,9 +436,7 @@ mod tests {
 
         let out = String::from(std::str::from_utf8(&writer).unwrap());
 
-
-            // #[cfg(test)]
-            // println!("{:?}", s.dump_raw_at_root());
+        // println!("\n{:?}", s.dump_raw_at_root());
 
         assert_eq!(out.lines().count(), 2);
         assert_eq!(out, "(val a b)\n(swaped-val (val a b) (val b a))\n");

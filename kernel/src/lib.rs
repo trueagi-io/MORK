@@ -275,4 +275,55 @@ mod tests {
             assert!(out.lines().any(|i| i == each))
         }
     }
+
+    #[test]
+    fn metta_calculus_test0() {
+        let mut s = Space::new();
+        // (exec PC0 (, (? $channel $payload $body) 
+        //              (! $channel $payload)
+        //              (exec PC0 $p $t)) 
+        //           (, $body (exec PC0 $p $t)))
+
+        // const SPACE_EXPRS: &str = r#"
+        // (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
+        // (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+
+        // (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
+        // (? (add $ret) (Z $y) (! $ret $y))
+
+        // (! (add result) ((S Z) (S Z)))
+        // "#;
+
+        const SPACE_EXPRS: &str = 
+        concat!
+        ( ""
+        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
+        , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, ))"
+
+        // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
+        , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
+        , "\n(? (add $ret) (Z $y) (! $ret $y))"
+        , "\n(! (add result) ((S Z) (S Z)))"
+        );
+
+        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus();
+
+        let mut v = vec![];
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+
+        println!("\nRESULTS\n");
+        let res = String::from_utf8(v).unwrap();
+
+        assert_eq!(res.lines().count(), 3);
+        core::assert_eq!(
+            res, 
+            "(! (add result) ((S Z) (S Z)))\n\
+             (? (add $) (Z $) (! _1 _2))\n\
+             (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
+        );
+        
+        println!("{}", res);
+    }
 }

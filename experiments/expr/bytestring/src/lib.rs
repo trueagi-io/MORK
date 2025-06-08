@@ -5,8 +5,9 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::iter::empty;
+use std::collections::BTreeMap;
+use std::hash::Hasher;
+use gxhash::{HashSet, HashSetExt, HashMap, HashMapExt};
 use smallvec::SmallVec;
 
 #[derive(Copy, Clone, Debug)]
@@ -687,18 +688,17 @@ impl Expr {
         }
     }
 
+    #[inline(never)]
     pub fn unifiable(self, other: Expr) -> bool {
-        let mut sx = vec![ExprEnv::new(0, self)];
-        let mut sy = vec![ExprEnv::new(1, other)];
+        let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
 
-        unify(sx, sy).is_ok()
+        unify(s).is_ok()
     }
 
     pub fn unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
-        let mut sx = vec![ExprEnv::new(0, self)];
-        let mut sy = vec![ExprEnv::new(1, other)];
+        let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
 
-        match unify(sx, sy) {
+        match unify(s) {
             Ok(bindings) => {
                 /*println!("{:?}", bindings.iter().map(|(k, v)| {
                     let ov = vec![0u8; 512];
@@ -958,13 +958,12 @@ impl Expr {
         let o = Expr{ ptr: vec![0; 512].leak().as_mut_ptr() };
         let x = Expr{ ptr: transformation.as_mut_ptr() };
         let y = Expr{ ptr: data.as_mut_ptr() };
-        let mut sx = vec![ExprEnv::new(0, x)];
-        let mut sy = vec![ExprEnv::new(1, y)];
+        let mut s = vec![(ExprEnv::new(0, x), ExprEnv::new(1, y))];
         
-        if let Ok(bindings) = unify(sx, sy) {
-            let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-            let mut stack: Vec<(u8, u8)> = vec![];
-            let mut assignments: Vec<(u8, u8)> = vec![];
+        if let Ok(bindings) = unify(s) {
+            let mut cycled = BTreeMap::<ExprVar, u8>::new();
+            let mut stack: Vec<ExprVar> = vec![];
+            let mut assignments: Vec<ExprVar> = vec![];
             apply(0, 0, 0, &mut ExprZipper::new(Expr{ ptr: transformation.as_mut_ptr() }), &bindings, &mut ExprZipper::new(o), &mut cycled, &mut stack, &mut assignments);
             Ok(Expr { ptr: unsafe { o.ptr.byte_add(1) } })
         } else {
@@ -2279,28 +2278,7 @@ impl ExprMapSolver {
     }
 }
 
-
-use std::collections::BTreeMap;
-use std::hash::Hasher;
-use std::ptr::addr_of_mut;
-use crate::UnificationFailure::{MaxIter, Unsatisfiable};
-
-/// ------------------------------------------------------------------
-/// The “signature” that a concrete term implementation has to satisfy
-/// ------------------------------------------------------------------
-pub trait Term: Clone {
-    /// The host language’s representation for logic variables
-    type TVar: Ord + Clone;
-
-    ///  ▒ var_opt : t -> tvar option
-    fn var_opt(&self) -> Option<Self::TVar>;
-
-    ///  ▒ same_functor : t -> t -> bool
-    fn same_functor(&self, other: &Self) -> bool;
-
-    ///  ▒ args : t -> t list
-    fn args(&self, stack: &mut Vec<Self>);
-}
+type ExprVar = (u8, u8);
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExprEnv {
@@ -2323,10 +2301,11 @@ impl Eq for ExprEnv {}
 
 impl std::hash::Hash for ExprEnv {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u8(self.n);
-        state.write_u8(self.v);
-        state.write_u32(self.offset);
-        state.write_u64(self.base.ptr as u64);
+        // state.write_u8(self.n);
+        // state.write_u8(self.v);
+        // state.write_u32(self.offset);
+        // state.write_u64(self.base.ptr as u64);
+        state.write(unsafe { &*slice_from_raw_parts(self as *const ExprEnv as *const u8, size_of::<ExprEnv>()) });
     }
 }
 
@@ -2352,12 +2331,8 @@ impl ExprEnv {
         //                               |v, i| format!("<{},{}>", self.n, v).leak());
         String::from_utf8(v).unwrap()
     }
-}
 
-impl Term for ExprEnv {
-    type TVar = (u8, u8);
-
-    fn var_opt(&self) -> Option<Self::TVar> {
+    fn var_opt(&self) -> Option<ExprVar> {
         unsafe {
             match byte_item(*self.base.ptr.add(self.offset as usize)) {
                 Tag::NewVar => { Some((self.n, self.v)) }
@@ -2428,16 +2403,15 @@ impl Term for ExprEnv {
 
 #[derive(Debug)]
 pub enum UnificationFailure {
-    Occurs((u8, u8), ExprEnv),
+    Occurs(ExprVar, ExprEnv),
     Difference(ExprEnv, ExprEnv),
-    MaxIter(u32),
-    Unsatisfiable((u8, u8), (u8, u8)),
+    MaxIter(u32)
 }
 
 const APPLY_DEPTH: u32 = 64;
 const MAX_UNIFY_ITER: u32 = 1000;
 const PRINT_DEBUG: bool = false;
-pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<(u8, u8), ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<(u8, u8), u8>, stack: &mut Vec<(u8, u8)>, assignments: &mut Vec<(u8, u8)>) -> (u8, u8) {
+pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<ExprVar, ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
     let depth = stack.len();
     if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
     if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, ez.subexpr()); }
@@ -2546,48 +2520,26 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
     }
 }
 
-fn occurs(x: (u8, u8), e: ExprEnv) -> bool {
-    if x.0 != e.n { return false }
-    local!(t : u8);
-    local!(t = x.1);
-    traverseh!(bool, bool, u8, e.subsexpr(), e.v,
-            |c: &mut u8, _| { let eq = *c == local!(t); *c += 1; eq },
-        |c: &mut u8, _, r| r == local!(t), |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
-}
-
-fn dereference(mut t: ExprEnv, bindings: &BTreeMap<(u8, u8), ExprEnv>) -> ExprEnv {
-    if PRINT_DEBUG { println!("derefencing ... (bound to {})", t.show()); }
-    let mut dc = 0;
-    'dereference: loop {
-        match t.var_opt() {
-            None => { break 'dereference }
-            Some(vt) => {
-                match bindings.get(&vt) {
-                    None => { break 'dereference }
-                    Some(ot) => {
-                        if PRINT_DEBUG { println!("following {} bound to {}", t.show(), ot.show()); }
-                        t = *ot;
-                        if dc > 5 { panic!("deref loop") }
-                        else { dc += 1 }
-                    }
-                }
-            }
-        }
-    }
-    t
-}
-
-type ExprVar = (u8, u8);
-
-pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
-                -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure>
-{
-    let mut original = (sx.first().unwrap().clone(), sy.first().unwrap().clone());
+pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
     let mut iterations = 0;
-    let mut encountered = HashSet::new();
+    let mut encountered: HashSet<(ExprEnv, ExprEnv)> = HashSet::new();
+    let mut tmpx = vec![];
+    let mut tmpy = vec![];
 
     macro_rules! step {
+        (occurs $x:expr, $e:expr) => {{
+            let x = $x;
+            let e = $e;
+            if x.0 != e.n { false }
+            else {
+                local!(t : u8);
+                local!(t = x.1);
+                traverseh!(bool, bool, u8, e.subsexpr(), e.v,
+                    |c: &mut u8, _| { let eq = *c == local!(t); *c += 1; eq },
+                    |c: &mut u8, _, r| r == local!(t), |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+            }
+        }};
         (derefBound $t:expr) => {{
             let mut t: ExprEnv = $t;
             'bound: loop {
@@ -2627,20 +2579,18 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
             let _y: ExprEnv = $y;
             match (_x.var_opt(), _y.var_opt()) {
                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
-                    sx.push(_x);
-                    sy.push(_y);
+                    stack.push((_x, _y));
                 }
                 _ if !encountered.contains(&(_x, _y)) => {
                     encountered.insert((_x, _y));
-                    sx.push(_x);
-                    sy.push(_y);
+                    stack.push((_x, _y));
                 }
                 _ => {}
             }
         }};
     }
 
-    'popping: while let (Some(xpop), Some(ypop)) = (sx.pop(), sy.pop()) {
+    'popping: while let Some((xpop, ypop)) = stack.pop() {
         if PRINT_DEBUG {
             println!("step {iterations}");
             bindings.iter().for_each(|(k, v)| {
@@ -2655,34 +2605,28 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
         }
 
         if iterations > MAX_UNIFY_ITER { 
-            print!("#");
-            unsafe {
-                println!("{}  U  {}", serialize(original.0.base.span().as_ref().unwrap()),
-                                      serialize(original.1.base.span().as_ref().unwrap()));
-                std::process::exit(0)
-            }
-            return Err(MaxIter(iterations)) }
+            return Err(UnificationFailure::MaxIter(iterations))
+        }
         iterations += 1;
         if PRINT_DEBUG {
             println!("popping");
-            println!("x: {}, sx : {:?}", xpop.show(), sx.len());
-            println!("y: {}, sy : {:?}", ypop.show(), sy.len());
+            // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
+            // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
         }
         let dt1: ExprEnv = step!(derefBound xpop);
         let dt2: ExprEnv = step!(derefBound ypop);
 
         match (dt1.var_opt(), dt2.var_opt()) {
             (None, None) => {
-                // println!("NV NV");
                 if dt1.same_functor(&dt2) {
-                    let mut tmpx = vec![];
-                    let mut tmpy = vec![];
                     dt1.args(&mut tmpx);
                     dt2.args(&mut tmpy);
                     for (&tx, &ty) in tmpx.iter().zip(tmpy.iter()) {
                         step!(push tx, ty);
                     }
-                    assert_eq!(sx.len(), sy.len(), "len({}) != len({})", dt2.show(), dt1.show());
+                    tmpx.clear();
+                    tmpy.clear();
+                    // assert_eq!(sx.len(), sy.len(), "len({}) != len({})", dt2.show(), dt1.show());
                 } else {
                     if PRINT_DEBUG { println!("diff {dt1:?}  != {dt2:?}"); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
@@ -2690,18 +2634,18 @@ pub fn unify(mut sx: Vec<ExprEnv>, mut sy: Vec<ExprEnv>)
             }
             (Some(vx), ov) => {
                 if let Some(sv) = ov { if vx == sv { continue 'popping } }
-                if occurs(vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
                 bindings.insert(vx, dt2.clone());
             }
             (ov, Some(vy)) => {
                 if let Some(sv) = ov { if vy == sv { continue 'popping } }
-                if occurs(vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
                 bindings.insert(vy, dt1.clone());
             }
         }
     }
 
-    if sx.is_empty() && sy.is_empty() {
+    if stack.is_empty() {
         Ok(bindings)
     } else {
         unreachable!()

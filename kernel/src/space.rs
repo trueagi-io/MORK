@@ -106,7 +106,8 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     macro_rules! unroll {
     (ACTION $recursive:expr) => {
         trace!(target: "transition", "introduced {} in {}", introduced, serialize(loc.origin_path()));
-        f(&references[..], introduced, loc); };
+        f(&references[..], introduced, loc);
+    };
     (ITER_AT_DEPTH $recursive:expr) => {
         let level = *last; last = last.offset(-1);
 
@@ -367,8 +368,10 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
+    #[cfg(debug_assertions)]
+    unroll!(CALL referential_transition(last, loc, references, introduced, f));
+    #[cfg(not(debug_assertions))]
     unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
-    // unroll!(CALL referential_transition(last, loc, references, f));
     }
 }
 
@@ -1194,7 +1197,7 @@ impl Space {
 
                     if true  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
-                        let bindings = unify(vec![ExprEnv::new(1, pat)], vec![ExprEnv::new(0, e)]);
+                        let bindings = unify(vec![(ExprEnv::new(1, pat), ExprEnv::new(0, e))]);
                         match bindings {
                             Ok(bs) => {
                                 match effect(Err((bs, introduced, pat_newvars as u8)), e) {
@@ -1239,32 +1242,35 @@ impl Space {
         })
     }
 
+    pub fn prefix_subsumption(prefixes: &[&[u8]]) -> Vec<usize> {
+        let n = prefixes.len();
+        let mut out = Vec::with_capacity(n);
+
+        for (i, &cur) in prefixes.iter().enumerate() {
+            let mut best_idx = i;
+            let mut best_len = cur.len();
+
+            for (j, &cand) in prefixes.iter().enumerate() {
+                if pathmap::utils::find_prefix_overlap(cand, cur) == cand.len() {
+                    let cand_len = cand.len();
+
+                    if cand_len < best_len || (cand_len == best_len && j < best_idx) {
+                        best_idx = j;
+                        best_len = cand_len;
+                    }
+                }
+            }
+
+            out.push(best_idx);
+        }
+
+        out
+    }
+
     pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
         let mut buffer = [0u8; 512];
         let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
-        let mut subsumption = vec![0; templates.len()];
-        // x abc y ab z   =>  0 3 2 3 4 
-        // x ab y abc z   =>  0 1 2 1 4
-
-        // x abc y ab z a   =>  0 5 2 5 4 5 
-        // x ab y abc z a   =>  0 5 2 5 4 5
-
-        // a x abc y ab z   =>  0 1 0 3 0 4
-        // a x ab y abc z   =>  0 1 0 3 0 4
-
-        // abc x a y ab z   =>  2 1 2 3 2 5
-        // ab x a y abc z   =>  2 1 2 3 2 5
-        for (i, e) in templates.iter().enumerate() {
-            template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
-            subsumption[i] = i;
-            for j in 0..i {
-                let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
-                if o == template_prefixes[j].len() { // i prefix of j (or equal) 
-                    subsumption[i] = j;
-                    break
-                }
-            }
-        }
+        let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let read_copy = self.btm.clone();
         let mut template_wzs: Vec<_> = vec![];

@@ -7,3 +7,4 @@ edition = "2021"
 smallvec = "1.13.2"
 freeze = { workspace = true }
 pathmap = { workspace = true }
+gxhash = { workspace = true }

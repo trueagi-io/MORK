@@ -1253,12 +1253,12 @@ where
 impl DefaultSpace {
     pub fn transform_multi_multi_simple(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
 
-        let mut readers = patterns.iter().map(|e|
-            self.new_reader(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
-        ).collect::<Vec<_>>();
-
         let mut writers = templates.iter().map(|e| 
             self.new_writer(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
+        ).collect::<Vec<_>>();
+
+        let mut readers = patterns.iter().map(|e|
+            self.new_reader(unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }, &()).unwrap()
         ).collect::<Vec<_>>();
 
 

@@ -200,7 +200,7 @@ mod tests {
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
         let out = String::from_utf8(res).unwrap();
-        assert_eq!(out.lines().count(), 4);
+        assert_eq!(out.lines().count(), 36);
         println!("{}", out);
     }
 
@@ -443,8 +443,8 @@ mod tests {
             // #[cfg(test)]
             // println!("{:?}", s.dump_raw_at_root());
 
-        assert_eq!(out.lines().count(), 2);
-        assert_eq!(out, "(val a b)\n(swaped-val (val a b) (val b a))\n");
+        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out, "(val a b)\n(pair a b)\n(swaped-val (val a b) (val b a))\n");
         println!("RESULTS:\n{}", out);
     }
 

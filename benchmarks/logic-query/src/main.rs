@@ -698,20 +698,20 @@ fn main() {
     // println!("took {} ms", t0.elapsed().as_millis());
     println!("map contains: {}", space.val_count());
 
-    let t0 = Instant::now();
-    let mut z = space.read_zipper();
-    //
-    let mut visited = 0;
-    let mut buffer = [0u8; 4096];
-    buffer[0] = ACTION;
-    buffer[1] = ITER_EXPR;
-    let mut references: Vec<(u32, u32)> = vec![];
-    referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
-    // // transition(&mut buffer, &mut z, &mut |loc| {
-        black_box(loc.origin_path());
-        visited += 1;
-    });
-    println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
+    // let t0 = Instant::now();
+    // let mut z = space.read_zipper();
+    // //
+    // let mut visited = 0;
+    // let mut buffer = [0u8; 4096];
+    // buffer[0] = ACTION;
+    // buffer[1] = ITER_EXPR;
+    // let mut references: Vec<(u32, u32)> = vec![];
+    // referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
+    // // // transition(&mut buffer, &mut z, &mut |loc| {
+    //     black_box(loc.origin_path());
+    //     visited += 1;
+    // });
+    // println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
     // let mut keeping = BytesTrieMap::from_iter(space.iter());
 
@@ -746,7 +746,7 @@ fn main() {
     //     assert!(recover.contains(rrz.path()));
     // }
 
-    return;
+    // return;
     // let mut keeping_wz = keeping.write_zipper();
     let mut z = space.read_zipper();
     // z.reserve_buffers(1024*4096, 1024*512);

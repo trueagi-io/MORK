@@ -186,8 +186,9 @@ mod tests {
 (axiom (= (\ $x 1) (/ 1 (L $x $x (\ $x 1)))))
 (axiom (= (L $x $x $x) (* (K $x (\ $x 1)) $x)))"#;
 
+    /// GOAT, this test passes with unification OFF, but fails with it ON
     #[test]
-    fn subsumption() {
+    fn subsumption_little() {
         let mut s = DefaultSpace::new();
         s.load_sexpr_simple(LOGICSEXPR0.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
@@ -200,12 +201,12 @@ mod tests {
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut res).unwrap();
         let out = String::from_utf8(res).unwrap();
-        assert_eq!(out.lines().count(), 4);
+        assert_eq!(out.lines().count(), 36);
         println!("{}", out);
     }
 
     #[test]
-    fn big_subsumption() {
+    fn subsumption_big() {
         let mut s = DefaultSpace::new();
         let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta")
           .expect("Should have been able to read the file");

@@ -324,8 +324,8 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
-        // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
+        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
+        , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
         , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
         , "\n(? (add $ret) (Z $y) (! $ret $y))"
         , "\n(! (add result) ((S Z) (S Z)))"
@@ -340,8 +340,6 @@ mod tests {
 
         println!("\nRESULTS\n");
         let res = String::from_utf8(v).unwrap();
-
-        panic!("GOAT Dangling path fix changes the behavior.  Almost (but not quite) matches original behavior before we tweaked the test yesterday.");
 
         assert_eq!(res.lines().count(), 3);
         core::assert_eq!(
@@ -460,9 +458,6 @@ mod tests {
 
     #[test]
     fn metta_calculus_swap_0() {
-
-        panic!("GOAT Dangling path fix gets rid of `(pair )` expr, which matches old behavior.  But we tweaked this test yesterday.  Talk through the correct behavior with Remy.");
-
         let mut s = DefaultSpace::new();
 
         const SPACE_EXPRS: &str =
@@ -486,8 +481,8 @@ mod tests {
         // println!("\n{:?}", s.dump_raw_at_root());
 
         // println!("RESULTS:\n{}", out);
-        assert_eq!(out.lines().count(), 2);
-        assert_eq!(out, "(val a b)\n(swaped-val (val a b) (val b a))\n");
+        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out, "(val a b)\n(pair a b)\n(swaped-val (val a b) (val b a))\n");
     }
 
     #[test]

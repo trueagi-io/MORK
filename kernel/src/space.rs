@@ -1889,7 +1889,6 @@ impl DefaultSpace {
             let mut exec_permission = self.new_writer(&prefix, &()).unwrap(); //GOAT, retry here if fails
             let mut exec_wz = self.write_zipper(&mut exec_permission);
             let mut rz = exec_wz.fork_read_zipper();
-            rz.descend_to(&buffer[prefix.len()..]);
 
             if !rz.to_next_val() { break }
 

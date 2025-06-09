@@ -349,6 +349,19 @@ mod tests {
              (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
         );
 
+        // GOAT, with the first expression in `SPACE_EXPRS` uncommented, this should be the result.
+        // This is not committed as part of the test because we need to spin up a separate thread with lots
+        // of stack space to run the test without overflow
+        //
+        // assert_eq!(res.lines().count(), 4);
+        // core::assert_eq!(
+        //     res,
+        //     "(body (? (add $) (_2 _3) (! _1 (S _4))))\n\
+        //      (! (add result) ((S Z) (S Z)))\n\
+        //      (? (add $) (Z $) (! _1 _2))\n\
+        //      (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
+        // );
+
         // println!("{}", res);
     }
 

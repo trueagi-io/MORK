@@ -47,7 +47,7 @@ pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyValues<'s, ()> + 
 impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 
 /// An interface for accessing the state used by the MORK kernel
-pub trait Space {
+pub trait Space: Sized {
     /// An authentication token used for access to the space
     type Auth;
     /// Objects of this type encapsulate a location in the space and the rights to read from that location
@@ -188,7 +188,7 @@ pub trait Space {
         patterns            : &[Expr],
         templates           : &[Expr],
         auth                : &Self::Auth,
-    ) -> Result<(BytesTrieMap<()>, Vec<(&[u8], usize, usize)>, Vec<<Self as Space>::Writer<'s>>), Self::PermissionErr> {
+    ) -> Result<TransformPermissions<'s, Self>, Self::PermissionErr> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         //Make the "ReadMap" by copying each pattern from the space
@@ -229,12 +229,11 @@ pub trait Space {
             }
         }
 
-        //Untangle the prefixes
-        // `(full_path, incremental_path_start, writer_idx)`
-        let mut template_prefixes = vec![(&[][..], 0, 0); templates.len()];
-        for (full_path, template_idx, writer_slot_idx) in template_path_table {
+        //Untangle the prefixes into the `template_prefixes` format from [TransformPermissions::template_prefixes]
+        let mut template_prefixes = vec![(0, 0); templates.len()];
+        for (_, template_idx, writer_slot_idx) in template_path_table {
             let incremental_path_start = writer_slots[writer_slot_idx].len();
-            template_prefixes[template_idx] = (full_path, incremental_path_start, writer_slot_idx);
+            template_prefixes[template_idx] = (incremental_path_start, writer_slot_idx);
         }
 
         //Acquire writers at each slot, knowing we any conflicts are with external clients
@@ -247,7 +246,7 @@ pub trait Space {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
 
-        Ok((read_map, template_prefixes, writers))
+        Ok(TransformPermissions { read_map, template_prefixes, writers })
     }
 
     fn transform_multi_multi<'s>(
@@ -255,7 +254,7 @@ pub trait Space {
         patterns : &[Expr],
         read_map: &BytesTrieMap<()>,
         templates : &[Expr],
-        template_prefixes : &[(&[u8], usize, usize)],
+        template_prefixes : &[(usize, usize)],
         writers : &mut [Self::Writer<'s>],
     ) -> (usize, bool) {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
@@ -297,20 +296,18 @@ pub trait Space {
     }
 }
 
-//GOAT, come back here and make `acquire_transform_permissions` easier to use.
-
-// /// Returns `(read_map, template_prefixes, writers)`:
-// /// * `read_map`: A PathMap in which all readers can be acquired
-// /// * `template_prefixes`: A vec of `(full_path, incremental_path_start, writer_idx)`, corresponding to `templates` where:
-// ///  - `full_path`: The `Expr` from `templates`, rendered as a path prefix
-// ///  - `incremental_path_start`: The index in `full_path` for the start of the part of the path that is not subsumed
-// ///  - `writer_idx`: The index into `writers` for the write permssion to use for this expr
-// /// * `writers`: A vector of [Space::Writer] permission objects
-// pub struct TransformPermissions<S: Space> {
-//     read_map: BytesTrieMap<()>,
-//     template_prefixes: Vec<(&[u8], usize, usize)>,
-//     Vec<<Self as Space>::Writer<'_>>
-// }
+/// An object containing all permissions and state to guarantee a transform will succeed
+pub struct TransformPermissions<'s, S: Space + 's> {
+    /// A PathMap in which all readers can be acquired
+    pub(crate) read_map: BytesTrieMap<()>,
+    /// A vec of `(incremental_path_start, writer_idx)`, corresponding to the `templates` where:
+    ///  - `incremental_path_start`: The index in the full template path for the start of the part of the path
+    ///       that is not subsumed by the writer's root path.
+    ///  - `writer_idx`: The index into `writers` for the write permssion to use for this expr
+    pub(crate) template_prefixes: Vec<(usize, usize)>,
+    /// A vector of [Space::Writer] permission objects
+    pub(crate) writers: Vec<<S as Space>::Writer<'s>>,
+}
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
     let mut it = ParseContext::new(data.as_bytes());

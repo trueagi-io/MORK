@@ -1493,9 +1493,8 @@ where
 impl DefaultSpace {
     pub fn transform_multi_multi_simple(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
 
-        let (read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(patterns, templates, &()).unwrap();
-
-        self.transform_multi_multi(patterns, &read_map, templates, &template_prefixes, &mut writers)
+        let mut perms = self.acquire_transform_permissions(patterns, templates, &()).unwrap();
+        self.transform_multi_multi(patterns, &perms.read_map, templates, &perms.template_prefixes, &mut perms.writers)
     }
 }
 
@@ -1504,7 +1503,7 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
     patterns            : &[Expr],
     pattern_rzs         : &[RZ],
     templates           : &[Expr],
-    template_prefixes   : &[(&[u8], usize, usize)],
+    template_prefixes   : &[(usize, usize)],
     template_wzs        : &mut [WZ],
 ) -> (usize, bool)
     where
@@ -1579,7 +1578,7 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
             // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
-            for (i, ((template_full_path, incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+            for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
 
                 let wz = &mut template_wzs[*wz_idx];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
@@ -1602,9 +1601,6 @@ pub(crate) fn transform_multi_multi_impl<'s, RZ, WZ>(
                 // loc.transformed(template,)
                 trace!(target: "transform", "{i} out {:?}", oz.root);
                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
-//GOAT, here is where I'm unsure
-//This is the original
-                //wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
 
                 wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
 
@@ -1626,7 +1622,7 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
     patterns            : &[Expr],
     pattern_rzs         : &[RZ],
     templates           : &[Expr],
-    template_prefixes   : &[(&[u8], usize, usize)],
+    template_prefixes   : &[(usize, usize)],
     template_wzs        : &mut [WZ],
 ) -> (usize, bool)
     where
@@ -1688,7 +1684,7 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
-            for (i, ((template_full_path, incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+            for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
 
                 let wz = &mut template_wzs[*wz_idx];
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
@@ -1712,10 +1708,6 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
                 // loc.transformed(template,)
                 trace!(target: "transform", "{i} out {:?}", oz.root);
                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
-
-//GOAT, here is where I'm unsure
-//This is the original
-                //wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
 
                 wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
 
@@ -1809,10 +1801,10 @@ impl DefaultSpace {
             dsts.push(dstz.subexpr());
         }
 
-        let (mut read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(&srcs[..], &dsts[..], &()).unwrap();
+        let mut transform_perms = self.acquire_transform_permissions(&srcs[..], &dsts[..], &()).unwrap();
 
         //Insert the self expression into the read_map
-        read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
+        transform_perms.read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
 
         //GOAT, when we unify `transform_multi_multi_impl` with `transform_multi_multi_impl_`, we ought to call `transform_multi_multi` here
         // rather than this copy-pasta
@@ -1820,12 +1812,17 @@ impl DefaultSpace {
 
         let pattern_rzs: Vec<_> = srcs.iter().map(|pat| {
             let path = make_prefix(pat);
-            read_map.read_zipper_at_borrowed_path(path)
+            transform_perms.read_map.read_zipper_at_borrowed_path(path)
         }).collect();
 
-        let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
+        let mut template_wzs: Vec<_> = transform_perms.writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &template_prefixes, &mut template_wzs);
+        let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &transform_perms.template_prefixes, &mut template_wzs);
+
+        for wz in template_wzs {
+            self.cleanup_write_zipper(wz);
+        }
+
         trace!(target: "interpret", "{:?}", res);
     }
 

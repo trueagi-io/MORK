@@ -162,9 +162,9 @@ mod tests {
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
             match i {
-                0 => { assert_eq!(sexpr!(s, e), "(children (0 Catherine))") }
-                1 => { assert_eq!(sexpr!(s, e), "(children (1 Thomas))") }
-                2 => { assert_eq!(sexpr!(s, e), "(children (2 Trevor))") }
+                0 => { assert_eq!(sexpr!(s, e), "((children (0 Catherine)))") }
+                1 => { assert_eq!(sexpr!(s, e), "((children (1 Thomas)))") }
+                2 => { assert_eq!(sexpr!(s, e), "((children (2 Trevor)))") }
                 _ => { assert!(false) }
             }
             i += 1;
@@ -180,9 +180,9 @@ mod tests {
         let mut i = 0;
         s.query(expr!(s, "[2] child_results $x"), |_, e| {
             match i {
-                0 => { assert_eq!(sexpr!(s, e), "(child_results Thomas)") }
-                1 => { assert_eq!(sexpr!(s, e), "(child_results Trevor)") }
-                2 => { assert_eq!(sexpr!(s, e), "(child_results Catherine)") }
+                0 => { assert_eq!(sexpr!(s, e), "((child_results Thomas))") }
+                1 => { assert_eq!(sexpr!(s, e), "((child_results Trevor))") }
+                2 => { assert_eq!(sexpr!(s, e), "((child_results Catherine))") }
                 _ => { assert!(false) }
             }
             i += 1;
@@ -341,15 +341,17 @@ mod tests {
         println!("\nRESULTS\n");
         let res = String::from_utf8(v).unwrap();
 
+        panic!("GOAT Dangling path fix changes the behavior.  Almost (but not quite) matches original behavior before we tweaked the test yesterday.");
+
         assert_eq!(res.lines().count(), 3);
         core::assert_eq!(
-            res, 
+            res,
             "(! (add result) ((S Z) (S Z)))\n\
              (? (add $) (Z $) (! _1 _2))\n\
              (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
         );
-        
-        println!("{}", res);
+
+        // println!("{}", res);
     }
 
     #[test]
@@ -399,6 +401,8 @@ mod tests {
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
         let out = String::from_utf8(v).unwrap();
+
+
         assert_eq!(out.lines().count(), 3);
         core::assert_eq!(
             "(result-pc0 (exec PC0 (, (exec $ $ $)) (, (result-pc0 (exec _1 _2 _3)))))\n\
@@ -407,25 +411,23 @@ mod tests {
             ", &out
         )
     }
-    
+
+    /// This exercises the writer cleanup code by ensuring there is no spurious dangling path, or that
+    /// the path isn't interpreted as a value
     #[test]
     fn transform_multi_multi_no_match() {
         let mut s = DefaultSpace::new();
 
-        s.transform_multi_multi_simple(&[expr!(s, "a")], &[expr!(s, "c")]);
+        s.transform_multi_multi_simple(&[expr!(s, "aardvark")], &[expr!(s, "cat")]);
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
 
-        let out = unsafe {
-            core::mem::transmute::<_,String>(writer)
-        };
+        let out = String::from_utf8(writer).unwrap();
 
-        println!("{}", out);
-
-        core::assert_ne!(&out, "c\n");
+        // println!("{}", out);
+        core::assert_ne!(&out, "cat\n");
     }
-
 
     #[test]
     fn transform_multi_multi_ignoring_second_template() {
@@ -459,6 +461,8 @@ mod tests {
     #[test]
     fn metta_calculus_swap_0() {
 
+        panic!("GOAT Dangling path fix gets rid of `(pair )` expr, which matches old behavior.  But we tweaked this test yesterday.  Talk through the correct behavior with Remy.");
+
         let mut s = DefaultSpace::new();
 
         const SPACE_EXPRS: &str =
@@ -471,11 +475,7 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        // #[cfg(test)]
-        // println!("IN METTA_CALCULUS_EXEC_PEREMISSIONS after METTA_CALCULUS:\n\t{:#?}", s.dump_raw_at_root());
-
         s.metta_calculus();
-
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
@@ -485,9 +485,9 @@ mod tests {
         // println!("\n{out:?}");
         // println!("\n{:?}", s.dump_raw_at_root());
 
-        assert_eq!(out.lines().count(), 3);
-        assert_eq!(out, "(val a b)\n(pair a b)\n(swaped-val (val a b) (val b a))\n");
-        println!("RESULTS:\n{}", out);
+        // println!("RESULTS:\n{}", out);
+        assert_eq!(out.lines().count(), 2);
+        assert_eq!(out, "(val a b)\n(swaped-val (val a b) (val b a))\n");
     }
 
     #[test]

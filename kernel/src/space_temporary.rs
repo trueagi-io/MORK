@@ -79,6 +79,9 @@ pub trait Space {
     /// not conceptually have mutable state
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + /* ZipperAbsolutePath +  */'w;
 
+    /// Removes the WriteZipper from the ZipperHead
+    fn cleanup_write_zipper(&self, wz: impl ZipperMoving + ZipperWriting<()> + ZipperForking<()>);
+
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
 
@@ -264,7 +267,12 @@ pub trait Space {
 
         let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs)
+        let result = transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
+
+        for wz in template_wzs {
+            self.cleanup_write_zipper(wz);
+        }
+        result
     }
 
     #[cfg(feature="neo4j")]

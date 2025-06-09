@@ -4,6 +4,8 @@ use std::io::{BufRead, Write};
 use std::process;
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::sync::Arc;
+
 use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, serialize, Tag, ExprEnv, unify};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
@@ -23,7 +25,7 @@ pub use crate::space_temporary::{
 
 /// A default minimalist implementation of [Space]
 pub struct DefaultSpace {
-    map: ZipperHeadOwned<()>,
+    map: Arc<ZipperHeadOwned<()>>,
     sm: SharedMappingHandle,
 }
 
@@ -31,34 +33,57 @@ impl DefaultSpace {
     /// Creates a new empty `DefaultSpace`
     pub fn new() -> Self {
         Self {
-            map: BytesTrieMap::new().into_zipper_head([]),
+            map: Arc::new(BytesTrieMap::new().into_zipper_head([])),
             sm: SharedMapping::new(),
         }
     }
 }
 
+/// Read Permission object in a [DefaultSpace]
+pub struct DefaultSpaceReader<'space>(ReadZipperTracked<'space, 'static, ()>);
+
+/// Write Permission object in a [DefaultSpace]
+pub struct DefaultSpaceWriter<'space> {
+    z: WriteZipperTracked<'space, 'static, ()>,
+    zh: Arc<ZipperHeadOwned<()>>,
+}
+
 impl Space for DefaultSpace {
     type Auth = ();
-    type Reader<'space> = ReadZipperTracked<'space, 'static, ()>;
-    type Writer<'space> = WriteZipperTracked<'space, 'static, ()>;
+    type Reader<'space> = DefaultSpaceReader<'space>;
+    type Writer<'space> = DefaultSpaceWriter<'space>;
     type PermissionErr = String;
 
     fn new_reader<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
-        self.map.read_zipper_at_path(path).map_err(|e| e.to_string())
+        let reader = DefaultSpaceReader(self.map.read_zipper_at_path(path).map_err(|e| e.to_string())?);
+        Ok(reader)
     }
     fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
-        self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())
+        let writer = DefaultSpaceWriter {
+            z: self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())?,
+            zh: self.map.clone(),
+        };
+        Ok(writer)
+    }
+    fn cleanup_write_zipper(&self, _wz: impl ZipperMoving + ZipperWriting<()> + ZipperForking<()>) {
+        //No-op for DefaultSpace, because the permission *is* the zipper
     }
     fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s> {
-        reader.reset();
-        reader
+        reader.0.reset();
+        &mut reader.0
     }
     fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> /* + ZipperAbsolutePath */ + 'w {
-        writer.reset();
-        writer
+        writer.z.reset();
+        &mut writer.z
     }
     fn symbol_table(&self) -> &SharedMappingHandle {
         &self.sm
+    }
+}
+
+impl Drop for DefaultSpaceWriter<'_> {
+    fn drop(&mut self) {
+        self.zh.cleanup_write_zipper(&mut self.z);
     }
 }
 
@@ -1266,9 +1291,10 @@ impl DefaultSpace {
     }
 
     pub fn restore_from_dag(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-        let new_map = pathmap::serialization::deserialize_file(path, |_| ())?;
-        self.map = new_map.into_zipper_head([]);
-        Ok(())
+        unimplemented!()
+        // let new_map = pathmap::serialization::deserialize_file(path, |_| ())?;
+        // self.map = new_map.into_zipper_head([]);
+        // Ok(())
     }
 
     pub fn backup_tree<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
@@ -1922,7 +1948,8 @@ impl DefaultSpace {
     // just a helper method for debuging
     #[cfg(test)]
     pub fn dump_raw_at_root(&self) -> RawDump {
-        let mut rz = self.new_reader(&[], &()).unwrap();
+        let mut reader = self.new_reader(&[], &()).unwrap();
+        let mut rz = self.read_zipper(&mut reader);
         let mut out = Vec::new();
         while rz.to_next_val() {
             out.push(rz.origin_path().to_vec());

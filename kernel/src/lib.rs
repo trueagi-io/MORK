@@ -338,8 +338,10 @@ mod tests {
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
 
-        println!("\nRESULTS\n");
         let res = String::from_utf8(v).unwrap();
+
+        // println!("\nRESULTS\n");
+        // println!("{}", res);
 
         assert_eq!(res.lines().count(), 3);
         core::assert_eq!(
@@ -349,20 +351,49 @@ mod tests {
              (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
         );
 
-        // GOAT, with the first expression in `SPACE_EXPRS` uncommented, this should be the result.
-        // This is not committed as part of the test because we need to spin up a separate thread with lots
-        // of stack space to run the test without overflow
-        //
-        // assert_eq!(res.lines().count(), 4);
-        // core::assert_eq!(
-        //     res,
-        //     "(body (? (add $) (_2 _3) (! _1 (S _4))))\n\
-        //      (! (add result) ((S Z) (S Z)))\n\
-        //      (? (add $) (Z $) (! _1 _2))\n\
-        //      (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
-        // );
+        //GOAT, there are several things before this test will work "correctly", i.e. with the first expression
+        // in `SPACE_EXPRS` uncommented
 
-        // println!("{}", res);
+        //Firstly, we need to run this test in a thread we spin up ourself, so we can ensure there is enough
+        // stack space. Otherwise we'll hit an overflow.  To temporarily work around this, you can set the
+        // env var before running the test:
+        //
+        // ```bash
+        // export RUST_MIN_STACK=16777216
+        // ```
+        //
+        //But then we still won't get the right answer because of lack of real unification.
+        //
+        // "(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
+        // "(exec PC0 (, (? $        $        $    ) (! _1       _2      ) (exec PC0 $  $ )) (, (body _3   ) (exec PC0_ _4 _5)))"
+        //
+        // first pattern
+        // "(? (add $   ) ((S $ ) $ ) (? (add $ ) (_2  _3) (! _1   (S _4)) ) )"
+        // $channel = (add $)
+        // $payload = ((S $ ) $ )
+        // $body    = (? (add $ ) (_2  _3) (! _1   (S _4)) ) )    // note that the references are now "divorced"
+        //
+        // second pattern
+        // "(! (add result) ((S Z) (S Z)))"
+        //                                                                // the following variable references are only true localy
+        // $channel = (add result)          // unifies first pattern $channel where (add result) = (add $)       ; _1 = result
+        // $payload = ((S Z) (S Z)))        // unifies first pattern $payload where ((S $) $)    = ((S Z) (S Z)) ; _1 = Z, _2 = (S Z)
+        //
+        // assume we substitued backwrds
+        // "(? (add $      ) ((S $) $   ) (? (add $ ) (_2  _3  ) (! _1     (S _4)) ) )"
+        // =>                       v                  v   v        v         v this should now decrement based on being the first introduction
+        // "(? (add result) ((S Z) (S Z)) (? (add $ ) (Z  (S Z)) (! result (S _1)) ) )"
+        //                                v new body
+        //                                $body = (? (add $ ) (Z  (S Z)) (! result (S _1)) )
+        //
+        // but then body get substituted
+        // $body = (? (add $ ) (_2  _3) (! _1   (S _4)) ) )
+        // write (body (? (add $ ) (_2  _3) (! _1   (S _4)) ) ))
+        //
+        // but we expect
+        // $body = (? (add $ ) (Z  (S Z)) (! result (S _1)) )
+        // write (body (? (add $ ) (Z  (S Z)) (! result (S _1)) ))
+
     }
 
     #[test]

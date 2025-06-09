@@ -393,6 +393,21 @@ mod tests {
         // but we expect
         // $body = (? (add $ ) (Z  (S Z)) (! result (S _1)) )
         // write (body (? (add $ ) (Z  (S Z)) (! result (S _1)) ))
+        //
+        // So if unification were working:
+        //
+        // "(body (? (add $) (_2 _3) (! _1 (S _4))))\n\
+        //  (! (add result) ((S Z) (S Z)))\n
+        //  (? (add $) (Z $) (! _1 _2))\n
+        //  (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n\
+        // "
+        // into 
+        // "(body (? (add $) (Z (S Z)) (! result (S _1))))\n\
+        //  (! (add result) ((S Z) (S Z)))\n\
+        //  (? (add $) (Z $) (! _1 _2))\n\
+        //  (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n\
+        // "
+        //
 
     }
 

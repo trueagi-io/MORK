@@ -663,9 +663,9 @@ impl DefaultSpace {
         println!("val count {}", self.map.read_zipper_at_borrowed_path(&[]).unwrap().val_count());
     }
 
-    pub fn load_csv_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr, seperator: u8) -> Result<usize, String> {
+    pub fn load_csv_simple<SrcStream: BufRead>(&mut self, src: SrcStream, pattern: Expr, template: Expr, seperator: u8, include_line_nums: bool) -> Result<usize, String> {
         let mut writer = self.new_writer(unsafe { &*template.prefix().unwrap_or(template.span()) }, &())?;
-        self.load_csv(src, pattern, template, &mut writer, seperator).map_err(|e| format!("{:?}",e))
+        self.load_csv(src, pattern, template, &mut writer, seperator, include_line_nums).map_err(|e| format!("{:?}",e))
     }
 
     /*
@@ -717,6 +717,7 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     template : Expr,
     mut wz   : WZ,
     seperator: u8,
+    include_line_nums: bool,
 ) -> Result<crate::space::PathCount, String>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()> + 's,
@@ -731,29 +732,39 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     let mut stack = [0u8; 2048];
     let mut pdp = ParDataParser::new(sm);
 
-    while src.read_until(b'\n', &mut src_line).unwrap() > 0  {
-        debug_assert_eq!(src_line[src_line.len()-1], b'\n');
-        let sv = &src_line[..src_line.len()-1];
+    while src.read_until(b'\n', &mut src_line).map_err(|e| format!("IO error: {e}"))? > 0 {
+        let mut sv = if *src_line.last().unwrap() == b'\n' {
+            &src_line[..src_line.len()-1]
+        } else {
+            &src_line
+        };
+        while sv.len() > 0 && sv[0] == b'\n' {
+            sv = &sv[1..];
+        }
         if sv.len() == 0 { continue }
-        let mut a = 0;
+        let mut arity = 0;
         let e = Expr{ ptr: stack.as_mut_ptr() };
         let mut ez = ExprZipper::new(e);
         ez.loc += 1;
-        let num = pdp.tokenizer(i.to_string().as_bytes());
-        // ez.write_symbol(i.to_be_bytes().as_slice());
-        ez.write_symbol(num);
-        // ez.loc += 9;
-        ez.loc += num.len() + 1;
+
+        if include_line_nums {
+            let num = pdp.tokenizer(i.to_string().as_bytes());
+            // ez.write_symbol(i.to_be_bytes().as_slice());
+            ez.write_symbol(num);
+            // ez.loc += 9;
+            ez.loc += num.len() + 1;
+            arity += 1;
+        }
 
         for symbol in sv.split(|&x| x == seperator) {
             let internal = pdp.tokenizer(symbol);
             ez.write_symbol(&internal[..]);
             ez.loc += internal.len() + 1;
-            a += 1;
+            arity += 1;
         }
         let total = ez.loc;
         ez.reset();
-        ez.write_arity(a + 1);
+        ez.write_arity(arity);
 
         let data = &mut stack[..total];
         let mut oz = ExprZipper::new(Expr{ ptr: buf.as_mut_ptr() });

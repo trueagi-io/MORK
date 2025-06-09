@@ -38,14 +38,52 @@ mod tests {
     }
 
     #[test]
-    fn parse_csv() {
+    fn parse_csv_little() {
         let csv_input = "0,123,foo\n1,321,bar\n";
         let reconstruction = "(0 123 foo)\n(1 321 bar)\n";
         let mut s = DefaultSpace::new();
-        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',').unwrap(), 2);
+        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',', false).unwrap(), 2);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
         assert_eq!(reconstruction, String::from_utf8(res).unwrap());
+    }
+
+    #[test]
+    fn parse_csv_big() {
+        let csv_input = concat!("AA00,123,foo\n AA01,321,bar\n AA02,456,baz\n AA03,654,boz\n",
+                                "AA04,123,foo\n AA05,321,bar\n AA06,456,baz\n AA07,654,boz\n",
+                                "AA08,123,foo\n AA09,321,bar\n AA0A,456,baz\n AA0B,654,boz\n",
+                                "AA0C,123,foo\n AA0D,321,bar\n AA0E,456,baz\n AA0F,654,boz\n",
+                                "AA10,123,foo\n AA11,321,bar\n AA12,456,baz\n AA13,654,boz\n",
+                                "AA14,123,foo\n AA15,321,bar\n AA16,456,baz\n AA17,654,boz\n",
+                                "AA18,123,foo\n AA19,321,bar\n AA1A,456,baz\n AA1B,654,boz\n\n",
+                                "AA1C,123,foo\n AA1D,321,bar\n AA1E,456,baz\n AA1F,654,boz\n",
+                                "AA20,123,foo\n AA21,321,bar\n AA22,456,baz\n AA23,654,boz\n",
+                                "AA24,123,foo\n AA25,321,bar\n AA26,456,baz\n AA27,654,boz\n\n\n",
+                                "AA28,123,foo\n AA29,321,bar\n AA2A,456,baz\n AA2B,654,boz\n",
+                                "AA2C,123,foo\n AA2D,321,bar\n AA2E,456,baz\n AA2F,654,boz\n",
+                                "AA30,123,foo\n AA31,321,bar\n AA32,456,baz\n AA33,654,boz\n",
+                                "AA34,123,foo\n AA35,321,bar\n AA36,456,baz\n AA37,654,boz\n\n\n\n",
+                                "AA38,123,foo\n AA39,321,bar\n AA3A,456,baz\n AA3B,654,boz\n",
+                                "AA3C,123,foo\n AA3D,321,bar\n AA3E,456,baz\n AA3F,654,boz\n",
+                                "AA40,123,foo\n AA41,321,bar\n AA42,456,baz\n AA43,654,boz\n",
+                                "AA44,123,foo\n AA45,321,bar\n AA46,456,baz\n AA47,654,boz\n",
+                                "AA48,123,foo\n AA49,321,bar\n AA4A,456,baz\n AA4B,654,boz\n",
+                                "AA4C,123,foo\n AA4D,321,bar\n AA4E,456,baz\n AA4F,654,boz",
+        );
+        let mut s = DefaultSpace::new();
+        assert_eq!(s.load_csv_simple(csv_input.as_bytes(), expr!(s, "$"), expr!(s, "_1"), b',', true).unwrap(), 80);
+
+        // let mut res = Vec::<u8>::new();
+        // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"),&mut res).unwrap();
+        // println!("\n{}", String::from_utf8_lossy(&res));
+
+        s.query(expr!(s, "[4] 27 $ $ $"), |_, e| {
+            assert_eq!(sexpr!(s, e), "((27  AA1B 654 boz))")
+        });
+        s.query(expr!(s, "[4] 28 $ $ $"), |_, e| {
+            assert_eq!(sexpr!(s, e), "((28 AA1C 123 foo))")
+        });
     }
 
     #[test]

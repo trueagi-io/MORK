@@ -125,6 +125,7 @@ pub trait Space {
         template        : Expr,
         template_writer : &mut Self::Writer<'s>,
         separator       : u8,
+        include_line_nums: bool
     ) -> Result<PathCount, ParseError> {
         load_csv_impl(
             &self.symbol_table(), 
@@ -133,6 +134,7 @@ pub trait Space {
             template,
             self.write_zipper(template_writer),
             separator,
+            include_line_nums,
         ).map_err(|_| ParseError("UnexpectedParseError".to_string()))
     }
 

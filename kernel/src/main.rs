@@ -149,7 +149,7 @@ fn work_mm2_run() {
     println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
     s.statistics();
 
-    s.metta_calculus();
+    s.metta_calculus(100);
 
     let backup_paths_start = Instant::now();
     println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
@@ -196,7 +196,7 @@ fn basic() {
 
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    s.metta_calculus();
+    s.metta_calculus(100);
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -208,52 +208,46 @@ fn basic() {
 
 fn process_calculus() {
     let mut s = Space::new();
-    // (exec PC0 (, (? $channel $payload $body) 
-    //              (! $channel $payload)
-    //              (exec PC0 $p $t)) 
-    //           (, $body (exec PC0 $p $t)))
 
-    // const SPACE_EXPRS: &str = r#"
-    // (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
-    // (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(doc "inference control that switches between dispatching two space functions and runs 10 steps")
+(exec (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z)))))))))))
+               (, (exec (IC $x $y (S $c)) $sp $st)
+                  ((exec $x) $p $t))
+               (, (exec (IC $y $x $c) $sp $st)
+                  (exec (R $x) $p $t)))
+(doc "process calculus recv-send matching")
+((exec 0)
+      (, (petri (? $channel $payload $body))
+         (petri (! $channel $payload)))
+      (, (petri $body)))
+(doc "process calculus | happens in parallel")
+((exec 1)
+      (, (petri (| $lprocess $rprocess)))
+      (, (petri $lprocess)
+         (petri $rprocess)))
 
-    // (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )
-    // (? (add $ret) (Z $y) (! $ret $y))
-
-    // (! (add result) ((S Z) (S Z)))
-    // "#;
-
-    const SPACE_EXPRS: &str =
-        concat!
-        ( ""
-        , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
-        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, ))"
-
-        // , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
-        , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
-        , "\n(? (add $ret) (Z $y) (! $ret $y))"
-        , "\n(! (add result) ((S Z) (S Z)))"
-        );
+(doc "peano arithmetic process-calculus style, using content addressing for Private Name gen")
+(petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                    (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+(petri (? (add $ret) (Z $y) (! $ret $y)))
+(doc "the actual input to the program: two peano numbers to add")
+(petri (! (add result) ((S (S Z)) (S (S Z)))))
+    "#;
 
     s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    s.metta_calculus();
+    s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
 
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-
-    println!("\nRESULTS\n");
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
+    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
-    // assert_eq!(res.lines().count(), 3);
-    // core::assert_eq!(
-    //     res,
-    //     "(! (add result) ((S Z) (S Z)))\n\
-    //          (? (add $) (Z $) (! _1 _2))\n\
-    //          (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
-    // );
-
-    println!("{}", res);
+    assert_eq!(res, "(S (S (S (S Z))))\n");
+    println!("result: {res}")
 }
 
 fn main() {
@@ -304,7 +298,7 @@ _ _ _ 4 1 _ _ _ _"#;
     
     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    s.metta_calculus();
+    s.metta_calculus(100);
     
     // println!("size {:?}", s.btm.val_count());
     

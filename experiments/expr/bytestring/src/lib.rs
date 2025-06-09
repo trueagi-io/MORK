@@ -667,16 +667,16 @@ impl Expr {
         }
     }
 
-    fn unbind(self, oz: &mut ExprZipper) -> *const [u8] {
+    pub fn unbind(self, oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
-        let mut bound = [0u8; 64];
+        let mut bound = [255; 64];
         let mut nvars = 0;
         loop {
             match ez.tag() {
                 Tag::NewVar => { oz.write_new_var(); oz.loc += 1; nvars += 1; }
                 Tag::VarRef(i) => {
-                    if (i as usize) < nvars { oz.write_var_ref(bound[i as usize]); oz.loc += 1 }
-                    else { oz.write_new_var(); bound[nvars] = i; nvars += 1; oz.loc += 1; }
+                    if (i as usize) < nvars || bound[i as usize] != 255 { oz.write_var_ref(bound[i as usize]); oz.loc += 1; }
+                    else { oz.write_new_var(); bound[i as usize] = nvars as u8; nvars += 1; oz.loc += 1; }
                 }
                 Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
                 Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
@@ -2363,7 +2363,7 @@ impl ExprEnv {
         }
     }
 
-    fn args(&self, dest: &mut Vec<Self>) {
+    pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
             let start_len = dest.len();
             match byte_item(*self.subsexpr().ptr) {

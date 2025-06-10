@@ -453,7 +453,7 @@ impl Expr {
             Continue(offset) => { Err(slice_from_raw_parts(self.ptr, offset)) } // full expr
         }
     }
-    
+
     pub fn substitute(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut var_count = 0;
@@ -1139,16 +1139,39 @@ impl Expr {
     }
 }
 
-impl OwnedExpr {
-    /// Borrow the `OwnedExpr` as a borrowed `Expr`
+/// Implemented on types that are fundamentall expressions, regardless of their internal ownership
+//
+//GOAT, Eventually, ExprTrait should be renamed to Expr, and the current Expr should be replaced by a
+// BorrowedExpr with a lifetime, and a reference expr that is a usize within another slice, from which
+// it is separable
+pub trait ExprTrait: Debug {
+    /// Borrows `self` as a borrowed `Expr` type
+    fn borrow(&self) -> Expr;
+}
+
+impl ExprTrait for Expr {
     #[inline]
-    pub fn borrow(&self) -> Expr {
-        Expr{ ptr: self.0.as_ptr().cast_mut()}
+    fn borrow(&self) -> Expr {
+        *self
     }
+}
+
+impl OwnedExpr {
     /// Borrow the inner bytes in the expression
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+    #[inline]
+    pub fn empty() -> Self {
+        Self::from([])
+    }
+}
+
+impl ExprTrait for OwnedExpr {
+    #[inline]
+    fn borrow(&self) -> Expr {
+        Expr{ ptr: self.0.as_ptr().cast_mut()}
     }
 }
 

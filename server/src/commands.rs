@@ -6,11 +6,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
 
-use mork::OwnedExpr;
+use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::trie_map::BytesTrieMap;
-use pathmap::zipper::{ZipperForking, ZipperIteration, ZipperMoving, ZipperWriting};
-use mork_bytestring::Tag;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -358,7 +356,7 @@ impl CommandDefinition for ExportCmd {
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
             .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let pat_reader = ctx.0.space.new_reader_async(&derive_prefix_from_expr_slice(&pattern).till_constant_to_till_last_constant(), &()).await?;
+        let pat_reader = ctx.0.space.new_reader_async(&derive_prefix_from_expr_slice(pattern.as_bytes()).till_constant_to_till_last_constant(), &()).await?;
 
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
@@ -401,7 +399,7 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, Vec<u8>), template: Vec<u8>, format: DataFormat, file_path: Option<PathBuf>) -> Result<Bytes, CommandError> {
+fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, file_path: Option<PathBuf>) -> Result<Bytes, CommandError> {
     let buffer = match &file_path {
         Some(file_path) => {
             // The rendered output will go to a file
@@ -426,10 +424,10 @@ fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, Vec<u8>), te
     Ok(hyper::body::Bytes::from(buffer))
 }
 
-fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, mut pattern): (ReadPermission, Vec<u8>), mut template: Vec<u8>, format: DataFormat) -> Result<(), CommandError> {
+fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat) -> Result<(), CommandError> {
     match format {
         DataFormat::Metta => {
-            ctx.0.space.dump_as_sexpr(writer, (&mut reader, mork_bytestring::Expr { ptr: pattern.as_mut_ptr() }), mork_bytestring::Expr { ptr: template.as_mut_ptr() }).map_err(|e| CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            ctx.0.space.dump_as_sexpr(writer, (&mut reader, pattern.borrow()), template.borrow()).map_err(|e| CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
         },
         DataFormat::Csv |
         DataFormat::Json => {
@@ -484,9 +482,9 @@ impl CommandDefinition for ImportCmd {
         let file_handle = ctx.0.resource_store.new_resource(file_uri, cmd.cmd_id).await?;
 
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
-        .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let writer = ctx.0.space.new_writer_async(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &()).await?;
+        let writer = ctx.0.space.new_writer_async(derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_full(), &()).await?;
 
         tokio::task::spawn(async move {
             match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
@@ -501,11 +499,11 @@ impl CommandDefinition for ImportCmd {
     }
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: Vec<u8>, template: Vec<u8>, mut writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
+async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: OwnedExpr, template: OwnedExpr, mut writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
     let url = Url::parse(file_uri)?;
 
-    let space_prefix = derive_prefix_from_expr_slice(&template).till_constant_to_till_last_constant().to_owned();
+    let space_prefix = derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_till_last_constant().to_owned();
 
     let file_path = if url.scheme() == "file" {
 
@@ -621,9 +619,9 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, mut pattern: Vec<u8>, mut template: Vec<u8>, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
-    let pattern_expr = mork_bytestring::Expr { ptr: pattern.as_mut_ptr() };
-    let template_expr = mork_bytestring::Expr { ptr: template.as_mut_ptr() };
+fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, pattern: OwnedExpr, template: OwnedExpr, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+    let pattern_expr = pattern.borrow();
+    let template_expr = template.borrow();
     match file_type {
         DataFormat::Metta => {
             let count = space.load_sexpr(src, pattern_expr, template_expr, writer).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
@@ -635,7 +633,7 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, mut 
             // println!("Loaded {count} atoms from JSON");
         },
         DataFormat::Csv => {
-            let count = space.load_csv(src, pattern_expr, template_expr, writer, b',').map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let count = space.load_csv(src, pattern_expr, template_expr, writer, b',', true).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {count} atoms from CSV");
         },
         DataFormat::Raw => {
@@ -895,7 +893,7 @@ impl CommandDefinition for MettaThreadCmd {
         // (exec (<location> $priority) $patterns $templates)
         let prefix_e_vec =  ctx.0.space.sexpr_to_expr(&format!("(exec ({} $) $ $)", location_sexpr)).unwrap();
 
-        let task = async move|server_space : &ServerSpace, status_writer | {
+        let task = async move|server_space: &ServerSpace, status_writer | {
 
             // // ////////////////
             // // BUILD BUFFER //
@@ -1028,8 +1026,8 @@ impl CommandDefinition for MettaThreadCmd {
             //             mork::space::ExecSyntaxError::ExpectedGroundPriority(e)     => StatusRecord::ExecSyntaxError(format!("the exec priority was not ground; offending expr : {}", e)),});
             // };
 
-            // // Free MeTTa Thread location explicty after everything is done.
-            // drop(status_writer);
+            // Free MeTTa Thread location explicty after everything is done.
+            drop(status_writer);
         };
 
         thread.dispatch_blocking_task(cmd, move |_| {
@@ -1292,77 +1290,7 @@ impl CommandDefinition for StopCmd {
 // transform
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
-
-pub struct TransformCmd;
-
-#[repr(usize)]
-enum TransformArg {
-    // FromSpacePath,
-    Pattern,
-    // ToSpacePath,
-    Template,
-    // keep this the last variant
-    _Len
-}
-
-impl CommandDefinition for TransformCmd {
-    const NAME: &'static str = "transform";
-    const CONST_CMD: &'static Self = &Self;
-    const CONSUME_WORKER: bool = true;
-    fn args() -> &'static [ArgDef] {
-        & const {
-            const ZEROED : ArgDef = ArgDef{ arg_type: ArgType::String, name: "", desc: "", required: false}; 
-            let mut args = [ZEROED; TransformArg::_Len as usize];
-            use TransformArg as Arg;
-            args[Arg::Pattern as usize] = 
-                ArgDef{
-                    arg_type: ArgType::String,
-                    name: "pattern",
-                    desc: "The pattern that the `from_space` expressions must conform to.",
-                    required: true
-                };
-            args[Arg::Template as usize] = 
-                ArgDef{
-                    arg_type: ArgType::String,
-                    name: "template",
-                    desc: "The template that the `to_space` expressions will be derived from.",
-                    required: true
-                };
-            args
-        }
-    }
-    fn properties() -> &'static [PropDef] {
-        &[]
-    }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
-
-        // this is incorrect, pattern and template need to be parsed together!
-
-        let transform_arg = 
-            &format!(
-                "(transform (, {}) (, {}))",
-                cmd.args[TransformArg::Pattern as usize].as_str(),
-                cmd.args[TransformArg::Template as usize].as_str(),
-            );
-
-        let transform_args = prep_transform_multi_multi(&ctx.0.space, &transform_arg).await?;
-
-        let work_thread = thread.unwrap();
-        work_thread.dispatch_blocking_task(cmd, move |_c| {
-
-            transform_args.dispatch_transform(&ctx);
-            Ok(())
-        }).await;
-
-        Ok(Bytes::from("ACK. Tranform dispatched"))
-    }
-}
-
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-// transform_multi_multi
-// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
-
-/// expects the post body to be of this form os sexpr
+/// expects the post body to be of this form of sexpr
 /// ```ignore
 /// (transform
 ///   (, (pattern0 ...)
@@ -1376,10 +1304,10 @@ impl CommandDefinition for TransformCmd {
 /// )
 /// ```
 
-pub struct TransformMultiMultiCmd;
+pub struct TransformCmd;
 
-impl CommandDefinition for TransformMultiMultiCmd {
-    const NAME: &'static str = "transform_multi_multi";
+impl CommandDefinition for TransformCmd {
+    const NAME: &'static str = "transform";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = true;
     fn args() -> &'static [ArgDef] {
@@ -1392,15 +1320,18 @@ impl CommandDefinition for TransformMultiMultiCmd {
         let work_thread = thread.unwrap();
 
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
-        let src  = core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+        let src = core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let transform_args = prep_transform_multi_multi(&ctx.0.space, src).await?;
+        let (patterns, templates) = pattern_template_args(&ctx.0.space, src)
+            .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
+        let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &())?;
 
         work_thread.dispatch_blocking_task(cmd, move |_c| {
-            transform_args.dispatch_transform(&ctx);
+
+            ctx.0.space.transform_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
             Ok(())
         }).await;
-
 
         Ok(Bytes::from("ACK. TranformMultiMulti dispatched"))
     }
@@ -1445,8 +1376,7 @@ impl CommandDefinition for TransformMultiMultiCmd {
 //     }
 // }
 
-
-// async fn prep_transform_multi_multi(ctx: &ServerSpace, src : &str) -> Result<PatternTemplateArgs, CommandError> {
+// async fn prep_transform_multi_multi(ctx: &ServerSpace, src: &str) -> Result<PatternTemplateArgs, CommandError> {
 //         let (patterns, templates) = pattern_template_args(
 //             &ctx, src
 //         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
@@ -1456,6 +1386,7 @@ impl CommandDefinition for TransformMultiMultiCmd {
 
 //         Ok(PatternTemplateArgs { patterns, readers, templates, writers })
 // }
+
 // async fn prefix_readers(ctx : &ServerSpace, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
 //     let mut readers = Vec::with_capacity(patterns.len());
 //     for pattern in patterns {
@@ -1517,20 +1448,22 @@ enum TransformMultiMultiError {
     ExpectedArity3AsFirstByte,
     ParseError
 }
-fn pattern_template_from_sexpr_pair(space : &ServerSpace, pattern : &str, template : &str)->Result<(Vec<u8>, Vec<u8>), TransformMultiMultiError> {
-        let formatted = format!(
-            "(transform (, {}) (, {}) )",
-            pattern, 
-            template,
-        );
-        let (mut patterns, mut templates) = pattern_template_args(&space, &formatted)?;
-        // Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
-        Ok((patterns.pop().unwrap_or(Vec::new()), templates.pop().unwrap_or(Vec::new())))
 
+/// Parse a (pattern, template) pair as paths
+fn pattern_template_from_sexpr_pair(space : &ServerSpace, pattern: &str, template: &str) -> Result<(OwnedExpr, OwnedExpr), TransformMultiMultiError> {
+    let formatted = format!(
+        "(transform (, {}) (, {}) )",
+        pattern, 
+        template,
+    );
+    let (mut patterns, mut templates) = pattern_template_args(&space, &formatted)?;
+    // Ok((patterns.pop().unwrap(), templates.pop().unwrap()))
+    Ok((patterns.pop().unwrap_or(OwnedExpr::empty()), templates.pop().unwrap_or(OwnedExpr::empty())))
 }
-fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), TransformMultiMultiError> {
-    use mork_bytestring::Tag;
 
+/// Parses the args in the POST body of a transform command request into a Vec of patterns and a Vec of templates
+fn pattern_template_args(space: &ServerSpace, input: &str)->Result<(Vec<OwnedExpr>, Vec<OwnedExpr>), TransformMultiMultiError> {
+    use mork_bytestring::Tag;
 
     let expr = space.sexpr_to_expr(input).map_err(|_| TransformMultiMultiError::ParseError)?;
     let mut expr_z = mork_bytestring::ExprZipper::new(expr.borrow());
@@ -1550,11 +1483,10 @@ fn pattern_template_args(space : &ServerSpace,input : &str)->Result<(Vec<Vec<u8>
     let templates = expr_z.subexpr();
     let Ok(out_templates) = comma_list_expr(&space, templates) else { return Err(TransformMultiMultiError::ExpectedTemplateList); };
 
-
-    Ok((out_paterns,out_templates))
+    Ok((out_paterns, out_templates))
 }
 
-fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result<Vec<Vec<u8>>, &'static str> {
+fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result<Vec<OwnedExpr>, &'static str> {
 
     let mut out = Vec::new();
     let mut z = mork_bytestring::ExprZipper::new(expr);
@@ -1568,16 +1500,13 @@ fn comma_list_expr(space : &ServerSpace, expr : mork_bytestring::Expr) -> Result
             for _ in 0..arity-1 {
                 z.next_child();
                 let sub = z.subexpr();
-                out.push(unsafe { &*sub.span() }.to_vec())
+                out.push(OwnedExpr::from(unsafe { &*sub.span() }))
             }
             Ok(out)
         }
         _ => Err(dbg!("expected arity byte"))
     }
 }
-
-
-
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // upload
@@ -1621,7 +1550,7 @@ impl CommandDefinition for UploadCmd {
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
             .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(&template).till_constant_to_full(), &())?;
+        let mut writer = ctx.0.space.new_writer(derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_full(), &())?;
 
         //Read all the data from the post request
 
@@ -1940,33 +1869,27 @@ fn prefix_assertions() {
     core::assert_eq!{pe11.till_constant_to_full(), pe7.till_constant_to_full()};
 }
 
-
-
 #[cfg(test)]
 #[tokio::test]
 async fn misbehaving_transform() -> Result<(), ()> {
     let s = ServerSpace::new();
 
-    let (pattern, mut template) = pattern_template_from_sexpr_pair(&s, "", "c").unwrap();
-    let Err(_) = prefix_readers(&s, &[&pattern]).await else {panic!()};
+    let (_pattern, template) = pattern_template_from_sexpr_pair(&s, "", "c").unwrap();
 
-    let mut writer = prefix_writers(&s, &[&template]).await.unwrap();
-    core::assert!(writer.len() == 1);
+    let (read_map, template_prefixes, mut writers) = s.acquire_transform_permissions(&[], &[template.borrow()], &()).unwrap();
 
-    s.transform_multi_multi( &[] , &mut [], &[ mork_bytestring::Expr{ptr: template.as_mut_ptr()}], &mut writer, BytesTrieMap::new());
+    s.transform_multi_multi(&[], &read_map, &[template.borrow()], &template_prefixes, &mut writers);
 
-    drop(writer);
+    drop(writers);
 
-    let (mut pattern, mut templates) = pattern_template_from_sexpr_pair(&s, "$x", "$x").unwrap();
-    let mut reader = prefix_readers(&s, &[&pattern]).await.unwrap();
+    let (pattern, template) = pattern_template_from_sexpr_pair(&s, "$x", "$x").unwrap();
+    let pat_prefix = derive_prefix_from_expr_slice(pattern.as_bytes()).till_constant_to_full();
+    let mut reader = s.new_reader(pat_prefix, &()).unwrap();
 
     let mut out = Vec::new();
-    s.dump_as_sexpr(&mut out, (&mut reader[0] , mork_bytestring::Expr{ptr : pattern.as_mut_ptr()}), mork_bytestring::Expr {ptr : templates.as_mut_ptr()}).unwrap();
+    s.dump_as_sexpr(&mut out, (&mut reader, pattern.borrow()), template.borrow()).unwrap();
 
     // this prints "c" !
-    println!("{}", unsafe {
-        core::mem::transmute::<_, String>(out)
-    });
-
+    println!("{}", String::from_utf8(out).unwrap());
     Ok(())
 }

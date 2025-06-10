@@ -4,7 +4,7 @@ pub mod prefix;
 mod space_temporary;
 pub use space_temporary::*;
 
-pub use mork_bytestring::{Expr, OwnedExpr};
+pub use mork_bytestring::{ExprTrait, Expr, OwnedExpr};
 
 #[cfg(test)]
 mod tests {

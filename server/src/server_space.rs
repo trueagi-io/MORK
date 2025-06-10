@@ -6,7 +6,7 @@ use hyper::StatusCode;
 use pathmap::{trie_map::BytesTrieMap, zipper::ZipperHeadOwned};
 use pathmap::zipper::*;
 
-use mork::{Space, SpaceReaderZipper};
+use mork::{Space, SpaceReaderZipper, SpaceWriterZipper};
 
 use crate::status_map::*;
 use crate::commands::*;
@@ -93,8 +93,11 @@ impl Space for ServerSpace {
     fn read_zipper<'r, 's: 'r>(&'s self, reader: &'r mut Self::Reader<'s>) -> impl SpaceReaderZipper<'s> {
         unsafe{ self.primary_map.read_zipper_at_borrowed_path_unchecked(reader.path()) }
     }
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + 'w {
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl SpaceWriterZipper + 'w {
         unsafe{ self.primary_map.write_zipper_at_exclusive_path_unchecked(writer.path()) }
+    }
+    fn cleanup_write_zipper(&self, wz: impl SpaceWriterZipper) {
+        self.primary_map.cleanup_write_zipper(wz);
     }
     fn symbol_table(&self) -> &bucket_map::SharedMappingHandle {
         &self.global_symbol_table

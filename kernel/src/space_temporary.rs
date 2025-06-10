@@ -5,7 +5,7 @@ use log::*;
 
 use bucket_map::SharedMappingHandle;
 use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
-use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
+use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
@@ -46,6 +46,9 @@ pub struct LoadNeo4JNodeLabelsError(String);
 pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 
+pub trait SpaceWriterZipper : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
+impl<T> SpaceWriterZipper for T where T : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
+
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space: Sized {
     /// An authentication token used for access to the space
@@ -77,10 +80,10 @@ pub trait Space: Sized {
     ///
     /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
     /// not conceptually have mutable state
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + /* ZipperAbsolutePath +  */'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl SpaceWriterZipper + 'w;
 
     /// Removes the WriteZipper from the ZipperHead
-    fn cleanup_write_zipper(&self, wz: impl ZipperMoving + ZipperWriting<()> + ZipperForking<()>);
+    fn cleanup_write_zipper(&self, wz: impl SpaceWriterZipper);
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
@@ -175,26 +178,37 @@ pub trait Space: Sized {
     /// Acquires the minimum set of permissions needed to perform a transform by applying the necessary
     /// subsumption logic
     ///
-    /// GOAT, look at the inchoate commented-out `TransformPermissions` object below for an explanation of the
-    /// return value.  The idea is a new `TransformPermissions` object will be returned from this function.
+    /// The return value is: `(read_map, template_prefixes, writers)`
+    ///
+    /// * read_map: BytesTrieMap<()>
+    ///    A PathMap in which all readers can be acquired
+    ///
+    /// * template_prefixes: Vec<(usize, usize)>
+    ///    A vec of `(incremental_path_start, writer_idx)`, corresponding to the `templates` where:
+    ///     - `incremental_path_start`: The index in the full template path for the start of the part of the path
+    ///        that is not subsumed by the writer's root path.
+    ///     - `writer_idx`: The index into `writers` for the write permssion to use for this expr
+    ///
+    /// * writers: Vec<Self::Writer<'s>>
+    ///    A vector of [Space::Writer] permission objects
     ///
     /// **WANRNING** GOAT  I think there is a race inside this function because it's possible for the readers
     /// to all be acquired, and succeed at making the `read_map`, then another operation transforms the writers
     /// in the interim, releases them, and then this function acquires the writers, but the data in the writer
     /// paths is now different from what it was when the readers were acquired...  I don't have a strong enough
     /// handle on the MM2 theory to know if this is allowable.
-    fn acquire_transform_permissions<'s>(
+    fn acquire_transform_permissions<'s, E: ExprTrait>(
         &'s self,
-        patterns            : &[Expr],
-        templates           : &[Expr],
+        patterns            : &[E],
+        templates           : &[E],
         auth                : &Self::Auth,
-    ) -> Result<TransformPermissions<'s, Self>, Self::PermissionErr> {
+    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), Self::PermissionErr> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         //Make the "ReadMap" by copying each pattern from the space
         let mut read_map = BytesTrieMap::new();
         for pat in patterns {
-            let path = make_prefix(pat);
+            let path = make_prefix(&pat.borrow());
 
             let mut reader = self.new_reader(path, auth)?;
             let rz = self.read_zipper(&mut reader);
@@ -206,7 +220,7 @@ pub trait Space: Sized {
         //Make a vec of template paths, sorted from shortest to longest
         // `(path, template_idx, writer_slot_idx)`
         let mut template_path_table: Vec<(&[u8], usize, usize)> = templates.iter().enumerate().map(|(i, template)|{
-            let path = make_prefix(template);
+            let path = make_prefix(&template.borrow());
             (path, i, 0)
         }).collect();
         template_path_table.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
@@ -246,21 +260,21 @@ pub trait Space: Sized {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
 
-        Ok(TransformPermissions { read_map, template_prefixes, writers })
+        Ok(( read_map, template_prefixes, writers ))
     }
 
-    fn transform_multi_multi<'s>(
+    fn transform_multi_multi<'s, E: ExprTrait>(
         &'s self,
-        patterns : &[Expr],
+        patterns : &[E],
         read_map: &BytesTrieMap<()>,
-        templates : &[Expr],
+        templates : &[E],
         template_prefixes : &[(usize, usize)],
         writers : &mut [Self::Writer<'s>],
     ) -> (usize, bool) {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         let pattern_rzs: Vec<_> = patterns.iter().map(|pat| {
-            let path = make_prefix(pat);
+            let path = make_prefix(&pat.borrow());
             read_map.read_zipper_at_borrowed_path(path)
         }).collect();
 
@@ -294,19 +308,6 @@ pub trait Space: Sized {
         let mut wz = self.write_zipper(writer);
         load_neo4j_node_labels_impl(sm, &mut wz, rt, uri, user, pass).map_err(LoadNeo4JNodeLabelsError)
     }
-}
-
-/// An object containing all permissions and state to guarantee a transform will succeed
-pub struct TransformPermissions<'s, S: Space + 's> {
-    /// A PathMap in which all readers can be acquired
-    pub(crate) read_map: BytesTrieMap<()>,
-    /// A vec of `(incremental_path_start, writer_idx)`, corresponding to the `templates` where:
-    ///  - `incremental_path_start`: The index in the full template path for the start of the part of the path
-    ///       that is not subsumed by the writer's root path.
-    ///  - `writer_idx`: The index into `writers` for the write permssion to use for this expr
-    pub(crate) template_prefixes: Vec<(usize, usize)>,
-    /// A vector of [Space::Writer] permission objects
-    pub(crate) writers: Vec<<S as Space>::Writer<'s>>,
 }
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {

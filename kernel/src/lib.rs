@@ -333,7 +333,7 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        s.metta_calculus();
+        metta_calculus_impl(&s, &()).unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -428,7 +428,8 @@ mod tests {
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-        s.metta_calculus();
+
+        metta_calculus_impl(&s, &()).unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -452,7 +453,8 @@ mod tests {
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-        s.metta_calculus();
+
+        metta_calculus_impl(&s, &()).unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -529,7 +531,7 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        s.metta_calculus();
+        metta_calculus_impl(&s, &()).unwrap();
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
@@ -571,8 +573,7 @@ mod tests {
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        s.metta_calculus();
-        s.metta_calculus();
+        metta_calculus_impl(&s, &()).unwrap();
 
 
         let mut writer = Vec::new();

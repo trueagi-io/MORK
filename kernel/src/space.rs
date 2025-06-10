@@ -735,6 +735,128 @@ impl DefaultSpace {
      */
 }
 
+/// Executes a single MM2 expression
+///
+/// (exec <loc> (, <src1> <src2> <srcn>)
+///             (, <dst1> <dst2> <dstm>))
+pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), S::PermissionErr> {
+    let mut rtz = ExprZipper::new(rt);
+    info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
+    assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
+    assert!(rtz.next());
+    assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, "exec").span().as_ref().unwrap() });
+    assert!(rtz.next());
+    // let loc = rtz.subexpr();
+
+    assert!(rtz.next_child());
+
+    //GOAT, old server branch code from before the merge
+    //
+    // let srcs = comma_fun_args_asserted(self, rtz.subexpr());
+
+    // assert!(rtz.next_child());
+    // let dsts = comma_fun_args_asserted(self, rtz.subexpr());
+
+    // // #[cfg(test)]{
+    // //     println!("SRCS");
+    // //     for each in &srcs {
+    // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+    // //     }
+    // //     println!("DSTS");
+    // //     for each in &dsts {
+    // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
+    // //     }
+    // // }
+
+    // self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
+
+
+    let mut srcz = ExprZipper::new(rtz.subexpr());
+    let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
+    let mut srcs = Vec::with_capacity(n as usize - 1);
+    srcz.next();
+    assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
+    for _ in 0..n as usize - 1 {
+        srcz.next_child();
+        srcs.push(srcz.subexpr());
+    }
+    assert!(rtz.next_child());
+    let mut dstz = ExprZipper::new(rtz.subexpr());
+    let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+    let mut dsts = Vec::with_capacity(m as usize - 1);
+    dstz.next();
+    assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
+    for _ in 0..m as usize - 1 {
+        dstz.next_child();
+        // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
+        // println!("dst {:?}", dstz.subexpr());
+        dsts.push(dstz.subexpr());
+    }
+
+    let mut transform_perms = space.acquire_transform_permissions(&srcs[..], &dsts[..], auth)?;
+
+    //Insert the self expression into the read_map
+    transform_perms.read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
+
+    //GOAT, when we unify `transform_multi_multi_impl` with `transform_multi_multi_impl_`, we ought to call `transform_multi_multi` here
+    // rather than this copy-pasta
+    let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
+    let pattern_rzs: Vec<_> = srcs.iter().map(|pat| {
+        let path = make_prefix(pat);
+        transform_perms.read_map.read_zipper_at_borrowed_path(path)
+    }).collect();
+
+    let mut template_wzs: Vec<_> = transform_perms.writers.iter_mut().map(|writer| space.write_zipper(writer)).collect();
+
+    let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &transform_perms.template_prefixes, &mut template_wzs);
+
+    for wz in template_wzs {
+        space.cleanup_write_zipper(wz);
+    }
+
+    trace!(target: "interpret", "{:?}", res);
+    Ok(())
+}
+
+//GOAT, We want some return additional error results along the lines of time-out, etc.
+pub(crate) fn metta_calculus_impl<S: Space>(space: &S, auth: &S::Auth) -> Result<(), S::PermissionErr> {
+    // MC CMD "TEXEC THREAD0"
+
+    let prefix_e = expr!(space, "[4] exec $ $ $");
+    let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+
+    // the invariant is that buffer should always be reset with at least the prefix
+    let mut buffer = Vec::from(prefix);
+
+    loop {
+        debug_assert!(buffer.len() >= prefix.len());
+        debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
+        let mut exec_permission = space.new_writer(&prefix, auth)?; //GOAT, retry here if fails
+        let mut exec_wz = space.write_zipper(&mut exec_permission);
+        let mut rz = exec_wz.fork_read_zipper();
+
+        if !rz.to_next_val() { break }
+
+        // let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
+        // drop(rz);
+
+        buffer.truncate(prefix.len());
+        buffer.extend_from_slice(rz.path());
+        drop(rz);
+
+        exec_wz.descend_to(&buffer[prefix.len()..]);
+        exec_wz.remove_value();
+        drop(exec_wz);
+        drop(exec_permission);
+
+        interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth);
+    }
+
+    Ok(())
+}
+
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
     sm       : &SharedMappingHandle,
     mut src  : SrcStream,
@@ -1742,90 +1864,6 @@ impl DefaultSpace {
         } ).unwrap();
     }
 
-    //GOAT, what is the value of this function??  Is this just a scaffolding for the tests, or should we try
-    // to make this part of the interface by giving it reasonable error pathways?
-    //
-    // (exec <loc> (, <src1> <src2> <srcn>)
-    //             (, <dst1> <dst2> <dstm>))
-    pub fn interpret(&mut self, rt: Expr) {
-        let mut rtz = ExprZipper::new(rt);
-        info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
-        assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
-        assert!(rtz.next());
-        assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "exec").span().as_ref().unwrap() });
-        assert!(rtz.next());
-        // let loc = rtz.subexpr();
-
-        assert!(rtz.next_child());
-
-        //GOAT, old server branch code from before the merge
-        //
-        // let srcs = comma_fun_args_asserted(self, rtz.subexpr());
-
-        // assert!(rtz.next_child());
-        // let dsts = comma_fun_args_asserted(self, rtz.subexpr());
-
-        // // #[cfg(test)]{
-        // //     println!("SRCS");
-        // //     for each in &srcs {
-        // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-        // //     }
-        // //     println!("DSTS");
-        // //     for each in &dsts {
-        // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-        // //     }
-        // // }
-
-        // self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
-
-
-        let mut srcz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
-        let mut srcs = Vec::with_capacity(n as usize - 1);
-        srcz.next();
-        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for _ in 0..n as usize - 1 {
-            srcz.next_child();
-            srcs.push(srcz.subexpr());
-        }
-        assert!(rtz.next_child());
-        let mut dstz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-        let mut dsts = Vec::with_capacity(m as usize - 1);
-        dstz.next();
-        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for _ in 0..m as usize - 1 {
-            dstz.next_child();
-            // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
-            // println!("dst {:?}", dstz.subexpr());
-            dsts.push(dstz.subexpr());
-        }
-
-        let mut transform_perms = self.acquire_transform_permissions(&srcs[..], &dsts[..], &()).unwrap();
-
-        //Insert the self expression into the read_map
-        transform_perms.read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
-
-        //GOAT, when we unify `transform_multi_multi_impl` with `transform_multi_multi_impl_`, we ought to call `transform_multi_multi` here
-        // rather than this copy-pasta
-        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
-
-        let pattern_rzs: Vec<_> = srcs.iter().map(|pat| {
-            let path = make_prefix(pat);
-            transform_perms.read_map.read_zipper_at_borrowed_path(path)
-        }).collect();
-
-        let mut template_wzs: Vec<_> = transform_perms.writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
-
-        let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &transform_perms.template_prefixes, &mut template_wzs);
-
-        for wz in template_wzs {
-            self.cleanup_write_zipper(wz);
-        }
-
-        trace!(target: "interpret", "{:?}", res);
-    }
-
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
         let mut rtz = ExprZipper::new(rt);
         assert_eq!(rtz.item(), Ok(Tag::Arity(3)));
@@ -1872,42 +1910,6 @@ impl DefaultSpace {
     //         }
     //     }
     // }
-
-    pub fn metta_calculus(&mut self) {
-        // MC CMD "TEXEC THREAD0"
-
-        let prefix_e = expr!(self, "[4] exec $ $ $");
-        let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
-
-        // the invariant is that buffer should always be reset with at least the prefix
-        let mut buffer = Vec::from(prefix);
-
-        loop {
-            debug_assert!(buffer.len() >= prefix.len());
-            debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-            let mut exec_permission = self.new_writer(&prefix, &()).unwrap(); //GOAT, retry here if fails
-            let mut exec_wz = self.write_zipper(&mut exec_permission);
-            let mut rz = exec_wz.fork_read_zipper();
-
-            if !rz.to_next_val() { break }
-
-            // let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
-            // drop(rz);
-
-            buffer.truncate(prefix.len());
-            buffer.extend_from_slice(rz.path());
-            drop(rz);
-
-            exec_wz.descend_to(&buffer[prefix.len()..]);
-            exec_wz.remove_value();
-            drop(exec_wz);
-            drop(exec_permission);
-
-            self.interpret(Expr{ ptr: buffer.as_mut_ptr() });
-        }
-
-    }
 
     // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
     //     let Ok(prefix) = e.prefix() else {

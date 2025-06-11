@@ -138,34 +138,217 @@
 //     });
 //     println!("res2 count {}", count);
 
+
+
+// (exec P1 (, (gene_name_of TP73-AS1 $x)
+//             (SPO $x includes $y)
+//             (SPO $x transcribed_from $z)) (,) (, (res0 $x $y $z))))
+// (exec P1' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+// (exec P1'' (, (res0 $x $y $z)) (, (COUNT (res0 $x $y $z))) (, (count "query TP73-AS1" $c)))
+// (exec P1''' (,) (, (MICROS $t)) (, (time "query TP73-AS1" $t us)))
+
+// (exec P2 (, (NKV $x chr $y)) (,) (, (chr_of $y $x)))
+// (exec P2' (,) (, (MICROS $t)) (, (time "add exon chr index" $t us)))
+
+// (exec P3 (, (SPO $s $p $o)) (,) (, (OPS $o $p $s)))
+// (exec P3' (,) (, (MICROS $t)) (, (time "add exon chr index" $t us)))
+
+// (exec P4 (, (chr_of chr1 $x)
+//             (OPS $x includes $y)
+//             (SPO $y transcribed_from $z)
+//             (OPS $z transcribed_from $w)) (,) (, (res1 $x $y $z $w))))
+// (exec P4' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+// (exec P4'' (, (res1 $x $y $z $w)) (, (COUNT (res1 $x $y $z $w))) (, (count "query chr1" $c)))
+// (exec P4''' (,) (, (MICROS $t)) (, (time "query chr1" $t us)))
+
+// (exec P5 (, (gene_name_of BRCA2 $x)
+//             (SPO $x transcribed_to $y)
+//             (SPO $y translates_to $z)
+//             (OPS $z interacts_with $p)
+//             (SPO $x genes_pathways $q)) (,) (, (res2 $x $y $z $p $q))))
+// (exec P5' (,) (, (MICROS $t)) (, (time "all related to gene" $t us)))
+// (exec P5'' (, (res2 $x $y $z $p $q)) (, (COUNT (res2 $x $y $z $p $q))) (, (count "query BRCA2" $c)))
+// (exec P5''' (,) (, (MICROS $t)) (, (time "query BRCA2" $t us)))
+// "#;
+
+// fn work_mm2_run() {
+//     let mut s = Space::new();
+//     let restore_paths_start = Instant::now();
+//     println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
+//     println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
+//     s.statistics();
+
+//     s.metta_calculus(100);
+
+//     let backup_paths_start = Instant::now();
+//     println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
+//     println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
 // }
-// fn bench_2() {
-//     const sexpr_contents: &str = r#"(Duck Quack)
-//     (Human BlaBla)"#;
-    
-//     let mut s = DefaultSpace::new();
-    
-//     s.load_sexpr_simple(sexpr_contents.as_bytes(),
-//                  expr!(s, "[2] $ $"),
-//                  expr!(s, "[2] root [2] Sound [2] Sound [2] _1 _2")).unwrap();
-    
-//     s.transform_multi_multi_simple(
-//         &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
-//         &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
-//     );
-    
+
+// /*
+// paths restore took 135
+//  978700221 atoms
+// add gene name index took 8637 ms
+//  979015756 atoms
+// query TP73-AS1
+//  193 µs
+//  142
+// add exon chr index took 32 s
+//  1054962128 atoms
+// add ops index took 91 s
+//  1386253656 atoms
+// query chr1
+//  7691 ms
+//  40172978 atoms
+// query BRCA2
+//  33295 µs
+//  151956 atoms
+//  */
+
+// fn basic() {
+//     let mut s = Space::new();
+
+//     const space: &str = r#"
+// (Straight 1 2)
+// (Straight 2 3)
+
+// (exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
+
+// (exec P2 (, (Transitive $x $y)) (, (Line $x $q)))
+// (exec P2 (, (Transitive $x $y)) (, (Line $q $y)))
+
+// "#;
+//     // (exec (P0 reverse) (, (Straight $x $y) (exec (P0 reverse) $P $T)) (, (Reverse $y $x) (pexec (P0 reverse) $P $T)))
+//     //
+//     // (exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
+//     //
+
+//     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+//     s.metta_calculus(100);
+
 //     let mut v = vec![];
 //     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-    
-//     println!("{}", String::from_utf8(v).unwrap());
-//     return;
 
-// <<<<<<< HEAD
+//     println!("out {}", String::from_utf8(v).unwrap());
+
+
 // }
 
-// fn bench_3() {
-//         let mut s = DefaultSpace::new();
+// fn process_calculus() {
+//     let mut s = Space::new();
+
+//     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+//     const SPACE_EXPRS: &str = r#"
+// (doc "inference control that switches between dispatching two space functions and runs 10 steps")
+// (exec (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z)))))))))))
+//                (, (exec (IC $x $y (S $c)) $sp $st)
+//                   ((exec $x) $p $t))
+//                (, (exec (IC $y $x $c) $sp $st)
+//                   (exec (R $x) $p $t)))
+// (doc "process calculus recv-send matching")
+// ((exec 0)
+//       (, (petri (? $channel $payload $body))
+//          (petri (! $channel $payload)))
+//       (, (petri $body)))
+// (doc "process calculus | happens in parallel")
+// ((exec 1)
+//       (, (petri (| $lprocess $rprocess)))
+//       (, (petri $lprocess)
+//          (petri $rprocess)))
+
+// (doc "peano arithmetic process-calculus style, using content addressing for Private Name gen")
+// (petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+//                                     (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+// (petri (? (add $ret) (Z $y) (! $ret $y)))
+// (doc "the actual input to the program: two peano numbers to add")
+// (petri (! (add result) ((S (S Z)) (S (S Z)))))
+//     "#;
+
+//     s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+//     s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+
+//     let mut v = vec![];
+//     // s.dump_all_sexpr(&mut v).unwrap();
+//     // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
+//     s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
+//     let res = String::from_utf8(v).unwrap();
+
+//     assert_eq!(res, "(S (S (S (S Z))))\n");
+//     println!("result: {res}")
+// }
+
+// fn main() {
+//     env_logger::init();
+
+//     process_calculus();
+//     return;
+
+//     let mut s = Space::new();
 //     const space: &str = r#"
+// (exec P0 (, (sudoku p2 input (row ($r $x1 $x2 $x3 $x4 $x5 $x6 $x7 $x8 $x9)))) 
+//          (, (cell 1 $r $x1) (cell 2 $r $x2) (cell 3 $r $x3)  (cell 4 $r $x4) (cell 5 $r $x5) (cell 6 $r $x6)  (cell 7 $r $x7) (cell 8 $r $x8) (cell 9 $r $x9)  ))
+
+// (exec P1 (, (cell $c $r _))
+//          (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
+
+// (exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
+//          (, (Deduction remaining (cell $ca $r $x) (cell $cb $r $y))))
+
+// "#;
+//     //
+//     // (exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
+//     // (, (Deduction remaining (cell $ca $r X) (cell $cb $r Y))))
+
+//     // (exec P3 (, (cell $c $ra $va) (cell $c $rb $vb))
+//     // (, (Deduction remaining (cell $c $ra X) (cell $c $rb Y))))
+//     // 
+//     // 
+//     // (exec P4 (, (cell $c $ra $va) (cell $c $rb $vb))
+//     // (, (Deduction remaining (cell $c $ra $x) (cell $c $rb $y))))
+//     // (block 0 1 1) (block 0 1 2) (block 0 1 3)
+//     // (block 0 2 1) (block 0 2 2) (block 0 2 3)
+//     // (block 0 3 1) (block 0 3 2) (block 0 3 3)
+
+//     const sudoku_p2: &str = r#"
+// 1 2 3 4 5 6 7 8 9
+// _ 5 _ _ _ _ 9 _ _
+// _ _ _ 8 3 1 2 5 _
+// 2 _ 7 _ _ _ 6 1 3
+// 9 _ 6 _ _ 7 _ 3 _
+// 1 2 8 _ _ _ 7 _ _
+// _ _ _ 2 _ 4 _ 9 6
+// 8 1 _ 7 6 _ _ 2 9
+// 7 3 4 _ 2 8 _ _ 1
+// _ _ _ 4 1 _ _ _ _"#;
+    
+// //     let mut s = DefaultSpace::new();
+    
+//     s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+//     s.metta_calculus(100);
+    
+// //     s.transform_multi_multi_simple(
+// //         &[expr!(s, "[2] root [2] Sound [2] Sound [2] $ $")],
+// //         &[expr!(s, "[2] root [2] Output [5] The _1 makes sounds _2")]
+// //     );
+    
+// //     let mut v = vec![];
+// //     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    
+// //     println!("{}", String::from_utf8(v).unwrap());
+// //     return;
+
+// // <<<<<<< HEAD
+// // }
+
+// // fn bench_3() {
+// //         let mut s = DefaultSpace::new();
+// //     const space: &str = r#"
+
+
+
 // (exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, $body (exec PC0 $p $t)))
 // (exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))
 // =======

@@ -233,6 +233,36 @@ pub trait Space: Sized {
             wz.graft(&rz);
         }
 
+        // GOAT, he is an alternative version of writer-subsumption part of this function, written by Adam after
+        // I write this one.  It may or may not be more correct of faster... I haven't had time yet to understand it deeply
+        //
+        // pub fn prefix_subsumption(prefixes: &[&[u8]]) -> Vec<usize> {
+        //     let n = prefixes.len();
+        //     let mut out = Vec::with_capacity(n);
+
+        //     for (i, &cur) in prefixes.iter().enumerate() {
+        //         let mut best_idx = i;
+        //         let mut best_len = cur.len();
+
+        //         for (j, &cand) in prefixes.iter().enumerate() {
+        //             if pathmap::utils::find_prefix_overlap(cand, cur) == cand.len() {
+        //                 let cand_len = cand.len();
+
+        //                 if cand_len < best_len || (cand_len == best_len && j < best_idx) {
+        //                     best_idx = j;
+        //                     best_len = cand_len;
+        //                 }
+        //             }
+        //         }
+
+        //         out.push(best_idx);
+        //     }
+
+        //     out
+        // }
+        //
+
+
         //Make a vec of template paths, sorted from shortest to longest
         // `(path, template_idx, writer_slot_idx)`
         let mut template_path_table: Vec<(&[u8], usize, usize)> = templates.iter().enumerate().map(|(i, template)|{
@@ -311,12 +341,11 @@ pub trait Space: Sized {
     ///  facilitate logging of sub-commands in the server
     fn metta_calculus<'s>(&'s self,
         thread_id_sexpr_str: &str,
-        status_writer: &mut Self::Writer<'s>,
         step_cnt: usize,
         auth: &Self::Auth
-    )
+    ) -> Result<(), ExecError<Self>>
     {
-        metta_calculus_impl(self, thread_id_sexpr_str, status_writer, 2000, step_cnt, auth)
+        metta_calculus_impl(self, thread_id_sexpr_str, 2000, step_cnt, auth)
     }
 
     #[cfg(feature="neo4j")]

@@ -20,7 +20,7 @@ def _main():
     space, query = space_query_fatality_combo(3, 10)
     print("space", space)
     print("query", query)
-    with ManagedMORK.start(binary_path="../target/release/mork_server").and_terminate() as server:
+    with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
         with server.work_at("boom") as ins:
             ins.upload_(space)
 

@@ -1868,9 +1868,9 @@ impl DefaultSpace {
         self.transform_multi_multi_simple(&[pattern], &[template])
     }
 
-    pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
-        self.query_multi(&[pattern], |refs, e| {
-            effect(refs.unwrap(), e);
+    pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
+        self.query_multi(&[pattern], |_refs, e| {
+            effect(e);
             Ok::<(), ()>(())
         } ).unwrap();
     }

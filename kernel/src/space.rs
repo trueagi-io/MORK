@@ -747,51 +747,12 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
 
     let (srcs, dsts) = destructure_exec_expr(space, rt)?.collect_inner();
 
-    //GOAT dead code to parse the pattern and template expressions
-    //
-    // let mut srcz = ExprZipper::new(rtz.subexpr());
-    // let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
-    // let mut srcs = Vec::with_capacity(n as usize - 1);
-    // srcz.next();
-    // assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
-    // for _ in 0..n as usize - 1 {
-    //     srcz.next_child();
-    //     srcs.push(srcz.subexpr());
-    // }
-    // assert!(rtz.next_child());
-    // let mut dstz = ExprZipper::new(rtz.subexpr());
-    // let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-    // let mut dsts = Vec::with_capacity(m as usize - 1);
-    // dstz.next();
-    // assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
-    // for _ in 0..m as usize - 1 {
-    //     dstz.next_child();
-    //     // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
-    //     // println!("dst {:?}", dstz.subexpr());
-    //     dsts.push(dstz.subexpr());
-    // }
-
     let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth)?;
 
     //Insert the self expression into the read_map
     read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
 
-    //GOAT, when we unify `transform_multi_multi_impl` with `transform_multi_multi_impl_`, we ought to call `transform_multi_multi` here
-    // rather than this copy-pasta
-    let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
-
-    let pattern_rzs: Vec<_> = srcs.iter().map(|pat| {
-        let path = make_prefix(pat);
-        read_map.read_zipper_at_borrowed_path(path)
-    }).collect();
-
-    let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| space.write_zipper(writer)).collect();
-
-    let res = transform_multi_multi_impl_(&srcs[..], &pattern_rzs, &dsts[..], &template_prefixes, &mut template_wzs);
-
-    for wz in template_wzs {
-        space.cleanup_write_zipper(wz);
-    }
+    let res = space.transform_multi_multi(&srcs, &read_map, &dsts, &template_prefixes, &mut writers);
 
     trace!(target: "interpret", "(run, changed) = {:?}", res);
     Ok(())
@@ -1834,128 +1795,7 @@ impl DefaultSpace {
     }
 }
 
-// #[inline]
-// pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
-//     patterns            : &[E],
-//     pattern_rzs         : &[RZ],
-//     templates           : &[E],
-//     template_prefixes   : &[(usize, usize)],
-//     template_wzs        : &mut [WZ],
-// ) -> (usize, bool)
-//     where
-//     E: ExprTrait,
-//     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-//     WZ : ZipperMoving + ZipperWriting<()>
-// {
-//         let mut buffer = [0u8; 512];
-
-//         //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
-//         //--------------------------------------------------
-//         // let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
-//         // let mut subsumption = vec![0; templates.len()];
-//         // // x abc y ab z   =>  0 3 2 3 4 
-//         // // x ab y abc z   =>  0 1 2 1 4
-
-//         // // x abc y ab z a   =>  0 5 2 5 4 5 
-//         // // x ab y abc z a   =>  0 5 2 5 4 5
-
-//         // // a x abc y ab z   =>  0 1 0 3 0 4
-//         // // a x ab y abc z   =>  0 1 0 3 0 4
-
-//         // // abc x a y ab z   =>  2 1 2 3 2 5
-//         // // ab x a y abc z   =>  2 1 2 3 2 5
-//         // for (i, e) in templates.iter().enumerate() {
-//         //     template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
-//         //     subsumption[i] = i;
-//         //     for j in 0..i {
-//         //         let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
-//         //         if o == template_prefixes[j].len() { // i prefix of j (or equal) 
-//         //             subsumption[i] = j;
-//         //             break
-//         //         }
-//         //     }
-//         // }
-//         // let mut placements = subsumption.clone();
-//         // let read_copy = self.btm.clone();
-//         // let mut template_wzs: Vec<_> = vec![];
-//         // // let mut write_copy = self.btm.clone();
-//         // template_prefixes.iter().enumerate().for_each(|(i, x)| {
-//         //     if subsumption[i] == i {
-//         //         // placements[i] = template_wzs.len();
-//         //         template_wzs.push(self.write_zipper_at_unchecked(x));
-//         //         // template_wzs.push(write_copy.write_zipper_at_path(x));
-//         //     }
-//         // });
-//         // for i in 0..subsumption.len() {
-//         //     subsumption[i] = placements[subsumption[i]]
-//         // }
-//         // trace!(target: "transform", "templates {:?}", templates);
-//         // trace!(target: "transform", "prefixes {:?}", template_prefixes);
-//         // trace!(target: "transform", "subsumption {:?}", subsumption);
-//         //--------------------------------------------------
-
-
-//         //Make a copy map for all of the sources we need to 
-
-
-//         //GOAT From server branch prior to merge
-//         //--------------------------------------------------
-//         // let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
-//         //     for i in 0..template_wzs.len() {
-//         //         let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
-//         //         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-//         //         template.substitute(refs, &mut oz);
-//         //         wz.descend_to(&buffer[prefix.len()..oz.loc]);
-//         //--------------------------------------------------
-
-
-
-//         let mut any_new = false;
-//         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
-//             // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
-//             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
-
-//             for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
-
-//                 let wz = &mut template_wzs[*wz_idx];
-//                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
-//                 trace!(target: "transform", "{i} template {}", serialize(unsafe { template.borrow().span().as_ref().unwrap()}));
-//                 match refs_bindings {
-//                     Ok(refs) => {
-//                         trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
-//                         template.borrow().substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
-//                     }
-//                     Err((ref bindings, ti, ni, _)) => {
-//                         #[cfg(debug_assertions)]
-//                         {
-//                         bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
-//                         }
-
-//                         mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
-//                     }
-//                 }
-//                 // loc.transformed(template,)
-//                 trace!(target: "transform", "{i} out {:?}", oz.root);
-//                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
-
-//                 wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
-
-//                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
-//                 // println!("insert path {}", serialize(&buffer[..oz.loc]));
-//                 any_new |= wz.set_value(()).is_none();
-//                 wz.reset();
-//                 // THIS DOES WORK v
-//                 // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
-
-//             }
-//             Result::<(),()>::Ok(())
-//         }).unwrap();
-//         (touched, any_new)
-// }
-
-//GOAT, There should NOT be two functions that are so close in implementation without a very very very good reason
-pub(crate) fn transform_multi_multi_impl_<'s, E, RZ, WZ> (
+pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
     patterns            : &[E],
     pattern_rzs         : &[RZ],
     templates           : &[E],
@@ -1968,54 +1808,6 @@ pub(crate) fn transform_multi_multi_impl_<'s, E, RZ, WZ> (
     WZ : ZipperMoving + ZipperWriting<()>
 {
         let mut buffer = [0u8; 512];
-
-        //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
-        //--------------------------------------------------
-        // let mut template_prefixes = vec![slice_from_raw_parts(null(), 0); templates.len()];
-        // let mut subsumption = vec![0; templates.len()];
-        // // x abc y ab z   =>  0 3 2 3 4
-        // // x ab y abc z   =>  0 1 2 1 4
-
-        // // x abc y ab z a   =>  0 5 2 5 4 5
-        // // x ab y abc z a   =>  0 5 2 5 4 5
-
-        // // a x abc y ab z   =>  0 1 0 3 0 4
-        // // a x ab y abc z   =>  0 1 0 3 0 4
-
-        // // abc x a y ab z   =>  2 1 2 3 2 5
-        // // ab x a y abc z   =>  2 1 2 3 2 5
-        // for (i, e) in templates.iter().enumerate() {
-        //     template_prefixes[i] = e.prefix().unwrap_or_else(|x| e.span());
-        //     subsumption[i] = i;
-        //     for j in 0..i {
-        //         let o = unsafe {
-        //             pathmap::utils::find_prefix_overlap(template_prefixes[i].as_ref().unwrap_unchecked(),
-        //                                                 template_prefixes[j].as_ref().unwrap_unchecked()) };
-        //         if o == template_prefixes[j].len() { // i prefix of j (or equal)
-        //             subsumption[i] = j;
-        //             break
-        //         }
-        //     }
-        // }
-        // let template_prefixes: &[&[u8]] = unsafe { std::mem::transmute(&template_prefixes[..]) };
-        // let mut placements = subsumption.clone();
-        // let mut read_copy = self.btm.clone();
-        // read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
-        // let mut template_wzs: Vec<_> = vec![];
-        // // let mut write_copy = self.btm.clone();
-        // template_prefixes.iter().enumerate().for_each(|(i, x)| {
-        //     if subsumption[i] == i {
-        //         // placements[i] = template_wzs.len();
-        //         template_wzs.push(self.write_zipper_at_unchecked(x));
-        //         // template_wzs.push(write_copy.write_zipper_at_path(x));
-        //     }
-        // });
-        // for i in 0..subsumption.len() {
-        //     subsumption[i] = placements[subsumption[i]]
-        // }
-        // trace!(target: "transform", "templates {:?}", templates);
-        // trace!(target: "transform", "prefixes {:?}", template_prefixes);
-        // trace!(target: "transform", "subsumption {:?}", subsumption);
 
         let mut any_new = false;
         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
@@ -2266,77 +2058,6 @@ impl<S: Space> core::fmt::Debug for ExecError<S> {
         }
     }
 }
-
-//GOAT trash
-// #[doc = "hidden"]
-// /// this function should only remain as an artifact for inlining
-// pub fn aquire_interpret_localized_permissions
-// <'s: 'r + 'w,  'r, 'w, S : Space<Auth = ()> + ?Sized>
-// ( _self : &'s S, patterns : &'r [Expr], templates : &'w [Expr]) 
-// -> Result<(Vec<S::Reader<'r>>, Vec<S::Writer<'w>>),Retry>
-// {
-//     let mut readers = Vec::new();
-//     for pat in patterns.iter() {
-//         let Ok(reader) = _self.new_reader(unsafe { pat.prefix().unwrap_or_else(|_| pat.span()).as_ref().unwrap() }, &())
-//             else { return Err(Retry) };
-//         readers.push(reader);
-//     }
-
-//     let mut writers = Vec::new();
-//     for template in templates.iter() {
-//         let Ok(writer) = _self.new_writer(unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() }, &()) 
-//             else { return Err(Retry) };
-//         writers.push(writer);
-//     }
-
-//     Ok((readers, writers))
-// }
-
-// #[doc = "hidden"]
-// /// this function should only be called on values of the form `(exec <loc> [, ..patterns) (, ..templates))`
-// /// it only checks the exec and <loc> in debug as asserts
-// /// 
-// /// this function should only remain as an artifact for inlining
-// pub fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
-//     let mut exec_ez = ExprZipper::new(exec_e);
-//     if exec_ez.item() != Ok(Tag::Arity(4)) {
-//         return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
-//     }
-//     assert!(exec_ez.next());
-
-//     // exec
-//     core::debug_assert_eq!{
-//         unsafe { exec_ez.subexpr().span().as_ref().unwrap() },
-//         unsafe { expr!(s, "exec").span().as_ref().unwrap() }
-//     };
-//     assert!(exec_ez.next());
-
-//     // <loc>
-//     core::debug_assert!( exec_ez.subexpr().is_ground() );
-//     assert!(exec_ez.next_child());
-
-//     let comma_list_check = |e| {
-//         let mut ez = ExprZipper::new(e);
-//         let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
-//         ez.next();
-
-//         let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
-//         if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
-//             return Err(());
-//         } else { Ok(()) }
-//     };
-
-//     // (, ..$patterns)
-//     let srcs = exec_ez.subexpr();
-//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
-//     assert!(exec_ez.next_child());
-
-//     // (, ..$templates)
-//     let dsts = exec_ez.subexpr();
-//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
-
-//     Ok(PatternsTemplatesExprs { patterns: srcs, templates: dsts })
-// }
 
 type PatternExpr = Expr;
 type PatternsExpr = Expr;

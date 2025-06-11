@@ -4,12 +4,12 @@ use std::io::{BufRead, Read};
 use log::*;
 
 use bucket_map::SharedMappingHandle;
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
+use mork_frontend::{bytestring_parser::{ParseContext, Parser, ParserErrorType}};
 use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
+    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -58,7 +58,7 @@ pub trait Space: Sized {
     /// Objects of this type encapsulate a location in the space and the rights to write to that location
     type Writer<'space> where Self: 'space;
     /// An error type for when a new reader or writer cannot be authenticated.
-    type PermissionErr;
+    type PermissionErr: core::fmt::Debug;
 
     // ===================== Methods used by caller ===================== 
 
@@ -85,6 +85,23 @@ pub trait Space: Sized {
     /// Removes the WriteZipper from the ZipperHead
     fn cleanup_write_zipper(&self, wz: impl SpaceWriterZipper);
 
+    /// Attempts to acquire a new writer at `path`, but retries in a loop instead of failing immediately
+    fn new_writer_retry<'space>(&'space self, path: &[u8], attempts: usize, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
+        let mut attempts = attempts.max(1);
+        let mut err = None;
+        while attempts > 0 {
+            match self.new_writer(path, auth) {
+                Ok(writer) => return Ok(writer),
+                Err(e) => { 
+                    std::thread::sleep(core::time::Duration::from_micros(500));
+                    err = Some(e);
+                } 
+            };
+            attempts -= 1;
+        }
+        Err(err.unwrap())
+    }
+
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
 
@@ -107,11 +124,9 @@ pub trait Space: Sized {
         ).map_err(|e|ParseError(format!("{e:?}")))
     }
 
-
-    fn sexpr_to_expr(&self, sexpr :  &str) -> Result<OwnedExpr, ParseError> {
+    fn sexpr_to_expr(&self, sexpr:  &str) -> Result<OwnedExpr, ParseError> {
         sexpr_to_path(self.symbol_table(), sexpr)
     }
-
 
     fn dump_as_sexpr<'s, W : std::io::Write>(
         &'s self,
@@ -202,7 +217,7 @@ pub trait Space: Sized {
         patterns            : &[E],
         templates           : &[E],
         auth                : &Self::Auth,
-    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), Self::PermissionErr> {
+    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         //Make the "ReadMap" by copying each pattern from the space
@@ -210,7 +225,8 @@ pub trait Space: Sized {
         for pat in patterns {
             let path = make_prefix(&pat.borrow());
 
-            let mut reader = self.new_reader(path, auth)?;
+            let mut reader = self.new_reader(path, auth)
+                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
             let rz = self.read_zipper(&mut reader);
 
             let mut wz = read_map.write_zipper_at_path(path);
@@ -253,7 +269,8 @@ pub trait Space: Sized {
         //Acquire writers at each slot, knowing we any conflicts are with external clients
         let mut writers = Vec::with_capacity(writer_slots.len());
         for path in writer_slots {
-            let writer = self.new_writer(path, auth)?;
+            let writer = self.new_writer(path, auth)
+                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
             writers.push(writer);
         }
 
@@ -286,6 +303,20 @@ pub trait Space: Sized {
             self.cleanup_write_zipper(wz);
         }
         result
+    }
+
+    /// Executes a MeTTa thread
+    ///
+    /// GOAT, TODO.  This also needs to take a callback that is called each trip through the loop, in order to
+    ///  facilitate logging of sub-commands in the server
+    fn metta_calculus<'s>(&'s self,
+        thread_id_sexpr_str: &str,
+        status_writer: &mut Self::Writer<'s>,
+        step_cnt: usize,
+        auth: &Self::Auth
+    )
+    {
+        metta_calculus_impl(self, thread_id_sexpr_str, status_writer, 2000, step_cnt, auth)
     }
 
     #[cfg(feature="neo4j")]

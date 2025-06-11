@@ -324,16 +324,16 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        // , "\n(exec PC0 (, (? $channel $payload $body) (! $channel $payload) (exec PC0 $p $t)) (, (body $body) (exec PC0_ $p $t)))"
-        , "\n(exec PC1 (, (| $lprocess $rprocess) (exec PC1 $p $t)) (, $lprocess $rprocess (exec PC1 $p $t)))"
-        , "\n(? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) )"
-        , "\n(? (add $ret) (Z $y) (! $ret $y))"
-        , "\n(! (add result) ((S Z) (S Z)))"
+        // , "\n(exec (test0 PC0) (, (? $channel $payload $body) (! $channel $payload) (exec (test0 PC0) $p $t)) (, (body $body) (exec (test0 PC0_) $p $t)))"
+        , "\n(exec (test0 PC1) (, (user (| $lprocess $rprocess)) (exec (test0 PC1) (user $p) (user $t))) (, (user $lprocess) (user $rprocess) (exec (test0 PC1) (user $p) (user $t))))"
+        , "\n(user (? (add $ret) ((S $x) $y) (? (add $z) ($x $y) (! $ret (S $z)) ) ) )"
+        , "\n(user (? (add $ret) (Z $y) (! $ret $y)))"
+        , "\n(user (! (add result) ((S Z) (S Z))))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        metta_calculus_impl(&s, &()).unwrap();
+        s.metta_calculus_simple("test0").unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -346,9 +346,9 @@ mod tests {
         assert_eq!(res.lines().count(), 3);
         core::assert_eq!(
             res,
-            "(! (add result) ((S Z) (S Z)))\n\
-             (? (add $) (Z $) (! _1 _2))\n\
-             (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4))))\n"
+            "(user (! (add result) ((S Z) (S Z))))\n\
+             (user (? (add $) (Z $) (! _1 _2)))\n\
+             (user (? (add $) ((S $) $) (? (add $) (_2 _3) (! _1 (S _4)))))\n"
         );
 
         //GOAT, there are several things before this test will work "correctly", i.e. with the first expression
@@ -418,18 +418,18 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        // , "\n(exec PC0 (, v) (, thing))"                        // regression bug was outputing : "thing\n"
-        // , "\n(exec PC0 (, v) (, (thing) ))"                     // regression bug was outputing : "(thing)\n"
-        // , "\n(exec PC0 (, v) (, (thing (thing thing) thing) ))" // regression bug was outputing : "(thing (thing thing) thing)\n"
-        // , "\n(exec PC0 (, v) (, (thing thing) ))"               // regression bug was outputing : "(thing thing)\n"
-        , "\n(exec PC0 (, v) (, ($x thing) ))"                     // ""
-        // , "\n(exec PC0 (, v) (, (thing $x) ))"                  // ""
-
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, thing))"                        // regression bug was outputing : "thing\n"
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, (thing) ))"                     // regression bug was outputing : "(thing)\n"
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, (thing (thing thing) thing) ))" // regression bug was outputing : "(thing (thing thing) thing)\n"
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, (thing thing) ))"               // regression bug was outputing : "(thing thing)\n"
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, ($x thing) ))"                  // fails because it's trying to grab a permission that conflicts with the build-in status location
+        // , "\n(exec (test_one_exec_only PC0) (, v) (, (exec $x) ))"                   // fails because it's trying to grab a permission that conflicts with the build-in status location
+        , "\n(exec (test_one_exec_only PC0) (, v) (, (executive $x) ))"                 // ""
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        metta_calculus_impl(&s, &()).unwrap();
+        s.metta_calculus_simple("test_one_exec_only").unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -447,14 +447,14 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec PC0 (, (exec $loc $p $t)) (, (result-pc0 (exec $loc $p $t))))"
+        , "\n(exec (test_clears_two_execs PC0) (, (exec $loc $p $t)) (, (result-pc0 (exec $loc $p $t))))"
 
-        , "\n(exec PC1 (, (exec $loc $p $t)) (, (result-pc1 (exec $loc $p $t))))"
+        , "\n(exec (test_clears_two_execs PC1) (, (exec $loc $p $t)) (, (result-pc1 (exec $loc $p $t))))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        metta_calculus_impl(&s, &()).unwrap();
+        s.metta_calculus_simple("test_clears_two_execs").unwrap();
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -464,9 +464,9 @@ mod tests {
 
         assert_eq!(out.lines().count(), 3);
         core::assert_eq!(
-            "(result-pc0 (exec PC0 (, (exec $ $ $)) (, (result-pc0 (exec _1 _2 _3)))))\n\
-            (result-pc0 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
-            (result-pc1 (exec PC1 (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
+            "(result-pc0 (exec (test_clears_two_execs PC0) (, (exec $ $ $)) (, (result-pc0 (exec _1 _2 _3)))))\n\
+            (result-pc0 (exec (test_clears_two_execs PC1) (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
+            (result-pc1 (exec (test_clears_two_execs PC1) (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
             ", &out
         )
     }
@@ -515,8 +515,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn metta_calculus_swap_0() {
         let mut s = DefaultSpace::new();
@@ -525,13 +523,13 @@ mod tests {
         concat!
         ( ""
         , "\n(val a b)"
-        , "\n(exec \"00\" (, (val $x $y)) (, (swaped-val (val $x $y) (val $y $x))) )" // swap vals
-        , "\n(exec \"01\" (, (val $x $y)) (, (pair $x $y)) )" // swap vals
+        , "\n(exec (swap_0 \"00\") (, (val $x $y)) (, (swaped-val (val $x $y) (val $y $x))) )" // swap vals
+        , "\n(exec (swap_0 \"01\") (, (val $x $y)) (, (pair $x $y)) )" // swap vals
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        metta_calculus_impl(&s, &()).unwrap();
+        s.metta_calculus_simple("swap_0").unwrap();
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
@@ -563,18 +561,17 @@ mod tests {
         , "\n                            (, (val $v $u))"
         , "\n)"
 
-        , "\n(exec metta_thread_basic (, (val $x $y) (def (metta_thread_basic 2) $p $t) )"
+        , "\n(exec (metta_thread_basic 1) (, (val $x $y) (def (metta_thread_basic 2) $p $t) )"
         , "\n                         (,"
         , "\n                            (swapped $y $x)"
-        , "\n                            (exec metta_thread_basic $p $t)"
+        , "\n                            (exec (metta_thread_basic 1) $p $t)"
         , "\n                         )"
         , "\n)"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        metta_calculus_impl(&s, &()).unwrap();
-
+        s.metta_calculus_simple("metta_thread_basic").unwrap();
 
         let mut writer = Vec::new();
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();

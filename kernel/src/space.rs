@@ -1,7 +1,7 @@
 use core::assert_eq;
 use core::result::Result::{Err, Ok};
 use std::io::{BufRead, Write};
-use std::process;
+use std::{process, usize};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::sync::Arc;
@@ -559,7 +559,6 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-
 pub struct SpaceTranscriber<'a, 'c, WZ> { 
     /// count of unnested values == path_count
     path_count : PathCount, 
@@ -736,65 +735,40 @@ impl DefaultSpace {
      */
 }
 
-/// Executes a single MM2 expression
+/// Executes a single MM2 expression in the expected form
 ///
-/// (exec <loc> (, <src1> <src2> <srcn>)
-///             (, <dst1> <dst2> <dstm>))
-pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), S::PermissionErr> {
-    let mut rtz = ExprZipper::new(rt);
+/// (exec (<thread_id> <priority>) (, <src1> <src2> <srcn)
+///                                (, <dst1> <dst2> <dstm>))
+pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
     info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
-    assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
-    assert!(rtz.next());
-    assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, "exec").span().as_ref().unwrap() });
-    assert!(rtz.next());
-    // let loc = rtz.subexpr();
 
-    assert!(rtz.next_child());
+    let (srcs, dsts) = destructure_exec_expr(space, rt)?.collect_inner();
 
-    //GOAT, old server branch code from before the merge
+    //GOAT dead code to parse the pattern and template expressions
     //
-    // let srcs = comma_fun_args_asserted(self, rtz.subexpr());
-
+    // let mut srcz = ExprZipper::new(rtz.subexpr());
+    // let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
+    // let mut srcs = Vec::with_capacity(n as usize - 1);
+    // srcz.next();
+    // assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
+    // for _ in 0..n as usize - 1 {
+    //     srcz.next_child();
+    //     srcs.push(srcz.subexpr());
+    // }
     // assert!(rtz.next_child());
-    // let dsts = comma_fun_args_asserted(self, rtz.subexpr());
+    // let mut dstz = ExprZipper::new(rtz.subexpr());
+    // let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+    // let mut dsts = Vec::with_capacity(m as usize - 1);
+    // dstz.next();
+    // assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
+    // for _ in 0..m as usize - 1 {
+    //     dstz.next_child();
+    //     // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
+    //     // println!("dst {:?}", dstz.subexpr());
+    //     dsts.push(dstz.subexpr());
+    // }
 
-    // // #[cfg(test)]{
-    // //     println!("SRCS");
-    // //     for each in &srcs {
-    // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-    // //     }
-    // //     println!("DSTS");
-    // //     for each in &dsts {
-    // //         println!("\te : {:?}", mork_bytestring::serialize(unsafe { each.span().as_ref().unwrap() }))
-    // //     }
-    // // }
-
-    // self.transform_multi_multi_simple(&srcs[..], &dsts[..]);
-
-
-    let mut srcz = ExprZipper::new(rtz.subexpr());
-    let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
-    let mut srcs = Vec::with_capacity(n as usize - 1);
-    srcz.next();
-    assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
-    for _ in 0..n as usize - 1 {
-        srcz.next_child();
-        srcs.push(srcz.subexpr());
-    }
-    assert!(rtz.next_child());
-    let mut dstz = ExprZipper::new(rtz.subexpr());
-    let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-    let mut dsts = Vec::with_capacity(m as usize - 1);
-    dstz.next();
-    assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(space, ",").span().as_ref().unwrap() });
-    for _ in 0..m as usize - 1 {
-        dstz.next_child();
-        // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
-        // println!("dst {:?}", dstz.subexpr());
-        dsts.push(dstz.subexpr());
-    }
-
-    let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs[..], &dsts[..], auth)?;
+    let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth)?;
 
     //Insert the self expression into the read_map
     read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
@@ -820,42 +794,208 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
     Ok(())
 }
 
-//GOAT, We want some return additional error results along the lines of time-out, etc.
-pub(crate) fn metta_calculus_impl<S: Space>(space: &S, auth: &S::Auth) -> Result<(), S::PermissionErr> {
-    // MC CMD "TEXEC THREAD0"
+/// Validates the format of an MM2 expression, and extracts the patterns and templates from it
+pub(crate) fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTemplatesExprs, ExecError<S>> {
+    let mut rtz = ExprZipper::new(rt);
 
-    let prefix_e = expr!(space, "[4] exec $ $ $");
-    let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+    // ////////////////////////////////////////////////////////////////////
+    // Overall format and `exec` keyword
+    // //////////////////////////////////////////////////////////////////
+
+    //Make sure the expression is an arity-4
+    if rtz.item() != Ok(Tag::Arity(4)) {
+        return Err(ExecError::ExpectedArity4(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+    }
+    assert!(rtz.next());
+
+    //Check for the "exec" keyword, and step over it if we find it
+    if unsafe{ rtz.subexpr().span().as_ref().unwrap() != expr!(space, "exec").span().as_ref().unwrap() } {
+        return Err(ExecError::ExpectedExecKeyword(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+    }
+    assert!(rtz.next());
+
+    // ////////////////////////////////////////////////////////////////////
+    // Validate (<thread_id>, <priority>)
+    // //////////////////////////////////////////////////////////////////
+
+    '_loc_priority_sub_expr : {
+        let mut sub_ez = ExprZipper::new(rtz.subexpr());
+
+        //Check for the (<thread_id> <priority>) pair.
+        if sub_ez.item() != Ok(Tag::Arity(2)) {
+            return Err(ExecError::ExpectedThreadIdPair(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+        }
+        assert!(rtz.next());
+
+        //Check <thread_id>.  Currently we only accept a grounded `thread_id` as the first arg,
+        // although this may change in the future
+        if !rtz.subexpr().is_ground() {
+            return Err(ExecError::OtherFmtErr(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+        }
+        assert!(sub_ez.next_child());
+
+        //Check <priority> is grounded
+        if !sub_ez.subexpr().is_ground() {
+            return Err(ExecError::ExpectedGroundPriority(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+        }
+    }
+    assert!(rtz.next_child());
+
+    // ////////////////////////////////////////////////////////////////////
+    // Lists of patterns, and templates
+    // //////////////////////////////////////////////////////////////////
+
+    let comma_list_check = |e| {
+        let mut ez = ExprZipper::new(e);
+        let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
+        ez.next();
+
+        let comma = unsafe { expr!(space, ",").span().as_ref().unwrap() };
+        if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
+            return Err(());
+        } else { Ok(()) }
+    };
+
+    // (, ..$patterns)
+    let srcs = rtz.subexpr();
+    comma_list_check(srcs).map_err(|_|ExecError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
+    assert!(rtz.next_child());
+
+    // (, ..$templates)
+    let dsts = rtz.subexpr();
+    comma_list_check(srcs).map_err(|_|ExecError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
+
+    Ok(PatternsTemplatesExprs::new(srcs, dsts))
+}
+
+impl DefaultSpace {
+    pub fn metta_calculus_simple(&mut self, thread_id_sexpr_str: &str) -> Result<(), String> {
+
+        //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+        let status_loc_sexpr = format!("(exec {})", thread_id_sexpr_str);
+        let status_loc = <_>::sexpr_to_expr(self, &status_loc_sexpr).unwrap();
+
+        let Ok(mut status_writer) = self.new_writer(status_loc.as_bytes(), &()) else {
+            return Err("Thread is already running at that loacation.".to_string())
+        };
+
+        self.metta_calculus(thread_id_sexpr_str, &mut status_writer, usize::MAX, &());
+
+        //GOAT, we should pack up the result from the status location and return it
+        Ok(())
+    }
+}
+
+pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, status_writer: &mut S::Writer<'s>, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) {
+
+    //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+    //
+    // (exec (<location> $priority) $patterns $templates)
+    let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
+    let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
 
     // the invariant is that buffer should always be reset with at least the prefix
     let mut buffer = Vec::from(prefix);
 
-    loop {
+    let mut retry = false;
+    let mut retry_cnt = max_retries;
+
+    let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
         debug_assert!(buffer.len() >= prefix.len());
         debug_assert_eq!(&buffer[..prefix.len()], prefix);
 
-        let mut exec_permission = space.new_writer(&prefix, auth)?; //GOAT, retry here if fails
+        // ////////////////////////////////////////////////////////////////////
+        // Get a write permission to the exec sub-space for this MeTTa thread
+        // //////////////////////////////////////////////////////////////////
+        //
+        // This path should never be contended for long periods of time, although it is possible another
+        // command (such as a debugger command) has this path locked in order to communicate with us.  We
+        // should be able to get the write permission soon enough by retrying
+        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+            Ok(writer) => writer,
+            Err(_) => {
+                //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
+                // which means we've been trying for a whole second.  It also likely means the path
+                // is held indefinitely, which is a bug somewhere, although not here.
+                //We ought to write an error into the status map and abort execution
+                todo!()
+            }
+        };
         let mut exec_wz = space.write_zipper(&mut exec_permission);
+
+        // //////////////////////////////////////
+        // Find an expression we can execute  //
+        // ////////////////////////////////////
         let mut rz = exec_wz.fork_read_zipper();
+        rz.descend_to(&buffer[prefix.len()..]);
 
-        if !rz.to_next_val() { break }
+        if !rz.to_next_val() {
+            if retry {
+                if retry_cnt > 0 {
+                    retry_cnt -= 1;
+                } else {
+                    break 'process_execs Err(ExecError::RetryLimit("".to_string()))
+                }
 
-        // let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
-        // drop(rz);
+                //Try again from the beginning
+                buffer.truncate(prefix.len());
+                std::thread::sleep(core::time::Duration::from_millis(1));
+                continue 'process_execs;
+            }
 
+            //Sucessfully consumed all execs.  This MeTTa thread is done
+            break 'process_execs Ok(())
+        }
         buffer.truncate(prefix.len());
         buffer.extend_from_slice(rz.path());
         drop(rz);
 
+        // Remove expr, which means we are "claiming" it
         exec_wz.descend_to(&buffer[prefix.len()..]);
         exec_wz.remove_value();
         drop(exec_wz);
         drop(exec_permission);
 
-        interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth);
-    }
+        match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
+            Ok(()) => {
+                retry = false;
+                retry_cnt = max_retries;
+                buffer.truncate(prefix.len());
+                if step_cnt > 0 {
+                    step_cnt -= 1
+                } else {
+                    //Finished running the allotted number of steps
+                    break 'process_execs Ok(())
+                }
+            },
+            Err(err) => {
+                match err {
+                    ExecError::UserPermissionErr(_) => {
+                        //We couldn't get permissions for this particular exec expression, so we need to
+                        // put the expression back in the space and then try with another one.
+                        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+                            Ok(writer) => writer,
+                            Err(_) => {
+                                //See similar code above...
+                                todo!()
+                            }
+                        };
+                        let mut exec_wz = space.write_zipper(&mut exec_permission);
+                        exec_wz.descend_to(&buffer[prefix.len()..]);
+                        exec_wz.set_value(());
+                        retry = true;
+                    },
+                    _ => {
+                        //Any error but a UserPermissionError means we halt the execution
+                        break 'process_execs Err(err)
+                    }
+                }
+            }
+        }
+    };
 
-    Ok(())
+    //GOAT, we need to put this result in the status map if it's an error
+    assert_eq!(exec_result, Ok(()));
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
@@ -1622,7 +1762,7 @@ impl DefaultSpace {
 }
 
 #[inline]
-pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ>(
+pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
     patterns            : &[E],
     pattern_rzs         : &[RZ],
     templates           : &[E],
@@ -1742,7 +1882,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ>(
 }
 
 //GOAT, There should NOT be two functions that are so close in implementation without a very very very good reason
-pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ>(
+pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
     patterns            : &[Expr],
     pattern_rzs         : &[RZ],
     templates           : &[Expr],
@@ -1970,82 +2110,156 @@ impl core::fmt::Debug for RawDump {
     }
 }
 
-pub enum ExecSyntaxError {
+/// An error type resulting from an attempt to run an MM2 thread
+pub enum ExecError<S: Space> {
     ExpectedArity4(String),
+    ExpectedExecKeyword(String),
+    ExpectedThreadIdPair(String),
     ExpectedCommaListPatterns(String),
     ExpectedCommaListTemplates(String),
     ExpectedGroundPriority(String),
+    OtherFmtErr(String),
+    SystemPermissionErr(S::PermissionErr),
+    UserPermissionErr(S::PermissionErr),
+    RetryLimit(String),
 }
 
-#[doc = "hidden"]
-/// this function should only remain as an artifact for inlining
-pub fn aquire_interpret_localized_permissions
-<'s: 'r + 'w,  'r, 'w, S : Space<Auth = ()> + ?Sized>
-( _self : &'s S, patterns : &'r [Expr], templates : &'w [Expr]) 
--> Result<(Vec<S::Reader<'r>>, Vec<S::Writer<'w>>),Retry>
-{
-    let mut readers = Vec::new();
-    for pat in patterns.iter() {
-        let Ok(reader) = _self.new_reader(unsafe { pat.prefix().unwrap_or_else(|_| pat.span()).as_ref().unwrap() }, &())
-            else { return Err(Retry) };
-        readers.push(reader);
+impl<S: Space> ExecError<S> {
+    /// Creates a new `ExecError` from a PermissionErr
+    ///
+    /// This function is also responsible for validating whether a whether a `PermissionErr` should be
+    /// classified as a [ExecError::UserPermissionErr] or a [ExecError::SystemPermissionErr], the former
+    /// indicating that another command is holding the required paths and therefore a retry is in order,
+    /// while the latter indicating that an illegal request has been made.
+    pub(crate) fn perm_err(space: &S, path: &[u8], perm_err: S::PermissionErr) -> Self {
+
+        //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+        let exec_status_subspace = unsafe{ expr!(space, "[2] exec $").prefix().unwrap().as_ref().unwrap() };
+
+        //For now, we only have 2 reserved types of paths.  We may have others in the future
+        if path.len() < 2 || path.starts_with(exec_status_subspace) {
+            Self::SystemPermissionErr(perm_err)
+        } else {
+            Self::UserPermissionErr(perm_err)
+        }
     }
 
-    let mut writers = Vec::new();
-    for template in templates.iter() {
-        let Ok(writer) = _self.new_writer(unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() }, &()) 
-            else { return Err(Retry) };
-        writers.push(writer);
+    /// Returns a space's `PermissionErr` if the `ExecError` is a `UserPermissionErr` variant
+    #[inline]
+    pub fn into_perm_err(self) -> Option<S::PermissionErr> {
+        match self {
+            Self::SystemPermissionErr(err) => Some(err),
+            Self::UserPermissionErr(err) => Some(err),
+            _ => None
+        }
     }
-
-    Ok((readers, writers))
 }
 
-#[doc = "hidden"]
-/// this function should only be called on values of the form `(exec <loc> [, ..patterns) (, ..templates))`
-/// it only checks the exec and <loc> in debug as asserts
-/// 
-/// this function should only remain as an artifact for inlining
-pub fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
-    let mut exec_ez = ExprZipper::new(exec_e);
-    if exec_ez.item() != Ok(Tag::Arity(4)) {
-        return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
+impl<S: Space> PartialEq<Self> for ExecError<S> {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::ExpectedArity4(_) => {matches!(other, Self::ExpectedArity4(_))},
+            Self::ExpectedExecKeyword(_) => {matches!(other, Self::ExpectedExecKeyword(_))},
+            Self::ExpectedThreadIdPair(_) => {matches!(other, Self::ExpectedThreadIdPair(_))},
+            Self::ExpectedCommaListPatterns(_) => {matches!(other, Self::ExpectedCommaListPatterns(_))},
+            Self::ExpectedCommaListTemplates(_) => {matches!(other, Self::ExpectedCommaListTemplates(_))},
+            Self::ExpectedGroundPriority(_) => {matches!(other, Self::ExpectedGroundPriority(_))},
+            Self::OtherFmtErr(_) => {matches!(other, Self::OtherFmtErr(_))},
+            Self::SystemPermissionErr(_) => {matches!(other, Self::SystemPermissionErr(_))},
+            Self::UserPermissionErr(_) => {matches!(other, Self::UserPermissionErr(_))},
+            Self::RetryLimit(_) => {matches!(other, Self::RetryLimit(_))},
+        }
     }
-    assert!(exec_ez.next());
-
-    // exec
-    core::debug_assert_eq!{
-        unsafe { exec_ez.subexpr().span().as_ref().unwrap() },
-        unsafe { expr!(s, "exec").span().as_ref().unwrap() }
-    };
-    assert!(exec_ez.next());
-
-    // <loc>
-    core::debug_assert!( exec_ez.subexpr().is_ground() );
-    assert!(exec_ez.next_child());
-
-    let comma_list_check = |e| {
-        let mut ez = ExprZipper::new(e);
-        let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
-        ez.next();
-
-        let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
-        if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
-            return Err(());
-        } else { Ok(()) }
-    };
-
-    // (, ..$patterns)
-    let srcs = exec_ez.subexpr();
-    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
-    assert!(exec_ez.next_child());
-
-    // (, ..$templates)
-    let dsts = exec_ez.subexpr();
-    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
-
-    Ok(PatternsTemplatesExprs { patterns: srcs, templates: dsts })
 }
+impl<S: Space> Eq for ExecError<S> {}
+
+impl<S: Space> core::fmt::Debug for ExecError<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExpectedArity4(s) => { format!("ExecError: ExpectedArity4 {s}").fmt(f) },
+            Self::ExpectedExecKeyword(s) => { format!("ExecError: ExpectedExecKeyword {s}").fmt(f) },
+            Self::ExpectedThreadIdPair(s) => { format!("ExecError: ExpectedThreadIdPair {s}").fmt(f) },
+            Self::ExpectedCommaListPatterns(s) => { format!("ExecError: ExpectedCommaListPatterns {s}").fmt(f) },
+            Self::ExpectedCommaListTemplates(s) => { format!("ExecError: ExpectedCommaListTemplates {s}").fmt(f) },
+            Self::ExpectedGroundPriority(s) => { format!("ExecError: ExpectedGroundPriority {s}").fmt(f) },
+            Self::OtherFmtErr(s) => { format!("ExecError: OtherFmtErr {s}").fmt(f) },
+            Self::SystemPermissionErr(s) => { format!("ExecError: SystemPermissionErr {s:?}").fmt(f) },
+            Self::UserPermissionErr(s) => { format!("ExecError: UserPermissionErr {s:?}").fmt(f) },
+            Self::RetryLimit(s) => { format!("ExecError: RetryLimit {s:?}").fmt(f) },
+        }
+    }
+}
+
+//GOAT trash
+// #[doc = "hidden"]
+// /// this function should only remain as an artifact for inlining
+// pub fn aquire_interpret_localized_permissions
+// <'s: 'r + 'w,  'r, 'w, S : Space<Auth = ()> + ?Sized>
+// ( _self : &'s S, patterns : &'r [Expr], templates : &'w [Expr]) 
+// -> Result<(Vec<S::Reader<'r>>, Vec<S::Writer<'w>>),Retry>
+// {
+//     let mut readers = Vec::new();
+//     for pat in patterns.iter() {
+//         let Ok(reader) = _self.new_reader(unsafe { pat.prefix().unwrap_or_else(|_| pat.span()).as_ref().unwrap() }, &())
+//             else { return Err(Retry) };
+//         readers.push(reader);
+//     }
+
+//     let mut writers = Vec::new();
+//     for template in templates.iter() {
+//         let Ok(writer) = _self.new_writer(unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() }, &()) 
+//             else { return Err(Retry) };
+//         writers.push(writer);
+//     }
+
+//     Ok((readers, writers))
+// }
+
+// #[doc = "hidden"]
+// /// this function should only be called on values of the form `(exec <loc> [, ..patterns) (, ..templates))`
+// /// it only checks the exec and <loc> in debug as asserts
+// /// 
+// /// this function should only remain as an artifact for inlining
+// pub fn localized_exec_match(s : &(impl Space + ?Sized), exec_e : Expr)->Result<PatternsTemplatesExprs, ExecSyntaxError> {
+//     let mut exec_ez = ExprZipper::new(exec_e);
+//     if exec_ez.item() != Ok(Tag::Arity(4)) {
+//         return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
+//     }
+//     assert!(exec_ez.next());
+
+//     // exec
+//     core::debug_assert_eq!{
+//         unsafe { exec_ez.subexpr().span().as_ref().unwrap() },
+//         unsafe { expr!(s, "exec").span().as_ref().unwrap() }
+//     };
+//     assert!(exec_ez.next());
+
+//     // <loc>
+//     core::debug_assert!( exec_ez.subexpr().is_ground() );
+//     assert!(exec_ez.next_child());
+
+//     let comma_list_check = |e| {
+//         let mut ez = ExprZipper::new(e);
+//         let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
+//         ez.next();
+
+//         let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
+//         if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
+//             return Err(());
+//         } else { Ok(()) }
+//     };
+
+//     // (, ..$patterns)
+//     let srcs = exec_ez.subexpr();
+//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
+//     assert!(exec_ez.next_child());
+
+//     // (, ..$templates)
+//     let dsts = exec_ez.subexpr();
+//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })))?;
+
+//     Ok(PatternsTemplatesExprs { patterns: srcs, templates: dsts })
+// }
 
 type PatternExpr = Expr;
 type PatternsExpr = Expr;
@@ -2065,11 +2279,9 @@ impl PatternsTemplatesExprs {
         (self.patterns, self.templates)
     }
     pub fn collect_inner(self) -> (Vec<PatternExpr>, Vec<TemplateExpr>) {
-
         ( fun_args(ExprZipper::new(self.patterns))
         , fun_args(ExprZipper::new(self.templates))
         )
-
     }
 }
 /// this function should only be called if the [`ExprZipper`] passed in is at an [`Tag::Arity`] and the first element is a "function" symbol.

@@ -200,7 +200,7 @@ class MORK:
             self.templates = templates
             self.payload = "(transform (, {}) (, {}))".format(" ".join(patterns), " ".join(templates))
             self.status_loc = templates[0] #GOAT, is there a better location expr to use?
-            super().__init__("post", f"/transform_multi_multi/", data=self.payload, headers={"Content-Type": "text/plain"})
+            super().__init__("post", f"/transform/", data=self.payload, headers={"Content-Type": "text/plain"})
 
     class Explore(Request):
         def __init__(self, pattern, token=""):

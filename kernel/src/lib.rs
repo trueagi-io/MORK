@@ -308,7 +308,7 @@ mod tests {
 
         s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-        s.metta_calculus();
+        s.metta_calculus(100);
 
         let mut v = vec![];
         s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
@@ -325,5 +325,89 @@ mod tests {
         );
         
         println!("{}", res);
+    }
+
+    #[test]
+    fn metta_calculus_swap_0() {
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str =
+        concat!
+        ( ""
+        , "\n(val a b)"
+        , "\n(exec (swap_0 \"00\") (, (val $x $y)) (, (swaped-val (val $x $y) (val $y $x))) )" // swap vals
+        , "\n(exec (swap_0 \"01\") (, (val $x $y)) (, (pair $x $y)) )" // swap vals
+        );
+
+        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus(100);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
+
+        let out = String::from(std::str::from_utf8(&writer).unwrap());
+
+        // println!("\n{out:?}");
+        // println!("\n{:?}", s.dump_raw_at_root());
+
+        // println!("RESULTS:\n{}", out);
+        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out, "(val a b)\n(pair a b)\n(swaped-val (val a b) (val b a))\n");
+    }
+
+    #[test]
+    fn metta_calculus_swap2() {
+
+        let mut s = Space::new();
+
+        const SPACE_EXPRS: &str =
+        concat!
+        ( ""
+        , "\n(val a b)"
+        , "\n(val c d)"
+        , "\n(val e f)"
+        , "\n(val g h)"
+
+        , "\n(def (metta_thread_basic 2) (, (swapped $v $u))"
+        , "\n                            (, (val $v $u))"
+        , "\n)"
+
+        , "\n(exec (metta_thread_basic 1) (, (val $x $y) (def (metta_thread_basic 2) $p $t) )"
+        , "\n                         (,"
+        , "\n                            (swapped $y $x)"
+        , "\n                            (exec (metta_thread_basic 1) $p $t)"
+        , "\n                         )"
+        , "\n)"
+        );
+
+        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus(100);
+
+        let mut writer = Vec::new();
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut writer).unwrap();
+
+        let out = String::from(std::str::from_utf8(&writer).unwrap());
+
+        assert_eq!(out.lines().count(), 13);
+        assert_eq!(out,
+            "(val a b)\n\
+            (val b a)\n\
+            (val c d)\n\
+            (val d c)\n\
+            (val e f)\n\
+            (val f e)\n\
+            (val g h)\n\
+            (val h g)\n\
+            (swapped b a)\n\
+            (swapped d c)\n\
+            (swapped f e)\n\
+            (swapped h g)\n\
+            (def (metta_thread_basic 2) (, (swapped $ $)) (, (val _1 _2)))\n\
+            "
+        );
+
+        println!("RESULTS:\n{}", out);
     }
 }

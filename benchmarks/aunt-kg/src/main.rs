@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{Parser, ParseContext, ParserError};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::*;
 
@@ -61,7 +61,7 @@ fn drop_symbol_head_2<Z: Zipper + ZipperMoving + ZipperWriting<()>>(loc: &mut Z)
 
 fn main() -> Result<(),&'static str> {
     for size in 1..64 {
-        let k = item_byte(Tag::SymbolSize(size));
+        let k = Tag::SymbolSize(size).byte();
         unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
 
@@ -86,8 +86,11 @@ fn main() -> Result<(),&'static str> {
             Ok(()) => {
                 family.insert(&stack[..ez.loc], ());
             }
-            Err(ParserError::InputFinished) => { break }
-            Err(other) => { panic!("{:?}", other) }
+            Err(err) => if err.error_type == ParserErrorType::InputFinished {
+                break
+            } else {
+                panic!("{:?}", err)
+            }
         }
 
         i += 1;
@@ -100,26 +103,26 @@ fn main() -> Result<(),&'static str> {
     let family_head = family.zipper_head();
 
     // family |= family.subst((parent $x $y), (child $y $x))
-    let mut parent_path = vec![item_byte(Tag::Arity(3))];
+    let mut parent_path = vec![Tag::Arity(3).byte()];
     let parent_symbol = parser.tokenizer(b"parent");
-    parent_path.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
+    parent_path.push(Tag::SymbolSize(parent_symbol.len() as u8).byte());
     parent_path.extend(parent_symbol);
     let mut parent_zipper = family_head.read_zipper_at_path(&parent_path[..]).map_err(|_|concat!("failed to make parent zipper at", line!(), "in main"))?;
-    let mut child_path = vec![item_byte(Tag::Arity(3))];
+    let mut child_path = vec![Tag::Arity(3).byte()];
     let child_symbol = parser.tokenizer(b"child");
-    child_path.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
+    child_path.push(Tag::SymbolSize(child_symbol.len() as u8).byte());
     child_path.extend(child_symbol);
     let mut full_child_path = child_path.clone(); full_child_path.resize(128, 0);
 
     let mut child_zipper = family_head.write_zipper_at_exclusive_path(&child_path[..]).map_err(|_|concat!("failed to make child zipper at", line!(), "in main"))?;
 
-    let mut patternv = vec![item_byte(Tag::Arity(3))];
-    patternv.push(item_byte(Tag::SymbolSize(parent_symbol.len() as u8)));
-    patternv.extend(parent_symbol); patternv.push(item_byte(Tag::NewVar)); patternv.push(item_byte(Tag::NewVar));
+    let mut patternv = vec![Tag::Arity(3).byte()];
+    patternv.push(Tag::SymbolSize(parent_symbol.len() as u8).byte());
+    patternv.extend(parent_symbol); patternv.push(Tag::NewVar.byte()); patternv.push(Tag::NewVar.byte());
     let pattern = Expr{ ptr: patternv.as_mut_ptr() };
-    let mut templatev = vec![item_byte(Tag::Arity(3))];
-    templatev.push(item_byte(Tag::SymbolSize(child_symbol.len() as u8)));
-    templatev.extend(child_symbol); templatev.push(item_byte(Tag::VarRef(1))); templatev.push(item_byte(Tag::VarRef(0)));
+    let mut templatev = vec![Tag::Arity(3).byte()];
+    templatev.push(Tag::SymbolSize(child_symbol.len() as u8).byte());
+    templatev.extend(child_symbol); templatev.push(Tag::VarRef(1).byte()); templatev.push(Tag::VarRef(0).byte());
     let template = Expr{ ptr: templatev.as_mut_ptr() };
 
     let mut _j = 0;
@@ -148,22 +151,22 @@ fn main() -> Result<(),&'static str> {
 
     let child_zipper = unsafe{ family_head.read_zipper_at_borrowed_path_unchecked(&child_path[..]) };
 
-    let mut female_path = vec![item_byte(Tag::Arity(2))];
+    let mut female_path = vec![Tag::Arity(2).byte()];
     let female_symbol = parser.tokenizer(b"female");
-    female_path.push(item_byte(Tag::SymbolSize(female_symbol.len() as u8)));
+    female_path.push(Tag::SymbolSize(female_symbol.len() as u8).byte());
     female_path.extend(female_symbol);
     let mut female_zipper = family_head.read_zipper_at_path(&female_path[..]).map_err(|_|concat!("failed to make `female_zipper` from `family_head` at line ", line!(), " in main"))?;
 
-    let mut male_path = vec![item_byte(Tag::Arity(2))];
+    let mut male_path = vec![Tag::Arity(2).byte()];
     let male_symbol = parser.tokenizer(b"male");
-    male_path.push(item_byte(Tag::SymbolSize(male_symbol.len() as u8)));
+    male_path.push(Tag::SymbolSize(male_symbol.len() as u8).byte());
     male_path.extend(male_symbol);
 
     let male_zipper = family_head.read_zipper_at_path(&male_path[..]).map_err(|_|concat!("failed to make `male_zipper` from `family_head` at line ", line!(), " in main"))?;
 
-    let mut person_path = vec![item_byte(Tag::Arity(2))];
+    let mut person_path = vec![Tag::Arity(2).byte()];
     let person_symbol = parser.tokenizer(b"person");
-    person_path.push(item_byte(Tag::SymbolSize(person_symbol.len() as u8)));
+    person_path.push(Tag::SymbolSize(person_symbol.len() as u8).byte());
     person_path.extend(person_symbol);
 
     let mut person_zipper = unsafe{ family_head.write_zipper_at_exclusive_path_unchecked(&person_path[..]) };
@@ -177,7 +180,7 @@ fn main() -> Result<(),&'static str> {
 
     let t3 = Instant::now();
 
-    let parent_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'0'];
+    let parent_query_out_path = &[Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'0'];
     let output_head = output.zipper_head();
     let mut parent_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&parent_query_out_path[..]) };
 
@@ -192,7 +195,7 @@ fn main() -> Result<(),&'static str> {
     println!("total out now {}", output_head.read_zipper_at_borrowed_path(&[]).map_err(|_|concat!("failed to make read_zipper from `output_head` at line ", line!(), " in main"))?.val_count());
 
     let t4 = Instant::now();
-    let mother_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'1'];
+    let mother_query_out_path = &[Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'1'];
     let mut mother_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&mother_query_out_path[..]) };
 
     let mut person_rzipper = family_head.read_zipper_at_path(&person_path[..]).map_err(|_|concat!("failed to make read_zipper from `family_head` with `person_path` at line ", line!(), " in main"))?;
@@ -226,7 +229,7 @@ fn main() -> Result<(),&'static str> {
     // val r = ((family("parent") <| family(Concat("child", person))).tail /\ family("female")) \ Singleton(person)
     let t5 = Instant::now();
 
-    let sister_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'2'];
+    let sister_query_out_path = &[Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'2'];
     let mut sister_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&sister_query_out_path[..]) };
 
     person_rzipper.reset();
@@ -258,7 +261,7 @@ fn main() -> Result<(),&'static str> {
     //         val aunts = parent_siblings /\ family("female")
     let t6 = Instant::now();
 
-    let aunt_query_out_path = &[item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'3'];
+    let aunt_query_out_path = &[Tag::Arity(3).byte(), Tag::SymbolSize(1).byte(), b'3'];
     let mut aunt_query_out_zipper = unsafe{ output_head.write_zipper_at_exclusive_path_unchecked(&aunt_query_out_path[..]) };
 
     person_rzipper.reset();

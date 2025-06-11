@@ -526,12 +526,11 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => StatusCmd
             | GET => StopCmd
             | POST => UploadCmd
-            | GET => TransformCmd
 
 
             | GET => MettaThreadCmd
             | GET => MettaThreadSuspendCmd
-            | POST => TransformMultiMultiCmd
+            | POST => TransformCmd
         }
         #[cfg(feature="neo4j")]
         dispatch!{
@@ -545,7 +544,6 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => StatusCmd
             | GET => StopCmd
             | POST => UploadCmd
-            | GET => TransformCmd
             // neo4j
             | GET => LoadNeo4jTriplesCmd
             | GET => LoadNeo4jNodePropertiesCmd
@@ -554,7 +552,7 @@ impl Service<Request<IncomingBody>> for MorkService {
 
             | GET => MettaThreadCmd
             | GET => MettaThreadSuspendCmd
-            | POST => TransformMultiMultiCmd
+            | POST => TransformCmd
         }
     }
 }

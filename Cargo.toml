@@ -6,6 +6,7 @@ members = [
     "benchmarks/logic-query/",
     "benchmarks/oeis/",
     "benchmarks/simple_partest/",
+    "benchmarks/parmap/",
     "experiments/expr/bytestring/",
     "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/bucket_map_dependant_tests", "experiments/symbol_mapping/naive_map",
     "frontend/",
@@ -17,6 +18,8 @@ members = [
 edition = "2024"
 
 [workspace.dependencies]
+log = { version = "0.4.27" }
+env_logger = "0.11.8"
 
 # Internal to MORK
 mork-bytestring = {path = "./experiments/expr/bytestring"}
@@ -29,5 +32,5 @@ freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } 
 
 [workspace.dependencies.pathmap]
 git = "https://github.com/Adam-Vandervorst/PathMap.git"
-features = ["jemalloc", "zipper_tracking"]
-# features = ["jemalloc", "zipper_tracking", "all_dense_nodes"]
+features = ["jemalloc", "zipper_tracking", "arena_compact"]
+# features = ["jemalloc", "zipper_tracking", "arena_compact", "all_dense_nodes"]

@@ -5,7 +5,7 @@ use std::ptr;
 use std::ptr::slice_from_raw_parts_mut;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError};
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
@@ -135,7 +135,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                         stack.pop();
                         stack.push(last);
                     }
-                    loc.ascend(1);
+                    loc.ascend_byte();
                 } else {
                     unreachable!()
                 }
@@ -156,7 +156,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                 if loc.descend_to_byte(b) {
                     transition(stack, loc, f);
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             }
         }
         ITER_ARITIES => {
@@ -174,7 +174,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
                         stack.pop();
                         stack.push(last);
                     }
-                    loc.ascend(1);
+                    loc.ascend_byte();
                 } else {
                     unreachable!()
                 }
@@ -199,7 +199,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             let size = stack.pop().unwrap();
             let mut v = vec![];
             for _ in 0..size { v.push(stack.pop().unwrap()) }
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+            if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
                 if loc.descend_to(&v[..]) {
                     transition(stack, loc, f);
                 }
@@ -218,7 +218,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+            if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
                 if loc.descend_to(&v[..]) {
                     transition(stack, loc, f);
                 }
@@ -230,7 +230,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
         }
         ITER_ARITY => {
             let arity = stack.pop().unwrap();
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+            if loc.descend_to_byte(Tag::Arity(arity).byte()) {
                 transition(stack, loc, f);
             }
             loc.ascend_byte();
@@ -243,7 +243,7 @@ fn transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(stack: &mut Vec<u8>,
             transition(stack, loc, f);
             stack.pop();
 
-            if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+            if loc.descend_to_byte(Tag::Arity(arity).byte()) {
                 transition(stack, loc, f);
             }
             loc.ascend_byte();
@@ -319,8 +319,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         while let Some(b) = it.next() {
             if let Tag::SymbolSize(s) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
+                if loc.descend_to_byte(b) {
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = s;
                     last = last.offset(1); *last = lastv;
@@ -329,7 +328,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!()
             }
@@ -347,11 +346,10 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         let mut it = m.iter();
 
         while let Some(b) = it.next() {
-            let buf = [b];
-            if loc.descend_to(buf) {
+            if loc.descend_to_byte(b) {
                 referential_transition(last, loc, references, f);
             }
-            loc.ascend(1);
+            loc.ascend_byte();
         }
     };
     (ITER_ARITIES $recursive:expr) => {
@@ -360,8 +358,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         while let Some(b) = it.next() {
             if let Tag::Arity(a) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
+                if loc.descend_to_byte(b) {
                     let lastv = *last; last = last.offset(-1);
                     last = last.offset(1); *last = a;
                     last = last.offset(1); *last = lastv;
@@ -370,7 +367,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
                     last = last.offset(-1);
                     last = last.offset(1); *last = lastv;
                 }
-                loc.ascend(1);
+                loc.ascend_byte();
             } else {
                 unreachable!()
             }
@@ -392,7 +389,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
         let mut v = [0; 64];
         for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 $recursive;
             }
@@ -409,7 +406,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
+        if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
             if loc.descend_to(&v[..size as usize]) {
                 referential_transition(last, loc, references, f);
             }
@@ -421,7 +418,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
     };
     (ITER_ARITY $recursive:expr) => {
         let arity = *last; last = last.offset(-1);
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -432,7 +429,7 @@ fn referential_transition<F: FnMut(&mut ReadZipperUntracked<()>) -> ()>(mut last
 
         unroll!(ITER_VARIABLES $recursive);
 
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
+        if loc.descend_to_byte(Tag::Arity(arity).byte()) {
             referential_transition(last, loc, references, f);
         }
         loc.ascend_byte();
@@ -651,17 +648,17 @@ impl Parser for DataParser {
 fn main() {
     // SETUP PROCEDURE?
     for size in 1..64 {
-        let k = item_byte(Tag::SymbolSize(size));
+        let k = Tag::SymbolSize(size).byte();
         unsafe { SIZES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
     for arity in 1..64 {
-        let k = item_byte(Tag::Arity(arity));
+        let k = Tag::Arity(arity).byte();
         unsafe { ARITIES[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
-    let nv_byte = item_byte(Tag::NewVar);
+    let nv_byte = Tag::NewVar.byte();
     unsafe { VARS[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111); }
     for size in 0..64 {
-        let k = item_byte(Tag::VarRef(size));
+        let k = Tag::VarRef(size).byte();
         unsafe { VARS[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111); }
     }
 
@@ -689,10 +686,11 @@ fn main() {
                 // println!("{:?}", ez.root);
                 space.insert(&stack[..ez.loc], ());
             }
-            Err(ParserError::InputFinished) => break,
-            Err(other) => {
+            Err(err) => if err.error_type == ParserErrorType::InputFinished {
+                break
+            } else {
                 let loc = it.byte_idx();
-                panic!("{:?} (byte {}, line {})", other, loc, buf[..loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
+                panic!("Parse Error {:?} (byte {}, line {})", err, loc, buf[..loc].iter().rfold(0, |t, b| t + (if *b == b'\n' { 1 } else { 0 })))
             }
         }
         i += 1;
@@ -701,20 +699,20 @@ fn main() {
     // println!("took {} ms", t0.elapsed().as_millis());
     println!("map contains: {}", space.val_count());
 
-    let t0 = Instant::now();
-    let mut z = space.read_zipper();
-
-    let mut visited = 0;
-    let mut buffer = [0u8; 4096];
-    buffer[0] = ACTION;
-    buffer[1] = ITER_EXPR;
-    let mut references: Vec<(u32, u32)> = vec![];
-    referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
-    // transition(&mut buffer, &mut z, &mut |loc| {
-        black_box(loc.origin_path());
-        visited += 1;
-    });
-    println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
+    // let t0 = Instant::now();
+    // let mut z = space.read_zipper();
+    // //
+    // let mut visited = 0;
+    // let mut buffer = [0u8; 4096];
+    // buffer[0] = ACTION;
+    // buffer[1] = ITER_EXPR;
+    // let mut references: Vec<(u32, u32)> = vec![];
+    // referential_transition(&mut buffer[1], &mut z, &mut references, &mut |loc| {
+    // // // transition(&mut buffer, &mut z, &mut |loc| {
+    //     black_box(loc.origin_path());
+    //     visited += 1;
+    // });
+    // println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
     // let mut keeping = BytesTrieMap::from_iter(space.iter());
 
@@ -749,9 +747,12 @@ fn main() {
     //     assert!(recover.contains(rrz.path()));
     // }
 
-    return;
+    // return;
     // let mut keeping_wz = keeping.write_zipper();
     let mut z = space.read_zipper();
+    // z.reserve_buffers(1024*4096, 1024*512);
+    // z.descend_to([0; 4096]);
+    // z.reset();
     let mut k = 0;
     let mut total_unified = 0;
     let mut max_unified = 0;
@@ -759,43 +760,48 @@ fn main() {
     let mut max_res = 0;
     let mut buffer = vec![];
     while z.to_next_val() {
+        // println!("path {:?}", z.path());
         let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
         buffer.push(ACTION);
         if k % 100 == 0 { println!("expr  {}", unsafe { serialize(se.span().as_ref().unwrap()) }); }
+        // println!("LHS:    {}", unsafe { serialize(se.span().as_ref().unwrap()) });
         // buffer.extend(indiscriminate_bidirectional_matching_stack(&mut ExprZipper::new(se)));
-        // buffer.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(se)));
+        buffer.extend(referential_bidirectional_matching_stack(&mut ExprZipper::new(se)));
         let mut visited = 0;
         let mut unified = 0;
         let mut rz = space.read_zipper();
+        // rz.reserve_buffers(1024*4096, 1024*512);
+        // rz.descend_to([0; 4096]);
+        // rz.reset();
         let mut references: Vec<(u32, u32)> = vec![];
 
-        transition(&mut buffer, &mut rz, &mut |loc| {
-        // referential_transition(&mut buffer, &mut rz, &mut references, &mut |loc| {
+        // transition(&mut buffer, &mut rz, &mut |loc| {
+        referential_transition(buffer.last_mut().unwrap(), &mut rz, &mut references, &mut |loc| {
         //     black_box(loc.origin_path());
             visited += 1;
             // assert!(space.contains(loc.path()));
 
-            // if z.path() != loc.path() {
-            //     let se_copy = Expr { ptr: z.path().to_vec().leak().as_mut_ptr() };
-            //     let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
-            //     let pe_copy = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
-            //
-            //     match Expr::unification(se_copy, pe_copy) {
-            //         Ok(e) => {
-            //             std::hint::black_box(e);
-            //             unified += 1;
-            //             // keeping.remove_old(loc.path());
-            //             // keeping_wz.descend_to(loc.path());
-            //             // assert!(keeping.contains(loc.path()));
-            //             // assert!(keeping_wz.path_exists());
-            //             // assert!(space.contains(keeping_wz.path()));
-            //             // assert!(keeping_wz.remove_value().is_some());
-            //             keeping.remove(loc.path());
-            //             // keeping_wz.reset();
-            //         }
-            //         Err(_) => {}
-            //     }
-            // }
+            // println!("LHS: {:?}", z.path());
+            // println!("RHS: {:?}", loc.path());
+            // let se = Expr{ ptr: z.path().to_vec().leak().as_mut_ptr() };
+            // let pe = Expr { ptr: loc.path().to_vec().leak().as_mut_ptr() };
+            let se = Expr{ ptr: z.path().as_ptr().cast_mut() };
+            let pe = Expr { ptr: loc.path().as_ptr().cast_mut() };
+            // let e = String::new(); se.str(&mut e, );
+            // println!("LHS: {:?}", serialize(z.path()));
+            // println!("RHS: {:?}", serialize(loc.path()));
+            // println!("RHS: {}", unsafe { serialize(pe.span().as_ref().unwrap()) });
+            if Expr::unifiable(se, pe) {
+                unified += 1;
+                // keeping.remove_old(loc.path());
+                // keeping_wz.descend_to(loc.path());
+                // assert!(keeping.contains(loc.path()));
+                // assert!(keeping_wz.path_exists());
+                // assert!(space.contains(keeping_wz.path()));
+                // assert!(keeping_wz.remove_value().is_some());
+                // keeping.remove(loc.path());
+                // keeping_wz.reset();
+            }
         });
         // assert!(visited >= 1);
         total_res += visited;

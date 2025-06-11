@@ -18,10 +18,9 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
         "/", in_expr!(),
     );
     const UPLOAD_PAYLOAD : &str = concat!(""
-    // , "\n(",data!()," T)" // this one causes a segfault if done 
+    , "\n(",data!()," T)"
     , "\n(",data!()," (foo 1))"
     , "\n(",data!()," (foo 2))"
-    , "\n(",data!()," T)"
     );
     const UPLOAD_STATUS: &str = concat!( 
         server_url!(),
@@ -121,6 +120,101 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
     , "(data (bar 2))\n"
     );
     core::assert_eq!(export_response_text.lines().count(), 6);
+
+    //GOAT, this is a hack until we have symbol-order-independent validation
+    const OUT_LIST_ALTERNATE : &str = concat!(""
+    , "(data T)\n"
+    , "(data ran_exec)\n"
+    , "(data (bar 1))\n"
+    , "(data (bar 2))\n"
+    , "(data (foo 1))\n"
+    , "(data (foo 2))\n"
+    );
+
+    assert!(export_response_text==OUT_LIST || export_response_text==OUT_LIST_ALTERNATE);
+
+    Ok(())
+
+}
+
+#[tokio::test]
+async fn metta_thread_without_substitution_self_reference() -> Result<(), Error> {
+    decl_lit!{out_read_expr!()  => "(metta_thread_without_substitution_self_reference $v)"}
+    decl_lit!{out_write_expr!() => "(self_reference $v)"         }
+    decl_lit!{thread_id!()      => "metta_thread_without_substitution_self_reference"     }
+
+    const METTA_UPLOAD_EXECS : &str =concat!(""
+    , "\n(exec (",thread_id!()," 0)   (, (exec (",thread_id!()," 0) $t $p)) (, (",thread_id!()," ran_exec) )   )"
+    );
+    const METTA_UPLOAD_EXECS_URL : &str =concat!(
+        server_url!(),
+        "/", "upload",
+        "/", "(exec $l_p $patterns $templates)",
+        "/", "(exec $l_p $patterns $templates)",
+    );
+    const METTA_EXEC_UPLOAD_STATUS: &str = concat!(
+        server_url!(),
+        "/", "status",
+        "/", "(exec (",thread_id!()," $priority) $p $t)",
+    );
+
+
+
+    const METTA_THREAD_RUNNER : &str = concat!(
+        server_url!(),
+        "/",  "metta_thread",
+        "/?", "location=",thread_id!()
+    );
+    const METTA_THREAD_RUNNER_STATUS: &str = concat!( 
+        server_url!(),
+        "/", "status",
+        "/", "(exec ",thread_id!(),")",
+    );
+
+    const EXPORT_URL : &str = concat!(
+        server_url!(),
+        "/", "export",
+        "/", out_read_expr!(),
+        "/", out_write_expr!(),
+    );
+
+    wait_for_server().await.unwrap();
+
+    // execs
+    let response = reqwest::Client::new().post(METTA_UPLOAD_EXECS_URL).body(METTA_UPLOAD_EXECS).send().await.unwrap();
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await.unwrap())
+    }
+    println!("Exec Upload response: {}", response.text().await.unwrap());
+
+    wait_for_url_eq_status(METTA_EXEC_UPLOAD_STATUS,  "pathClear").await.unwrap();
+
+    // exec runner
+    let response = reqwest::get(METTA_THREAD_RUNNER).await.unwrap();
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await.unwrap())
+    }
+    println!("Exec Runner response: {}", response.text().await.unwrap());
+
+    wait_for_url_eq_status(METTA_THREAD_RUNNER_STATUS, "pathClear").await.unwrap();
+
+
+    tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    // //////////
+    // EXPORT //
+    // ////////
+
+    let export_response = reqwest::get(EXPORT_URL).await.unwrap();
+    if !export_response.status().is_success() {
+        panic!("Error response: {} - {}", export_response.status(), export_response.text().await.unwrap())
+    }
+    let export_response_text = export_response.text().await.unwrap();
+    println!("Export response:\n{}", export_response_text);
+
+
+    const OUT_LIST : &str = concat!(""
+    , "(self_reference ran_exec)\n"
+    );
     core::assert_eq!(
         OUT_LIST,
         export_response_text
@@ -129,7 +223,6 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
     Ok(())
 
 }
-
 
 #[tokio::test]
 async fn metta_thread_basic_works_without_substitution() -> Result<(), Error> {

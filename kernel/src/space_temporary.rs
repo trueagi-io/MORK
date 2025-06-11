@@ -1,17 +1,20 @@
 
 extern crate alloc;
 use std::io::{BufRead, Read};
+use log::*;
 
-use alloc::borrow::Cow;
-
-use bucket_map::{SharedMapping, SharedMappingHandle};
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
-use mork_bytestring::{Expr, OwnedExpr, ExprZipper};
+use bucket_map::SharedMappingHandle;
+use mork_frontend::{bytestring_parser::{ParseContext, Parser, ParserErrorType}};
+use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
-
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl, load_sexpr_impl, transform_multi_multi_impl, token_bfs_impl, ParDataParser
+    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
+};
+
+#[cfg(feature="neo4j")]
+use crate::space::{
+    load_neo4j_node_labels_impl, load_neo4j_node_properties_impl, load_neo4j_triples_impl
 };
 
 /// The number of S-Expressions returned by [Space::load_sexpr]
@@ -43,8 +46,11 @@ pub struct LoadNeo4JNodeLabelsError(String);
 pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 
+pub trait SpaceWriterZipper : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
+impl<T> SpaceWriterZipper for T where T : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
+
 /// An interface for accessing the state used by the MORK kernel
-pub trait Space {
+pub trait Space: Sized {
     /// An authentication token used for access to the space
     type Auth;
     /// Objects of this type encapsulate a location in the space and the rights to read from that location
@@ -52,7 +58,7 @@ pub trait Space {
     /// Objects of this type encapsulate a location in the space and the rights to write to that location
     type Writer<'space> where Self: 'space;
     /// An error type for when a new reader or writer cannot be authenticated.
-    type PermissionErr;
+    type PermissionErr: core::fmt::Debug;
 
     // ===================== Methods used by caller ===================== 
 
@@ -74,7 +80,27 @@ pub trait Space {
     ///
     /// NOTE: The `&mut Self::Writer` argument ensures exclusivity, but the `Writer` does
     /// not conceptually have mutable state
-    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + /* ZipperAbsolutePath +  */'w;
+    fn write_zipper<'w, 's: 'w>(&'s self, writer: &'w mut Self::Writer<'s>) -> impl SpaceWriterZipper + 'w;
+
+    /// Removes the WriteZipper from the ZipperHead
+    fn cleanup_write_zipper(&self, wz: impl SpaceWriterZipper);
+
+    /// Attempts to acquire a new writer at `path`, but retries in a loop instead of failing immediately
+    fn new_writer_retry<'space>(&'space self, path: &[u8], attempts: usize, auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
+        let mut attempts = attempts.max(1);
+        let mut err = None;
+        while attempts > 0 {
+            match self.new_writer(path, auth) {
+                Ok(writer) => return Ok(writer),
+                Err(e) => { 
+                    std::thread::sleep(core::time::Duration::from_micros(500));
+                    err = Some(e);
+                } 
+            };
+            attempts -= 1;
+        }
+        Err(err.unwrap())
+    }
 
     /// Returns a handle to the `Space`'s [bucket_map] symbol table.
     fn symbol_table(&self) -> &SharedMappingHandle;
@@ -98,11 +124,9 @@ pub trait Space {
         ).map_err(|e|ParseError(format!("{e:?}")))
     }
 
-
-    fn sexpr_to_expr(&self, sexpr :  &str) -> Result<OwnedExpr, ParseError> {
+    fn sexpr_to_expr(&self, sexpr:  &str) -> Result<OwnedExpr, ParseError> {
         sexpr_to_path(self.symbol_table(), sexpr)
     }
-
 
     fn dump_as_sexpr<'s, W : std::io::Write>(
         &'s self,
@@ -121,13 +145,17 @@ pub trait Space {
         pattern         : Expr,
         template        : Expr,
         template_writer : &mut Self::Writer<'s>,
+        separator       : u8,
+        include_line_nums: bool
     ) -> Result<PathCount, ParseError> {
         load_csv_impl(
             &self.symbol_table(), 
             src_data,
             pattern,
             template,
-            self.write_zipper(template_writer)
+            self.write_zipper(template_writer),
+            separator,
+            include_line_nums,
         ).map_err(|_| ParseError("UnexpectedParseError".to_string()))
     }
 
@@ -162,26 +190,133 @@ pub trait Space {
         )
     }
 
-    fn transform_multi_multi<'s>(
+    /// Acquires the minimum set of permissions needed to perform a transform by applying the necessary
+    /// subsumption logic
+    ///
+    /// The return value is: `(read_map, template_prefixes, writers)`
+    ///
+    /// * read_map: BytesTrieMap<()>
+    ///    A PathMap in which all readers can be acquired
+    ///
+    /// * template_prefixes: Vec<(usize, usize)>
+    ///    A vec of `(incremental_path_start, writer_idx)`, corresponding to the `templates` where:
+    ///     - `incremental_path_start`: The index in the full template path for the start of the part of the path
+    ///        that is not subsumed by the writer's root path.
+    ///     - `writer_idx`: The index into `writers` for the write permssion to use for this expr
+    ///
+    /// * writers: Vec<Self::Writer<'s>>
+    ///    A vector of [Space::Writer] permission objects
+    ///
+    /// **WANRNING** GOAT  I think there is a race inside this function because it's possible for the readers
+    /// to all be acquired, and succeed at making the `read_map`, then another operation transforms the writers
+    /// in the interim, releases them, and then this function acquires the writers, but the data in the writer
+    /// paths is now different from what it was when the readers were acquired...  I don't have a strong enough
+    /// handle on the MM2 theory to know if this is allowable.
+    fn acquire_transform_permissions<'s, E: ExprTrait>(
         &'s self,
-        patterns : &[Expr],
-        pattern_readers : &mut[Self::Reader<'s>],
-        template : &[Expr],
-        template_writer : &mut [Self::Writer<'s>],
+        patterns            : &[E],
+        templates           : &[E],
+        auth                : &Self::Auth,
+    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
+        //Make the "ReadMap" by copying each pattern from the space
+        let mut read_map = BytesTrieMap::new();
+        for pat in patterns {
+            let path = make_prefix(&pat.borrow());
+
+            let mut reader = self.new_reader(path, auth)
+                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
+            let rz = self.read_zipper(&mut reader);
+
+            let mut wz = read_map.write_zipper_at_path(path);
+            wz.graft(&rz);
+        }
+
+        //Make a vec of template paths, sorted from shortest to longest
+        // `(path, template_idx, writer_slot_idx)`
+        let mut template_path_table: Vec<(&[u8], usize, usize)> = templates.iter().enumerate().map(|(i, template)|{
+            let path = make_prefix(&template.borrow());
+            (path, i, 0)
+        }).collect();
+        template_path_table.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+
+        //Find the set of least-common-denominator template prefixes
+        let mut writer_slots: Vec<&[u8]> = Vec::with_capacity(templates.len());
+        for (path, _template_idx, writer_slot_idx) in template_path_table.iter_mut() {
+            let mut subsumed = false;
+            for (slot_idx, slot_path) in writer_slots.iter().enumerate() {
+                let overlap = pathmap::utils::find_prefix_overlap(path, slot_path);
+                if overlap == slot_path.len() {
+                    *writer_slot_idx = slot_idx;
+                    subsumed = true;
+                    break
+                }
+            }
+            if !subsumed {
+                *writer_slot_idx = writer_slots.len();
+                writer_slots.push(path);
+            }
+        }
+
+        //Untangle the prefixes into the `template_prefixes` format from [TransformPermissions::template_prefixes]
+        let mut template_prefixes = vec![(0, 0); templates.len()];
+        for (_, template_idx, writer_slot_idx) in template_path_table {
+            let incremental_path_start = writer_slots[writer_slot_idx].len();
+            template_prefixes[template_idx] = (incremental_path_start, writer_slot_idx);
+        }
+
+        //Acquire writers at each slot, knowing we any conflicts are with external clients
+        let mut writers = Vec::with_capacity(writer_slots.len());
+        for path in writer_slots {
+            let writer = self.new_writer(path, auth)
+                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
+            writers.push(writer);
+        }
+
+        trace!(target: "transform", "templates {:?}", templates);
+        trace!(target: "transform", "prefixes {:?}", template_prefixes);
+
+        Ok(( read_map, template_prefixes, writers ))
+    }
+
+    fn transform_multi_multi<'s, E: ExprTrait>(
+        &'s self,
+        patterns : &[E],
+        read_map: &BytesTrieMap<()>,
+        templates : &[E],
+        template_prefixes : &[(usize, usize)],
+        writers : &mut [Self::Writer<'s>],
     ) -> (usize, bool) {
-        core::debug_assert_eq!(patterns.len(), pattern_readers.len());
-        core::debug_assert_eq!(template.len(), template_writer.len());
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
-        // until dangling paths are fixed, the aquisition order matters, writers first, then readers
+        let pattern_rzs: Vec<_> = patterns.iter().map(|pat| {
+            let path = make_prefix(&pat.borrow());
+            read_map.read_zipper_at_borrowed_path(path)
+        }).collect();
 
-        // FIRST THE WRITERS
-        let template_prefixes: Vec<_> = template.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() }).collect();
-        let mut template_wzs: Vec<_> = template_writer.iter_mut().map(|p| self.write_zipper(p)).collect();
+        let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        // SECOND THE READERS
-        let readers = pattern_readers.iter_mut().map(|r| self.read_zipper(r)).collect::<Vec<_>>();
+        let result = transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
 
-        transform_multi_multi_impl(patterns, &readers, template, &template_prefixes, &mut template_wzs)
+        for wz in template_wzs {
+            self.cleanup_write_zipper(wz);
+        }
+        result
+    }
+
+    /// Executes a MeTTa thread
+    ///
+    /// GOAT, TODO.  This also needs to take a callback that is called each trip through the loop, in order to
+    ///  facilitate logging of sub-commands in the server
+    fn metta_calculus<'s>(&'s self,
+        thread_id_sexpr_str: &str,
+        status_writer: &mut Self::Writer<'s>,
+        step_cnt: usize,
+        auth: &Self::Auth
+    )
+    {
+        metta_calculus_impl(self, thread_id_sexpr_str, status_writer, 2000, step_cnt, auth)
     }
 
     #[cfg(feature="neo4j")]

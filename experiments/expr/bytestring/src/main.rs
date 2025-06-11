@@ -1,6 +1,5 @@
 #[allow(unused_imports)]
 use std::{fmt::{format, Formatter}, mem, ptr::slice_from_raw_parts, str::Utf8Error};
-
 use mork_bytestring::*;
 
 #[allow(unused)]
@@ -1466,7 +1465,7 @@ fn solver() {
     }
 }
 
-#[test]
+// #[test]
 fn unify_other() {
     // {
     //     let mut xv = parse!(r"[3] a [2] b $ [3] f $ _1");
@@ -1562,7 +1561,7 @@ fn unify_other() {
             Err(e) => { panic!("{:?}", e); }
         }
     }
-    println!("================");
+    // println!("================");
     {
         // let mut tv = parse!("");
         // let t = Expr{ ptr: tv.as_mut_ptr() };
@@ -1711,7 +1710,6 @@ fn unify_other() {
 
         println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
     }
-    println!("=================");
     {
         let mut xv = parse!("[2] axiom [3] = [3] * [3] * $ [3] * $ _2 _2 [3] * _1 [3] * [3] * _2 _2 _2");
         let x = Expr{ ptr: xv.as_mut_ptr() };
@@ -1740,6 +1738,22 @@ fn unify_other() {
 
         println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
     }
+    println!("=================");
+    {
+        let mut xv = parse!(r"[2] axiom [3] = [3] * [3] K $ [3] * [3] \ $ [3] \ _2 $ [3] / $ 1 [3] T [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] * _3 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3");
+        let x = Expr{ ptr: xv.as_mut_ptr() };
+        let mut yv = parse!(r"[2] axiom [3] = [3] * [3] K $ [3] * [3] \ $ [3] \ _2 $ [3] / $ 1 [3] T [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] * _3 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3");
+        let y = Expr{ ptr: yv.as_mut_ptr() };
+
+        // x.serialize2()
+        // println!("{}", )
+
+        let tov = vec![0u8; 512];
+        let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+        println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+    }
+      
     
 }
 
@@ -1754,4 +1768,5 @@ fn main() {
         format!("\x1B[4m{}\x1B[24m", NAMES[v as usize]).leak(), 1);
     println!("{}", std::str::from_utf8(&s[..]).unwrap());
 
+    unify_other()
 }

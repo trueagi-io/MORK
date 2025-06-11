@@ -695,9 +695,13 @@ async fn transform_basic_request_test() -> Result<(), Error> {
         concat!( 
             server_url!(),
             "/", "transform",
-            "/", space_in_expr!(), // pattern
-            "/", space_out_expr!(), // template
         );
+
+    const TRANSFORM_PAYLOAD: &str = concat!(
+        "(transform ",
+        "    (, ", space_in_expr!(), ")",
+        "    (, ", space_out_expr!(), ")",
+        ")");
 
     const EXPORT_ORIGINAL_RAW: &str =
         concat!(
@@ -740,7 +744,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     println!("Import response: {}", response.text().await.unwrap());
 
     // invoke a Transform
-    let response = reqwest::get(TRANSFORM_REQUEST_URL).await.unwrap();
+    let response = reqwest::Client::new().post(TRANSFORM_REQUEST_URL).body(TRANSFORM_PAYLOAD).send().await.unwrap();
     if !response.status().is_success() {
         panic!("Transform Error response: {} - {}", response.status(), response.text().await?)
     }
@@ -802,7 +806,7 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     const TRANSFORM_REQUEST_URL: &str =
         concat!( 
             server_url!(),
-            "/", "transform_multi_multi",
+            "/", "transform",
         );
 
     const TRANSFORM_PAYLOAD : &str = 

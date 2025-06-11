@@ -878,18 +878,19 @@ impl DefaultSpace {
         let status_loc_sexpr = format!("(exec {})", thread_id_sexpr_str);
         let status_loc = <_>::sexpr_to_expr(self, &status_loc_sexpr).unwrap();
 
-        let Ok(mut status_writer) = self.new_writer(status_loc.as_bytes(), &()) else {
+        let Ok(status_writer) = self.new_writer(status_loc.as_bytes(), &()) else {
             return Err("Thread is already running at that loacation.".to_string())
         };
 
-        self.metta_calculus(thread_id_sexpr_str, &mut status_writer, usize::MAX, &());
+        self.metta_calculus(thread_id_sexpr_str, usize::MAX, &())
+            .map_err(|exec_err| format!("{exec_err:?}"))?;
 
-        //GOAT, we should pack up the result from the status location and return it
+        drop(status_writer);
         Ok(())
     }
 }
 
-pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, status_writer: &mut S::Writer<'s>, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) {
+pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) -> Result<(), ExecError<S>> {
 
     //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
     //
@@ -997,8 +998,7 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
         }
     };
 
-    //GOAT, we need to put this result in the status map if it's an error
-    assert_eq!(exec_result, Ok(()));
+    exec_result
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(

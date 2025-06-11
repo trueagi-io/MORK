@@ -341,12 +341,11 @@ pub trait Space: Sized {
     ///  facilitate logging of sub-commands in the server
     fn metta_calculus<'s>(&'s self,
         thread_id_sexpr_str: &str,
-        status_writer: &mut Self::Writer<'s>,
         step_cnt: usize,
         auth: &Self::Auth
-    )
+    ) -> Result<(), ExecError<Self>>
     {
-        metta_calculus_impl(self, thread_id_sexpr_str, status_writer, 2000, step_cnt, auth)
+        metta_calculus_impl(self, thread_id_sexpr_str, 2000, step_cnt, auth)
     }
 
     #[cfg(feature="neo4j")]

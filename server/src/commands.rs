@@ -876,7 +876,7 @@ impl CommandDefinition for MettaThreadCmd {
         let status_loc_sexpr = format!("(exec {})", &thread_id_sexpr_string);
         let status_loc = <_>::sexpr_to_expr(&ctx.0.space, &status_loc_sexpr).unwrap();
 
-        let Ok(mut status_writer) = (&ctx.0.space).new_writer(status_loc.as_bytes(), &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
+        let Ok(status_writer) = (&ctx.0.space).new_writer(status_loc.as_bytes(), &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
 
         // //////////////
         // BUILD TASK //
@@ -908,209 +908,27 @@ impl CommandDefinition for MettaThreadCmd {
             // // TODO! JOURNAL INSERTION of INITIAL_EXEC
 
 
-        // let task = async move|server_space: &ServerSpace, status_writer | {
-
-
-        //     // let status_result : Result<(), mork::space::ExecSyntaxError> = 'process_execs : loop {
-                                                                                                //     //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tPROCESS")};
-
-                                                                                                //     //     #[cfg(debug_assertions)]
-                                                                                                //     //     { 
-                                                                                                //     //         if loops_left == 0 { println!("TEST TOO LONG"); return } loops_left -= 1
-                                                                                                //     //     }
-                                                                                                //     //     debug_assert!(buffer.len() >= prefix.len());
-                                                                                                //     //     debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-                                                                                                //     //     let mut exec_permission = 'get_writer : loop { 
-                                                                                                //     //         match server_space.new_writer(&prefix, &()) {
-                                                                                                //     //             Ok(writer) => break 'get_writer writer,
-                                                                                                //     //             Err(_) => { 
-                                                                                                //     //                 tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-                                                                                                //     //                 continue 'get_writer;
-                                                                                                //     //             } 
-                                                                                                //     //         };
-                                                                                                //     //     };
-
-                                                                                                //     //     let mut exec_wz = server_space.write_zipper(&mut exec_permission);
-                                                                                                //     //     let mut rz = exec_wz.fork_read_zipper();
-                                                                                                //     //     rz.descend_to(&buffer[prefix.len()..]);
-
-
-                                                                                                //     //     if !rz.to_next_val() { 
-                                                                                                //     //         if retry {
-                                                                                                //     //             // ////////////////////
-                                                                                                //     //             // LOOP TO BEGINING //
-                                                                                                //     //             // //////////////////
-                                                                                                //     //             #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tLOOP TO BEGINING")};
-                                                                                                //     //             buffer.truncate(prefix.len());
-                                                                                                //     //             tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-                                                                                                //     //             continue 'process_execs;
-                                                                                                //     //         }
-
-                                                                                                //     //         // /////////////////////////////////////
-                                                                                                //     //         // SUCCESSFUL CONSUMING OF ALL EXECS //
-                                                                                                //     //         // ///////////////////////////////////
-                                                                                                //     //         #[cfg(debug_assertions)] if DBG_PRINTLN { println!("\tSUCCESSFUL CONSUMING OF ALL EXECS")};
-                                                                                                //     //         break 'process_execs Ok(())
-                                                                                                //     //     }
-                                                                                                //     //     // remember expr
-                                                                                                //     //     buffer.truncate(prefix.len());
-                                                                                                //     //     buffer.extend_from_slice(rz.path());
-                                                                                                //     //     drop(rz);
-
-                                                                                                //     //     if DBG_PRINTLN { println!("\tBUFFER :{:?}", buffer) }
-
-                                                                                                //     //     // remove expr in case of success
-                                                                                                //     //     exec_wz.descend_to(&buffer[prefix.len()..]);
-                                                                                                //     //     exec_wz.remove_value();
-                                                                                                //     //     drop(exec_wz);
-                                                                                                //     //     drop(exec_permission);
-
-
-                                                                                                //     //     let exec_expr = mork_bytestring::Expr{ ptr: buffer.as_mut_ptr() };
-                                                                                                //     //     let (patterns, templates) = match localized_with_priority_exec_match(server_space, exec_expr) {
-                                                                                                //     //         Ok(ok) => ok,
-                                                                                                //     //         Err(exec_syntax_error) => break 'process_execs Err(exec_syntax_error),
-                                                                                                //     //     }.collect_inner();
-
-        //     //     let Ok((mut readers, mut writers)) = mork::space::aquire_interpret_localized_permissions(server_space, &patterns, &templates) else {
-        //     //         // /////////
-        //     //         // RETRY //
-        //     //         // ///////
-        //     //         #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tRETRY")};
-
-        //     //         // undo the removal on failure and retry
-        //     //         let mut exec_permission = 'get_writer : loop { 
-        //     //             match server_space.new_writer(&prefix, &()) {
-        //     //                 Ok(writer) => break 'get_writer writer,
-        //     //                 Err(_) => { 
-        //     //                     tokio::time::sleep(core::time::Duration::from_millis(1)).await;
-        //     //                     continue 'get_writer;
-        //     //                 } 
-        //     //             };
-        //     //         };
-        //     //         let mut exec_wz = server_space.write_zipper(&mut exec_permission);
-        //     //         exec_wz.descend_to(&buffer[prefix.len()..]);
-        //     //         exec_wz.set_value(());
-
-        //     //         retry = true;
-        //     //         tokio::time::sleep(core::time::Duration::from_millis(1)).await; 
-        //     //         continue 'process_execs;
-        //     //     };
-
-        //     //     // ////////////////////////////
-        //     //     // ALL PERMISSIONS ACQUIRED //
-        //     //     // //////////////////////////
-        //     //     let mut union_in_map = BytesTrieMap::new();
-        //     //     union_in_map.insert(&buffer, ()); // this should allows reading "self" exec
-        //     //     debug_assert!(union_in_map.contains_path(&buffer));
-
-        //     //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("\tALL PERMISSIONS ACQUIRED | WRITER_COUNT : {} | READER_COUNT : {}", writers.len(), readers.len())};
-        //     //     let res = server_space.transform_multi_multi(&patterns, &mut readers[..], &templates, &mut writers[..], union_in_map);
-        //     //     #[cfg(debug_assertions)] if DBG_PRINTLN {println!("RES : {:?}", res)};
-        //     //     retry = false;
-        //     //     buffer.truncate(prefix.len());
-        //     // };
-
-
-        //     // if let Err(syntax_error) = status_result {
-        //     //         let _ = server_space.set_user_status(status_location.as_bytes(), match syntax_error {
-        //     //             mork::space::ExecSyntaxError::ExpectedArity4(e)             => unreachable!("`.to_next_val()` likely has a logic bug, the prefix should protect against this; offending expr : `{}`", e),
-        //     //             mork::space::ExecSyntaxError::ExpectedCommaListPatterns(e)  => StatusRecord::ExecSyntaxError(format!("the exec pattern list was not syntactically correct; offending expr : `{}`", e)),
-        //     //             mork::space::ExecSyntaxError::ExpectedCommaListTemplates(e) => StatusRecord::ExecSyntaxError(format!("the exec template list was not syntactically correct; offending expr : `{}`", e)),
-        //     //             mork::space::ExecSyntaxError::ExpectedGroundPriority(e)     => StatusRecord::ExecSyntaxError(format!("the exec priority was not ground; offending expr : {}", e)),});
-        //     // };
-
-        //     // Free MeTTa Thread location explicty after everything is done.
-        //     // drop(status_writer);
-        // };
-
         let thread_id_sexpr_string_moved = thread_id_sexpr_string.clone();
         thread.dispatch_blocking_task(cmd, move |_| {
 
-            ctx.0.space.metta_calculus(&thread_id_sexpr_string_moved, &mut status_writer, usize::MAX, &());
+            if let Err(exec_err) = ctx.0.space.metta_calculus(&thread_id_sexpr_string_moved, usize::MAX, &()) {
+                let _ = ctx.0.space.set_user_status(status_loc.as_bytes(), StatusRecord::ExecError(format!("{exec_err:?}")));
+            }
 
             drop(status_writer);
             Ok(())
         }).await;
 
-        // TODO! location needs to be pulled out with space!
+        // TODO! location needs to be pulled out with space!  GOAT: Please explain what you mean by this.
         Ok(Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched. Errors will be found at the status location: `{status_loc_sexpr}`")))
     }
 }
 
-//GOAT trash
-// /// this function should only be called on values of the form `(exec (<loc> <priority>) [, ..patterns) (, ..templates))`
-// /// it only checks the exec and <loc> in debug as asserts
-// fn localized_with_priority_exec_match(s : &(impl Space + ?Sized), exec_e : mork_bytestring::Expr)->Result<mork::space::PatternsTemplatesExprs, mork::space::ExecSyntaxError> {
-//     use mork_bytestring::{ExprZipper, Tag};
-//     use mork::{space::ExecSyntaxError, expr};
-//     let mut exec_ez = ExprZipper::new(exec_e);
-//     if exec_ez.item() != Ok(Tag::Arity(4)) {
-//         return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
-//     }
-//     assert!(exec_ez.next());
-
-//     // exec
-//     core::debug_assert_eq!{
-//         unsafe { exec_ez.subexpr().span().as_ref().unwrap() },
-//         unsafe { expr!(s, "exec").span().as_ref().unwrap() }
-//     };
-//     assert!(exec_ez.next());
-
-//     // (<loc> <priority>)
-//     core::debug_assert!( exec_ez.subexpr().is_ground() );
-//     '_loc_priority_sub_expr : {
-//         let mut sub_ez = ExprZipper::new(exec_ez.subexpr());
-//         // (_ _)
-//         core::debug_assert_eq!(sub_ez.item(), Ok(Tag::Arity(2)));
-//         assert!(sub_ez.next());
-//         // <loc> debug asserted above
-//         assert!(sub_ez.next_child());
-//         // <priority>
-//         if !sub_ez.subexpr().is_ground() {
-//             return Err(ExecSyntaxError::ExpectedGroundPriority(mork_bytestring::serialize(unsafe { exec_e.span().as_ref().unwrap() })));
-//         }
-//     }
-//     assert!(exec_ez.next_child());
-
-//     check_pattern_template(s, &mut exec_ez)
-
-// }
-
-// /// this code expects that the zipper is NOT at the root of an S-Expr (but that the `.root`` is), rather that it is at the position that would have a pattern list, followed by a template list.
-// fn check_pattern_template(s : &(impl Space + ?Sized), ez : &mut mork_bytestring::ExprZipper) -> Result<mork::space::PatternsTemplatesExprs, mork::space::ExecSyntaxError> {
-//     use mork_bytestring::{ExprZipper, Tag};
-//     use mork::{space::ExecSyntaxError, expr};
-
-//     let comma_list_check = |e| {
-//         let mut ez = ExprZipper::new(e);
-//         let Ok(Tag::Arity(_)) = ez.item() else { return Err(()); };
-//         ez.next();
-
-//         let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
-//         if unsafe { ez.subexpr().span().as_ref().unwrap() } != comma {
-//             return Err(());
-//         } else { Ok(()) }
-//     };
-
-//     // (, ..$patterns)
-//     let srcs = ez.subexpr();
-//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { ez.root.span().as_ref().unwrap() })))?;
-//     assert!(ez.next_child());
-
-//     // (, ..$templates)
-//     let dsts = ez.subexpr();
-//     comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { ez.root.span().as_ref().unwrap() })))?;
-
-//     Ok(mork::space::PatternsTemplatesExprs::new(srcs, dsts))
-// }
-
-
-
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // metta_thread_suspend
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+//GOAT, suspend needs tests.  For example, a test that starts an infinite-looping MeTTa thread, and then a second suspend request to stop it
 
 /// Extracts a executing thread from the execution space to a location to be suspended
 pub struct MettaThreadSuspendCmd;
@@ -1336,84 +1154,6 @@ impl CommandDefinition for TransformCmd {
         Ok(Bytes::from("ACK. TranformMultiMulti dispatched"))
     }
 }
-
-//GOAT, this structure is superseded by something from Kernel, e.g. "TransformPermissions"
-
-// struct PatternTemplateArgs {
-//     patterns  : Vec<Vec<u8>>,
-//     readers   : Vec<ReadPermission>,
-//     templates : Vec<Vec<u8>>,
-//     writers   : Vec<WritePermission>
-// }
-// impl PatternTemplateArgs {
-//     fn dispatch_transform(self, ctx : &MorkService) {
-//         let PatternTemplateArgs { patterns, mut readers, templates, mut writers } = self;
-//         let pattern_exprs = slices_to_exprs(&patterns);
-//         let template_exprs = slices_to_exprs(&templates);
-
-//         ctx.0.space.transform_multi_multi(&pattern_exprs, &mut readers, &template_exprs, &mut writers);
-//     }
-//     #[allow(unused)]
-//     fn is_read_write(&self) -> bool {
-//         self.patterns.len()== self.readers.len()
-//         && self.templates.len() == self.writers.len() 
-//         && self.patterns.len()  > 0
-//         && self.templates.len() > 0
-//     }
-//     #[allow(unused)]
-//     fn is_read(&self) -> bool {
-//         self.patterns.len()== self.readers.len()
-//         && self.writers.len()  == 0
-//         && self.patterns.len()  > 0 
-//         && self.templates.len() > 0
-//     }
-//     #[allow(unused)]
-//     fn is_write(&self) -> bool {
-//         self.templates.len() == self.writers.len() 
-//         && self.readers.len()  == 0
-//         && self.patterns.len()  > 0
-//         && self.templates.len() > 0
-//     }
-// }
-
-// async fn prep_transform_multi_multi(ctx: &ServerSpace, src: &str) -> Result<PatternTemplateArgs, CommandError> {
-//         let (patterns, templates) = pattern_template_args(
-//             &ctx, src
-//         ).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
-
-//         let readers = prefix_readers(&ctx, &patterns).await?;
-//         let writers = prefix_writers(&ctx, &templates).await?;
-
-//         Ok(PatternTemplateArgs { patterns, readers, templates, writers })
-// }
-
-// async fn prefix_readers(ctx : &ServerSpace, patterns : &[impl AsRef<[u8]>]) -> Result<Vec<ReadPermission>, CommandError> {
-//     let mut readers = Vec::with_capacity(patterns.len());
-//     for pattern in patterns {
-//         if pattern.as_ref().is_empty() {
-//             return Err(CommandError::internal(String::from("unexpected empty Expr")));
-//         }
-//         let reader = ctx.new_reader_async(derive_prefix_from_expr_slice(pattern.as_ref()).till_constant_to_full(), &()).await?;
-//         readers.push(reader);
-//     }
-//     Ok(readers)
-// }
-// async fn prefix_writers(ctx : &ServerSpace, templates : &[impl AsRef<[u8]>]) -> Result<Vec<WritePermission>, CommandError> {
-//     let mut writers = Vec::with_capacity(templates.len());
-//     for template in templates {
-//         if template.as_ref().is_empty() {
-//             return Err(CommandError::internal(String::from("unexpected empty Expr")));
-//         }
-//         let writer = ctx.new_writer_async(derive_prefix_from_expr_slice(template.as_ref()).till_constant_to_full(), &()).await?;
-//         writers.push(writer);
-//     }
-//     Ok(writers)
-// }
-fn slices_to_exprs(slices : &[impl AsRef<[u8]>])->Vec<mork_bytestring::Expr>{
-    slices.into_iter().map(|pattern| mork_bytestring::Expr { ptr : pattern.as_ref().as_ptr() as *mut _ }).collect()
-}
-
-
 
 #[cfg(test)]
 #[test]
@@ -1705,7 +1445,7 @@ impl CommandError {
             StatusRecord::PathForbiddenTemporary => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
             StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
-            StatusRecord::ExecSyntaxError(err) =>Self::external(StatusCode::CONFLICT, err),
+            StatusRecord::ExecError(err) =>Self::external(StatusCode::BAD_REQUEST, err),
         }
     }
 }

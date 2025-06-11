@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 
 use hyper::service::Service;
+use hyper::header::{HeaderValue, CONNECTION};
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::{Incoming as IncomingBody, Bytes};
 use hyper::server::conn::http1;
@@ -172,19 +173,21 @@ impl MorkService {
             None
         };
 
-        //Acquire the resources (mainly zippers) to perform the operation
+        //Dispatch to the command's work handler
         let ctx = self.clone();
         Box::pin(async move {
             println!("Processing: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
-            match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
+            let mut response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
                 Ok(response_bytes) => {
-                    Ok(ok_response(response_bytes))
+                    ok_response(response_bytes)
                 },
                 Err(err) => {
                     let response = MorkServerError::cmd_err(err, &command).error_response();
-                    Ok(response)
+                    response
                 }
-            }
+            };
+            response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+            Ok(response)
         })
     }
 }

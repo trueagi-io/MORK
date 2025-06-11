@@ -1482,7 +1482,7 @@ impl ExprZipper {
             debug_assert!(l < 64);
             let w = self.root.ptr.byte_add(self.loc);
             *w = Tag::SymbolSize(l as u8).encode_as_byte().unwrap();
-            std::ptr::copy_nonoverlapping(value.as_ptr(), w.byte_add(1), l);
+            std::ptr::copy(value.as_ptr(), w.byte_add(1), l);
             true
         }
     }

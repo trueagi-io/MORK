@@ -1,7 +1,7 @@
 from client import MORK, ManagedMORK
 
 def _main():
-    with ManagedMORK.start(binary_path="../target/release/mork_server").and_terminate() as server:
+    with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
         with server.work_at("toy") as ins:
             ins.upload_("\n".join(str(i) for i in range(10000)))
 

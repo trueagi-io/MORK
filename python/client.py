@@ -268,6 +268,10 @@ class MORK:
                 yield from traverse(child)
                 yield value
 
+    class Exec(Request):
+        def __init__(self, location=None):
+            if location: self.status_loc = f"(exec {location})"
+            super().__init__("get", f"/metta_thread/" if location is None else f"/metta_thread/?location={location}")
 
     def __init__(self, base_url: Optional[str] = os.environ.get("MORK_URL"), namespace = "{}", finalization = (), parent=None, history=None):
         if base_url is None:
@@ -370,6 +374,15 @@ class MORK:
     def explore_(self):
         io = self.ns.format("$x")
         cmd = self.Explore(io)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
+    def exec(self, thread_id="*"):
+        """
+        Execute MM2
+        """
+        cmd = self.Exec(self.ns.format(thread_id))
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd
@@ -532,6 +545,7 @@ class ManagedMORK(MORK):
 
 
 def _main():
+    # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("main").and_clear() as ins:
             print("entered")
@@ -547,5 +561,18 @@ def _main():
         for i, item in enumerate(server.history):
             print(i, str(item))
 
+def _main_mm2():
+    # smoke test
+    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+        server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
+        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).block()
+        server.exec(thread_id="test").block()
+        print("data", server.download_().data)
+
+        for i, item in enumerate(server.history):
+            print(i, str(item))
+
+
 if __name__ == '__main__':
-    _main()
+    # _main()
+    _main_mm2()

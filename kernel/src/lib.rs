@@ -598,4 +598,51 @@ mod tests {
 
         println!("RESULTS:\n{}", out);
     }
+
+    #[test]
+    fn process_calculus_test() {
+        let mut s = DefaultSpace::new();
+
+        // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+        const SPACE_EXPRS: &str = r#"
+    (doc "inference control that switches between dispatching two space functions and runs 10 steps")
+    (exec (process_calculus (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z))))))))))))
+                (, (exec (process_calculus (IC $x $y (S $c))) $sp $st)
+                    ((exec $x) $p $t))
+                (, (exec (process_calculus (IC $y $x $c)) $sp $st)
+                    (exec (process_calculus (R $x)) $p $t)))
+    (doc "process calculus recv-send matching")
+    ((exec 0)
+        (, (petri (? $channel $payload $body))
+            (petri (! $channel $payload)))
+        (, (petri $body)))
+    (doc "process calculus | happens in parallel")
+    ((exec 1)
+        (, (petri (| $lprocess $rprocess)))
+        (, (petri $lprocess)
+            (petri $rprocess)))
+
+    (doc "peano arithmetic process-calculus style, using content addressing for Private Name gen")
+    (petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                        (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+    (petri (? (add $ret) (Z $y) (! $ret $y)))
+    (doc "the actual input to the program: two peano numbers to add")
+    (petri (! (add result) ((S (S Z)) (S (S Z)))))
+        "#;
+
+        s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+        s.metta_calculus_simple("process_calculus").unwrap(); // big number of steps to show the MM2 inference control working
+
+        let mut v = vec![];
+        // s.dump_all_sexpr(&mut v).unwrap();
+        // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
+        s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
+        let res = String::from_utf8(v).unwrap();
+
+        assert_eq!(res, "(S (S (S (S Z))))\n");
+        println!("result: {res}")
+    }
+
+
 }

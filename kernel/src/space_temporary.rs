@@ -9,7 +9,7 @@ use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
+    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl_, metta_calculus_impl, token_bfs_impl, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -327,7 +327,7 @@ pub trait Space: Sized {
 
         let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        let result = transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
+        let result = transform_multi_multi_impl_(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
 
         for wz in template_wzs {
             self.cleanup_write_zipper(wz);

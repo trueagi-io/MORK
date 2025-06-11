@@ -1755,7 +1755,7 @@ where
                     //             RET.set(t_ptr);
                     //             unsafe { longjmp(a, 1) }
 
-                    if false  { // introduced != 0
+                    if true  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
                         let mut tmp_args = vec![];
                         ExprEnv::new(1, e).args(&mut tmp_args);
@@ -1834,8 +1834,128 @@ impl DefaultSpace {
     }
 }
 
-#[inline]
-pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
+// #[inline]
+// pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
+//     patterns            : &[E],
+//     pattern_rzs         : &[RZ],
+//     templates           : &[E],
+//     template_prefixes   : &[(usize, usize)],
+//     template_wzs        : &mut [WZ],
+// ) -> (usize, bool)
+//     where
+//     E: ExprTrait,
+//     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+//     WZ : ZipperMoving + ZipperWriting<()>
+// {
+//         let mut buffer = [0u8; 512];
+
+//         //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
+//         //--------------------------------------------------
+//         // let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
+//         // let mut subsumption = vec![0; templates.len()];
+//         // // x abc y ab z   =>  0 3 2 3 4 
+//         // // x ab y abc z   =>  0 1 2 1 4
+
+//         // // x abc y ab z a   =>  0 5 2 5 4 5 
+//         // // x ab y abc z a   =>  0 5 2 5 4 5
+
+//         // // a x abc y ab z   =>  0 1 0 3 0 4
+//         // // a x ab y abc z   =>  0 1 0 3 0 4
+
+//         // // abc x a y ab z   =>  2 1 2 3 2 5
+//         // // ab x a y abc z   =>  2 1 2 3 2 5
+//         // for (i, e) in templates.iter().enumerate() {
+//         //     template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
+//         //     subsumption[i] = i;
+//         //     for j in 0..i {
+//         //         let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
+//         //         if o == template_prefixes[j].len() { // i prefix of j (or equal) 
+//         //             subsumption[i] = j;
+//         //             break
+//         //         }
+//         //     }
+//         // }
+//         // let mut placements = subsumption.clone();
+//         // let read_copy = self.btm.clone();
+//         // let mut template_wzs: Vec<_> = vec![];
+//         // // let mut write_copy = self.btm.clone();
+//         // template_prefixes.iter().enumerate().for_each(|(i, x)| {
+//         //     if subsumption[i] == i {
+//         //         // placements[i] = template_wzs.len();
+//         //         template_wzs.push(self.write_zipper_at_unchecked(x));
+//         //         // template_wzs.push(write_copy.write_zipper_at_path(x));
+//         //     }
+//         // });
+//         // for i in 0..subsumption.len() {
+//         //     subsumption[i] = placements[subsumption[i]]
+//         // }
+//         // trace!(target: "transform", "templates {:?}", templates);
+//         // trace!(target: "transform", "prefixes {:?}", template_prefixes);
+//         // trace!(target: "transform", "subsumption {:?}", subsumption);
+//         //--------------------------------------------------
+
+
+//         //Make a copy map for all of the sources we need to 
+
+
+//         //GOAT From server branch prior to merge
+//         //--------------------------------------------------
+//         // let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
+//         //     for i in 0..template_wzs.len() {
+//         //         let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
+//         //         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+//         //         template.substitute(refs, &mut oz);
+//         //         wz.descend_to(&buffer[prefix.len()..oz.loc]);
+//         //--------------------------------------------------
+
+
+
+//         let mut any_new = false;
+//         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
+//             // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
+//             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+
+//             for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+
+//                 let wz = &mut template_wzs[*wz_idx];
+//                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+
+//                 trace!(target: "transform", "{i} template {}", serialize(unsafe { template.borrow().span().as_ref().unwrap()}));
+//                 match refs_bindings {
+//                     Ok(refs) => {
+//                         trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
+//                         template.borrow().substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+//                     }
+//                     Err((ref bindings, ti, ni, _)) => {
+//                         #[cfg(debug_assertions)]
+//                         {
+//                         bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+//                         }
+
+//                         mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+//                     }
+//                 }
+//                 // loc.transformed(template,)
+//                 trace!(target: "transform", "{i} out {:?}", oz.root);
+//                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+
+//                 wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
+
+//                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
+//                 // println!("insert path {}", serialize(&buffer[..oz.loc]));
+//                 any_new |= wz.set_value(()).is_none();
+//                 wz.reset();
+//                 // THIS DOES WORK v
+//                 // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
+
+//             }
+//             Result::<(),()>::Ok(())
+//         }).unwrap();
+//         (touched, any_new)
+// }
+
+//GOAT, There should NOT be two functions that are so close in implementation without a very very very good reason
+pub(crate) fn transform_multi_multi_impl_<'s, E, RZ, WZ> (
     patterns            : &[E],
     pattern_rzs         : &[RZ],
     templates           : &[E],
@@ -1847,126 +1967,6 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
     WZ : ZipperMoving + ZipperWriting<()>
 {
-        let mut buffer = [0u8; 512];
-
-        //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
-        //--------------------------------------------------
-        // let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
-        // let mut subsumption = vec![0; templates.len()];
-        // // x abc y ab z   =>  0 3 2 3 4 
-        // // x ab y abc z   =>  0 1 2 1 4
-
-        // // x abc y ab z a   =>  0 5 2 5 4 5 
-        // // x ab y abc z a   =>  0 5 2 5 4 5
-
-        // // a x abc y ab z   =>  0 1 0 3 0 4
-        // // a x ab y abc z   =>  0 1 0 3 0 4
-
-        // // abc x a y ab z   =>  2 1 2 3 2 5
-        // // ab x a y abc z   =>  2 1 2 3 2 5
-        // for (i, e) in templates.iter().enumerate() {
-        //     template_prefixes[i] = unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() };
-        //     subsumption[i] = i;
-        //     for j in 0..i {
-        //         let o = pathmap::utils::find_prefix_overlap(template_prefixes[i], template_prefixes[j]);
-        //         if o == template_prefixes[j].len() { // i prefix of j (or equal) 
-        //             subsumption[i] = j;
-        //             break
-        //         }
-        //     }
-        // }
-        // let mut placements = subsumption.clone();
-        // let read_copy = self.btm.clone();
-        // let mut template_wzs: Vec<_> = vec![];
-        // // let mut write_copy = self.btm.clone();
-        // template_prefixes.iter().enumerate().for_each(|(i, x)| {
-        //     if subsumption[i] == i {
-        //         // placements[i] = template_wzs.len();
-        //         template_wzs.push(self.write_zipper_at_unchecked(x));
-        //         // template_wzs.push(write_copy.write_zipper_at_path(x));
-        //     }
-        // });
-        // for i in 0..subsumption.len() {
-        //     subsumption[i] = placements[subsumption[i]]
-        // }
-        // trace!(target: "transform", "templates {:?}", templates);
-        // trace!(target: "transform", "prefixes {:?}", template_prefixes);
-        // trace!(target: "transform", "subsumption {:?}", subsumption);
-        //--------------------------------------------------
-
-
-        //Make a copy map for all of the sources we need to 
-
-
-        //GOAT From server branch prior to merge
-        //--------------------------------------------------
-        // let touched = query_multi_impl(patterns, pattern_rzs, union_reader_values, |refs, _loc| {
-        //     for i in 0..template_wzs.len() {
-        //         let (wz, prefix, template) = (&mut template_wzs[i], template_prefixes[i], templates[i]);
-        //         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-        //         template.substitute(refs, &mut oz);
-        //         wz.descend_to(&buffer[prefix.len()..oz.loc]);
-        //--------------------------------------------------
-
-
-
-        let mut any_new = false;
-        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
-            // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
-            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
-
-            for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
-
-                let wz = &mut template_wzs[*wz_idx];
-                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
-                trace!(target: "transform", "{i} template {}", serialize(unsafe { template.borrow().span().as_ref().unwrap()}));
-                match refs_bindings {
-                    Ok(refs) => {
-                        trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
-                        template.borrow().substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
-                    }
-                    Err((ref bindings, ti, ni, _)) => {
-                        #[cfg(debug_assertions)]
-                        {
-                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
-                        }
-
-                        mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
-                    }
-                }
-                // loc.transformed(template,)
-                trace!(target: "transform", "{i} out {:?}", oz.root);
-                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
-
-                wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
-
-                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
-                // println!("insert path {}", serialize(&buffer[..oz.loc]));
-                any_new |= wz.set_value(()).is_none();
-                wz.reset();
-                // THIS DOES WORK v
-                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
-
-            }
-            Result::<(),()>::Ok(())
-        }).unwrap();
-        (touched, any_new)
-}
-
-//GOAT, There should NOT be two functions that are so close in implementation without a very very very good reason
-pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
-    patterns            : &[Expr],
-    pattern_rzs         : &[RZ],
-    templates           : &[Expr],
-    template_prefixes   : &[(usize, usize)],
-    template_wzs        : &mut [WZ],
-) -> (usize, bool)
-    where
-    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-    WZ : ZipperMoving + ZipperWriting<()>
-{
-
         let mut buffer = [0u8; 512];
 
         //GOAT Subsumption code, implemented inside of "acquire_transform_permissions"
@@ -2029,7 +2029,7 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
 
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
-                trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
+                trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.borrow().span().as_ref().unwrap()}));
                 // println!("ass len {}", assignments.len());
                 let mut ass = if i == 0 {
                     // assignments.clone()
@@ -2039,7 +2039,7 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
                     vec![]
                 };
                 // let mut ass = vec![];
-                let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
+                let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
                 // println!("res {:?}", res);
                 // (oi, ni) = res;
 

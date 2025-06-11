@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::sync::Arc;
 
-use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify};
+use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::trie_map::BytesTrieMap;
@@ -177,7 +177,8 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     macro_rules! unroll {
     (ACTION $recursive:expr) => {
         trace!(target: "transition", "introduced {} in {}", introduced, serialize(loc.origin_path()));
-        f(&references[..], introduced, loc); };
+        f(&references[..], introduced, loc);
+    };
     (ITER_AT_DEPTH $recursive:expr) => {
         let level = *last; last = last.offset(-1);
 
@@ -438,8 +439,10 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
+    #[cfg(debug_assertions)]
+    unroll!(CALL referential_transition(last, loc, references, introduced, f));
+    #[cfg(not(debug_assertions))]
     unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
-    // unroll!(CALL referential_transition(last, loc, references, f));
     }
 }
 
@@ -790,7 +793,7 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
         space.cleanup_write_zipper(wz);
     }
 
-    trace!(target: "interpret", "{:?}", res);
+    trace!(target: "interpret", "(run, changed) = {:?}", res);
     Ok(())
 }
 
@@ -1462,6 +1465,32 @@ where
 }
 
 impl DefaultSpace {
+
+    /// GOAT, What is the point of this function?  Why doesn't it just call `dump_sexpr`??
+    pub fn dump_all_sexpr<W : Write>(&self, w: &mut W) -> Result<usize, String> {
+
+        unimplemented!();
+
+        // let mut rz = self.btm.read_zipper();
+        // let mut i = 0usize;
+        // while rz.to_next_val() {
+        //     Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
+        //         #[cfg(feature="interning")]
+        //         {
+        //             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+        //             let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+        //             // println!("symbol {symbol:?}, bytes {mstr:?}");
+        //             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+        //         }
+        //         #[cfg(not(feature="interning"))]
+        //         unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+        //     });
+        //     w.write(&[b'\n']).map_err(|x| x.to_string())?;
+        //     i += 1;
+        // }
+        // Ok(i)
+    }
+
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
         let mut reader = self.new_reader(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }, &())?;
         let rz = self.read_zipper(&mut reader);
@@ -1476,7 +1505,8 @@ impl DefaultSpace {
         ).map_err(|e| format!("{:?}", e))
     }
 }
-pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy>(
+
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
@@ -1489,21 +1519,35 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W : std::io::Write, IoWriteError : Copy
 {
     let mut buffer = [0u8; 4096];
 
-    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
+    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         match refs_bindings {
             Ok(refs) => {
                 template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
             }
-            Err((ref bindings, ti, ni)) => {
-                mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+            Err((ref bindings, ti, ni, _)) => {
+                mork_bytestring::apply(0, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
             }
         }
 
         // &buffer[constant_template_prefix.len()..oz.loc]
-        serialize_sexpr_into(buffer.as_mut_ptr(), w, sm).map_err(|_| f())?;
-        w.write(&[b'\n']).map_err(|_| f())?;
+        Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
+            #[cfg(feature="interning")]
+            {
+                let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                // println!("symbol {symbol:?}, bytes {mstr:?}");
+                unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+            }
+            #[cfg(not(feature="interning"))]
+            unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+        });
+
+        // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
+        // w.write(&[b'\n']).map_err(|x| x.to_string())?;
+        w.write(&[b'\n']).map_err(|x| f())?;
+
         Ok(())
     })
 }
@@ -1590,7 +1634,7 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-    pub fn query_multi<E: Copy, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), E>>(&self, patterns: &[Expr], effect: F) -> Result<usize, E> {
+    pub fn query_multi<Err: Copy, F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>>(&self, patterns: &[Expr], effect: F) -> Result<usize, Err> {
         let mut readers = patterns.iter().map(|p| {
             self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
@@ -1613,7 +1657,7 @@ where
     E: ExprTrait,
     Err: Copy,
     RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8)>, Expr) -> Result<(), Err>,
+    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
@@ -1638,6 +1682,7 @@ where
         let mut virtual_path = vec![Tag::Arity(patterns.len() as u8).byte()];
         let mut pattern_expr = virtual_path.clone();
         for pattern in patterns.iter() {
+            trace!(target: "query_multi", "pattern {:?}", pattern);
             pattern_expr.extend_from_slice(unsafe { pattern.borrow().span().as_ref().unwrap() })
         }
         virtual_path.extend_from_slice(first_pattern_prefix);
@@ -1652,7 +1697,10 @@ where
         for (rz, pat) in rz_rest.iter().zip(pat_rest) {
             let mut temp_map = BytesTrieMap::new();
             let prefix = make_prefix(&pat.borrow());
-            if !rz.path_exists() { return Ok(0) }
+            if !rz.path_exists() {
+                trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));
+                return Ok(0)
+            }
             temp_map.write_zipper_at_path(prefix).graft(rz);
             tmp_maps.push(temp_map);
         }
@@ -1685,7 +1733,8 @@ where
         let pat = Expr { ptr: pattern_expr.as_mut_ptr() };
         let pat_newvars = pat.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(&pattern_expr[..]));
-
+        let mut pat_args = vec![];
+        ExprEnv::new(0, pat).args(&mut pat_args);
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
@@ -1708,10 +1757,34 @@ where
 
                     if false  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
-                        let bindings = unify(vec![ExprEnv::new(1, pat)], vec![ExprEnv::new(0, e)]);
+                        let mut tmp_args = vec![];
+                        ExprEnv::new(1, e).args(&mut tmp_args);
+
+                        let pairs: Vec<_> = pat_args.iter().zip(tmp_args.iter()).enumerate().map(|(i, (pat_arg, data_arg))| {
+                            (*pat_arg, ExprEnv::new((i + 1) as u8, data_arg.subsexpr()))
+                        }).collect();
+                        for pair in pairs[..].iter() {
+                            // println!("{}", pair.1.show());
+                        }
+                        let bindings = unify(
+                            pairs
+                        );
+
                         match bindings {
                             Ok(bs) => {
-                                match effect(Err((bs, introduced, pat_newvars as u8)), e) {
+                                // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
+                                let mut assignments: Vec<(u8, u8)> = vec![];
+                                let (oi, ni) = {
+                                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                                    let mut stack: Vec<(u8, u8)> = vec![];
+                                    let mut scratch = [0u8; 512];
+                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments);
+                                    // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                                    r
+                                };
+                                // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
+
+                                match effect(Err((bs, oi, ni, assignments)), e) {
                                     Ok(()) => {}
                                     Err(t) => {
                                         let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Err>()) };
@@ -1853,7 +1926,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
                         trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
                         template.borrow().substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
                     }
-                    Err((ref bindings, ti, ni)) => {
+                    Err((ref bindings, ti, ni, _)) => {
                         #[cfg(debug_assertions)]
                         {
                         bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
@@ -1946,29 +2019,36 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
 
         let mut any_new = false;
         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
-            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+
+            let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
+            #[cfg(debug_assertions)]
+            bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
             for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
-
                 let wz = &mut template_wzs[*wz_idx];
+
                 let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
-                trace!(target: "transform", "{i} template {}", serialize(unsafe { template.span().as_ref().unwrap()}));
-                match refs_bindings {
-                    Ok(refs) => {
-                        trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
-                        template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
-                    }
-                    Err((ref bindings, ti, ni)) => {
-                        #[cfg(debug_assertions)]
-                        {
-                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
-                        }
-                        template.shift(ti, &mut ExprZipper::new(*template));
-                        trace!(target: "transform", "total introduced {:?}", ti);
-                        mork_bytestring::apply(1, ni as u8, ti, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
-                    }
-                }
+                trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
+                // println!("ass len {}", assignments.len());
+                let mut ass = if i == 0 {
+                    // assignments.clone()
+                    vec![]
+                } else {
+                    // assignments[..1].to_vec()
+                    vec![]
+                };
+                // let mut ass = vec![];
+                let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
+                // println!("res {:?}", res);
+                // (oi, ni) = res;
+
+                //   0      1      2      3      4      5      6      7      8      9
+                //  [(1,3), (3,4), (3,5), (3,6), (3,0), (3,1), (3,7), (3,8), (3,2), (3,3)]
+                // <0, 3> = (, (petri (? <3,4> <3,5> <3,6>)) (petri (! <3,0> <3,1>)) (exec PC0 <3,7> <3,8>))
+                // <0, 4> = (, (petri <3,2>) (exec PC0 <3,3> <3,4>))
+                // [4] exec PC0 _4 _5
+
                 // loc.transformed(template,)
                 trace!(target: "transform", "{i} out {:?}", oz.root);
                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
@@ -1979,9 +2059,6 @@ pub(crate) fn transform_multi_multi_impl_<'s, RZ, WZ> (
                 // println!("insert path {}", serialize(&buffer[..oz.loc]));
                 any_new |= wz.set_value(()).is_none();
                 wz.reset();
-                // THIS DOES WORK v
-                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
-
             }
             Ok::<(), ()>(())
         }).unwrap();
@@ -2390,7 +2467,7 @@ fn bfs_test() {
 }
 
 pub struct Retry;
-pub enum MettaCalculusLocalizedError{
+pub enum MettaCalculusLocalizedError {
     LocationWasNotAConstantExpression,
-    LocationWasAlreadyDispatchedOnAnotherThread
+    LocationWasAlreadyDispatchedOnAnotherThread,
 }

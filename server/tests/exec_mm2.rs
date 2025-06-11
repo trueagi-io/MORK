@@ -120,10 +120,18 @@ async fn metta_thread_without_substitution_adams_hello_world() -> Result<(), Err
     , "(data (bar 2))\n"
     );
     core::assert_eq!(export_response_text.lines().count(), 6);
-    core::assert_eq!(
-        OUT_LIST,
-        export_response_text
+
+    //GOAT, this is a hack until we have symbol-order-independent validation
+    const OUT_LIST_ALTERNATE : &str = concat!(""
+    , "(data T)\n"
+    , "(data ran_exec)\n"
+    , "(data (bar 1))\n"
+    , "(data (bar 2))\n"
+    , "(data (foo 1))\n"
+    , "(data (foo 2))\n"
     );
+
+    assert!(export_response_text==OUT_LIST || export_response_text==OUT_LIST_ALTERNATE);
 
     Ok(())
 

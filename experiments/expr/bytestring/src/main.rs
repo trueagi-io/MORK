@@ -1928,8 +1928,10 @@ fn unify_multi_multi() {
 
         let mut eov0 = parse!(r"[4] T0 $ $ _2");
         let mut eov1 = parse!(r"[4] T1 $ $ _2");
+        let mut eov2 = parse!(r"[4] T2 $ $ _2");
         let eo0 = Expr{ ptr: eov0.as_mut_ptr() };
         let eo1 = Expr{ ptr: eov1.as_mut_ptr() };
+        let eo2 = Expr{ ptr: eov2.as_mut_ptr() };
 
         let mut components = vec![];
         ExprEnv::new(0, x).args(&mut components);

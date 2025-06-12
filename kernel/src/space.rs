@@ -759,7 +759,7 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
 }
 
 /// Validates the format of an MM2 expression, and extracts the patterns and templates from it
-pub(crate) fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTemplatesExprs, ExecError<S>> {
+fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTemplatesExprs, ExecError<S>> {
     let mut rtz = ExprZipper::new(rt);
 
     // ////////////////////////////////////////////////////////////////////
@@ -1468,6 +1468,7 @@ impl DefaultSpace {
 }
 
 pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
+    #[allow(unused)] // Symbol table mapping only used when interning feature is enabled
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
@@ -1480,7 +1481,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
 {
     let mut buffer = [0u8; 4096];
 
-    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, loc| {
+    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         match refs_bindings {
@@ -1702,20 +1703,6 @@ where
                 referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, introduced, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
 
-                    //GOAT, from server branch prior to merge
-                    //
-                    // // Remy : This check is potentially expensive, but at least it makes dangling constant not an issue.
-                    // //        I would like a better alternative.
-                    // let skip = !loc.is_value() && e.is_ground();
-                    // if !skip {
-                    //     match effect(refs, e) {
-                    //         Ok(()) => {}
-                    //         Err(t) => {
-                    //             let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<E>()) };
-                    //             unsafe { std::ptr::write(t_ptr as *mut E, t) };
-                    //             RET.set(t_ptr);
-                    //             unsafe { longjmp(a, 1) }
-
                     if true  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
                         let mut tmp_args = vec![];
@@ -1724,9 +1711,9 @@ where
                         let pairs: Vec<_> = pat_args.iter().zip(tmp_args.iter()).enumerate().map(|(i, (pat_arg, data_arg))| {
                             (*pat_arg, ExprEnv::new((i + 1) as u8, data_arg.subsexpr()))
                         }).collect();
-                        for pair in pairs[..].iter() {
-                            // println!("{}", pair.1.show());
-                        }
+                        // for pair in pairs[..].iter() {
+                        //     println!("{}", pair.1.show());
+                        // }
                         let bindings = unify(
                             pairs
                         );
@@ -1900,6 +1887,7 @@ impl DefaultSpace {
         }
     }
 
+
     // pub fn datalog(&mut self, statements: &[Expr]) {
     //     let last_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 0];
     //     let current_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 1];
@@ -2064,26 +2052,24 @@ type PatternsExpr = Expr;
 type TemplateExpr = Expr;
 type TemplatesExpr = Expr;
 
+/// The pattern and template sets from an `exec` expression
+///
 /// the inner [`(PatternsExpr, TemplatesExpr)`] is guaranteed to have expr lists of the form `[<len>] , ...<Patterns | Templates>)`
 #[derive(Clone, Copy)]
-pub struct PatternsTemplatesExprs {
+struct PatternsTemplatesExprs {
     patterns : PatternsExpr,
     templates : TemplatesExpr,
 }
 impl PatternsTemplatesExprs {
-    #[doc(hidden)]
-    pub fn new(patterns : Expr, templates : Expr) -> Self {Self { patterns: patterns, templates }}
-    pub fn inner_raw(&self) -> (PatternsExpr, TemplatesExpr) {
-        (self.patterns, self.templates)
-    }
-    pub fn collect_inner(self) -> (Vec<PatternExpr>, Vec<TemplateExpr>) {
+    fn new(patterns : Expr, templates : Expr) -> Self {Self { patterns: patterns, templates }}
+    fn collect_inner(self) -> (Vec<PatternExpr>, Vec<TemplateExpr>) {
         ( fun_args(ExprZipper::new(self.patterns))
         , fun_args(ExprZipper::new(self.templates))
         )
     }
 }
 /// this function should only be called if the [`ExprZipper`] passed in is at an [`Tag::Arity`] and the first element is a "function" symbol.
-pub fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
+fn fun_args(mut ez : ExprZipper)->Vec<Expr> {
 
     // [n]
     let Tag::Arity(n) = ez.tag() else { panic!() };
@@ -2113,9 +2099,8 @@ fn comma_fun_args_asserted(s : &impl Space, e : Expr)->Vec<Expr> {
     );
     ez.reset();
     debug_assert!(matches!(ez.tag(), Tag::Arity(_)));
-    fun_args(ez)    
+    fun_args(ez)
 }
-
 
 #[cfg(test)]
 #[test]
@@ -2185,10 +2170,4 @@ fn bfs_test() {
     let [(t1, _), (t2, _), ..] = &prime_results[..] else { panic!() };
     println!("L1.0 {:?}", space.token_bfs(t1, expr!(space, "$"), &mut reader));
     println!("L1.1 {:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
-}
-
-pub struct Retry;
-pub enum MettaCalculusLocalizedError {
-    LocationWasNotAConstantExpression,
-    LocationWasAlreadyDispatchedOnAnotherThread,
 }

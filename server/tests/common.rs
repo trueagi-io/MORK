@@ -38,32 +38,34 @@ pub async fn wait_for_server() -> Result<(), Error> {
 }
 
 #[allow(dead_code)]
-pub async fn wait_for_url_eq_status(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
-    wait_for_url_status::<true>(url, expected_status).await
-}
-#[allow(dead_code)]
-pub async fn wait_for_url_ne_status(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
-    wait_for_url_status::<false>(url, expected_status).await
-}
-pub async fn wait_for_url_status<const EQ : bool>(url : &str, expected_status : &str) ->Result<(),reqwest::Error> {
+pub async fn wait_for_url_eq_status(url : &str, expected_status : &str) -> Result<(), reqwest::Error> {
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let response = reqwest::get(url).await?;
-        assert!(response.status().is_success());
-        let response_text = response.text().await?;
-        println!("Status (polling) response: {}", response_text);
-        let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        if EQ {
-            if response_json.get("status").unwrap().as_str().unwrap() == expected_status {
-                break
-            }
+        let status = get_url_status(url).await?;
+        if status == expected_status {
+            return Ok(())
         } else {
-            if response_json.get("status").unwrap().as_str().unwrap() != expected_status {
-                break
-            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
-    Ok(())
+}
+#[allow(dead_code)]
+pub async fn wait_for_url_ne_status(url : &str, expected_status : &str) -> Result<String, reqwest::Error> {
+    loop {
+        let status = get_url_status(url).await?;
+        if status != expected_status {
+            return Ok(status)
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+pub async fn get_url_status(url : &str) -> Result<String, reqwest::Error> {
+    let response = reqwest::get(url).await?;
+    assert!(response.status().is_success());
+    let response_text = response.text().await?;
+    println!("Status (polling) response: {}", response_text);
+    let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    Ok(response_json.get("status").unwrap().as_str().unwrap().to_string())
 }
 
 /// Starts the server, and then dispatches a `stop?wait_for_idle` request

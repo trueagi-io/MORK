@@ -328,7 +328,8 @@ async fn import_request_test() -> Result<(), Error> {
     // assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary"); // we need to ensure tests simulate latency somehow for this to be deterministic
 
     //Now spin until we get a "pathClear" status
-    wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
+    let status = wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
+    assert_eq!(status, "pathClear");
     println!("Finished loading space");
 
     //Finally, check that we got the right data in the path by using the count command
@@ -511,7 +512,8 @@ async fn copy_request_test() -> Result<(), Error> {
     println!("Import response: {}", response.text().await?);
 
     // Wait until the server has finished import
-    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+    let status = wait_for_url_ne_status(STATUS_URL, "pathForbiddenTemporary").await.unwrap();
+    assert_eq!(status, "pathClear");
     println!("Finished loading space");
 
     // Copy the data from `royals` to `commoners`

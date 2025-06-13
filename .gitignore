@@ -3,8 +3,3 @@ Cargo.lock
 .DS_Store
 .vscode
 tmp
-
-.env
-.env.local
-server/.env
-server/.env.local

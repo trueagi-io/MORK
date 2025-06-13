@@ -21,6 +21,8 @@ RUN rustup target add x86_64-unknown-linux-musl
 # needed to compile gxhash
 ENV RUSTFLAGS="-C target-cpu=native"
 
+RUN cargo install --branch master --rev 55c7e57006deba8ac9222bcf222a14f35b822170  --git https://github.com/Adam-Vandervorst/PathMap.git pathmap
+
 RUN cargo build --release --bin mork_server --target x86_64-unknown-linux-musl
 
 FROM alpine:3.19

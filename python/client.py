@@ -115,7 +115,7 @@ class MORK:
 
         def dispatch(self, server):
             super().dispatch(server)
-            print("download", self.response.status_code)
+            print("download status code:", self.response.status_code)
             if self.response and self.response.status_code == 200:
                 self.data = self.response.text
 
@@ -474,7 +474,7 @@ class ManagedMORK(MORK):
         server_stdout = FileIO(stdout_path, "w+")
         stderr_path = f"/tmp/.mork_server_stderr_{bin_hash}.log"
         server_stderr = FileIO(stderr_path, "w+")
-        process = Popen([binary_path, *map(str, args)], stdout=server_stdout, stderr=server_stderr)
+        process = Popen([binary_path, *map(str, args)], stdout=server_stdout, stderr=server_stderr, env={"RUST_BACKTRACE": "1"})
         print("process id", process.pid)
         sleep(.5)
         if process.returncode is None:  # good, still running
@@ -540,7 +540,10 @@ class ManagedMORK(MORK):
             else:
                 print("stderr unavailable with external server")
         if "terminate" in self.finalization:
-            print(exc_type, exc_val, exc_tb, "caused terminate")
+            if exc_type is None:
+                print("normal termination")
+            else:
+                print(exc_type, exc_val, exc_tb, "caused terminate")
             self.cleanup()
 
 

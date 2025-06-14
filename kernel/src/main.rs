@@ -39,73 +39,73 @@ use mork_bytestring::{item_byte, Tag};
 //     s.done();
 // }
 
-fn work(s: &mut Space) {
-    let restore_paths_start = Instant::now();
-    println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
-    println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
-    s.statistics();
-
-    let add_gene_name_index_start = Instant::now();
-    s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
-    println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
-    s.statistics();
-
-    let all_related_to_gene_start = Instant::now();
-    s.transform_multi(&[
-        expr!(s, "[3] gene_name_of TP73-AS1 $"),
-        expr!(s, "[4] SPO _1 includes $"),
-        expr!(s, "[4] SPO _1 transcribed_from $"),
-    ], expr!(s, "[4] res0 _1 _2 _3"));
-    println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
-    let mut count = 0;
-    s.query(expr!(s, "[4] res0 $ $ $"), |_, e| {
-        println!("{}", sexpr!(s, e));
-        count += 1
-    });
-    println!("res0 count {}", count);
-
-    let add_exon_chr_index_start = Instant::now();
-    s.transform(expr!(s, "[4] NKV $ chr $"), expr!(s, "[3] chr_of _2 _1"));
-    println!("add exon chr index took {}", add_exon_chr_index_start.elapsed().as_secs());
-    s.statistics();
-
-    let ops_index_start = Instant::now();
-    s.transform(expr!(s, "[4] SPO $ $ $"), expr!(s, "[4] OPS _3 _2 _1"));
-    println!("add ops index took {}", ops_index_start.elapsed().as_secs());
-    s.statistics();
-
-    let transitive_chr1_start = Instant::now();
-    s.transform_multi(&[
-        expr!(s, "[3] chr_of chr1 $"),
-        expr!(s, "[4] OPS _1 includes $"),
-        expr!(s, "[4] SPO _2 translates_to $"),
-        expr!(s, "[4] OPS _3 interacts_with $"),
-    ], expr!(s, "[5] res1 _1 _2 _3 _4"));
-    println!("transitive_chr1 {} ms", transitive_chr1_start.elapsed().as_millis());
-    let mut count = 0;
-    s.query(expr!(s, "[5] res1 $ $ $ $"), |_, e| {
-        // println!("{}", sexpr!(s, e));
-        count += 1
-    });
-    println!("res1 count {}", count);
-
-    let q0_start = Instant::now();
-    s.transform_multi(&[
-        expr!(s, "[3] gene_name_of BRCA2 $"),
-        expr!(s, "[4] SPO _1 transcribed_to $"),
-        expr!(s, "[4] SPO _2 translates_to $"),
-        expr!(s, "[4] OPS _3 interacts_with $"),
-        expr!(s, "[4] SPO _1 genes_pathways $"),
-    ], expr!(s, "[6] res2 _1 _2 _3 _4 _5"));
-    println!("q0 {}", q0_start.elapsed().as_micros());
-    let mut count = 0;
-    s.query( expr!(s, "[6] res2 $ $ $ $ $"), |_, e| {
-        // println!("{}", sexpr!(s, e));
-        count += 1
-    });
-    println!("res2 count {}", count);
-
-}
+// fn work(s: &mut Space) {
+//     let restore_paths_start = Instant::now();
+//     println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
+//     println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
+//     s.statistics();
+//
+//     let add_gene_name_index_start = Instant::now();
+//     s.transform(expr!(s, "[4] NKV $ gene_name $"), expr!(s, "[3] gene_name_of _2 _1"));
+//     println!("add gene name index took {} ms", add_gene_name_index_start.elapsed().as_millis());
+//     s.statistics();
+//
+//     let all_related_to_gene_start = Instant::now();
+//     s.transform_multi(&[
+//         expr!(s, "[3] gene_name_of TP73-AS1 $"),
+//         expr!(s, "[4] SPO _1 includes $"),
+//         expr!(s, "[4] SPO _1 transcribed_from $"),
+//     ], expr!(s, "[4] res0 _1 _2 _3"));
+//     println!("all_related_to_gene_start {}", all_related_to_gene_start.elapsed().as_micros());
+//     let mut count = 0;
+//     s.query(expr!(s, "[4] res0 $ $ $"), |_, e| {
+//         println!("{}", sexpr!(s, e));
+//         count += 1
+//     });
+//     println!("res0 count {}", count);
+//
+//     let add_exon_chr_index_start = Instant::now();
+//     s.transform(expr!(s, "[4] NKV $ chr $"), expr!(s, "[3] chr_of _2 _1"));
+//     println!("add exon chr index took {}", add_exon_chr_index_start.elapsed().as_secs());
+//     s.statistics();
+//
+//     let ops_index_start = Instant::now();
+//     s.transform(expr!(s, "[4] SPO $ $ $"), expr!(s, "[4] OPS _3 _2 _1"));
+//     println!("add ops index took {}", ops_index_start.elapsed().as_secs());
+//     s.statistics();
+//
+//     let transitive_chr1_start = Instant::now();
+//     s.transform_multi(&[
+//         expr!(s, "[3] chr_of chr1 $"),
+//         expr!(s, "[4] OPS _1 includes $"),
+//         expr!(s, "[4] SPO _2 translates_to $"),
+//         expr!(s, "[4] OPS _3 interacts_with $"),
+//     ], expr!(s, "[5] res1 _1 _2 _3 _4"));
+//     println!("transitive_chr1 {} ms", transitive_chr1_start.elapsed().as_millis());
+//     let mut count = 0;
+//     s.query(expr!(s, "[5] res1 $ $ $ $"), |_, e| {
+//         // println!("{}", sexpr!(s, e));
+//         count += 1
+//     });
+//     println!("res1 count {}", count);
+//
+//     let q0_start = Instant::now();
+//     s.transform_multi(&[
+//         expr!(s, "[3] gene_name_of BRCA2 $"),
+//         expr!(s, "[4] SPO _1 transcribed_to $"),
+//         expr!(s, "[4] SPO _2 translates_to $"),
+//         expr!(s, "[4] OPS _3 interacts_with $"),
+//         expr!(s, "[4] SPO _1 genes_pathways $"),
+//     ], expr!(s, "[6] res2 _1 _2 _3 _4 _5"));
+//     println!("q0 {}", q0_start.elapsed().as_micros());
+//     let mut count = 0;
+//     s.query( expr!(s, "[6] res2 $ $ $ $ $"), |_, e| {
+//         // println!("{}", sexpr!(s, e));
+//         count += 1
+//     });
+//     println!("res2 count {}", count);
+//
+// }
 
 const work_mm2: &str = r#"
 (exec P0 (, (NKV $x gene_name $y)) (,) (, (gene_name_of $y $x)))
@@ -211,43 +211,45 @@ fn process_calculus() {
 
     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
     const SPACE_EXPRS: &str = r#"
-(doc "inference control that switches between dispatching two space functions and runs 10 steps")
-(exec (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z)))))))))))
+(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+                  )
                (, (exec (IC $x $y (S $c)) $sp $st)
                   ((exec $x) $p $t))
                (, (exec (IC $y $x $c) $sp $st)
                   (exec (R $x) $p $t)))
-(doc "process calculus recv-send matching")
+
 ((exec 0)
       (, (petri (? $channel $payload $body))
-         (petri (! $channel $payload)))
+         (petri (! $channel $payload)) )
       (, (petri $body)))
-(doc "process calculus | happens in parallel")
 ((exec 1)
       (, (petri (| $lprocess $rprocess)))
       (, (petri $lprocess)
          (petri $rprocess)))
 
-(doc "peano arithmetic process-calculus style, using content addressing for Private Name gen")
 (petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
                                     (? (PN $x $y) $z (! $ret (S $z)))  )  ))
 (petri (? (add $ret) (Z $y) (! $ret $y)))
-(doc "the actual input to the program: two peano numbers to add")
-(petri (! (add result) ((S (S Z)) (S (S Z)))))
+(petri (! (add result) (
+           (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+           (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+           )))
     "#;
 
     s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
-
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    println!("elapsed {} steps {}", t0.elapsed().as_millis(), steps);
+    
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
     // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
     s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
-    assert_eq!(res, "(S (S (S (S Z))))\n");
-    println!("result: {res}")
+    println!("result: {res}");
+    assert_eq!(res, "(S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n");
 }
 
 fn main() {

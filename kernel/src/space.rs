@@ -1406,13 +1406,6 @@ impl Space {
                 // let mut ass = vec![];
                 let res = mork_bytestring::apply(0 as u8, ni as u8, 0, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
                 // println!("res {:?}", res);
-                // (oi, ni) = res;
-
-                //   0      1      2      3      4      5      6      7      8      9
-                //  [(1,3), (3,4), (3,5), (3,6), (3,0), (3,1), (3,7), (3,8), (3,2), (3,3)]
-                // <0, 3> = (, (petri (? <3,4> <3,5> <3,6>)) (petri (! <3,0> <3,1>)) (exec PC0 <3,7> <3,8>))
-                // <0, 4> = (, (petri <3,2>) (exec PC0 <3,3> <3,4>))
-                // [4] exec PC0 _4 _5
 
                 // loc.transformed(template,)
                 trace!(target: "transform", "{i} out {:?}", oz.root);
@@ -1546,7 +1539,7 @@ impl Space {
                 false
             }
         } { done += 1 }
-        
+
         done
     }
 

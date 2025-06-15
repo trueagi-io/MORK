@@ -240,7 +240,7 @@ fn process_calculus() {
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
-    println!("elapsed {} steps {}", t0.elapsed().as_millis(), steps);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
     
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();

@@ -1175,6 +1175,55 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
     }
 }
 
+#[allow(unused)]
+fn match2<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize),
+    A1, R1, T1 : Traversal<A1, R1>,
+    A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
+                                    t2: &mut T2, e2: Expr, i2: usize, hole: &mut F) -> Result<(usize, R1, usize, R2), (usize, usize)> {
+    match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
+        (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
+            hole(t1, e1, i1, t2, e2, i2);
+            let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
+            let (d2, r2) = execute_loop(t2, e2, i2);
+            Ok((1, r1, d2 - i2, r2))
+        }
+        (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
+            hole(t1, e1, i1, t2, e2, i2);
+            let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
+            let (d1, r1) = execute_loop(t1, e1, i1);
+            Ok((d1 - i1, r1, 1, r2))
+        }
+        (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
+            let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
+            let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
+            if slice1 != slice2 { Err((i1, i2)) }
+            else {
+                let d = s1 as usize + 1;
+                let r1 = t1.symbol(i1, slice1);
+                let r2 = t2.symbol(i2, slice2);
+                Ok((d, r1, d, r2))
+            }
+        }
+        (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
+            let mut offset1 = 1;
+            let mut offset2 = 1;
+            let mut acc1 = t1.zero(i1, a1);
+            let mut acc2 = t2.zero(i2, a2);
+            for k in 0..a1 {
+                let (d1, r1, d2, r2) = match2(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole)?;
+                acc1 = t1.add(i1 + offset1, acc1, r1);
+                acc2 = t2.add(i2 + offset2, acc2, r2);
+                offset1 += d1;
+                offset2 += d2;
+            }
+            let r1 = t1.finalize(i1 + offset1, acc1);
+            let r2 = t2.finalize(i2 + offset2, acc2);
+            Ok((offset1, r1, offset2, r2))
+        }
+        _ => { Err((i1, i2)) }
+    }
+}
+
 enum Remaining {
     None,
     
@@ -2309,6 +2358,16 @@ impl std::hash::Hash for ExprEnv {
     }
 }
 
+pub struct TraverseSide { ee: ExprEnv }
+impl Traversal<(), ()> for TraverseSide {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
+}
+
 impl ExprEnv {
     pub fn new(i: u8, e: Expr) -> Self {
         Self {
@@ -2317,6 +2376,14 @@ impl ExprEnv {
             offset: 0,
             base: e,
         }
+    }
+    
+    pub fn v_incr_traversal(&self) -> TraverseSide {
+        TraverseSide{ ee: self.clone() }
+    }
+
+    pub fn offset(&self, offset: u32) -> ExprEnv {
+        ExprEnv{ n: self.n, v: self.v, offset: self.offset + offset, base: self.base }
     }
 
     pub fn subsexpr(&self) -> Expr {
@@ -2526,8 +2593,6 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
     let mut iterations = 0;
     let mut encountered: HashSet<(ExprEnv, ExprEnv)> = HashSet::new();
-    let mut tmpx = vec![];
-    let mut tmpy = vec![];
 
     macro_rules! step {
         (occurs $x:expr, $e:expr) => {{
@@ -2579,6 +2644,7 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
         (push $x:expr, $y:expr) => {{
             let _x: ExprEnv = $x;
             let _y: ExprEnv = $y;
+            if PRINT_DEBUG { println!("pushing {} {}", _x.show(), _y.show()); }
             match (_x.var_opt(), _y.var_opt()) {
                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
                     stack.push((_x, _y));
@@ -2620,17 +2686,14 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
 
         match (dt1.var_opt(), dt2.var_opt()) {
             (None, None) => {
-                if dt1.same_functor(&dt2) {
-                    dt1.args(&mut tmpx);
-                    dt2.args(&mut tmpy);
-                    for (&tx, &ty) in tmpx.iter().zip(tmpy.iter()) {
-                        step!(push tx, ty);
-                    }
-                    tmpx.clear();
-                    tmpy.clear();
-                    // assert_eq!(sx.len(), sy.len(), "len({}) != len({})", dt2.show(), dt1.show());
-                } else {
-                    if PRINT_DEBUG { println!("diff {dt1:?}  != {dt2:?}"); }
+                let mut ts1 = dt1.clone().v_incr_traversal();
+                let mut ts2 = dt2.clone().v_incr_traversal();
+
+                if let Err((o1, o2)) = match2(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
+                                              &mut |_ts1, e1, i1, _ts2, e2, i2| {
+                                                  step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32))
+                                              }) {
+                    if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
                 }
             }

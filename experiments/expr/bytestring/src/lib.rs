@@ -1178,7 +1178,9 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
     }
 }
 
-#[allow(unused)]
+// functor same -> functor arguments -> call recursively
+// unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
+// unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
 fn match2<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize),
     A1, R1, T1 : Traversal<A1, R1>,
     A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,

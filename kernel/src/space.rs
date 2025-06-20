@@ -1328,6 +1328,7 @@ impl Space {
             btm.read_zipper()
         }));
         prz.reserve_buffers(1 << 32, 32);
+        // println!("pat args {} {}", pat_args.len(), prz.factor_count());
 
         let mut stack = pat_args[1..].iter().rev().cloned().collect::<Vec<_>>();
 
@@ -1343,6 +1344,7 @@ impl Space {
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
                 while prz.to_next_val() {
+                    if prz.path_indices().len() != pat_args.len() - 2 { continue }
                     let loc = &prz;
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
@@ -1361,12 +1363,13 @@ impl Space {
                             pairs.push((pa, fe))
                         }
 
-                        // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
-
+                        let orig = pairs.clone();
                         let bindings = unify(pairs);
 
                         match bindings {
                             Ok(bs) => {
+                                orig.iter().for_each(|(x, y)| trace!(target: "transform", "pair {} {}", x.show(), y.show()));
+
                                 // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
                                 let mut assignments: Vec<(u8, u8)> = vec![];
                                 let (oi, ni) = {
@@ -1730,7 +1733,7 @@ impl Space {
         trace!(target: "transform", "subsumption {:?}", subsumption);
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_reference(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
             let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
@@ -1751,7 +1754,7 @@ impl Space {
                     vec![]
                 };
                 // let mut ass = vec![];
-                let res = mork_bytestring::apply(0 as u8, ni as u8, 0, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
+                let res = mork_bytestring::apply(0 as u8, oi as u8, ni, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
                 // println!("res {:?}", res);
 
                 // loc.transformed(template,)

@@ -562,18 +562,69 @@ fn logic_query() {
     assert_eq!(s.btm.val_count(), 79);
 }
 
+fn bc0() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+    ((step base)
+      (, (goal (: $proof $conclusion)) (kb (: $proof $conclusion)))
+      (, (ev (: $proof $conclusion) ) ))
+
+    ((step abs)
+      (, (goal (: $proof $conclusion)))
+      (, (goal (: $lhs (-> $synth $conclusion)) ) ))
+
+    ((step rev)
+      (, (ev (: $lhs (-> $a $r)))  (goal (: $k $r)) )
+      (, (goal (: $rhs $a) ) ))
+
+    ((step app)
+      (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+      (, (ev (: (@ $lhs $rhs) $r) ) ))
+
+    (exec zealous
+            (, ((step $x) $p0 $t0)
+               (exec zealous $p1 $t1) )
+            (, (exec $x $p0 $t0)
+               (exec zealous $p1 $t1) ))
+    "#;
+
+    const KB_EXPRS: &str = r#"
+    (kb (: a A))
+    (kb (: ab (R A B)))
+    (kb (: bc (R B C)))
+    (kb (: MP (-> (R $p $q) (-> $p $q))))
+
+    (goal (: $proof C))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(50);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert!(res.contains("(ev (: (@ (@ MP ab) a) B))\n"));
+}
+
 /*fn match_case() {
     let mut s = Space::new();
 
     const SPACE_EXPRS: &str = r#"
 (unify $x $x)
 
-(exec 0 
-      (, (Apply $x) 
-         (Match $c $p $t)) 
-      (, (exec (M $c) 
-               (, (unify $x $p) (exec (M $c) $Mp $Mt)) 
-               (, (res $t) 
+(exec 0
+      (, (Apply $x)
+         (Match $c $p $t))
+      (, (exec (M $c)
+               (, (unify $x $p) (exec (M $c) $Mp $Mt))
+               (, (res $t)
                   (- (exec (M $c) $Mp $Mt)) ))))
 
 (Match 0 (foo $x) (Inner Foo $x))
@@ -599,22 +650,23 @@ fn logic_query() {
 fn main() {
     env_logger::init();
 
-    lookup();
-    positive();
-    negative();
-    bipolar();
-    positive_equal();
-    negative_equal();
-    bipolar_equal();
-    
-    two_positive_equal();
-    two_positive_equal_crossed();
-    two_bipolar_equal_crossed();
-    
-    process_calculus();
-    process_calculus_reverse();
-    logic_query();
-    
+    // lookup();
+    // positive();
+    // negative();
+    // bipolar();
+    // positive_equal();
+    // negative_equal();
+    // bipolar_equal();
+    //
+    // two_positive_equal();
+    // two_positive_equal_crossed();
+    // two_bipolar_equal_crossed();
+    //
+    // process_calculus();
+    // process_calculus_reverse();
+    // logic_query();
+    bc0();
+
     // match_case();
 
     return;

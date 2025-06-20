@@ -211,8 +211,7 @@ fn process_calculus() {
 
     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
     const SPACE_EXPRS: &str = r#"
-(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
-                  )
+(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S Z)))))))))) )
                (, (exec (IC $x $y (S $c)) $sp $st)
                   ((exec $x) $p $t))
                (, (exec (IC $y $x $c) $sp $st)
@@ -230,18 +229,13 @@ fn process_calculus() {
 (petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
                                     (? (PN $x $y) $z (! $ret (S $z)))  )  ))
 (petri (? (add $ret) (Z $y) (! $ret $y)))
-(petri (! (add result) (
-           (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
-           (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
-           )))
+(petri (! (add result) ( (S (S Z)) (S (S Z)) )))
     "#;
 
     s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
-    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
-    
+
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
     // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
@@ -249,13 +243,380 @@ fn process_calculus() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))\n");
+    assert_eq!(res, "(S (S (S (S Z))))\n");
 }
+
+fn process_calculus_reverse() {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S Z)))))))))) )
+               (, (exec (IC $x $y (S $c)) $sp $st)
+                  ((exec $x) $p $t))
+               (, (exec (IC $y $x $c) $sp $st)
+                  (exec (R $x) $p $t)))
+
+((exec 0)
+      (, (petri (! $channel $payload))
+         (petri (? $channel $payload $body)) )
+      (, (petri $body)))
+((exec 1)
+      (, (petri (| $lprocess $rprocess)))
+      (, (petri $lprocess)
+         (petri $rprocess)))
+
+(petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                    (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+(petri (? (add $ret) (Z $y) (! $ret $y)))
+(petri (! (add result) ( (S (S Z)) (S (S Z)) )))
+    "#;
+
+    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(S (S (S (S Z))))\n");
+}
+
+fn lookup() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something (very specific))) (, MATCHED))
+
+(Something (very specific))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn positive() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $unspecific)) (, MATCHED))
+
+(Something (very specific))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn positive_equal() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $repeated $repeated)) (, MATCHED))
+
+(Something (very specific) (very specific))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn negative() {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something (very specific))) (, MATCHED))
+
+(Something $unspecific)
+
+    "#;
+
+    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn negative_equal() {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something (very specific) (very specific))) (, MATCHED))
+
+(Something $repeated $repeated)
+
+    "#;
+
+    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn bipolar() {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something (very $unspecific))) (, MATCHED))
+
+(Something ($unspecific specific))
+
+    "#;
+
+    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn bipolar_equal() {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something ($x Y $x Y))) (, MATCHED))
+
+(Something (X $y X $y))
+
+    "#;
+
+    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn two_positive_equal() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $x $x) (Else $y $y)) (, MATCHED))
+
+(Something (foo bar) (foo bar))
+(Else (bar baz) (bar baz))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn two_positive_equal_crossed() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $x $y) (Else $x $y)) (, MATCHED))
+
+(Something (foo bar) (bar baz))
+(Else (foo bar) (bar baz))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+}
+
+fn two_bipolar_equal_crossed() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $x $y) (Else $x $y)) (, (MATCHED $x $y)))
+
+(Something (foo $x) (foo $x))
+(Else ($x bar) ($x bar))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+}
+
+fn logic_query() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (axiom $x) (axiom $x)) (, (combined $x)))
+(exec 0 (, (axiom (= $lhs $rhs)) (axiom (= $rhs $lhs))) (, (reversed $lhs $rhs)))
+    "#;
+
+    const AXIOM_EXPRS: &str = r#"
+(= (L $x $y $z) (R $x $y $z))
+(= (L 1 $x $y) (R 1 $x $y))
+(= (R $x (L $x $y $z) $w) $x)
+(= (R $x (R $x $y $z) $w) $x)
+(= (R $x (L $x $y $z) $x) (L $x (L $x $y $z) $x))
+(= (L $x $y (\ $y $z)) (L $x $y $z))
+(= (L $x $y (* $z $y)) (L $x $y $z))
+(= (L $x $y (\ $z 1)) (L $x $z $y))
+(= (L $x $y (\ $z $y)) (L $x $z $y))
+(= (L $x 1 (\ $y 1)) (L $x $y 1))
+(= (T $x (L $x $y $z)) $x)
+(= (T $x (R $x $y $z)) $x)
+(= (T $x (a $x $y $z)) $x)
+(= (T $x (\ (a $x $y $z) $w)) (T $x $w))
+(= (T $x (* $y $y)) (T $x (\ (a $x $z $w) (* $y $y))))
+(= (R (/ 1 $x) $x (\ $x 1)) (\ $x 1))
+(= (\ $x 1) (/ 1 (L $x $x (\ $x 1))))
+(= (L $x $x $x) (* (K $x (\ $x 1)) $x))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_sexpr(AXIOM_EXPRS.as_bytes(),expr!(s, "$"), expr!(s, "[2] axiom _1")).unwrap();
+
+    let steps = s.metta_calculus(1000000000000000);
+
+    assert_eq!(s.btm.val_count(), 79);
+}
+
+/*fn match_case() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(unify $x $x)
+
+(exec 0 
+      (, (Apply $x) 
+         (Match $c $p $t)) 
+      (, (exec (M $c) 
+               (, (unify $x $p) (exec (M $c) $Mp $Mt)) 
+               (, (res $t) 
+                  (- (exec (M $c) $Mp $Mt)) ))))
+
+(Match 0 (foo $x) (Inner Foo $x))
+(Match 1 (bar $x) (Inner Bar $x))
+(Match 2 $x (Fallback $x))
+
+(Apply (foo $x))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+}*/
 
 fn main() {
     env_logger::init();
 
+    lookup();
+    positive();
+    negative();
+    bipolar();
+    positive_equal();
+    negative_equal();
+    bipolar_equal();
+    
+    two_positive_equal();
+    two_positive_equal_crossed();
+    two_bipolar_equal_crossed();
+    
     process_calculus();
+    process_calculus_reverse();
+    logic_query();
+    
+    // match_case();
+
     return;
 
     let mut s = Space::new();

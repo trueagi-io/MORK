@@ -1062,6 +1062,9 @@ impl Expr {
         execute_loop(&mut traversal, *self, 0);
     }
 
+    // pub const VARNAMES: [&'static str; 64] = ["$x0", "$x1", "$x2", "$x3", "$x4", "$x5", "$x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+    pub const VARNAMES: [&'static str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+
     #[inline(never)]
     pub fn serialize2<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G) -> () {
         let mut traversal = SerializerTraversal2{ out: t, map_symbol: map_symbol, map_variable: map_variable, transient: false, n: 0 };
@@ -2377,7 +2380,7 @@ impl ExprEnv {
             base: e,
         }
     }
-    
+
     pub fn v_incr_traversal(&self) -> TraverseSide {
         TraverseSide{ ee: self.clone() }
     }
@@ -2392,14 +2395,14 @@ impl ExprEnv {
 
     pub fn show(&self) -> String {
         let mut v = vec![];
-        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap(),
+        self.base.serialize_highlight(&mut v, |x| std::str::from_utf8(x).unwrap_or_else(|_| format!("{:?}", x).leak()),
                                       |v, i| format!("<{},{}>", self.n, v).leak(), self.offset as usize);
         // self.subsexpr().serialize2(&mut v, |x| std::str::from_utf8(x).unwrap(),
         //                               |v, i| format!("<{},{}>", self.n, v).leak());
         String::from_utf8(v).unwrap()
     }
 
-    fn var_opt(&self) -> Option<ExprVar> {
+    pub fn var_opt(&self) -> Option<ExprVar> {
         unsafe {
             match byte_item(*self.base.ptr.add(self.offset as usize)) {
                 Tag::NewVar => { Some((self.n, self.v)) }

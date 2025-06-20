@@ -368,12 +368,147 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
-    #[cfg(debug_assertions)]
+    // #[cfg(debug_assertions)]
     unroll!(CALL referential_transition(last, loc, references, introduced, f));
-    #[cfg(not(debug_assertions))]
-    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
+
     }
 }
+
+
+// future Adam: don't fall for the temptation of keeping references of data->pattern, you tried it twice already: it's not worth the complexity, it's incompatible due to the PZ de-Bruijn level non-well-foundedness, it doesn't occur in most queries, and the performance is not worth it
+// others: this code has haphephobia, contact Adam when you run into problems
+// optimization opportunities:
+// - use u16 x u16 compressed byte mask to reduce stack size
+// - decrease the size of ExprEnv; it's too rich for this function
+// - symbol size can use more optimized descend at depth k implementation (PZ)
+// - this function gets massive (many thousands of instructions) but can do with less checked functions
+// - ascends may be avoided by using RZ refs instead of re-ascending in some cases
+// - the adiabatic crate may be used to get rid of the recursion (though currently the recursion is significantly faster)
+// - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
+// - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
+fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&mut Z) -> ()>(
+    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
+    unsafe {
+    trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
+    trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
+    match stack.pop() {
+        None => { f(loc) }
+        Some(e) => {
+            let e_byte = *e.base.ptr.add(e.offset as usize);
+
+            macro_rules! vs {
+                () => {{
+                    let m = loc.child_mask().and(&ByteMask(VARS));
+                    let mut it = m.iter();
+
+                    while let Some(b) = it.next() {
+                        if loc.descend_to_byte(b) {
+                            coreferential_transition(loc, stack, references, f);
+                        }
+                        loc.ascend_byte();
+                    }
+                }};
+            }
+
+            match byte_item(e_byte) {
+                Tag::NewVar => {
+                    if e.n == 0 { references.push(loc.path().len() as u32); }
+                    else {
+                        trace!(target: "coref trans", "not putting {} {}", e.n, e.show());
+                    }
+
+                    vs!();
+
+                    let m = loc.child_mask().and(&ByteMask(SIZES));
+                    let mut it = m.iter();
+                    while let Some(b) = it.next() {
+                        if let Tag::SymbolSize(size) = byte_item(b) {
+                            if loc.descend_to_byte(b) {
+                                let mut i = 0;
+                                while i < size {
+                                    if loc.descend_first_byte() { i += 1 }
+                                    else if loc.to_next_sibling_byte() {}
+                                    else if loc.ascend_byte() { i -= 1 }
+                                    else { i = 0; break }
+                                }
+                                while i > 0 {
+                                    if i == size {
+                                        coreferential_transition(loc, stack, references, f);
+                                        if loc.to_next_sibling_byte() {}
+                                        else { assert!(loc.ascend_byte()); i -= 1 }
+                                    } else if i < size {
+                                        if loc.to_next_sibling_byte() { while i < size && loc.descend_first_byte() { i += 1 } }
+                                        else { assert!(loc.ascend_byte()); i -= 1 }
+                                    }
+                                }
+                            }
+                            loc.ascend_byte();
+                        } else { unreachable!("no symbol size next") }
+                    }
+
+                    let m = loc.child_mask().and(&ByteMask(ARITIES));
+                    let mut it = m.iter();
+                    while let Some(b) = it.next() {
+                        if let Tag::Arity(a) = byte_item(b) {
+                            if loc.descend_to_byte(b) {
+                                static nv: u8 = item_byte(Tag::NewVar);
+                                let ol = stack.len();
+                                for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                                coreferential_transition(loc, stack, references, f);
+                                stack.truncate(ol);
+                            }
+                            loc.ascend(1);
+                        } else { unreachable!("no arity next") }
+                    }
+
+                    if e.n == 0 { references.pop(); }
+                }
+                Tag::VarRef(i) => {
+                    // wrong addition v and n?
+                    let addition = if e.n == 0 {
+                        trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
+                        trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
+                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
+                    } else {
+                        trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
+                        static nv: u8 = item_byte(Tag::NewVar);
+                        ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
+                    };
+                    stack.push(addition);
+                    vs!();
+                    coreferential_transition(loc, stack, references, f);
+                    stack.pop();
+                }
+                Tag::SymbolSize(size) => {
+                    vs!();
+                    if loc.descend_to_byte(e_byte) {
+                        if loc.descend_to(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
+                            coreferential_transition(loc, stack, references, f);
+                        }
+                        loc.ascend(size as usize);
+                    }
+                    loc.ascend_byte();
+
+                }
+                Tag::Arity(arity) => {
+                    vs!();
+                    if loc.descend_to_byte(e_byte) {
+                        let stackl = stack.len();
+                        e.args(&mut stack);
+                        stack[stackl..].reverse();
+                        coreferential_transition(loc, stack, references, f);
+                        stack.truncate(stack.len() - arity as usize);
+                    }
+                    loc.ascend_byte();
+                }
+            }
+
+            stack.push(e);
+        }
+    }
+    }
+}
+
 
 
 fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
@@ -1012,6 +1147,28 @@ impl Space {
         Ok((nodes, labels))
     }
 
+    pub fn load_all_sexpr(&mut self, r: &[u8]) -> Result<usize, String> {
+        let mut stack = Vec::with_capacity(1 << 32);
+        unsafe { stack.set_len(1 << 32); }
+        let mut it = Context::new(r);
+        let mut i = 0;
+        let mut parser = ParDataParser::new(&self.sm);
+        loop {
+            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+            match parser.sexpr(&mut it, &mut ez) {
+                Ok(()) => {
+                    let data = &stack[..ez.loc];
+                    self.btm.insert(data, ());
+                }
+                Err(ParserError::InputFinished) => { break }
+                Err(other) => { panic!("{:?}", other) }
+            }
+            i += 1;
+            it.variables.clear();
+        }
+        Ok(i)
+    }
+
     pub fn load_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
@@ -1050,7 +1207,7 @@ impl Space {
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
-            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
+            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
@@ -1060,7 +1217,7 @@ impl Space {
                 }
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-            });
+            }, |i, intro| { Expr::VARNAMES[i as usize] });
             w.write(&[b'\n']).map_err(|x| x.to_string())?;
             i += 1;
         }
@@ -1087,7 +1244,7 @@ impl Space {
             }
 
             // &buffer[constant_template_prefix.len()..oz.loc]
-            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
+            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
@@ -1097,7 +1254,7 @@ impl Space {
                 }
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-            });
+            }, |i, intro| { Expr::VARNAMES[i as usize] });
             w.write(&[b'\n']).map_err(|x| x.to_string())?;
 
             Ok(())
@@ -1158,7 +1315,197 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
+    pub fn query_multi_reference<T, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> Result<usize, T> {
+        let pat_newvars = pat_expr.newvars();
+        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
+        let mut pat_args = vec![];
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+
+        if pat_args.len() <= 1 { return Ok(0) }
+
+        let mut rz = btm.read_zipper();
+        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+            btm.read_zipper()
+        }));
+        prz.reserve_buffers(1 << 32, 32);
+
+        let mut stack = pat_args[1..].iter().rev().cloned().collect::<Vec<_>>();
+
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut references: Vec<ExprEnv> = vec![];
+        let mut candidate = 0;
+        thread_local! {
+            static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
+            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(null_mut()) };
+        }
+
+        BREAK.with_borrow_mut(|a| {
+            if unsafe { setjmp(a) == 0 } {
+                while prz.to_next_val() {
+                    let loc = &prz;
+                    let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
+                    trace!(target: "query_multi", "pi {:?}", loc.path_indices());
+                    trace!(target: "query_multi", "at {:?}", e);
+                    for &other_i in loc.path_indices() {
+                        trace!(target: "query_multi", "at {:?}",
+                            Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                    }
+
+                    if true  { // introduced != 0
+                        let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
+
+                        for (&pa, &other_i) in pat_args[2..].iter().zip(loc.path_indices()) {
+                            let fe = ExprEnv::new((pairs.len() + 1) as u8,
+                                                  Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                            pairs.push((pa, fe))
+                        }
+
+                        // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
+
+                        let bindings = unify(pairs);
+
+                        match bindings {
+                            Ok(bs) => {
+                                // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
+                                let mut assignments: Vec<(u8, u8)> = vec![];
+                                let (oi, ni) = {
+                                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                                    let mut trace: Vec<(u8, u8)> = vec![];
+                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                                    // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                                    r
+                                };
+                                // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
+
+                                match effect(Err((bs, oi, ni, assignments)), e) {
+                                    Ok(()) => {}
+                                    Err(t) => {
+                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<T>()) };
+                                        unsafe { std::ptr::write(t_ptr as *mut T, t) };
+                                        RET.set(t_ptr);
+                                        unsafe { longjmp(a, 1) }
+                                    }
+                                }
+                                unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+
+                            }
+                            Err(failed) => {
+                                trace!(target: "query_multi", "failed {:?}", failed)
+                            }
+                        }
+                    } else {
+                    }
+                }
+            }
+        });
+        RET.with(|mptr| {
+            if mptr.get().is_null() { Ok(candidate) }
+            else {
+                let tref = unsafe { mptr.get() };
+                let t = unsafe { std::ptr::read(tref as _) };
+                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<T>()) };
+                Err(t)
+            }
+        })
+    }
+
+
     pub fn query_multi<T, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> Result<usize, T> {
+        let pat_newvars = pat_expr.newvars();
+        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
+        let mut pat_args = vec![];
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+
+        if pat_args.len() <= 1 { return Ok(0) }
+
+        let mut rz = btm.read_zipper();
+        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+            btm.read_zipper()
+        }));
+        prz.reserve_buffers(1 << 32, 32);
+
+        let mut stack = pat_args[1..].iter().rev().cloned().collect::<Vec<_>>();
+
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut references: Vec<ExprEnv> = vec![];
+        let mut candidate = 0;
+        thread_local! {
+            static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
+            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(null_mut()) };
+        }
+
+        BREAK.with_borrow_mut(|a| {
+            if unsafe { setjmp(a) == 0 } {
+                coreferential_transition(&mut prz, &mut stack, &mut vec![],&mut |loc| {
+                    let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
+                    trace!(target: "query_multi", "pi {:?}", loc.path_indices());
+                    trace!(target: "query_multi", "at {:?}", e);
+                    for &other_i in loc.path_indices() {
+                        trace!(target: "query_multi", "at {:?}",
+                            Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                    }
+
+                    if true  { // introduced != 0
+                        let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
+
+                        for (&pa, &other_i) in pat_args[2..].iter().zip(loc.path_indices()) {
+                            let fe = ExprEnv::new((pairs.len() + 1) as u8,
+                                                  Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                            pairs.push((pa, fe))
+                        }
+
+                        // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
+
+                        let bindings = unify(pairs);
+
+                        match bindings {
+                            Ok(bs) => {
+                                // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
+                                let mut assignments: Vec<(u8, u8)> = vec![];
+                                let (oi, ni) = {
+                                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                                    let mut trace: Vec<(u8, u8)> = vec![];
+                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                                    // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                                    r
+                                };
+                                // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
+
+                                match effect(Err((bs, oi, ni, assignments)), e) {
+                                    Ok(()) => {}
+                                    Err(t) => {
+                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<T>()) };
+                                        unsafe { std::ptr::write(t_ptr as *mut T, t) };
+                                        RET.set(t_ptr);
+                                        unsafe { longjmp(a, 1) }
+                                    }
+                                }
+                                unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+
+                            }
+                            Err(failed) => {
+                                trace!(target: "query_multi", "failed {:?}", failed)
+                            }
+                        }
+                    } else {
+                    }
+                })
+            }
+        });
+        RET.with(|mptr| {
+            if mptr.get().is_null() { Ok(candidate) }
+            else {
+                let tref = unsafe { mptr.get() };
+                let t = unsafe { std::ptr::read(tref as _) };
+                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<T>()) };
+                Err(t)
+            }
+        })
+    }
+
+    pub fn query_multi_old<T, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> Result<usize, T> {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let mut pat_args = vec![];

@@ -1733,7 +1733,7 @@ impl Space {
         trace!(target: "transform", "subsumption {:?}", subsumption);
 
         let mut any_new = false;
-        let touched = Self::query_multi_reference(&read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
             let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };

@@ -610,7 +610,133 @@ fn bc0() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    // assert!(res.contains("(ev (: (@ (@ MP ab) a) B))\n"));
+    assert!(res.contains("(ev (: (@ (@ MP bc) (@ (@ MP ab) a)) C))\n"));
+}
+
+fn bc1() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+    ((step base)
+      (, (goal (: $proof $conclusion)) (kb (: $proof $conclusion)))
+      (, (ev (: $proof $conclusion) ) ))
+
+    ((step rec)
+      (, (goal (: (@ $lhs $rhs) $conclusion)))
+      (, (goal (: $lhs (-> $synth $conclusion))) (goal (: $rhs $synth))))
+
+    ((step app)
+      (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+      (, (ev (: (@ $lhs $rhs) $r) ) ))
+
+    (exec zealous
+            (, ((step $x) $p0 $t0)
+               (exec zealous $p1 $t1) )
+            (, (exec $x $p0 $t0)
+               (exec zealous $p1 $t1) ))
+    "#;
+
+    const KB_EXPRS: &str = r#"
+    (kb (: a A))
+    (kb (: ab (R A B)))
+    (kb (: bc (R B C)))
+    (kb (: cd (R C D)))
+    (kb (: MP (-> (R $p $q) (-> $p $q))))
+
+    (goal (: $proof C))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(100);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(ev (: (@ (@ MP cd) (@ (@ MP bc) (@ (@ MP ab) a))) D))\n"));
+}
+
+fn bc2() {
+    let mut s = Space::new();
+
+    /*
+    ((step rec)
+      (, (goal (: (@ $lhs $rhs) $conclusion)))
+      (, (goal (: $lhs (-> $synth $conclusion))) (goal (: $rhs $synth))))
+
+    ((step rec2)
+      (, (goal (: (@ $f $a $b) $conclusion)))
+      (, (goal (: $f (-> $syntha $synthb $conclusion))) (goal (: $a $syntha)) (goal (: $b $synthb)) ))
+    
+     */
+    const SPACE_EXPRS: &str = r#"
+    ((step base)
+      (, (goal (: $proof $conclusion)) (kb (: $proof $conclusion)))
+      (, (ev (: $proof $conclusion) ) ))
+
+    ((step abs)
+      (, (goal (: $proof $conclusion)))
+      (, (goal (: $lhs (-> $synth $conclusion)) ) ))
+
+    ((step rev)
+      (, (ev (: $lhs (-> $a $r)))  (goal (: $k $r)) )
+      (, (goal (: $rhs $a) ) ))
+
+    ((step abs2)
+      (, (goal (: $proof $conclusion)))
+      (, (goal (: $lhs (-> $syntha $synthb $conclusion)) ) ))
+
+    ((step rev2)
+      (, (ev (: $lhs (-> $a $b $r)))  (goal (: $k $r)) )
+      (, (goal (: $ap $a)) (goal (: $bp $b)) ))
+
+    ((step app)
+      (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+      (, (ev (: (@ $lhs $rhs) $r) ) ))
+      
+    ((step app2)
+      (, (ev (: $f (-> $a $b $r)))  (ev (: $ap $a)) (ev (: $bp $b))  )
+      (, (ev (: (@ $f $ap $bp) $r) ) ))
+
+    (exec zealous
+            (, ((step $x) $p0 $t0)
+               (exec zealous $p1 $t1) )
+            (, (exec $x $p0 $t0)
+               (exec zealous $p1 $t1) ))
+    "#;
+
+    const KB_EXPRS: &str = r#"
+    (kb (: ax-mp (-> $𝜑 (→ $𝜑 $𝜓) $𝜓)))
+    (kb (: ax-1 (→ $𝜑 (→ $𝜓 $𝜑))))
+    (kb (: ax-2 (→ (→ $𝜑 (→ $𝜓 $𝜒)) (→ (→ $𝜑 $𝜓) (→ $𝜑 $𝜒)))))
+    (kb (: ax-3 (→ (→ (¬ $𝜑) (¬ $𝜓)) (→ $𝜓 $𝜑))))
+
+    (kb (: mp2b.1 𝜑))
+    (kb (: mp2b.2 (→ 𝜑 𝜓)))
+    (kb (: mp2b.3 (→ 𝜓 𝜒)))
+
+    (goal (: $proof 𝜒))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(30);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] ev [3] : $ 𝜒"), expr!(s, "_1"), &mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("proof of 𝜒: {res}");
+    assert!(res.contains("(@ ax-mp (@ ax-mp mp2b.1 mp2b.2) mp2b.3)\n"));
 }
 
 /*fn match_case() {
@@ -665,7 +791,9 @@ fn main() {
     // process_calculus();
     // process_calculus_reverse();
     // logic_query();
-    bc0();
+    // bc0();
+    // bc1();
+    bc2();
 
     // match_case();
 

@@ -49,6 +49,24 @@ impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyV
 pub trait SpaceWriterZipper : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
 impl<T> SpaceWriterZipper for T where T : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
 
+/// Implemented on a type that can be returned by a failure to acquire a permission
+pub trait PathPermissionErr: core::fmt::Debug {
+    /// Returns the path to which access was forbidden
+    fn path(&self) -> &[u8];
+}
+
+/// Implemented on an object that assigns permissions for a [Space]
+///
+/// A given `PermissionArb` object must never be capable of assigning conflicting permissions
+/// with another `PermissionArb` object.
+pub trait PermissionArb<'space, S: Space> {
+    /// Requests a new [Space::Reader] from the `Space`
+    fn new_reader(&self, path: &[u8], auth: &S::Auth) -> Result<S::Reader<'space>, S::PermissionErr>;
+
+    /// Requests a new [Space::Writer] from the `Space`
+    fn new_writer(&self, path: &[u8], auth: &S::Auth) -> Result<S::Writer<'space>, S::PermissionErr>;
+}
+
 /// An interface for accessing the state used by the MORK kernel
 pub trait Space: Sized {
     /// An authentication token used for access to the space
@@ -57,16 +75,38 @@ pub trait Space: Sized {
     type Reader<'space> where Self: 'space;
     /// Objects of this type encapsulate a location in the space and the rights to write to that location
     type Writer<'space> where Self: 'space;
+    /// An object from which reader and writer permissions may be acquired within the space
+    type PermissionHead<'space>: PermissionArb<'space, Self> where Self: 'space;
     /// An error type for when a new reader or writer cannot be authenticated.
-    type PermissionErr: core::fmt::Debug;
+    type PermissionErr: PathPermissionErr;
 
-    // ===================== Methods used by caller ===================== 
+    // ===================== Methods intended for use from outside the space ===================== 
+
+    /// Atomically request multiple permissions.  Ensures no other requests for permissions will be
+    /// granted while the supplied closure is running.
+    ///
+    /// If a single requested permission cannot be fulfilled, the enture request should fail
+    fn new_multiple<'space, F: FnOnce(&Self::PermissionHead<'space>)->Result<(), Self::PermissionErr>>(&'space self, f: F) -> Result<(), Self::PermissionErr>;
 
     /// Requests a new [Space::Reader] from the `Space`
-    fn new_reader<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr>;
+    fn new_reader<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
+        let mut reader = None;
+        self.new_multiple(|perm_head| {
+            reader = Some(perm_head.new_reader(path, auth)?);
+            Ok(())
+        })?;
+        Ok(reader.unwrap())
+    }
 
     /// Requests a new [Space::Writer] from the `Space`
-    fn new_writer<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr>;
+    fn new_writer<'space>(&'space self, path: &[u8], auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
+        let mut writer = None;
+        self.new_multiple(|perm_head| {
+            writer = Some(perm_head.new_writer(path, auth)?);
+            Ok(())
+        })?;
+        Ok(writer.unwrap())
+    }
 
     // ===================== Methods used by shared impl ===================== 
 
@@ -207,11 +247,6 @@ pub trait Space: Sized {
     /// * writers: Vec<Self::Writer<'s>>
     ///    A vector of [Space::Writer] permission objects
     ///
-    /// **WANRNING** GOAT  I think there is a race inside this function because it's possible for the readers
-    /// to all be acquired, and succeed at making the `read_map`, then another operation transforms the writers
-    /// in the interim, releases them, and then this function acquires the writers, but the data in the writer
-    /// paths is now different from what it was when the readers were acquired...  I don't have a strong enough
-    /// handle on the MM2 theory to know if this is allowable.
     fn acquire_transform_permissions<'s, E: ExprTrait>(
         &'s self,
         patterns            : &[E],
@@ -220,48 +255,9 @@ pub trait Space: Sized {
     ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
-        //Make the "ReadMap" by copying each pattern from the space
-        let mut read_map = BytesTrieMap::new();
-        for pat in patterns {
-            let path = make_prefix(&pat.borrow());
-
-            let mut reader = self.new_reader(path, auth)
-                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
-            let rz = self.read_zipper(&mut reader);
-
-            let mut wz = read_map.write_zipper_at_path(path);
-            wz.graft(&rz);
-        }
-
-        // GOAT, he is an alternative version of writer-subsumption part of this function, written by Adam after
-        // I write this one.  It may or may not be more correct of faster... I haven't had time yet to understand it deeply
-        //
-        // pub fn prefix_subsumption(prefixes: &[&[u8]]) -> Vec<usize> {
-        //     let n = prefixes.len();
-        //     let mut out = Vec::with_capacity(n);
-
-        //     for (i, &cur) in prefixes.iter().enumerate() {
-        //         let mut best_idx = i;
-        //         let mut best_len = cur.len();
-
-        //         for (j, &cand) in prefixes.iter().enumerate() {
-        //             if pathmap::utils::find_prefix_overlap(cand, cur) == cand.len() {
-        //                 let cand_len = cand.len();
-
-        //                 if cand_len < best_len || (cand_len == best_len && j < best_idx) {
-        //                     best_idx = j;
-        //                     best_len = cand_len;
-        //                 }
-        //             }
-        //         }
-
-        //         out.push(best_idx);
-        //     }
-
-        //     out
-        // }
-        //
-
+        // ************************************************************************
+        // Writer subsumption logic (No permissions acquired yet)
+        // ************************************************************************
 
         //Make a vec of template paths, sorted from shortest to longest
         // `(path, template_idx, writer_slot_idx)`
@@ -296,13 +292,33 @@ pub trait Space: Sized {
             template_prefixes[template_idx] = (incremental_path_start, writer_slot_idx);
         }
 
-        //Acquire writers at each slot, knowing we any conflicts are with external clients
+        // ************************************************************************
+        // Permission Acquisition
+        // ************************************************************************
+
+        let mut read_map = BytesTrieMap::new();
         let mut writers = Vec::with_capacity(writer_slots.len());
-        for path in writer_slots {
-            let writer = self.new_writer(path, auth)
-                .map_err(|perm_err| ExecError::perm_err(self, path, perm_err))?;
-            writers.push(writer);
-        }
+        self.new_multiple(|perm_head| {
+
+            //Make the "ReadMap" by copying each pattern from the space
+            for pat in patterns {
+                let path = make_prefix(&pat.borrow());
+
+                let mut reader = perm_head.new_reader(path, auth)?;
+                let rz = self.read_zipper(&mut reader);
+
+                let mut wz = read_map.write_zipper_at_path(path);
+                wz.graft(&rz);
+            }
+
+            //Acquire writers at each slot, knowing we any conflicts are with external clients
+            for path in writer_slots {
+                let writer = perm_head.new_writer(path, auth)?;
+                writers.push(writer);
+            }
+
+            Ok(())
+        }).map_err(|perm_err| ExecError::perm_err(self, perm_err))?;
 
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);

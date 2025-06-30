@@ -8,7 +8,7 @@ use pathmap::zipper_tracking::{PathStatus, SharedTrackerPaths, ZipperTracker, Tr
 
 use hyper::StatusCode;
 
-use crate::BoxedErr;
+use crate::ServerPermissionErr;
 
 /// A status associated with a specific path
 ///
@@ -158,29 +158,31 @@ impl StatusMap {
         self.get_user_status(path)
     }
 
-    /// Returns a [WritePermission] for the requested path and removes any a associated user
+    /// Returns a [WritePermission] for the requested path and removes any associated user
     /// statuses
     ///
     /// If an existign status cannot be removed then this method will fail.
-    pub fn get_write_permission(&self, path: &[u8]) -> Result<WritePermission, BoxedErr> {
+    pub fn get_write_permission(&self, path: &[u8]) -> Result<WritePermission, ServerPermissionErr> {
         let user_status = self.get_user_status(path);
         if user_status.blocks_writer() {
-            return Err(format!("get_write_permission: encountered blocking status {user_status:?} at path {path:?}.").into())
+            return Err(ServerPermissionErr::new(path, format!("get_write_permission: encountered blocking status {user_status:?} at path {path:?}.")))
         }
         self.clear_user_status(path)?;
-        let tracker = ZipperTracker::<TrackingWrite>::new(self.trackers.clone(), path)?;
+        let tracker = ZipperTracker::<TrackingWrite>::new(self.trackers.clone(), path)
+            .map_err(|conflict| ServerPermissionErr::from_conflict(conflict, path))?;
         Ok(WritePermission(path.to_vec(), tracker))
     }
 
     /// Returns a [WritePermission] for the requested path
     ///
     /// If an existign status cannot be removed then this method will fail.
-    pub fn get_read_permission(&self, path: &[u8]) -> Result<ReadPermission, BoxedErr> {
+    pub fn get_read_permission(&self, path: &[u8]) -> Result<ReadPermission, ServerPermissionErr> {
         let user_status = self.get_user_status(path);
         if user_status.blocks_reader() {
-            return Err(format!("get_read_permission: encountered blocking status {user_status:?} at path {path:?}.").into())
+            return Err(ServerPermissionErr::new(path, format!("get_read_permission: encountered blocking status {user_status:?} at path {path:?}.")))
         }
-        let tracker = ZipperTracker::<TrackingRead>::new(self.trackers.clone(), path)?;
+        let tracker = ZipperTracker::<TrackingRead>::new(self.trackers.clone(), path)
+            .map_err(|conflict| ServerPermissionErr::from_conflict(conflict, path))?;
         Ok(ReadPermission(path.to_vec(), tracker))
     }
 
@@ -226,7 +228,7 @@ impl StatusMap {
     }
 
     /// Internal method. Clears the user status at the path
-    fn clear_user_status(&self, path: &[u8]) -> Result<(), BoxedErr> {
+    fn clear_user_status(&self, path: &[u8]) -> Result<(), ServerPermissionErr> {
         let mut user_map = self.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper();
         zipper.descend_to(path);

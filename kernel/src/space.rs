@@ -4,7 +4,7 @@ use std::io::{BufRead, Write};
 use std::{process, usize};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
@@ -20,13 +20,20 @@ pub use crate::space_temporary::{
     AttributeCount,
     SExprCount,
     Space,
+    PermissionArb,
+    PathPermissionErr,
     SpaceReaderZipper,
 };
 use crate::SpaceWriterZipper;
 
 /// A default minimalist implementation of [Space]
 pub struct DefaultSpace {
+    /// The [PathMap] containing everything in the space
     map: Arc<ZipperHeadOwned<()>>,
+    /// Guards access to create new permissions, so we can ensure high level operations
+    /// that involve exchanging permissions are atomic
+    permission_guard: Mutex<()>,
+    /// A global symbol table
     sm: SharedMappingHandle,
 }
 
@@ -35,6 +42,7 @@ impl DefaultSpace {
     pub fn new() -> Self {
         Self {
             map: Arc::new(BytesTrieMap::new().into_zipper_head([])),
+            permission_guard: Mutex::new(()),
             sm: SharedMapping::new(),
         }
     }
@@ -49,23 +57,75 @@ pub struct DefaultSpaceWriter<'space> {
     zh: Arc<ZipperHeadOwned<()>>,
 }
 
+/// PermissionHead object for [DefaultSpace]
+pub struct DefaultPermissionHead<'space>(&'space DefaultSpace);
+
+impl<'space> PermissionArb<'space, DefaultSpace> for DefaultPermissionHead<'space> {
+    fn new_reader(&self, path: &[u8], _auth: &()) -> Result<DefaultSpaceReader<'space>, DefaultPermissionErr> {
+        let reader = DefaultSpaceReader(self.0.map.read_zipper_at_path(path).map_err(|e| {
+            DefaultPermissionErr {
+                message: format!("Conflict trying to acquire read zipper at {path:?}, {e}"),
+                path: path.to_vec()
+            }
+        })?);
+        Ok(reader)
+    }
+
+    /// Requests a new [Space::Writer] from the `Space`
+    fn new_writer(&self, path: &[u8], _auth: &()) -> Result<DefaultSpaceWriter<'space>, DefaultPermissionErr> {
+        let writer = DefaultSpaceWriter {
+            z: self.0.map.write_zipper_at_exclusive_path(path).map_err(|e| {
+                DefaultPermissionErr {
+                    message: format!("Conflict trying to acquire write zipper at {path:?}, {e}"),
+                    path: path.to_vec()
+                }
+            })?,
+            zh: self.0.map.clone(),
+        };
+        Ok(writer)
+    }
+}
+
+/// [PathPermissionErr] in a [DefaultSpace]
+#[derive(Debug)]
+pub struct DefaultPermissionErr {
+    path: Vec<u8>,
+    message: String,
+}
+
+impl PathPermissionErr for DefaultPermissionErr {
+    fn path(&self) -> &[u8] {
+        &self.path
+    }
+}
+
+impl core::fmt::Display for DefaultPermissionErr {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        self.message.fmt(f)
+    }
+}
+
+impl From<DefaultPermissionErr> for String {
+    fn from(perm_err: DefaultPermissionErr) -> Self {
+        perm_err.message
+    }
+}
+
 impl Space for DefaultSpace {
     type Auth = ();
     type Reader<'space> = DefaultSpaceReader<'space>;
     type Writer<'space> = DefaultSpaceWriter<'space>;
-    type PermissionErr = String;
+    type PermissionHead<'space> = DefaultPermissionHead<'space>;
+    type PermissionErr = DefaultPermissionErr;
 
-    fn new_reader<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Reader<'space>, Self::PermissionErr> {
-        let reader = DefaultSpaceReader(self.map.read_zipper_at_path(path).map_err(|e| e.to_string())?);
-        Ok(reader)
+    fn new_multiple<'space, F: FnOnce(&Self::PermissionHead<'space>)->Result<(), Self::PermissionErr>>(&'space self, f: F) -> Result<(), Self::PermissionErr> {
+        let guard = self.permission_guard.lock().unwrap();
+        let perm_head = DefaultPermissionHead(self);
+        f(&perm_head)?;
+        drop(guard);
+        Ok(())
     }
-    fn new_writer<'space>(&'space self, path: &[u8], _auth: &Self::Auth) -> Result<Self::Writer<'space>, Self::PermissionErr> {
-        let writer = DefaultSpaceWriter {
-            z: self.map.write_zipper_at_exclusive_path(path).map_err(|e| e.to_string())?,
-            zh: self.map.clone(),
-        };
-        Ok(writer)
-    }
+
     fn cleanup_write_zipper(&self, _wz: impl ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath) {
         //No-op for DefaultSpace, because the permission *is* the zipper
     }
@@ -920,6 +980,11 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
         exec_wz.remove_value();
         drop(exec_wz);
         drop(exec_permission);
+
+        //------------------------------------------------------------------------------
+        // Here the exec has been removed from the space, but the transform permissions
+        // have not yet been acquired.
+        //------------------------------------------------------------------------------
 
         match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
             Ok(()) => {
@@ -1988,7 +2053,8 @@ impl<S: Space> ExecError<S> {
     /// classified as a [ExecError::UserPermissionErr] or a [ExecError::SystemPermissionErr], the former
     /// indicating that another command is holding the required paths and therefore a retry is in order,
     /// while the latter indicating that an illegal request has been made.
-    pub(crate) fn perm_err(space: &S, path: &[u8], perm_err: S::PermissionErr) -> Self {
+    pub(crate) fn perm_err(space: &S, perm_err: S::PermissionErr) -> Self {
+        let path = perm_err.path();
 
         //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
         let exec_status_subspace = unsafe{ expr!(space, "[2] exec $").prefix().unwrap().as_ref().unwrap() };

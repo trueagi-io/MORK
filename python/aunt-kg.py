@@ -26,6 +26,9 @@ def preprocessing(server, datasets=DATASETS):
                 scope.transform(("(src (Relations $r (Husband $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",))\
                     .block()
                 scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",))
+                scope.transform(("(src (Relations $r (Husband $id)))", "(src (Relations $r (Children $cid)))"), ("(simple (parent $id $cid))",))\
+                    .block()
+                scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $cid)))"), ("(simple (parent $id $cid))",))
 
     ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file://" + __file__.rpartition("/")[0] + "/simple_all.metta")
 

@@ -739,6 +739,77 @@ fn bc2() {
     assert!(res.contains("(@ ax-mp (@ ax-mp mp2b.1 mp2b.2) mp2b.3)\n"));
 }
 
+fn cm0() {
+    let mut s = Space::new();
+    
+    // Follow along https://en.wikipedia.org/wiki/Counter_machine#Program
+    
+    // non-peano csv version see cm1
+    /*
+    s.load_csv(INSTRS_CSV.as_bytes(), expr!(s, "$"), expr!(s, "[2] program _1"), b',').unwrap();
+    s.load_csv(REGS_CSV.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] state 0 [3] REG _1 _2"), b',').unwrap();
+    JZ,2,5\nDEC,2,2INC,3,3\nINC,1,4\nJZ,0,0\nJZ,1,9\nDEC,1,7\nINC,2,8\nJZ,0,5\nH,0,0
+     */
+
+    const SPACE_MACHINE: &str = r#"
+    (program Z (JZ 2 (S (S (S (S (S Z))))) ))
+    (program (S Z) (DEC 2))
+    (program (S (S Z)) (INC 3))
+    (program (S (S (S Z))) (INC 1))
+    (program (S (S (S (S Z)))) (JZ 0 Z))
+    (program (S (S (S (S (S Z))))) (JZ 1 (S (S (S (S (S (S (S (S (S Z)))))))))))
+    (program (S (S (S (S (S (S Z)))))) (DEC 1))
+    (program (S (S (S (S (S (S (S Z))))))) (INC 2))
+    (program (S (S (S (S (S (S (S (S Z)))))))) (JZ 0 (S (S (S (S (S Z)))))))
+    (program (S (S (S (S (S (S (S (S (S Z))))))))) H)
+    (state Z (REG 0 Z))
+    (state Z (REG 1 Z))
+    (state Z (REG 2 (S (S Z))))
+    (state Z (REG 3 Z))
+    (state Z (REG 4 Z))
+    (state Z (IC Z))
+    (if (S $n) $x $y $x)
+    (if Z $x $y $y)
+    (0 != 1) (0 != 2) (0 != 3) (0 != 4)
+    (1 != 0) (1 != 2) (1 != 3) (1 != 4)
+    (2 != 1) (2 != 0) (2 != 3) (2 != 4)
+    (3 != 1) (3 != 2) (3 != 0) (3 != 4)
+    (4 != 1) (4 != 2) (4 != 0) (4 != 3)
+    
+    ((step JZ $ts)
+      (, (state $ts (IC $i)) (program $i (JZ $r $j)) (state $ts (REG $r $v)) (if $v (S $i) $j $ni) (state $ts (REG $k $kv)))
+      (, (state (S $ts) (IC $ni)) (state (S $ts) (REG $k $kv))))
+
+    ((step INC $ts)
+      (, (state $ts (IC $i)) (program $i (INC $r)) (state $ts (REG $r $v)) ($r != $o) (state $ts (REG $o $ov)))
+      (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r (S $v))) (state (S $ts) (REG $o $ov))))
+    
+    ((step DEC $ts)
+      (, (state $ts (IC $i)) (program $i (DEC $r)) (state $ts (REG $r (S $v))) ($r != $o) (state $ts (REG $o $ov)))
+      (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r $v)) (state (S $ts) (REG $o $ov))))  
+
+    (exec (clocked Z)
+            (, (exec (clocked $ts) $p1 $t1) 
+               (state $ts (IC $_))
+               ((step $k $ts) $p0 $t0))
+            (, (exec ($k $ts) $p0 $t0)
+               (exec (clocked (S $ts)) $p1 $t1)))
+    "#;
+
+    s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(200);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{}", res);
+    assert!(res.contains("(state (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z)))))))))))))))))))) (REG 3 (S (S Z))))\n"));
+}
+
 /*fn match_case() {
     let mut s = Space::new();
 
@@ -793,7 +864,9 @@ fn main() {
     // logic_query();
     // bc0();
     // bc1();
-    bc2();
+    // bc2();
+
+    cm0();
 
     // match_case();
 

@@ -16,7 +16,7 @@ def preprocessing(server, datasets=DATASETS):
                     src.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")\
                         .block()
                     downloaded = src.download("(Individuals $i (Fullname $name))", "$name")
-                    print("names", dataset, downloaded.data)
+                    # print("names", dataset, downloaded.data)
 
                 # Generate isIdDifferent relations so that sister relations aren't reflective
                 ids_string = scope.download("(src (Individuals $i (Id $id)))", "$id").data
@@ -55,8 +55,8 @@ def preprocessing(server, datasets=DATASETS):
 
     ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file://" + __file__.rpartition("/")[0] + "/simple_all.metta")
 
-    for i, item in enumerate(ins.history):
-        print("preprocessing event", i, str(item))
+    # for i, item in enumerate(ins.history):
+    #     print("preprocessing event", i, str(item))
 
 def _main():
     with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:

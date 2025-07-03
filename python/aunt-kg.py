@@ -18,17 +18,17 @@ def preprocessing(server, datasets=DATASETS):
                     downloaded = src.download("(Individuals $i (Fullname $name))", "$name")
                     print("names", dataset, downloaded.data)
 
-                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Fullname $name)))"), ("(simple (hasName $id $name))", "(simple (hasId $name $id))"))
+                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Fullname $name)))"), ("(simple (hasName $id $name))", "(simple (hasId $name $id))")).block()
 
-                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"M\")))"), ("(simple (male $id))",))
-                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"F\")))"), ("(simple (female $id))",))
+                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"M\")))"), ("(simple (male $id))",)).block()
+                scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"F\")))"), ("(simple (female $id))",)).block()
 
                 scope.transform(("(src (Relations $r (Husband $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",))\
                     .block()
-                scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",))
+                scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $lci $cid)))"), ("(simple (parent $id $cid))",)).block()
                 scope.transform(("(src (Relations $r (Husband $id)))", "(src (Relations $r (Children $cid)))"), ("(simple (parent $id $cid))",))\
                     .block()
-                scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $cid)))"), ("(simple (parent $id $cid))",))
+                scope.transform(("(src (Relations $r (Wife $id)))", "(src (Relations $r (Children $cid)))"), ("(simple (parent $id $cid))",)).block()
 
     ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file://" + __file__.rpartition("/")[0] + "/simple_all.metta")
 

@@ -31,6 +31,7 @@ serialize_tests = [] # Causes tests to run with 100ms between each one, so they 
 tokio_workers = [] # Use Tokio threads as the server workers
 mork_workers = ["dep:num_cpus", "dep:scc"] # Use our own custom thread pool for CPU-heavy work.  CURRENTLY UNMAINTAINED
 local_files = [] # Allows the server to import and export files on the host.  Handy for a local server, but disable in a multi-user remote environment with untrusted users.
+journaling = []
 neo4j = ["mork/neo4j"]
 interning = ["mork/interning"]
 

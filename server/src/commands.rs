@@ -116,6 +116,13 @@ impl CommandDefinition for ClearCmd {
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches();
         wz.remove_value();
+        
+        '_journal_event : {
+            // JOURNAL.append_event(Clear(prefix))
+
+            // explictly drop wz only after Journal event complete
+            drop(wz)
+        }
         Ok("ACK. Cleared".into())
     }
 }
@@ -160,6 +167,15 @@ impl CommandDefinition for CopyCmd {
         let rz = ctx.0.space.read_zipper(&mut reader);
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.graft(&rz);
+
+
+        '_journal_event : {
+            // JOURNAL.append_event(Copy( (src_expr, dst_expr)) ) // maybe Sexpr?
+
+            // explictly drop (wz,rz) only after Journal event complete
+            drop((wz,rz))
+        }
+
         Ok("ACK. Copied".into())
     }
 }
@@ -593,7 +609,16 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
         let file_handle = std::fs::File::open(&file_path)?;
         let file_stream = BufReader::new(file_handle);
 
-        do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)
+        do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)?;
+
+        '_journal_event : {
+            // JOURNAL.append_event(Import( (file, pattern, template)) ) // pattern : Sexpr, template : Sexpr
+        
+            // explictly drop `writer` only after Journal event complete
+            drop(writer)
+        }
+        Result::<(),CommandError>::Ok(())
+    
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
@@ -959,7 +984,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
             ArgDef{
                 arg_type: ArgType::String,
                 name: "suspend loaction",
-                desc: "The location execs at the thread location will be suspended in the form ($suspend_loc (exec $thread_loc $patterns $templates))",
+                desc: "The location execs at the thread location will be suspended in the form ($suspend_loc (exec ($thread_loc $priority) $patterns $templates))",
                 required: true
             }
         ]
@@ -1019,6 +1044,13 @@ impl CommandDefinition for MettaThreadSuspendCmd {
 
         suspend_wz.descend_to(exec_prefix_expr.as_bytes());
         suspend_wz.graft_map(pats_templates);
+
+        '_journal_event : {
+            // JOURNAL.append_event(Suspend(exec_loc))
+
+            // explictly drop wz only after Journal event complete
+            drop((suspend_wz, exec_wz))
+        }
 
         Ok(Bytes::from(format!("Ack. Thread {} cleared, now frozen at `({} (exec ({} $priorities) $patterns $templates))`", exec_loc_sexpr, suspend_loc_sexpr, exec_loc_sexpr)))
     }
@@ -1153,8 +1185,13 @@ impl CommandDefinition for TransformCmd {
         let (patterns, templates) = pattern_template_args(&ctx.0.space, src)
             .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &())
-            .map_err(|exec_err| exec_err.into_perm_err().unwrap())?;
+        let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &(), ||{})?;
+
+        '_journal_event : {
+            // JOURNAL.append_event(Transform(Post_bytes))
+
+            // explictly drop wz only after Journal event complete
+        }
 
         work_thread.dispatch_blocking_task(cmd, move |_c| {
 
@@ -1311,7 +1348,14 @@ impl CommandDefinition for UploadCmd {
         let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)
+            let out = do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)?;
+            '_journal_event : {
+                // JOURNAL.append_event(Upload(Pattern, template, src_buf))
+                            
+                // explictly drop writer only after Journal event complete
+                drop(writer)
+            }
+            Result::<(),CommandError>::Ok(())
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {
@@ -1628,7 +1672,7 @@ async fn misbehaving_transform() -> Result<(), ()> {
 
     let (_pattern, template) = pattern_template_from_sexpr_pair(&s, "", "c").unwrap();
 
-    let (read_map, template_prefixes, mut writers) = s.acquire_transform_permissions(&[], &[template.borrow()], &()).unwrap();
+    let (read_map, template_prefixes, mut writers) = s.acquire_transform_permissions(&[], &[template.borrow()], &(), ||{}).unwrap();
 
     s.transform_multi_multi(&[], &read_map, &[template.borrow()], &template_prefixes, &mut writers);
 

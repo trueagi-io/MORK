@@ -24,7 +24,7 @@ pub use crate::space_temporary::{
     PathPermissionErr,
     SpaceReaderZipper,
 };
-use crate::SpaceWriterZipper;
+use crate::{space_temporary, SpaceWriterZipper};
 
 /// A default minimalist implementation of [Space]
 pub struct DefaultSpace {
@@ -805,9 +805,9 @@ impl DefaultSpace {
 pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
     info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
 
-    let (srcs, dsts) = destructure_exec_expr(space, rt)?.collect_inner();
+    let (srcs, dsts) = destructure_exec_expr(space, rt).map_err(ExecError::Syntax)?.collect_inner();
 
-    let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth)?;
+    let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth, ||{}).map_err(|perm_err| ExecError::perm_err(space, perm_err))?;
 
     //Insert the self expression into the read_map
     read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
@@ -819,7 +819,7 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
 }
 
 /// Validates the format of an MM2 expression, and extracts the patterns and templates from it
-fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTemplatesExprs, ExecError<S>> {
+fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTemplatesExprs, ExecSyntaxError> {
     let mut rtz = ExprZipper::new(rt);
 
     // ////////////////////////////////////////////////////////////////////
@@ -828,13 +828,13 @@ fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTempla
 
     //Make sure the expression is an arity-4
     if rtz.item() != Ok(Tag::Arity(4)) {
-        return Err(ExecError::ExpectedArity4(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+        return Err(ExecSyntaxError::ExpectedArity4(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
     }
     assert!(rtz.next());
 
     //Check for the "exec" keyword, and step over it if we find it
     if unsafe{ rtz.subexpr().span().as_ref().unwrap() != expr!(space, "exec").span().as_ref().unwrap() } {
-        return Err(ExecError::ExpectedExecKeyword(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+        return Err(ExecSyntaxError::ExpectedExecKeyword(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
     }
     assert!(rtz.next());
 
@@ -847,20 +847,20 @@ fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTempla
 
         //Check for the (<thread_id> <priority>) pair.
         if sub_ez.item() != Ok(Tag::Arity(2)) {
-            return Err(ExecError::ExpectedThreadIdPair(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+            return Err(ExecSyntaxError::ExpectedThreadIdPair(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
         }
         assert!(rtz.next());
 
         //Check <thread_id>.  Currently we only accept a grounded `thread_id` as the first arg,
         // although this may change in the future
         if !rtz.subexpr().is_ground() {
-            return Err(ExecError::OtherFmtErr(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+            return Err(ExecSyntaxError::ExpectedGroundThreadId(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
         }
         assert!(sub_ez.next_child());
 
         //Check <priority> is grounded
         if !sub_ez.subexpr().is_ground() {
-            return Err(ExecError::ExpectedGroundPriority(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
+            return Err(ExecSyntaxError::ExpectedGroundPriority(mork_bytestring::serialize(unsafe { rt.span().as_ref().unwrap() })));
         }
     }
     assert!(rtz.next_child());
@@ -882,12 +882,12 @@ fn destructure_exec_expr<S: Space>(space: &S, rt: Expr) -> Result<PatternsTempla
 
     // (, ..$patterns)
     let srcs = rtz.subexpr();
-    comma_list_check(srcs).map_err(|_|ExecError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
+    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListPatterns(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
     assert!(rtz.next_child());
 
     // (, ..$templates)
     let dsts = rtz.subexpr();
-    comma_list_check(srcs).map_err(|_|ExecError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
+    comma_list_check(srcs).map_err(|_|ExecSyntaxError::ExpectedCommaListTemplates(mork_bytestring::serialize(unsafe { rtz.root.span().as_ref().unwrap() })))?;
 
     Ok(PatternsTemplatesExprs::new(srcs, dsts))
 }
@@ -911,7 +911,13 @@ impl DefaultSpace {
     }
 }
 
-pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) -> Result<(), ExecError<S>> {
+pub(crate) fn metta_calculus_impl<'s, S: Space>(
+    space: &'s S, 
+    thread_id_sexpr_str: &str, 
+    max_retries: usize, 
+    mut step_cnt: usize, 
+    auth: &S::Auth,
+) -> Result<(), ExecError<S>> {
 
     //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
     //
@@ -978,6 +984,9 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
         // Remove expr, which means we are "claiming" it
         exec_wz.descend_to(&buffer[prefix.len()..]);
         exec_wz.remove_value();
+
+        // journal exec_removal of buffer;
+        
         drop(exec_wz);
         drop(exec_permission);
 
@@ -986,6 +995,10 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
         // have not yet been acquired.
         //------------------------------------------------------------------------------
 
+        // for journaling, interpret_impl needs to be a 2 step action, first it returns a Result of a struct that holds the Writer Subsuption set, and the Reader outside subsumption set, and the copy map,
+        // If Ok(permissions), we ask for a time_stamp to journal, we then drop the Reader set
+        //    then run interpret. When interpret succeeds, we write the journal entry with our timestamp and exec expr. and drop the Writers set
+        // If Err(err), we reinsert the buffer exec expr, and journal the insertion.
         match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
             Ok(()) => {
                 retry = false;
@@ -1842,7 +1855,7 @@ where
 impl DefaultSpace {
     pub fn transform_multi_multi_simple(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
 
-        let (read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(patterns, templates, &()).unwrap();
+        let (read_map, template_prefixes, mut writers) = self.acquire_transform_permissions(patterns, templates, &(), ||{}).unwrap();
         self.transform_multi_multi(patterns, &read_map, templates, &template_prefixes, &mut writers)
     }
 }
@@ -2034,17 +2047,23 @@ impl core::fmt::Debug for RawDump {
 
 /// An error type resulting from an attempt to run an MM2 thread
 pub enum ExecError<S: Space> {
-    ExpectedArity4(String),
-    ExpectedExecKeyword(String),
-    ExpectedThreadIdPair(String),
-    ExpectedCommaListPatterns(String),
-    ExpectedCommaListTemplates(String),
-    ExpectedGroundPriority(String),
+    Syntax(ExecSyntaxError),
     OtherFmtErr(String),
     SystemPermissionErr(S::PermissionErr),
     UserPermissionErr(S::PermissionErr),
     RetryLimit(String),
 }
+
+pub enum ExecSyntaxError {
+    ExpectedArity4(String),
+    ExpectedExecKeyword(String),
+    ExpectedThreadIdPair(String),
+    ExpectedCommaListPatterns(String),
+    ExpectedCommaListTemplates(String),
+    ExpectedGroundThreadId(String),
+    ExpectedGroundPriority(String),
+}
+
 
 impl<S: Space> ExecError<S> {
     /// Creates a new `ExecError` from a PermissionErr
@@ -2081,12 +2100,13 @@ impl<S: Space> ExecError<S> {
 impl<S: Space> PartialEq<Self> for ExecError<S> {
     fn eq(&self, other: &Self) -> bool {
         match self {
-            Self::ExpectedArity4(_) => {matches!(other, Self::ExpectedArity4(_))},
-            Self::ExpectedExecKeyword(_) => {matches!(other, Self::ExpectedExecKeyword(_))},
-            Self::ExpectedThreadIdPair(_) => {matches!(other, Self::ExpectedThreadIdPair(_))},
-            Self::ExpectedCommaListPatterns(_) => {matches!(other, Self::ExpectedCommaListPatterns(_))},
-            Self::ExpectedCommaListTemplates(_) => {matches!(other, Self::ExpectedCommaListTemplates(_))},
-            Self::ExpectedGroundPriority(_) => {matches!(other, Self::ExpectedGroundPriority(_))},
+            Self::Syntax(ExecSyntaxError::ExpectedArity4(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedArity4(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedExecKeyword(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedExecKeyword(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedThreadIdPair(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedThreadIdPair(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedCommaListPatterns(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedCommaListPatterns(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedCommaListTemplates(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedCommaListTemplates(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedGroundPriority(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedGroundPriority(_)))},
+            Self::Syntax(ExecSyntaxError::ExpectedGroundThreadId(_)) => {matches!(other, Self::Syntax(ExecSyntaxError::ExpectedGroundThreadId(_)))},
             Self::OtherFmtErr(_) => {matches!(other, Self::OtherFmtErr(_))},
             Self::SystemPermissionErr(_) => {matches!(other, Self::SystemPermissionErr(_))},
             Self::UserPermissionErr(_) => {matches!(other, Self::UserPermissionErr(_))},
@@ -2099,12 +2119,13 @@ impl<S: Space> Eq for ExecError<S> {}
 impl<S: Space> core::fmt::Debug for ExecError<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ExpectedArity4(s) => { format!("ExecError: ExpectedArity4 {s}").fmt(f) },
-            Self::ExpectedExecKeyword(s) => { format!("ExecError: ExpectedExecKeyword {s}").fmt(f) },
-            Self::ExpectedThreadIdPair(s) => { format!("ExecError: ExpectedThreadIdPair {s}").fmt(f) },
-            Self::ExpectedCommaListPatterns(s) => { format!("ExecError: ExpectedCommaListPatterns {s}").fmt(f) },
-            Self::ExpectedCommaListTemplates(s) => { format!("ExecError: ExpectedCommaListTemplates {s}").fmt(f) },
-            Self::ExpectedGroundPriority(s) => { format!("ExecError: ExpectedGroundPriority {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedArity4(s)) => { format!("ExecError: ExpectedArity4 {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedExecKeyword(s)) => { format!("ExecError: ExpectedExecKeyword {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedThreadIdPair(s)) => { format!("ExecError: ExpectedThreadIdPair {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedCommaListPatterns(s)) => { format!("ExecError: ExpectedCommaListPatterns {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedCommaListTemplates(s)) => { format!("ExecError: ExpectedCommaListTemplates {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedGroundPriority(s)) => { format!("ExecError: ExpectedGroundPriority {s}").fmt(f) },
+            Self::Syntax(ExecSyntaxError::ExpectedGroundThreadId(s)) => { format!("ExecError: ExpectedGroundThreadId {s}").fmt(f) },
             Self::OtherFmtErr(s) => { format!("ExecError: OtherFmtErr {s}").fmt(f) },
             Self::SystemPermissionErr(s) => { format!("ExecError: SystemPermissionErr {s:?}").fmt(f) },
             Self::UserPermissionErr(s) => { format!("ExecError: UserPermissionErr {s:?}").fmt(f) },
@@ -2237,3 +2258,612 @@ fn bfs_test() {
     println!("L1.0 {:?}", space.token_bfs(t1, expr!(space, "$"), &mut reader));
     println!("L1.1 {:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pub mod metta_calculus {
+// ///////////////////
+// SEMANTIC TARGET //
+// /////////////////
+//
+// par for thread in threads
+//   'from_start
+//   let it = space.at(`[4] exec [2] `thread``)
+//   'from_current
+//   let stmt = it.next(`(exec (`thread` $loc) $patterns $templates)`)
+//   try
+//     atomic
+//       let read_permissions = get_read_permissions(stmt)
+//       let write_permissions = get_write_permissions(stmt)
+//     space.transform(stmt, read_permissions, write_permissions)
+//     goto 'from_start
+//   except PermissionError
+//     goto 'from_current
+//   except Exception as e
+//     space.add(`(exec (`thread` $loc) `e`)`)
+//     goto 'done
+//   finally
+//     drop(read_permissions)
+//     drop(write_permissions)
+// 'done
+
+
+
+    use std::ops::ControlFlow;
+
+    type CF<B,C> = ControlFlow<B,C>;
+
+    use super::*;
+
+macro_rules! states {
+    ($( $STATE:ident $DOC:literal,)+) => {
+        mod sealed { pub trait StateT {} }
+        #[allow(private_interfaces)]
+        trait StateVal : StateT { const SELF : Self; }
+        use sealed::StateT;
+        $(
+        #[doc=$DOC]
+        pub struct $STATE {}
+        impl sealed::StateT for $STATE {}
+        #[allow(private_interfaces)]
+        impl StateVal       for $STATE { const SELF : Self = $STATE {}; }
+        )+
+    };
+
+}
+
+states!{
+    LoopStart             "The machine is initialized to a valid state; \n\ncontinue to start iterating the loop.",
+    ExecRemovalPermission "The permission for the exec's prefix was aquired; \n\nnext, lookup the next exec to run.",
+    ExecsRemaining        "There were conflicts that have been skipped; \n\ncontinue to restart the loop.",
+    ExecRemovedGuard      "The current exec was removed from the space (the state of the space has been modified), but the permission is still being held; \n\n next, immediatly drop the permission and construct transform arguments.",
+    PreTransform          "Permission was droped; \n\nnext, try to run the transform",
+    DeferGuard            "The permission for defering is being held; \n\nnext, reinsert to defer execution of current exec.",
+}
+
+pub struct Done;
+
+
+pub struct Machine<'space, 'auth, S: Space> {
+    // /////////////
+    // INIT ARGS //
+    // ///////////
+    space               : &'space S,
+    auth                : &'auth S::Auth,
+
+    // ////////////
+    // INIT VARS //
+    // ///////////
+    prefix_len             : usize,
+    buffer                 : Vec<u8>,
+    retry_remaining        : bool,
+
+    // /////////////
+    // LOOP VARS //
+    // ///////////
+    exec_permission     : Option<<S as Space>::Writer<'space>>,
+    pattern_templates   : Option<(Vec<Expr>, Vec<Expr>)>,
+
+}
+impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
+    /// the `place` argument value should be [`Option::None`], as it will be replaced with the new [`Machine`].
+    #[inline(always)]
+    pub fn init(
+        machine             : &'machine mut Option<Self>,
+        space               : &'space S,
+        thread_id_sexpr_str : &str,
+        auth                : &'machine S::Auth,
+    ) -> Controller<'machine, 'space, LoopStart, S> {
+
+        //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+        //
+        // (exec (<location> $priority) $patterns $templates)
+        let prefix_expr = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
+        let prefix = unsafe { prefix_expr.borrow().prefix().unwrap().as_ref().unwrap() };
+        
+        let prefix_len = prefix.len();
+        let buffer     = Vec::from(prefix);
+
+        let retry_remaining = false;
+
+        *machine = Some(
+            Machine {
+                space,
+                auth,
+                prefix_len,
+                buffer,
+                retry_remaining,
+                exec_permission   : None,
+                pattern_templates : None,
+            }
+        );
+        Controller { _state: LoopStart {}, machine }
+    }
+
+    // The following methods are primarily here for inspection by users, without fear of breaking the integrity of the state machine.
+    #[inline(always)] pub fn prefix         (&self) -> &[u8]             { &self.buffer[0..self.prefix_len]}
+    #[inline(always)] pub fn current_exec   (&self) -> Option<&[u8]>     { (self.buffer.len() > self.prefix_len).then_some(&self.buffer[..]) }
+    #[inline(always)] pub fn retry_remaining(&self) -> bool              { self.retry_remaining }
+    #[inline(always)] pub fn space          (&self) -> &'space S         { self.space }
+    #[inline(always)] pub fn auth           (&self) -> &'machine S::Auth { self.auth }
+}
+
+
+pub struct Controller<'machine, 'space, State : StateT, S : Space>{
+    _state  : State,
+    machine : &'machine mut Option<Machine<'space, 'machine, S>>
+}
+
+// The following macros are use because it avoids having to care about if self is by value or ref.
+// Thes are only ever used internaly
+macro_rules! machine_mut {
+    ($CONTROLLER:ident) => {unsafe {
+        core::debug_assert!($CONTROLLER.machine.is_some());
+        let machine = $CONTROLLER.machine.as_mut().unwrap_unchecked();
+        // This Safety invariant must _always_ be true, so might as well do it here.
+        core::debug_assert!(machine.buffer.len()>=machine.prefix_len);
+        machine
+    }};
+}
+macro_rules! machine_ref {
+    ($CONTROLLER:ident) => {unsafe {
+        core::debug_assert!($CONTROLLER.machine.is_some());
+        let machine = $CONTROLLER.machine.as_ref().unwrap_unchecked();
+        // This Safety invariant must _always_ be true, so might as well do it here.
+        core::debug_assert!(machine.buffer.len()>=machine.prefix_len);
+        machine
+    }};
+}
+
+impl<'space, 'machine, State : StateT, S: Space> Controller<'machine, 'space, State, S> {
+    #[inline(always)]
+    fn next_state<NextState : StateVal>(self, _s : NextState)-> Controller<'machine, 'space, NextState, S> {
+        core::debug_assert!(self.machine.is_some());
+        Controller { _state: NextState::SELF, machine : self.machine }
+    }
+    #[inline(always)]
+    pub fn inspect_machine(&self)->&Machine<'space, 'machine, S> {
+        machine_ref!(self)
+    }
+}
+
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
+    #[inline(always)]
+    pub fn exec_permission(self)
+    -> Result<
+        Controller<'machine, 'space, ExecRemovalPermission, S>,
+        (Self, <S as Space>::PermissionErr),
+    > {
+        let Machine { space, auth, prefix_len, buffer, exec_permission, .. } = machine_mut!(self);
+        core::debug_assert!(exec_permission.is_none());
+
+        match space.new_writer(&buffer[..*prefix_len], auth) {
+            Ok(writer) => { *exec_permission = Some(writer);
+                            Ok(self.next_state(ExecRemovalPermission{}))
+                          }
+            Err(error) => Err((self,error)),
+        }
+    }
+
+
+    /// retry logic should mirror [`Controller<'machine, 'space, PreTransform, S>::defer_guard_with_retries`]
+    #[inline(always)]
+    pub fn exec_permission_with_retries(mut self, max_retries : usize)
+    -> Result<
+        Controller<'machine, 'space, ExecRemovalPermission, S>,
+        (Self, <S as Space>::PermissionErr),
+    > {
+        let mut err = None;
+        for _each in 0..max_retries.max(1) {
+            match self.exec_permission() {
+                Ok(ok)     => return Ok(ok),
+                Err((c,e)) => { (self, err) = (c, Some(e))},
+            };
+            std::thread::sleep(core::time::Duration::from_micros(500));
+        }
+        Err((self, err.unwrap()))
+    }
+}
+
+pub enum LookupBaseCases<'machine, 'space, S : Space> {
+    Done,
+    ExecsRemaining(Controller<'machine, 'space, ExecsRemaining, S>),
+}
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermission, S> {
+    #[inline(always)]
+    pub fn exec_lookup(self)
+    ->  ControlFlow<
+            LookupBaseCases<'machine, 'space, S>,
+            Controller<'machine, 'space, ExecRemovedGuard, S>,
+        >
+    {
+        let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, .. } = machine_mut!(self);
+        core::debug_assert!(exec_permission.is_some());
+
+        let mut exec_wz = space.write_zipper(unsafe { exec_permission.as_mut().unwrap_unchecked() });
+
+        let mut rz = exec_wz.fork_read_zipper();
+        rz.descend_to(&buffer[*prefix_len..]);
+
+        if !rz.to_next_val() {
+            drop(rz);
+            drop(exec_wz);
+            // unblock this as soon as possible
+            *exec_permission = None;
+
+
+            if *retry_remaining {
+                return CF::Break(LookupBaseCases::ExecsRemaining( self.next_state(ExecsRemaining {})));
+            }
+
+            // Sucessfully consumed all execs.  This MeTTa thread is done
+            *self.machine = None;
+            return CF::Break(LookupBaseCases::Done)
+        }
+        buffer.truncate(*prefix_len);
+        buffer.extend_from_slice(rz.path());
+        drop(rz);
+
+        // Remove expr, which means we are "claiming" it
+        exec_wz.descend_to(&buffer[*prefix_len..]);
+        exec_wz.remove_value();
+
+        drop(exec_wz);
+        CF::Continue(self.next_state(ExecRemovedGuard{}))
+    }
+}
+
+
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecsRemaining, S> {
+    #[inline(always)]
+    pub fn continue_loop(self) ->  Controller<'machine, 'space, LoopStart, S>
+    {
+        let Machine { prefix_len, buffer, exec_permission, .. } = machine_mut!(self);
+        core::debug_assert!(exec_permission.is_some());
+
+        buffer.truncate(*prefix_len);
+        *exec_permission = None;
+        self.next_state(LoopStart {})
+    }
+}
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovedGuard, S> {
+    #[inline(always)]
+    pub fn drop_permission(self) ->  Controller<'machine, 'space, PreTransform, S>
+    {
+        let Machine { exec_permission, .. } = machine_mut!(self);
+        core::debug_assert!(exec_permission.is_some());
+        *exec_permission = None;
+        self.next_state(PreTransform {})
+    }
+    #[inline(always)]
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>
+    {
+        self.drop_permission().transform(at_critical_section)
+    }
+}
+
+pub enum TransformErr<'machine, 'space, S : Space> {
+    Syntax    ((Controller<'machine, 'space, LoopStart,    S>, ExecSyntaxError )),
+    Permission((Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)),
+}
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
+    #[inline(always)]
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>))
+    ->  Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>
+    {
+
+        let m_mut = machine_mut!(self);
+        let rt = Expr{ ptr: m_mut.buffer.as_mut_ptr() };
+        // if this code get revisited we want to avoid this branch
+        if m_mut.pattern_templates.is_none() {
+            m_mut.pattern_templates = Some(match destructure_exec_expr(m_mut.space, rt) {
+                Ok(ok)   => ok,
+                Err(err) => return Err(TransformErr::Syntax((self.next_state(LoopStart{}), err))),
+            }.collect_inner());
+        }
+
+
+        // we need an shared reference for the critical section
+        let m_ref = machine_ref!(self);
+        core::debug_assert!( m_ref.pattern_templates.is_some() );
+        let (patterns, templates) = unsafe { m_ref.pattern_templates.as_ref().unwrap_unchecked() };
+
+        let (mut read_map, template_prefixes, mut writers) = match m_ref.space.acquire_transform_permissions(patterns, templates, m_ref.auth, ||at_critical_section(m_ref)) {
+            Ok(ok)   => ok,
+            Err(err) => return Err(TransformErr::Permission((self, err))),
+        };
+
+
+        // We switch back to the mutable reference
+        let Machine { space, prefix_len, buffer, retry_remaining, pattern_templates, .. } = machine_mut!(self);
+        core::debug_assert!( pattern_templates.is_some() );
+        let (patterns, templates) = unsafe { pattern_templates.as_ref().unwrap_unchecked() };
+
+        //Insert the self expression into the read_map
+        read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
+
+        space.transform_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
+
+        *pattern_templates = None;
+        *retry_remaining = false;
+        buffer.truncate(*prefix_len);
+
+        Ok(self.next_state(LoopStart{}))
+    }
+
+    #[inline(always)]
+    pub fn defer_guard(self) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
+    {
+        let Machine { space, prefix_len, auth, buffer, exec_permission, pattern_templates, ..  } = machine_mut!(self);
+        // we are reusing this for a different permission
+        core::debug_assert!(exec_permission.is_none());
+
+        match space.new_writer(&buffer[..*prefix_len], auth) {
+            Ok(writer) => {
+                            *pattern_templates = None;
+                            *exec_permission = Some(writer);
+                            Ok(self.next_state(DeferGuard {}))
+                          },
+            Err(err)   => Err((self, err)),
+        }
+    }
+    /// retry logic should mirror [`Controller<'machine, 'space, LoopStart, S>::exec_permission_with_retries`]
+    #[inline(always)]
+    pub fn defer_guard_with_retries(mut self, max_retries : usize) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
+    {
+        let mut err = None;
+        for _each in 0..max_retries.max(1) {
+            match self.defer_guard() {
+                Ok(ok)     => return Ok(ok),
+                Err((c,e)) => { (self, err) = (c, Some(e))},
+            };
+            std::thread::sleep(core::time::Duration::from_micros(500));
+        }
+        Err((self, err.unwrap()))
+    }
+}
+
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, DeferGuard, S> {
+    #[inline(always)]
+    pub fn defer_current_exec(self)
+    -> Controller<'machine, 'space, LoopStart, S>
+    {
+        let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, ..  } = machine_mut!(self);
+        core::debug_assert!(exec_permission.is_some());
+        let mut writer = unsafe { exec_permission.take().unwrap_unchecked() };
+
+        let mut exec_wz = space.write_zipper(&mut writer);
+        exec_wz.descend_to(&buffer[*prefix_len..]);
+        exec_wz.set_value(());
+        *retry_remaining = true;
+
+        self.next_state(LoopStart {})
+    }
+}
+
+#[allow(unused)]
+pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
+    space               : &'space S,
+    thread_id_sexpr_str : &str,
+    max_retries         : usize,
+    mut step_cnt        : usize,
+    auth                : &S::Auth,
+) -> Result<(), ExecError<S>> {
+    let mut machine = None;
+    let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, auth);
+
+    'process_execs : loop {
+        let exec_permission = match start_controller.exec_permission_with_retries(max_retries) {
+            Ok(ok)       => ok,
+            Err((_c, e)) => return Err(ExecError::perm_err(space, e)),
+        };
+
+        let removed = match exec_permission.exec_lookup() {
+            CF::Continue(removed)                                 => removed,
+            CF::Break(LookupBaseCases::Done)                      => return Ok(()),
+            CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
+                                                                       start_controller = remaining.continue_loop();
+                                                                       continue 'process_execs;
+                                                                     },
+        };
+        // journal removal
+        
+        // close the loop
+        start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
+            Ok(ok)                                => {
+                                                        if step_cnt > 0 {
+                                                            step_cnt -= 1
+                                                        } else {
+                                                            //Finished running the allotted number of steps
+                                                            break 'process_execs Ok(())
+                                                        }
+                                                        ok
+                                                     },
+            Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
+            Err(TransformErr::Permission((c, _e))) => {
+                                                        let defer_guard = match c.defer_guard_with_retries(max_retries) {
+                                                            Ok(ok)      => ok,
+                                                            Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
+                                                        };
+                                                        // journal deferal reinsertion
+                                                        defer_guard.defer_current_exec()
+                                                      },
+        };
+    }
+}
+
+// // for reference
+// pub(crate) fn metta_calculus_impl_<'space, S: Space>(
+//     space               : &'space S,
+//     thread_id_sexpr_str : &str,
+//     max_retries         : usize,
+//     mut step_cnt        : usize,
+//     auth                : &S::Auth,
+// ) -> Result<(), ExecError<S>> {
+
+//     //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+//     //
+//     // (exec (<location> $priority) $patterns $templates)
+//     let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
+//     let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
+
+//     // the invariant is that buffer should always be reset with at least the prefix
+//     let mut buffer = Vec::from(prefix);
+
+//     let mut retry = false;
+//     let mut retry_cnt = max_retries;
+
+// // INIT
+
+//     let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
+// // EXEC PERMISSION
+//         debug_assert!(buffer.len() >= prefix.len());
+//         debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
+//         // ////////////////////////////////////////////////////////////////////
+//         // Get a write permission to the exec sub-space for this MeTTa thread
+//         // //////////////////////////////////////////////////////////////////
+//         //
+//         // This path should never be contended for long periods of time, although it is possible another
+//         // command (such as a debugger command) has this path locked in order to communicate with us.  We
+//         // should be able to get the write permission soon enough by retrying
+//         let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+//             Ok(writer) => writer,
+//             Err(_) => {
+//                 //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
+//                 // which means we've been trying for a whole second.  It also likely means the path
+//                 // is held indefinitely, which is a bug somewhere, although not here.
+//                 //We ought to write an error into the status map and abort execution
+//                 todo!()
+//             }
+//         };
+// // EXEC LOOKUP
+//         let mut exec_wz = space.write_zipper(&mut exec_permission);
+
+//         // //////////////////////////////////////
+//         // Find an expression we can execute  //
+//         // ////////////////////////////////////
+//         let mut rz = exec_wz.fork_read_zipper();
+//         rz.descend_to(&buffer[prefix.len()..]);
+
+//         if !rz.to_next_val() {
+//             drop(rz);
+//             drop(exec_wz);
+
+            
+//             if retry {
+// // RETRY
+//                 if retry_cnt > 0 {
+//                     retry_cnt -= 1;
+//                 } else {
+//                     drop(exec_permission);
+//                     break 'process_execs Err(ExecError::RetryLimit("".to_string()))
+//                 }
+
+//                 //Try again from the beginning
+//                 buffer.truncate(prefix.len());
+                
+//                 drop(exec_permission);
+//                 std::thread::sleep(core::time::Duration::from_millis(1));
+//                 continue 'process_execs;
+//             }
+
+//             drop(exec_permission);
+//             //Sucessfully consumed all execs.  This MeTTa thread is done
+//             break 'process_execs Ok(())
+// // THREAD COMPLETE
+//         }
+//         buffer.truncate(prefix.len());
+//         buffer.extend_from_slice(rz.path());
+//         drop(rz);
+
+//         // Remove expr, which means we are "claiming" it
+//         exec_wz.descend_to(&buffer[prefix.len()..]);
+//         exec_wz.remove_value();
+
+//         // journal exec_removal of buffer;
+        
+//         drop(exec_wz);
+// // EXEC REMOVED
+//         drop(exec_permission);
+// // EXEC PERMISSION DROPED
+
+//         // for journaling, interpret_impl needs to be a 2 step action, first it returns a Result of a struct that holds the Writer Subsuption set, and the Reader outside subsumption set, and the copy map,
+//         // If Ok(permissions), we ask for a time_stamp to journal, we then drop the Reader set
+//         //    then run interpret. When interpret succeeds, we write the journal entry with our timestamp and exec expr. and drop the Writers set
+//         // If Err(err), we reinsert the buffer exec expr, and journal the insertion.
+        
+//         match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
+//             Ok(()) => {
+//                 retry = false;
+//                 retry_cnt = max_retries;
+//                 buffer.truncate(prefix.len());
+//                 if step_cnt > 0 {
+//                     step_cnt -= 1
+//                 } else {
+//                     //Finished running the allotted number of steps
+//                     break 'process_execs Ok(())
+//                 }
+//             },
+//             Err(err) => {
+//                 match err {
+//                     ExecError::UserPermissionErr(_) => {
+//                         //We couldn't get permissions for this particular exec expression, so we need to
+//                         // put the expression back in the space and then try with another one.
+//                         let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+//                             Ok(writer) => writer,
+//                             Err(_) => {
+//                                 //See similar code above...
+//                                 todo!()
+//                             }
+//                         };
+//                         let mut exec_wz = space.write_zipper(&mut exec_permission);
+//                         exec_wz.descend_to(&buffer[prefix.len()..]);
+//                         exec_wz.set_value(());
+//                         retry = true;
+//                     },
+//                     _ => {
+//                         //Any error but a UserPermissionError means we halt the execution
+//                         break 'process_execs Err(err)
+//                     }
+//                 }
+//             }
+//         }
+//     };
+
+//     exec_result
+// }
+
+
+
+
+
+
+
+} // end mod metta_calculus

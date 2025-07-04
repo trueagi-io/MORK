@@ -9,7 +9,7 @@ use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
+    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, metta_calculus_impl, token_bfs_impl, transform_multi_multi_impl, ExecError, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -252,7 +252,8 @@ pub trait Space: Sized {
         patterns            : &[E],
         templates           : &[E],
         auth                : &Self::Auth,
-    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
+        at_critical_section : impl FnOnce(),
+    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), Self::PermissionErr> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         // ************************************************************************
@@ -317,8 +318,9 @@ pub trait Space: Sized {
                 writers.push(writer);
             }
 
+            at_critical_section();
             Ok(())
-        }).map_err(|perm_err| ExecError::perm_err(self, perm_err))?;
+        })?;
 
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
@@ -358,7 +360,7 @@ pub trait Space: Sized {
     fn metta_calculus<'s>(&'s self,
         thread_id_sexpr_str: &str,
         step_cnt: usize,
-        auth: &Self::Auth
+        auth: &Self::Auth,
     ) -> Result<(), ExecError<Self>>
     {
         metta_calculus_impl(self, thread_id_sexpr_str, 2000, step_cnt, auth)

@@ -2,7 +2,7 @@ from typing import Optional
 import os
 import json
 import time
-from time import monotonic_ns, sleep
+from time import monotonic, sleep
 from base64 import b32encode
 import re
 from io import StringIO, FileIO
@@ -115,7 +115,7 @@ class MORK:
 
         def dispatch(self, server):
             super().dispatch(server)
-            print("download status code:", self.response.status_code)
+            # print("download status code:", self.response.status_code)
             if self.response and self.response.status_code == 200:
                 self.data = self.response.text
 
@@ -401,6 +401,7 @@ class MORK:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
         if "clear" in self.finalization: self.clear().block()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
@@ -432,12 +433,19 @@ class MORK:
         self.finalization += ("clear",)
         return self
 
-#GOAT: What is this for?
-def retry(f, count):
-    for i in range(count):
-        res = f()
-        if res is None: continue
-        return res
+    def and_time(self):
+        self.t0 = monotonic()
+        self.finalization += ("time",)
+        return self
+
+    def _bare(self) -> 'MORK':
+        return _BareMORK(self.base, self.ns)
+
+class _BareMORK(MORK):
+    def __init__(self, base, ns):
+        self.base = base
+        self.ns = ns
+        self.history = []
 
 class ManagedMORK(MORK):
     """

@@ -176,6 +176,11 @@ query BRCA2
  151956 atoms
  */
 
+fn peano(x: usize) -> String {
+    if x == 0 { "Z".to_string() }
+    else { format!("(S {})", peano(x - 1)) }
+}
+
 fn basic() {
     let mut s = Space::new();
 
@@ -210,8 +215,11 @@ fn process_calculus() {
     let mut s = Space::new();
 
     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
-    const SPACE_EXPRS: &str = r#"
-(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S Z)))))))))) )
+    let STEPS = 1000;
+    let X = 200;
+    let Y = 200;
+    let SPACE_EXPRS = format!(r#"
+(exec (IC 0 1 {})
                (, (exec (IC $x $y (S $c)) $sp $st)
                   ((exec $x) $p $t))
                (, (exec (IC $y $x $c) $sp $st)
@@ -229,8 +237,8 @@ fn process_calculus() {
 (petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
                                     (? (PN $x $y) $z (! $ret (S $z)))  )  ))
 (petri (? (add $ret) (Z $y) (! $ret $y)))
-(petri (! (add result) ( (S (S Z)) (S (S Z)) )))
-    "#;
+(petri (! (add result) ({} {})))
+    "#, peano(STEPS), peano(X), peano(Y));
 
     s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
@@ -243,7 +251,7 @@ fn process_calculus() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(S (S (S (S Z))))\n");
+    assert_eq!(res, format!("{}\n", peano(X+Y)));
 }
 
 fn process_calculus_reverse() {
@@ -750,8 +758,9 @@ fn cm0() {
     s.load_csv(REGS_CSV.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] state 0 [3] REG _1 _2"), b',').unwrap();
     JZ,2,5\nDEC,2,2INC,3,3\nINC,1,4\nJZ,0,0\nJZ,1,9\nDEC,1,7\nINC,2,8\nJZ,0,5\nH,0,0
      */
+    let TO_COPY = 50;
 
-    const SPACE_MACHINE: &str = r#"
+    let SPACE_MACHINE = format!(r#"
     (program Z (JZ 2 (S (S (S (S (S Z))))) ))
     (program (S Z) (DEC 2))
     (program (S (S Z)) (INC 3))
@@ -764,7 +773,7 @@ fn cm0() {
     (program (S (S (S (S (S (S (S (S (S Z))))))))) H)
     (state Z (REG 0 Z))
     (state Z (REG 1 Z))
-    (state Z (REG 2 (S (S Z))))
+    (state Z (REG 2 {}))
     (state Z (REG 3 Z))
     (state Z (REG 4 Z))
     (state Z (IC Z))
@@ -794,20 +803,25 @@ fn cm0() {
                ((step $k $ts) $p0 $t0))
             (, (exec ($k $ts) $p0 $t0)
                (exec (clocked (S $ts)) $p1 $t1)))
-    "#;
+    "#, peano(TO_COPY));
 
     s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
-    let steps = s.metta_calculus(200);
+    let steps = s.metta_calculus(1000000000000000);
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
+    let mut v_ts = vec![];
+    s.dump_sexpr(expr!(s, "[3] state $ $"), expr!(s, "_1"), &mut v_ts).unwrap();
+    let last_ts_tmp = String::from_utf8(v_ts).unwrap(); 
+    let last_ts = last_ts_tmp.split("\n").max_by_key(|x| x.len()).unwrap();
     let mut v = vec![];
-    s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] state $ [3] REG 3 $"), expr!(s, "[2] _1 _2"), &mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
-
-    println!("{}", res);
-    assert!(res.contains("(state (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z)))))))))))))))))))) (REG 3 (S (S Z))))\n"));
+    
+    // println!("{res}");
+    assert!(res.contains(format!("({} {})", last_ts, peano(TO_COPY)).as_str()));
 }
 
 /*fn match_case() {
@@ -858,15 +872,19 @@ fn main() {
     // two_positive_equal();
     // two_positive_equal_crossed();
     // two_bipolar_equal_crossed();
-    //
-    // process_calculus();
+
+    // please profile this one
+    process_calculus();
     // process_calculus_reverse();
     // logic_query();
     // bc0();
     // bc1();
     // bc2();
 
+    // and this one
     cm0();
+    
+    // I know they're both algorithmically stupid, but I feel like this will make up a large part of the workload anyway... 
 
     // match_case();
 

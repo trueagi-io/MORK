@@ -179,7 +179,7 @@ impl MorkService {
             println!("Processing: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
             let mut response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
                 Ok(response_bytes) => {
-                    ok_response(response_bytes)
+                    ok_response(response_bytes.get_bytes().unwrap_or("".into()))
                 },
                 Err(err) => {
                     let response = MorkServerError::cmd_err(err, &command).error_response();

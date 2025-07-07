@@ -1,4 +1,3 @@
-
 use core::pin::Pin;
 use std::future::Future;
 use std::path::Path;
@@ -6,6 +5,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
 use std::usize;
+use std::convert::Infallible;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
@@ -14,9 +14,13 @@ use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
 use bytes::BytesMut;
-use hyper::{Request, StatusCode};
-use hyper::body::{Incoming as IncomingBody, Bytes};
+use hyper::{Request, Response, StatusCode};
+use hyper::body::{Incoming as IncomingBody, Bytes, Frame};
 use http_body_util::BodyExt;
+use tokio::sync::mpsc;
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use futures_util::Stream;
+use http_body_util::StreamBody;
 use url::Url;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
@@ -1054,6 +1058,80 @@ impl CommandDefinition for StatusCmd {
         let status = ctx.0.space.get_status(&prefix);
         let json_string = serde_json::to_string(&status)?;
         Ok(json_string.into())
+    }
+}
+
+pub struct StatusSseCmd;
+
+impl CommandDefinition for StatusSseCmd {
+    const NAME: &'static str = "status_sse";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression on which to return the status.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+
+    async fn work(
+        ctx: MorkService,
+        cmd: Command,
+        _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>
+    ) -> Result<Bytes, CommandError> {
+
+
+        let expr = cmd.args[0].as_expr_bytes();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+
+        let response_builder = Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type");
+
+
+        let (tx, rx) = mpsc::channel::<StatusRecord>(100);
+
+        //let status = ctx.0.space.get_status(&prefix);
+
+        // TODO: close on client disconnect
+        tokio::spawn(async move {
+            loop {
+                println!("Checking status update!!!");
+                match ctx.0.space.get_status(&prefix) {
+                    StatusRecord::PathClear => {
+                        tx.send(StatusRecord::PathClear).await.unwrap();
+                        break;
+                    },
+                    _ => {
+                        continue;
+                    }
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx).map(|quote| {
+            let data = serde_json::to_string(&quote).unwrap();
+            let event = format!("data: {}\n\n", data);
+            Ok(Frame::data(Bytes::from(event)))
+        });
+
+        let response = response_builder
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
+            .body(StreamBody::new(Box::pin(stream)
+                as Pin<
+                    Box<dyn Stream<Item = Result<Frame<Bytes>, Infallible>> + Send>,
+                >))
+            .unwrap();
+        Ok(response)
     }
 }
 

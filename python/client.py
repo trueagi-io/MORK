@@ -433,7 +433,7 @@ class MORK:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
-        if "clear" in self.finalization: self.clear().block()
+        if "clear" in self.finalization: self.clear().listen()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
 
@@ -595,7 +595,7 @@ def _main():
 
             print("data", ins.download_().data)
 
-            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").block()
+            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
 
             print("data", ins.download_().data)
 
@@ -607,8 +607,8 @@ def _main_mm2():
     # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
-        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).block()
-        server.exec(thread_id="test").block()
+        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen()
+        server.exec(thread_id="test").listen()
         print("data", server.download_().data)
 
         for i, item in enumerate(server.history):
@@ -624,8 +624,8 @@ def test_sse_status():
 
 if __name__ == '__main__':
     # _main()
-    # _main_mm2()
-    test_sse_status()
+    _main_mm2()
+    # test_sse_status()
 
 
 

@@ -10,6 +10,7 @@ from urllib.parse import quote, quote_from_bytes
 
 import requests
 from requests import request, RequestException
+from requests_sse import EventSource, InvalidStatusCodeError, InvalidContentTypeError
 from subprocess import Popen
 
 class MORK:
@@ -53,6 +54,7 @@ class MORK:
 
             # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
+            print("poll status: ", status_response.text)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
                 return_status = status_info['status']
@@ -84,6 +86,35 @@ class MORK:
                 if attempt > max_attempts:
                     raise StopIteration
             return meta
+
+        def listen(self):
+            """
+            Listens to server side events on the status of a request.
+            """
+
+            url = self.server.base + f"/status_sse/{quote(self.status_loc)}"
+
+            def on_error():
+                raise Exception("error")
+
+            with EventSource(
+                url,
+                timeout=30,
+                on_error=on_error,
+            ) as event_source:
+                try:
+                    print("listening...")
+                    for event in event_source:
+                        if event.data:
+                            msg = json.loads(event.data)
+                            print("msg: ", msg)
+                            if msg['status'] == "pathClear":
+                                return
+
+                except Exception as e:
+                    print("error: ", e)
+
+
 
         def __str__(self):
             return str(vars(self))
@@ -583,7 +614,19 @@ def _main_mm2():
         for i, item in enumerate(server.history):
             print(i, str(item))
 
+def test_sse_status():
+    # response = requests.get("http://localhost:8000/status_sse/", stream=True)
+
+    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+        server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
+
+
 
 if __name__ == '__main__':
     # _main()
-    _main_mm2()
+    # _main_mm2()
+    test_sse_status()
+
+
+
+

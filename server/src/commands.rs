@@ -17,8 +17,10 @@ use bytes::BytesMut;
 use hyper::{Request, Response, StatusCode};
 use hyper::body::{Incoming as IncomingBody, Bytes, Frame};
 use http_body_util::BodyExt;
+use tokio::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+//use futures_util::stream::BoxStream;
 use futures_util::Stream;
 use http_body_util::StreamBody;
 use url::Url;
@@ -29,10 +31,12 @@ use super::resource_store::ResourceHandle;
 use super::server_space::*;
 use super::status_map::*;
 
+pub type BoxStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, hyper::Error>> + Send + Sync + 'static>>;
+
 pub enum WorkResult {
     Immediate(Bytes), // previous behavior
     Streamed(
-        Response<StreamBody<Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, Infallible>> + Send + Sync>>>>,
+        BoxStream,
     ),  // support for streaming responses
 }
 
@@ -1153,34 +1157,52 @@ impl CommandDefinition for StatusSseCmd {
 
             loop {
                 println!("Checking status update!!!");
+
+                if tx.is_closed() {
+                    println!("tx is closed");
+                    break;
+                }
+
                 match ctx.0.space.get_status(&prefix) {
                     StatusRecord::PathClear => {
-                        tx.send(StatusRecord::PathClear).await.unwrap();
+                        match tx.send(StatusRecord::PathClear).await {
+                            Ok(_) => {
+                                println!("Path cleared!!!");  
+                                let _ = tx.send(StatusRecord::PathClear).await;
+                            },
+                            Err(e) => {
+                                println!("Failed to send status update: {}", e);
+                            }
+                        };
+
                         break;
                     },
                     _ => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 }
             }
         });
 
+        // Map<ReceiverStream<StatusRecord>, FnMut<StatusRecord> -> Result<Frame<Bytes>, hyper::Error>>
         let stream = ReceiverStream::new(rx).map(|quote| {
             let data = serde_json::to_string(&quote).unwrap();
             let event = format!("data: {}\n\n", data);
             Ok(Frame::data(Bytes::from(event)))
         });
 
-        let response = response_builder
-            .header("Content-Type", "text/event-stream")
-            .header("Cache-Control", "no-cache")
-            .header("Connection", "keep-alive")
-            .body(StreamBody::new(Box::pin(stream)
-                as Pin<
-                    Box<dyn Stream<Item = Result<Frame<Bytes>, Infallible>> + Send + Sync>,
-                >))
-            .unwrap();
-        Ok(WorkResult::Streamed(response))
+        //let response = response_builder
+        //    .status(StatusCode::OK)
+        //    .header("Content-Type", "text/event-stream")
+        //    .header("Cache-Control", "no-cache")
+        //    .header("Connection", "keep-alive")
+        //    .body(StreamBody::new(Box::pin(stream)
+        //        as Pin<
+        //            Box<dyn Stream<Item = Result<Frame<Bytes>, Infallible>> + Send + Sync>,
+        //        >))
+        //    .unwrap();
+        Ok(WorkResult::Streamed(Box::pin(stream)))
     }
 }
 

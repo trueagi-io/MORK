@@ -5,18 +5,22 @@ use std::sync::{Arc, atomic::AtomicU64};
 use std::future::Future;
 use std::pin::Pin;
 use std::path::PathBuf;
+use std::convert::Infallible;
 
 use tokio::sync::Notify;
 
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 
 use hyper::service::Service;
-use hyper::header::{HeaderValue, CONNECTION};
+use hyper::header::{HeaderValue, CONNECTION, CONTENT_TYPE, CACHE_CONTROL};
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::{Incoming as IncomingBody, Bytes};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
+use hyper::body::Frame;
 use tokio::net::TcpListener;
+use futures_util::Stream;
+use http_body_util::StreamBody;
 
 const SERVER_ADDR_ENV_VAR: &str = "MORK_SERVER_ADDR";
 const SERVER_PORT_ENV_VAR: &str = "MORK_SERVER_PORT";
@@ -177,16 +181,39 @@ impl MorkService {
         let ctx = self.clone();
         Box::pin(async move {
             println!("Processing: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
-            let mut response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
-                Ok(response_bytes) => {
-                    ok_response(response_bytes.get_bytes().unwrap_or("".into()))
+            let response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
+                Ok(WorkResult::Immediate(b)) => {
+                    let resp = ok_response::<Bytes>(b.into());
+                    resp
                 },
+                Ok(WorkResult::Streamed(stream)) => {
+                    let boxed_body: BoxBody<Bytes, hyper::Error> = StreamBody::new(stream).boxed();
+
+                    let response = Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONNECTION, "keep-alive")
+                        .header(CONTENT_TYPE, "text/event-stream")
+                        .header(CACHE_CONTROL, "no-cache")
+                        .body(boxed_body)
+                        .unwrap();
+
+                    response
+
+                }
+
                 Err(err) => {
                     let response = MorkServerError::cmd_err(err, &command).error_response();
                     response
                 }
             };
-            response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+
+            //if is_streamed {
+            //    response.headers_mut().insert(CONNECTION, HeaderValue::from_static("keep-alive"));
+            //    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+            //    response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            //} else {
+            //    response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+            //}
             Ok(response)
         })
     }

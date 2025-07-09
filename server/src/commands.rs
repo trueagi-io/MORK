@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
 use std::usize;
-use std::convert::Infallible;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
@@ -14,15 +13,12 @@ use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
 use bytes::BytesMut;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Request, StatusCode};
 use hyper::body::{Incoming as IncomingBody, Bytes, Frame};
 use http_body_util::BodyExt;
-use tokio::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
-//use futures_util::stream::BoxStream;
 use futures_util::Stream;
-use http_body_util::StreamBody;
 use url::Url;
 
 use super::{BoxedErr, MorkService, WorkThreadHandle};
@@ -35,9 +31,7 @@ pub type BoxStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, hyper::Error
 
 pub enum WorkResult {
     Immediate(Bytes), // previous behavior
-    Streamed(
-        BoxStream,
-    ),  // support for streaming responses
+    Streamed(BoxStream),  // support for streaming responses
 }
 
 impl WorkResult {
@@ -74,7 +68,6 @@ impl From<String> for WorkResult {
         WorkResult::Immediate(Bytes::copy_from_slice(b.as_bytes()))
     }
 }
-
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -1114,6 +1107,11 @@ impl CommandDefinition for StatusCmd {
     }
 }
 
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// status_stream
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Opens a Server-Side-Events stream, to monitor an expression / path for status updates
 pub struct StatusStreamCmd;
 
 impl CommandDefinition for StatusStreamCmd {
@@ -1132,60 +1130,66 @@ impl CommandDefinition for StatusStreamCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-
     async fn work(
         ctx: MorkService,
         cmd: Command,
         _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>
     ) -> Result<WorkResult, CommandError> {
 
+        let expr = cmd.args[0].as_expr_bytes();
+        let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
+
+        //Make a channel to send status updates to the client
         let (tx, rx) = mpsc::channel::<StatusRecord>(100);
 
-        //let status = ctx.0.space.get_status(&prefix);
+        //Send the current status right away.  It'll be buffered because we haven't composed the reply yet
+        let status = ctx.0.space.get_status(&prefix);
+        let _ = tx.send(status).await;
 
-        // TODO: close on client disconnect
-        tokio::spawn(async move {
+        //Put the sender in the StatusMap, so we can send updates to the stream
+        ctx.0.space.status_map.add_stream(prefix, cmd.cmd_id, tx);
 
-            let expr = cmd.args[0].as_expr_bytes();
-            let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
-
-            loop {
-                println!("Checking status update!!!");
-
-                if tx.is_closed() {
-                    break;
-                }
-
-                match ctx.0.space.get_status(&prefix) {
-                    StatusRecord::PathClear => {
-                        match tx.send(StatusRecord::PathClear).await {
-                            Ok(_) => {
-                                println!("Path cleared!!!");  
-                            },
-                            Err(e) => {
-                                println!("Failed to send status update: {}", e);
-                            }
-                        };
-                        break;
-                    },
-                    _ => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                }
-            }
-        });
-
+        //Finally, Make a StatusStream from the channel, so we can return it to the client, and clean up the
+        // StatusMap if the client closes the stream
         let stream = ReceiverStream::new(rx).map(|quote| {
             let data = serde_json::to_string(&quote).unwrap();
             let event = format!("data: {}\n\n", data);
             Ok(Frame::data(Bytes::from(event)))
         });
+        let stream = StatusStream::new(ctx.0.space.status_map.clone(), prefix.to_vec(), cmd.cmd_id, stream);
 
         Ok(WorkResult::Streamed(Box::pin(stream)))
     }
 }
 
+/// Wraps a stream, so the stream will be removed from the server's status_streams map when the client closes the connection
+pub(crate) struct StatusStream<S> {
+    inner: S,
+    stream_id: u64,
+    status_map: StatusMap,
+    path: Vec<u8>,
+}
+
+impl<S> Drop for StatusStream<S> {
+    fn drop(&mut self) {
+        //When this is called, it tells us that the client has closed the channel, so remove the sender from the map
+        self.status_map.remove_stream(&self.path, self.stream_id);
+    }
+}
+
+impl<S> StatusStream<S> {
+    pub(crate) fn new(status_map: StatusMap, path: Vec<u8>, stream_id: u64, inner: S) -> Self {
+        StatusStream { path, status_map, stream_id, inner }
+    }
+}
+
+impl<S: Stream + Unpin> Stream for StatusStream<S> where S::Item : core::fmt::Debug {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // stop

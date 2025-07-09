@@ -2,6 +2,8 @@
 use std::{time::{Duration, Instant}};
 use tokio::task;
 use reqwest::{Client, Error};
+use eventsource_stream::Eventsource;
+use tokio_stream::StreamExt;
 
 mod common;
 use common::*;
@@ -262,6 +264,73 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
             }
         }
     }).await;
+
+    Ok(())
+}
+
+/// Tests the `status_listen` endpoint
+#[tokio::test]
+async fn simple_listen_request_test() -> Result<(), Error> {
+    decl_lit!{space_expr!() => "(simple_listen_request_test $v)"}
+    const WAIT_URL: &str = concat!( 
+        server_url!(),
+        "/", "busywait",
+        "/", "1000",
+        "/?", "expr1=", space_expr!(),
+        "&", "writer1"
+    );
+    const LISTEN_URL: &str = concat!( 
+        server_url!(),
+        "/", "status_stream",
+        "/", space_expr!(),
+    );
+    wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    //Open up the status listener stream, to receive Server-Side-Events (SSE)
+    let response = reqwest::Client::new().get(LISTEN_URL).send().await?.error_for_status()?;
+    let mut stream = response.bytes_stream().eventsource();
+
+    //The first event in the stream should be a `pathClear` status
+    if let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        assert_eq!(event.event, "message");
+        let response_json: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+        assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathClear");
+    }
+
+    //Send a busywait command
+    let response = reqwest::get(WAIT_URL).await?;
+    if !response.status().is_success() {
+        panic!("Failed to open busy-wait connection: {}", response.status());
+    }
+
+    //Now the stream ought to have gotten an updated status, so test to make sure the status change
+    // came over the channel, and the new status is `pathForbiddenTemporary`
+    if let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        assert_eq!(event.event, "message");
+        let response_json: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+        assert_eq!(response_json.get("status").unwrap().as_str().unwrap(), "pathForbiddenTemporary");
+    }
+
+    //Wait until we get the message that the status has changed
+    let start_time = Instant::now();
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        assert_eq!(event.event, "message");
+        let response_json: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+        let new_status = response_json.get("status").unwrap().as_str().unwrap();
+
+        //If we finally got a "pathClear" status, make sure at least 800ms have passed (we are sleeping for 1s)
+        if new_status == "pathClear" {
+            let duration = start_time.elapsed();
+            assert!(duration > Duration::from_millis(800));
+            break;
+        }
+    }
 
     Ok(())
 }
@@ -789,7 +858,6 @@ async fn transform_basic_request_test() -> Result<(), Error> {
 
     Ok(())
 }
-
 
 #[tokio::test]
 async fn transform_ooga_booga_regression_test() -> Result<(), Error> {

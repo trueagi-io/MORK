@@ -1,5 +1,5 @@
 
-use std::sync::RwLock;
+use std::sync::{RwLock, Arc};
 use serde::{Serialize, Serializer};
 
 use pathmap::trie_map::BytesTrieMap;
@@ -106,7 +106,7 @@ impl StatusRecord {
 }
 
 /// Permission to read from a path
-pub struct ReadPermission(Vec<u8>, #[allow(dead_code)]ZipperTracker<TrackingRead>);
+pub struct ReadPermission(Vec<u8>, StatusMap, Option<ZipperTracker<TrackingRead>>);
 
 impl ReadPermission {
     /// Returns the path associated with the permission
@@ -115,8 +115,16 @@ impl ReadPermission {
     }
 }
 
+impl Drop for ReadPermission {
+    fn drop(&mut self) {
+        let tracker = core::mem::take(&mut self.2);
+        drop(tracker);
+        self.1.send_new_status(&self.0);
+    }
+}
+
 /// Permission to write to a path
-pub struct WritePermission(Vec<u8>, #[allow(dead_code)]ZipperTracker<TrackingWrite>);
+pub struct WritePermission(Vec<u8>, StatusMap, Option<ZipperTracker<TrackingWrite>>);
 
 impl WritePermission {
     /// Returns the path associated with the permission
@@ -125,10 +133,23 @@ impl WritePermission {
     }
 }
 
+impl Drop for WritePermission {
+    fn drop(&mut self) {
+        let tracker = core::mem::take(&mut self.2);
+        drop(tracker);
+        self.1.send_new_status(&self.0);
+    }
+}
+
 /// A map to track statuses associated with all paths in the primary map.  See [StatusRecord]
-pub struct StatusMap {
+#[derive(Clone)]
+pub struct StatusMap(Arc<StatusMapFields>);
+
+/// Fields within the [StatusMap]
+struct StatusMapFields {
     trackers: SharedTrackerPaths,
     user_status: RwLock<BytesTrieMap<StatusRecord>>,
+    streams: RwLock<BytesTrieMap<Vec<(u64, tokio::sync::mpsc::Sender<StatusRecord>)>>>,
 }
 
 impl StatusMap {
@@ -138,15 +159,19 @@ impl StatusMap {
         // filtering out the temporary statuses, but leaving the permanant ones
         let user_status = BytesTrieMap::<StatusRecord>::new();
 
-        Self {
+        let steams = BytesTrieMap::new();
+
+        let fields = StatusMapFields {
             trackers: SharedTrackerPaths::default(),
             user_status: RwLock::new(user_status),
-        }
+            streams: RwLock::new(steams),
+        };
+        Self(Arc::new(fields))
     }
 
     /// Returns the status associated with a path or [StatusRecord::PathClear] if the path is not affected by any status
     pub fn get_status(&self, path: &[u8]) -> StatusRecord {
-        match self.trackers.path_status(path) {
+        match self.0.trackers.path_status(path) {
             PathStatus::Unavailable => {
                 return StatusRecord::PathForbiddenTemporary
             },
@@ -156,6 +181,49 @@ impl StatusMap {
             PathStatus::Available => {}
         }
         self.get_user_status(path)
+    }
+
+    /// Adds the sender end of a stream's channel to the `StatusMap`'s streams table
+    pub fn add_stream(&self, path: &[u8], stream_id: u64, sender: tokio::sync::mpsc::Sender<StatusRecord>) {
+        let mut guard = self.0.streams.write().unwrap();
+        let senders_vec = guard.get_value_mut_or_set_with(path, || vec![]);
+        senders_vec.push((stream_id, sender));
+    }
+
+    /// Removes the stream from the `StatusMap`'s streams table
+    pub fn remove_stream(&self, path: &[u8], stream_id: u64) {
+        let mut guard = self.0.streams.write().unwrap();
+        let senders_vec = guard.get_mut(path).unwrap();
+        if let Some(pos) = senders_vec.iter().position(|(map_stream_id, _)| *map_stream_id == stream_id) {
+            senders_vec.remove(pos);
+        }
+    }
+
+    /// Sends the new status to all streams listening for it.  If a stream is closed, then it is immediately
+    /// removed from the streams table
+    fn send_new_status(&self, path: &[u8]) {
+        let mut should_remove = vec![];
+        let guard = self.0.streams.read().unwrap();
+        if let Some(streams_vec) = guard.get(path) {
+            let new_status = self.get_status(path);
+
+            for (stream_id, stream_tx) in streams_vec.iter() {
+                match stream_tx.try_send(new_status.clone()) {
+                    Ok(()) => {},
+                    Err(err) => {
+                        if matches!(err, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                            should_remove.push(*stream_id);
+                        }
+                    }
+                }
+            }
+        }
+        drop(guard);
+
+        //See if we need to remove any streams because they were closed
+        for stream_id in should_remove {
+            self.remove_stream(path, stream_id);
+        }
     }
 
     /// Returns a [WritePermission] for the requested path and removes any associated user
@@ -168,9 +236,13 @@ impl StatusMap {
             return Err(ServerPermissionErr::new(path, format!("get_write_permission: encountered blocking status {user_status:?} at path {path:?}.")))
         }
         self.clear_user_status(path)?;
-        let tracker = ZipperTracker::<TrackingWrite>::new(self.trackers.clone(), path)
+        let tracker = ZipperTracker::<TrackingWrite>::new(self.0.trackers.clone(), path)
             .map_err(|conflict| ServerPermissionErr::from_conflict(conflict, path))?;
-        Ok(WritePermission(path.to_vec(), tracker))
+
+        //Send the status to any streams monitoring this path
+        self.send_new_status(path);
+
+        Ok(WritePermission(path.to_vec(), self.clone(), Some(tracker)))
     }
 
     /// Returns a [WritePermission] for the requested path
@@ -181,9 +253,13 @@ impl StatusMap {
         if user_status.blocks_reader() {
             return Err(ServerPermissionErr::new(path, format!("get_read_permission: encountered blocking status {user_status:?} at path {path:?}.")))
         }
-        let tracker = ZipperTracker::<TrackingRead>::new(self.trackers.clone(), path)
+        let tracker = ZipperTracker::<TrackingRead>::new(self.0.trackers.clone(), path)
             .map_err(|conflict| ServerPermissionErr::from_conflict(conflict, path))?;
-        Ok(ReadPermission(path.to_vec(), tracker))
+
+        //Send the status to any streams monitoring this path
+        self.send_new_status(path);
+
+        Ok(ReadPermission(path.to_vec(), self.clone(), Some(tracker)))
     }
 
     /// Attempts to set `new_status` at `path`.  Returns `Ok(())` if the status was sucessfully set, or
@@ -215,21 +291,25 @@ impl StatusMap {
         // wz.set_value(new_status);
         // Ok(())
 
-        let mut user_map = self.user_status.write().unwrap();
+        let mut user_map = self.0.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper_at_path(path);
         zipper.set_value(new_status);
+
+        //Send the status to any streams monitoring this path
+        self.send_new_status(path);
+
         Ok(())
     }
 
     /// Internal method. Returns the value from the user status map at the path
     fn get_user_status(&self, path: &[u8]) -> StatusRecord {
-        let user_map = self.user_status.read().unwrap();
+        let user_map = self.0.user_status.read().unwrap();
         user_map.get(path).cloned().unwrap_or(StatusRecord::PathClear)
     }
 
     /// Internal method. Clears the user status at the path
     fn clear_user_status(&self, path: &[u8]) -> Result<(), ServerPermissionErr> {
-        let mut user_map = self.user_status.write().unwrap();
+        let mut user_map = self.0.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper();
         zipper.descend_to(path);
         zipper.remove_branches();

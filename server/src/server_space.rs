@@ -22,7 +22,7 @@ pub struct ServerSpace {
     /// ZipperHead for accessing the primary map
     primary_map: ZipperHeadOwned<()>,
     /// ZipperHead for accessing status and permissions associated with paths
-    status_map: StatusMap,
+    pub(crate) status_map: StatusMap,
     /// Guard to ensure high-level operations can be atomic
     permission_guard: Mutex<()>,
 }

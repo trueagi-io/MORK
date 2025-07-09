@@ -5,21 +5,18 @@ use std::sync::{Arc, atomic::AtomicU64};
 use std::future::Future;
 use std::pin::Pin;
 use std::path::PathBuf;
-use std::convert::Infallible;
 
 use tokio::sync::Notify;
 
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 
 use hyper::service::Service;
-use hyper::header::{HeaderValue, CONNECTION, CONTENT_TYPE, CACHE_CONTROL};
+use hyper::header::{CONNECTION, CONTENT_TYPE, CACHE_CONTROL};
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::{Incoming as IncomingBody, Bytes};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use hyper::body::Frame;
 use tokio::net::TcpListener;
-use futures_util::Stream;
 use http_body_util::StreamBody;
 
 const SERVER_ADDR_ENV_VAR: &str = "MORK_SERVER_ADDR";
@@ -189,16 +186,13 @@ impl MorkService {
                 Ok(WorkResult::Streamed(stream)) => {
                     let boxed_body: BoxBody<Bytes, hyper::Error> = StreamBody::new(stream).boxed();
 
-                    let response = Response::builder()
+                    Response::builder()
                         .status(StatusCode::OK)
                         .header(CONNECTION, "keep-alive")
                         .header(CONTENT_TYPE, "text/event-stream")
                         .header(CACHE_CONTROL, "no-cache")
                         .body(boxed_body)
-                        .unwrap();
-
-                    response
-
+                        .unwrap()
                 }
 
                 Err(err) => {
@@ -207,13 +201,6 @@ impl MorkService {
                 }
             };
 
-            //if is_streamed {
-            //    response.headers_mut().insert(CONNECTION, HeaderValue::from_static("keep-alive"));
-            //    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
-            //    response.headers_mut().insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-            //} else {
-            //    response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
-            //}
             Ok(response)
         })
     }

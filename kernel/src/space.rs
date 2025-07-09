@@ -2316,24 +2316,28 @@ pub mod metta_calculus {
 
 
     use std::ops::ControlFlow;
-
     type CF<B,C> = ControlFlow<B,C>;
-
-    use super::*;
+    use crate::space::*;
 
 macro_rules! states {
     ($( $STATE:ident $DOC:literal,)+) => {
-        mod sealed { pub trait StateT {} }
-        #[allow(private_interfaces)]
-        trait StateVal : StateT { const SELF : Self; }
-        use sealed::StateT;
+        mod sealed {
+            pub trait StateT {} 
+            use super::{Space, Controller, MachineHandle};
+            #[allow(private_interfaces)]
+            pub trait StateVal : StateT + Sized { const SELF : Self; fn handle_constructor<'machine, 'space, S:Space>(c : Controller<'machine, 'space, Self, S>)->MachineHandle<'machine, 'space, S>;}
+        }
+        use sealed::{StateT, StateVal};
         $(
         #[doc=$DOC]
         pub struct $STATE {}
         impl sealed::StateT for $STATE {}
         #[allow(private_interfaces)]
-        impl StateVal       for $STATE { const SELF : Self = $STATE {}; }
+        impl StateVal       for $STATE { const SELF : Self = $STATE {}; fn handle_constructor<'machine, 'space, S:Space>(c : Controller<'machine, 'space, Self, S>)->MachineHandle<'machine, 'space, S> { MachineHandle::$STATE(c) }}
         )+
+        pub enum MachineHandle<'machine, 'space, S : Space> {$(
+            $STATE(Controller<'machine, 'space, $STATE, S>),
+        )+}
     };
 
 }
@@ -2451,6 +2455,11 @@ impl<'space, 'machine, State : StateT, S: Space> Controller<'machine, 'space, St
     pub fn inspect_machine(&self)->&Machine<'space, 'machine, S> {
         machine_ref!(self)
     }
+
+    #[inline(always)]
+    pub fn to_handle(self)->MachineHandle<'machine, 'space, S> where State : StateVal{
+        State::handle_constructor(self)
+    }
 }
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
@@ -2470,7 +2479,6 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
             Err(error) => Err((self,error)),
         }
     }
-
 
     /// retry logic should mirror [`Controller<'machine, 'space, PreTransform, S>::defer_guard_with_retries`]
     #[inline(always)]
@@ -2536,6 +2544,16 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermiss
 
         drop(exec_wz);
         CF::Continue(self.next_state(ExecRemovedGuard{}))
+    }
+    #[inline(always)]
+    pub fn exec_lookup_to_handle(self)
+    ->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
+    {
+        match self.exec_lookup() {
+            ControlFlow::Continue(c) => CF::Continue(MachineHandle::ExecRemovedGuard(c)),
+            ControlFlow::Break(LookupBaseCases::Done) => CF::Break(()),
+            ControlFlow::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::ExecsRemaining(remaining)),
+        }   
     }
 }
 
@@ -2714,6 +2732,48 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
                                                         // journal deferal reinsertion
                                                         defer_guard.defer_current_exec()
                                                       },
+        };
+    }
+}
+
+#[allow(unused)]
+pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Space>(
+    space               : &'space S,
+    thread_id_sexpr_str : &str,
+    max_retries         : usize,
+    mut step_cnt        : usize,
+    auth                : &S::Auth,
+) -> Result<(), ExecError<S>> {
+    type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
+    let mut machine = None;
+    let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, auth).to_handle();
+
+    'process_execs : loop {
+        handle = match handle {
+            MH::LoopStart            (controller) => match controller.exec_permission_with_retries(max_retries) {
+                                                         Ok(ok)      => ok.to_handle(),
+                                                         Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
+                                                     },
+            MH::ExecRemovalPermission(controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return Ok(());},
+            MH::ExecRemovedGuard     (controller) => controller.drop_permission().to_handle(),
+            MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
+            MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
+                                                         Ok(ok)                                 => {
+                                                                                                      if step_cnt > 0 {
+                                                                                                          step_cnt -= 1
+                                                                                                      } else {
+                                                                                                          //Finished running the allotted number of steps
+                                                                                                          break 'process_execs Ok(())
+                                                                                                      }
+                                                                                                      ok.to_handle()
+                                                                                                   },
+                                                         Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
+                                                         Err(TransformErr::Permission((c, _e))) => match c.defer_guard_with_retries(max_retries) {
+                                                                                                       Ok(ok)      => ok.to_handle(),
+                                                                                                       Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
+                                                                                                   },
+                                                     },
+            MH::DeferGuard           (controller) => controller.defer_current_exec().to_handle(), // journal deferal reinsertion
         };
     }
 }

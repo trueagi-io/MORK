@@ -1114,10 +1114,10 @@ impl CommandDefinition for StatusCmd {
     }
 }
 
-pub struct StatusSseCmd;
+pub struct StatusStreamCmd;
 
-impl CommandDefinition for StatusSseCmd {
-    const NAME: &'static str = "status_sse";
+impl CommandDefinition for StatusStreamCmd {
+    const NAME: &'static str = "status_stream";
     const CONST_CMD: &'static Self = &Self;
     const CONSUME_WORKER: bool = false;
 
@@ -1138,12 +1138,6 @@ impl CommandDefinition for StatusSseCmd {
         cmd: Command,
         _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>
     ) -> Result<WorkResult, CommandError> {
-
-        let response_builder = Response::builder()
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Content-Type");
-
 
         let (tx, rx) = mpsc::channel::<StatusRecord>(100);
 

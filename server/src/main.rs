@@ -572,7 +572,7 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => ExportCmd
             | GET => ImportCmd
             | GET => StatusCmd
-            | GET => StatusSseCmd
+            | GET => StatusStreamCmd
             | GET => StopCmd
             | POST => UploadCmd
             // neo4j

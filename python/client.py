@@ -92,7 +92,7 @@ class MORK:
             Listens to server side events on the status of a request.
             """
 
-            url = self.server.base + f"/status_sse/{quote(self.status_loc)}"
+            url = self.server.base + f"/status_stream/{quote(self.status_loc)}"
 
             def on_error():
                 raise Exception("error")
@@ -615,8 +615,6 @@ def _main_mm2():
             print(i, str(item))
 
 def test_sse_status():
-    # response = requests.get("http://localhost:8000/status_sse/", stream=True)
-
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
 

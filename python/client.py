@@ -88,40 +88,58 @@ class MORK:
                     raise StopIteration
             return meta
 
-        def listen(self):
+        def listen(self, timeout: float = 300):
             """
-            Listens to server side events on the status of a request.
+            Listens to server-side events on the status of a request.
 
             Yields:
-                dict[str, str] 
+                dict[str, Any]: Parsed JSON messages from the event stream.
             """
             url = self.server.base + f"/status_stream/{quote(self.status_loc)}"
-            try:
-                with EventSource(url, timeout=30) as event_source:
-                    for event in event_source:
-                        if event.data:
-                            msg = json.loads(event.data)
-                            yield msg
-            except Exception as e:
-                print(f"An unexpected error occurred: {e}")
+            with EventSource(url, timeout=timeout) as event_source:
+                for event in event_source:
+                    if event.data:
+                        msg = json.loads(event.data)
+                        yield msg
 
-        def listen_until_clear(self):
+            print("event stream closed")
+
+        def listen_until_clear(self, timeout: float = 300):
             """
             Listens to server side events until a 'pathClear' status is received.
 
+            Args:
+                timeout (int): The maximum amount of time to listen.
+
             Returns:
                 metadata: Any
+
+            Raises:
+                TimeoutError: If the timeout is reached before the path is clear.
             """
             print("Listening status ...")
-            for msg in self.listen():
-                status = msg.get("status")
-                if status == "pathClear":
-                    print("path clear")
-                    return ""
-                elif status == "pathForbiddenTemporary":
-                    continue
-                else:
-                    return msg
+            start_time = monotonic()
+            
+            try:
+                for msg in self.listen(timeout=timeout):
+                    if timeout is not None:
+                        if (monotonic() - start_time) > timeout:
+                            raise TimeoutError(f"listen_until_clear timed out after {timeout} seconds")
+
+                    status = msg.get("status")
+                    if status == "pathClear":
+                        print("path cleared")
+                        return ""
+                    elif status == "pathForbiddenTemporary":
+                        print("waiting for path to clear")
+                        continue
+                    else:
+                        return msg
+            except requests.exceptions.ReadTimeout:  # timeout raised by requests module
+                raise TimeoutError(f"Timeout of {timeout}s waiting for event from server.") from None
+            except Exception as e:  # unkown exceptions
+                print(f"An unexpected error occurred: {e}")
+                raise
 
 
         def __str__(self):
@@ -615,23 +633,32 @@ def _main_mm2():
     # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
-        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen_until_clear()
-        server.exec(thread_id="test").listen_until_clear()
-        print("data", server.download_().data)
-
-        for i, item in enumerate(server.history):
-            print(i, str(item))
+        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen_until_clear(5)
+        server.exec(thread_id="test").listen_until_clear(5)
+        # print("data", server.download_().data)
+        #
+        # for i, item in enumerate(server.history):
+        #     print(i, str(item))
 
 def test_sse_status():
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
-        server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen_until_clear()
+        DATASETS = (
+            "royal92",
+            "lordOfTheRings",
+            "adameve",
+            "simpsons",
+        )
+        for dataset in DATASETS:
+            server.sexpr_import_(
+                f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta"
+            ).listen_until_clear()
 
 
 
 if __name__ == '__main__':
     # _main()
-    _main_mm2()
-    # test_sse_status()
+    # _main_mm2()
+    test_sse_status()
 
 
 

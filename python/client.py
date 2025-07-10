@@ -88,7 +88,7 @@ class MORK:
                     raise StopIteration
             return meta
 
-        def listen(self, timeout: float = 300):
+        def listen(self, timeout: Optional[float] = 300):
             """
             Listens to server-side events on the status of a request.
 
@@ -104,12 +104,12 @@ class MORK:
 
             print("event stream closed")
 
-        def listen_until_clear(self, timeout: float = 300):
+        def listen_until_clear(self, timeout: Optional[float] = 300):
             """
             Listens to server side events until a 'pathClear' status is received.
 
             Args:
-                timeout (int): The maximum amount of time to listen.
+                timeout (float): The maximum amount of time to listen.
 
             Returns:
                 metadata: Any
@@ -122,9 +122,8 @@ class MORK:
             
             try:
                 for msg in self.listen(timeout=timeout):
-                    if timeout is not None:
-                        if (monotonic() - start_time) > timeout:
-                            raise TimeoutError(f"listen_until_clear timed out after {timeout} seconds")
+                    if timeout and (monotonic() - start_time) > timeout:
+                        raise TimeoutError(f"listen_until_clear timed out after {timeout} seconds")
 
                     status = msg.get("status")
                     if status == "pathClear":

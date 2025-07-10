@@ -20,7 +20,7 @@ fn main() {
         // println!("m3_zipper        @ {m3_path:?}");
 
         m3_zipper.descend_to(&[Tag::SymbolSize(4 as u8).byte()]);
-        m3_zipper.graft_map(BytesTrieMap::range::<true, u32>(3, n as u32, 3, ()));
+        m3_zipper.graft_map(pathmap::utils::ints::gen_int_range(3, n as u32, 3, ()));
         m3_zipper.reset();
 
         let mut m5_path = vec![Tag::Arity(2).byte()];
@@ -31,7 +31,7 @@ fn main() {
         // println!("m5_zipper        @ {m5_path:?}");
 
         m5_zipper.descend_to(&[Tag::SymbolSize(4 as u8).byte()]);
-        m5_zipper.graft_map(BytesTrieMap::range::<true, u32>(5, n as u32, 5, ()));
+        m5_zipper.graft_map(pathmap::utils::ints::gen_int_range(5, n as u32, 5, ()));
         m5_zipper.reset();
 
         let mut r_path = vec![Tag::Arity(2).byte()];
@@ -42,7 +42,7 @@ fn main() {
         // println!("r_zipper         @ {r_path:?}");
 
         r_zipper.descend_to(&[Tag::SymbolSize(4 as u8).byte()]);
-        r_zipper.graft_map(BytesTrieMap::range::<true, u32>(1, n as u32, 1, ()));
+        r_zipper.graft_map(pathmap::utils::ints::gen_int_range(1, n as u32, 1, ()));
         r_zipper.reset();
 
         let mut m35_path = vec![Tag::Arity(2).byte()];

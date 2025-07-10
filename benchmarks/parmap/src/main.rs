@@ -43,7 +43,7 @@ fn parallel_map() {
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
 
@@ -159,7 +159,7 @@ fn task_parallel_map() {
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
 
     let mut work_zippers = vec![];
@@ -231,7 +231,7 @@ fn sequential_map() {
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
     let mut oz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[1]) };

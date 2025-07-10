@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 import os
 import json
@@ -90,30 +91,37 @@ class MORK:
         def listen(self):
             """
             Listens to server side events on the status of a request.
+
+            Yields:
+                dict[str, str] 
             """
-
             url = self.server.base + f"/status_stream/{quote(self.status_loc)}"
-
-            def on_error():
-                raise Exception("error")
-
-            with EventSource(
-                url,
-                timeout=30,
-                on_error=on_error,
-            ) as event_source:
-                try:
-                    print("listening...")
+            try:
+                with EventSource(url, timeout=30) as event_source:
                     for event in event_source:
                         if event.data:
                             msg = json.loads(event.data)
-                            print("msg: ", msg)
-                            if msg['status'] == "pathClear":
-                                return
+                            yield msg
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
 
-                except Exception as e:
-                    print("error: ", e)
+        def listen_until_clear(self):
+            """
+            Listens to server side events until a 'pathClear' status is received.
 
+            Returns:
+                metadata: Any
+            """
+            print("Listening status ...")
+            for msg in self.listen():
+                status = msg.get("status")
+                if status == "pathClear":
+                    print("path clear")
+                    return ""
+                elif status == "pathForbiddenTemporary":
+                    continue
+                else:
+                    return msg
 
 
         def __str__(self):
@@ -433,7 +441,7 @@ class MORK:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
-        if "clear" in self.finalization: self.clear().listen()
+        if "clear" in self.finalization: self.clear().listen_until_clear()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
 
@@ -595,7 +603,7 @@ def _main():
 
             print("data", ins.download_().data)
 
-            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
+            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen_until_clear()
 
             print("data", ins.download_().data)
 
@@ -607,8 +615,8 @@ def _main_mm2():
     # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
-        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen()
-        server.exec(thread_id="test").listen()
+        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen_until_clear()
+        server.exec(thread_id="test").listen_until_clear()
         print("data", server.download_().data)
 
         for i, item in enumerate(server.history):
@@ -616,7 +624,7 @@ def _main_mm2():
 
 def test_sse_status():
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
-        server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
+        server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen_until_clear()
 
 
 

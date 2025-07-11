@@ -193,7 +193,7 @@ impl StatusMap {
     /// Removes the stream from the `StatusMap`'s streams table
     pub fn remove_stream(&self, path: &[u8], stream_id: u64) {
         let mut guard = self.0.streams.write().unwrap();
-        let senders_vec = guard.get_mut(path).unwrap();
+        let senders_vec = guard.get_val_mut_at(path).unwrap();
         if let Some(pos) = senders_vec.iter().position(|(map_stream_id, _)| *map_stream_id == stream_id) {
             senders_vec.remove(pos);
         }
@@ -204,7 +204,7 @@ impl StatusMap {
     fn send_new_status(&self, path: &[u8]) {
         let mut should_remove = vec![];
         let guard = self.0.streams.read().unwrap();
-        if let Some(streams_vec) = guard.get(path) {
+        if let Some(streams_vec) = guard.get_val_at(path) {
             let new_status = self.get_status(path);
 
             for (stream_id, stream_tx) in streams_vec.iter() {
@@ -304,7 +304,7 @@ impl StatusMap {
     /// Internal method. Returns the value from the user status map at the path
     fn get_user_status(&self, path: &[u8]) -> StatusRecord {
         let user_map = self.0.user_status.read().unwrap();
-        user_map.get(path).cloned().unwrap_or(StatusRecord::PathClear)
+        user_map.get_val_at(path).cloned().unwrap_or(StatusRecord::PathClear)
     }
 
     /// Internal method. Clears the user status at the path

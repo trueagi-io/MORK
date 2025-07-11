@@ -62,7 +62,7 @@ impl<'a> WritePermit<'a> {
     let sym = 'lock_scope_sym : {
       let mut sym_guard = sym_table_lock.write().unwrap();
       // try once more to see if we need to make the symbol
-      if let Some(s) = sym_guard.get(bytes) {
+      if let Some(s) = sym_guard.get_val_at(bytes) {
         // Another thread beat us to it. yay!
         break 'lock_scope_sym *s;
       }

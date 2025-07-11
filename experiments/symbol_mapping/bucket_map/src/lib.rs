@@ -118,7 +118,7 @@ impl SharedMapping {
     let bucket = sym[SYMBOL_THREAD_PERMIT_BYTE_POS];
 
     let res = self.to_bytes[bucket as usize].0.read().unwrap();
-    res.get(sym).map(|t| unsafe {&*t.as_raw_slice()})
+    res.get_val_at(sym).map(|t| unsafe {&*t.as_raw_slice()})
   }
 
   /// This function is not inherently unsafe, but should only be used as a last resort when
@@ -138,7 +138,7 @@ impl SharedMapping {
     '_lock_scope:{
       let lock_guard = trie_lock.read().unwrap();
 
-      lock_guard.get(bytes).copied()
+      lock_guard.get_val_at(bytes).copied()
     }
   }
 }

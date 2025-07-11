@@ -21,14 +21,14 @@ impl SharedMapping {
   pub fn get_bytes(&self, sym : Symbol) -> Option<&[u8]> {
     '_lock_scope : {
       let lock = self.to_bytes.read().unwrap();
-      lock.get(&sym.to_ne_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
+      lock.get_val_at(&sym.to_ne_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
     }
   }
 
   pub fn get_sym(&self, bytes : &[u8]) -> Option<Symbol> {
     '_lock_scope : {
       let lock = self.to_symbols.read().unwrap();
-      lock.get(bytes).copied()
+      lock.get_val_at(bytes).copied()
     }
   }
 }
@@ -52,7 +52,7 @@ impl<'a> WritePermit<'a> {
   pub fn get_sym_or_insert(&self, bytes : &[u8])->Symbol {
     '_lock_scope_sym : {
       let mut lock_sym = self.to_symbols.write().unwrap();
-      if let Some(sym) = lock_sym.get(bytes) {
+      if let Some(sym) = lock_sym.get_val_at(bytes) {
         return *sym;
       }
 

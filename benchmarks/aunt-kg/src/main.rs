@@ -1,20 +1,20 @@
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
-use pathmap::trie_map::BytesTrieMap;
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<u64>,
+    symbols: PathMap<u64>,
 }
 
 impl DataParser {
     fn new() -> Self {
         Self {
             count: 3,
-            symbols: BytesTrieMap::new(),
+            symbols: PathMap::new(),
         }
     }
 
@@ -76,8 +76,8 @@ fn main() -> Result<(),&'static str> {
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
-    let mut family = BytesTrieMap::new();
-    let mut output = BytesTrieMap::new();
+    let mut family = PathMap::new();
+    let mut output = PathMap::new();
     let mut i = 0u64;
     let mut stack = [0u8; 1 << 19];
     loop {

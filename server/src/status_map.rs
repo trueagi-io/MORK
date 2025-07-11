@@ -2,7 +2,7 @@
 use std::sync::{RwLock, Arc};
 use serde::{Serialize, Serializer};
 
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::{ZipperWriting, ZipperMoving};
 use pathmap::zipper_tracking::{PathStatus, SharedTrackerPaths, ZipperTracker, TrackingRead, TrackingWrite};
 
@@ -148,8 +148,8 @@ pub struct StatusMap(Arc<StatusMapFields>);
 /// Fields within the [StatusMap]
 struct StatusMapFields {
     trackers: SharedTrackerPaths,
-    user_status: RwLock<BytesTrieMap<StatusRecord>>,
-    streams: RwLock<BytesTrieMap<Vec<(u64, tokio::sync::mpsc::Sender<StatusRecord>)>>>,
+    user_status: RwLock<PathMap<StatusRecord>>,
+    streams: RwLock<PathMap<Vec<(u64, tokio::sync::mpsc::Sender<StatusRecord>)>>>,
 }
 
 impl StatusMap {
@@ -157,9 +157,9 @@ impl StatusMap {
 
         //GOAT, Load the map from a file, so it persists across server starts.  Which also means
         // filtering out the temporary statuses, but leaving the permanant ones
-        let user_status = BytesTrieMap::<StatusRecord>::new();
+        let user_status = PathMap::<StatusRecord>::new();
 
-        let steams = BytesTrieMap::new();
+        let steams = PathMap::new();
 
         let fields = StatusMapFields {
             trackers: SharedTrackerPaths::default(),

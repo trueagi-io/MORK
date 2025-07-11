@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::time::Instant;
 use std::usize;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperValues, ZipperMoving, ZipperWriting, ZipperCreation};
 use num::BigInt;
 
@@ -71,7 +71,7 @@ fn main() {
     println!("#sequences {}", i);
 
     let t0 = Instant::now();
-    let mut m = BytesTrieMap::new();
+    let mut m = PathMap::new();
     let mut buildz = m.write_zipper_at_path(&[0]);
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
@@ -107,7 +107,7 @@ fn main() {
     const QSEQ: [u64; 6] = [1, 2, 3, 5, 8, 13];
     let mut qseq = encode_seq(QSEQ.into_iter().map(BigInt::from));
     qseq.insert(0, 0);
-    let mut q = BytesTrieMap::new();
+    let mut q = PathMap::new();
     for i in 0..(MAX_OFFSET + 1) {
         qseq[0] = i;
         q.insert(&qseq[..], 0usize);

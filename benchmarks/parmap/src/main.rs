@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use rayon::ThreadPoolBuilder;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperIteration, ZipperAbsolutePath};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 const K: u64 = 1_000_000_000;
@@ -39,7 +39,7 @@ fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &m
 fn parallel_map() {
     const TC: u32 = 64;
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
@@ -155,7 +155,7 @@ fn task_parallel_map() {
     let pool = ThreadPoolBuilder::new().num_threads(TC as usize).build().unwrap();
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
@@ -227,7 +227,7 @@ fn task_parallel_map() {
 #[allow(unused)]
 fn sequential_map() {
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };

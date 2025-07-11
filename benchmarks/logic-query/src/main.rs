@@ -6,7 +6,7 @@ use std::ptr::slice_from_raw_parts_mut;
 use std::time::Instant;
 use mork_bytestring::*;
 use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperMoving, ZipperWriting};
 use pathmap::zipper::{ZipperAbsolutePath, ZipperIteration};
 use pathmap::utils::{ByteMaskIter, ByteMask};
@@ -615,14 +615,14 @@ fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<u64>,
+    symbols: PathMap<u64>,
 }
 
 impl DataParser {
     fn new() -> Self {
         Self {
             count: 3,
-            symbols: BytesTrieMap::new(),
+            symbols: PathMap::new(),
         }
     }
 
@@ -671,8 +671,8 @@ fn main() {
     let mut it = ParseContext::new(&buf[..]);
     let mut parser = DataParser::new();
 
-    let mut space = BytesTrieMap::<()>::new();
-    // let space_ptr = &mut space as *mut BytesTrieMap<()>;
+    let mut space = PathMap::<()>::new();
+    // let space_ptr = &mut space as *mut PathMap<()>;
 
     #[allow(unused)]
     let t0 = Instant::now();
@@ -714,7 +714,7 @@ fn main() {
     // });
     // println!("iterating all ({}) took {} microseconds", visited, t0.elapsed().as_micros());
 
-    // let mut keeping = BytesTrieMap::from_iter(space.iter());
+    // let mut keeping = PathMap::from_iter(space.iter());
 
     // let mut f = File::create_new("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta.paths").unwrap();
     // let mut fv = vec![];
@@ -722,7 +722,7 @@ fn main() {
     //     Ok((wr, bc, pc)) => { println!("ok {wr} {bc} {pc}") }
     //     Err(e) => { println!("err {e}") }
     // }
-    // let mut recover: BytesTrieMap<()> = BytesTrieMap::new();
+    // let mut recover: PathMap<()> = PathMap::new();
     // let mut f = File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big2.metta.paths").unwrap();
     // let mut fv = vec![];
     // f.read_to_end(&mut fv).unwrap();

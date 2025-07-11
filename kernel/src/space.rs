@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use log::*;
@@ -41,7 +41,7 @@ impl DefaultSpace {
     /// Creates a new empty `DefaultSpace`
     pub fn new() -> Self {
         Self {
-            map: Arc::new(BytesTrieMap::new().into_zipper_head([])),
+            map: Arc::new(PathMap::new().into_zipper_head([])),
             permission_guard: Mutex::new(()),
             sm: SharedMapping::new(),
         }
@@ -1715,14 +1715,14 @@ where
         virtual_path.extend_from_slice(first_pattern_prefix);
 
         //Make a temp map for the first pattern
-        let mut first_temp_map = BytesTrieMap::new();
+        let mut first_temp_map = PathMap::new();
         first_temp_map.write_zipper_at_path(&virtual_path[..]).graft(rz0);
         let first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
 
         //Make temp maps for the rest of the patterns
         let mut tmp_maps = vec![];
         for (rz, pat) in rz_rest.iter().zip(pat_rest) {
-            let mut temp_map = BytesTrieMap::new();
+            let mut temp_map = PathMap::new();
             let prefix = make_prefix(&pat.borrow());
             if !rz.path_exists() {
                 trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));

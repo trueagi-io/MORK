@@ -60,9 +60,9 @@ impl<'a> WritePermit<'a> {
       let sym = self.next_sym.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
       '_lock_scope_bytes : {
         let mut lock_bytes = self.to_bytes.write().unwrap();
-        lock_bytes.insert(sym.to_ne_bytes(), store);
-        
-        lock_sym.insert(bytes, sym);
+        lock_bytes.set_val_at(sym.to_ne_bytes(), store);
+
+        lock_sym.set_val_at(bytes, sym);
         sym
       }
     }

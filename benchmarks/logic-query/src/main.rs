@@ -684,7 +684,7 @@ fn main() {
         match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
                 // println!("{:?}", ez.root);
-                space.insert(&stack[..ez.loc], ());
+                space.set_val_at(&stack[..ez.loc], ());
             }
             Err(err) => if err.error_type == ParserErrorType::InputFinished {
                 break

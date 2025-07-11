@@ -139,25 +139,23 @@ impl SharedMapping {
         while let diff @ 1..=usize::MAX = zip_file.read(&mut slab_slice[start..slab_size])? {
           start += diff;
         }
-        
+
         drop(zip_file);
-      
+
         // at this point we are done with the file. We have to parse the slice inside the slab
-      
+
         let mut to_parse = &*slab_slice;
         let mut max_symbol = 0;
-      
-        
-      
+
         while let Some((sym_bytes, to_parse_0)) = to_parse.split_at_checked(SYM_LEN-SYMBOL_THREAD_PERMIT_BYTE_POS) {
           let [s0,s1,s2,s3,s4,s5] = (sym_bytes.as_ptr() as *const [u8;SYM_LEN-SYMBOL_THREAD_PERMIT_BYTE_POS]).read();
           let sym : Symbol = [0,0,s0,s1,s2,s3,s4,s5];
           if u64::from_be_bytes(sym) == 0 {
             break
           }
-      
+
           let leading_byte = to_parse_0[0];
-      
+
           // read out the length
           let (length, to_parse_2) = if (leading_byte as i8).is_negative()
           { let Some((_, to_parse_1)) = to_parse_0.split_at_checked(1) else { return Err(std::io::Error::other(concat!("Malformed data, expected length byte, file : ", file!(), ", line : ", line!() ))); };
@@ -166,22 +164,20 @@ impl SharedMapping {
             let Some((len_bytes, to_parse_1)) = to_parse_0.split_at_checked(8) else { return Err(std::io::Error::other(concat!("Malformed data, expected 8 length bytes, file : ", file!(), ", line : ", line!() )));};
             (u64::from_be_bytes((len_bytes.as_ptr() as *const [u8;8]).read()) as usize, to_parse_1)
           };
-      
-          max_symbol = max_symbol.max(u64::from_be_bytes(sym));
-      
 
-          to_symbol[bounded_pearson_hash::<{crate::PEARSON_BOUND}>(&to_parse[0..length]) as usize % MAX_WRITER_THREADS].insert(&to_parse_2[0..length], sym);         
-          to_bytes[index].insert(&sym, ThinBytes(to_parse_0.as_ptr()));
-        
+          max_symbol = max_symbol.max(u64::from_be_bytes(sym));
+
+
+          to_symbol[bounded_pearson_hash::<{crate::PEARSON_BOUND}>(&to_parse[0..length]) as usize % MAX_WRITER_THREADS].set_val_at(&to_parse_2[0..length], sym);         
+          to_bytes[index].set_val_at(&sym, ThinBytes(to_parse_0.as_ptr()));
+
           let Some((_, [to_parse_3 @ .. ])) = to_parse_2.split_at_checked(length) else { return Err(std::io::Error::other(concat!("Malformed data, unexpected end', file : ", file!(), ", line : ", line!() ))); };
-      
+
           to_parse = to_parse_3;
         }
-      
+
         (*mapping_ptr).permissions[index].0.next_symbol.store(max_symbol+1, core::sync::atomic::Ordering::Relaxed);
-                
-                
-      
+
       }
     }
 

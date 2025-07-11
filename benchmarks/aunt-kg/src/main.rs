@@ -84,7 +84,7 @@ fn main() -> Result<(),&'static str> {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
-                family.insert(&stack[..ez.loc], ());
+                family.set_val_at(&stack[..ez.loc], ());
             }
             Err(err) => if err.error_type == ParserErrorType::InputFinished {
                 break

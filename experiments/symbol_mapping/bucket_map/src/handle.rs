@@ -88,11 +88,11 @@ impl<'a> WritePermit<'a> {
       '_lock_scope_bytes : {
         let mut bytes_guard = bytes_guard_lock.write().unwrap();
 
-        let old_thin = bytes_guard.insert(new_sym.as_slice(), thin_bytes_ptr);
+        let old_thin = bytes_guard.set_val_at(new_sym.as_slice(), thin_bytes_ptr);
         core::debug_assert!(matches!(old_thin, Option::None));
 
       }
-      let old_sym = sym_guard.insert(bytes, new_sym);
+      let old_sym = sym_guard.set_val_at(bytes, new_sym);
       core::debug_assert!(matches!(old_sym, Option::None));
 
       new_sym

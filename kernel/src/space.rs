@@ -810,7 +810,7 @@ pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> R
     let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth)?;
 
     //Insert the self expression into the read_map
-    read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
+    read_map.set_val_at(unsafe { rt.span().as_ref().unwrap() }, ());
 
     let res = space.transform_multi_multi(&srcs, &read_map, &dsts, &template_prefixes, &mut writers);
 
@@ -1642,7 +1642,7 @@ impl DefaultSpace {
         // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(path)?;
         // let mut rz = tree.read_zipper();
         // while rz.to_next_val() {
-        //     self.btm.insert(rz.path(), ());
+        //     self.btm.set_val_at(rz.path(), ());
         // }
         // Ok(())
     }

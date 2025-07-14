@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use hyper::StatusCode;
 
-use pathmap::{trie_map::BytesTrieMap, zipper::ZipperHeadOwned};
+use pathmap::{PathMap, zipper::ZipperHeadOwned};
 use pathmap::zipper_tracking::Conflict;
 use pathmap::zipper::*;
 
@@ -36,7 +36,7 @@ impl ServerSpace {
 
         // Load the PathMap from the last snapshot
         //GOAT, ACTually load it!!
-        let primary_map = BytesTrieMap::<()>::new();
+        let primary_map = PathMap::<()>::new();
         let primary_map = primary_map.into_zipper_head([]);
 
         // Load the status map also

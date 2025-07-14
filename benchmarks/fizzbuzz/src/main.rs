@@ -1,12 +1,12 @@
 use std::time::Instant;
 use mork_bytestring::*;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 fn main() {
     let n = 100000;
 
-    let mut space = BytesTrieMap::<()>::new();
+    let mut space = PathMap::<()>::new();
     let space_head = space.zipper_head();
 
     let t0 = Instant::now();

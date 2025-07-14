@@ -125,7 +125,11 @@ impl MorkService {
                     let future = shutdown_watcher.watch(conn);
                     tokio::task::spawn(async move {
                         if let Err(err) = future.await {
-                            println!("Internal Server Error: Failed to serve connection: {:?}", err); //GOAT log this.  Likely the client closed the connection before we could reply
+                            if err.is_incomplete_message() || err.is_closed() {
+                                //The client closed the connection
+                            } else {
+                                println!("Internal Server Error: Failed to serve connection: {:?}", err); //GOAT log this
+                            }
                         }
                     });
                 },

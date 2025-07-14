@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use clap::Parser;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 // ===================================================================================================
@@ -85,11 +85,11 @@ struct Node {
 }
 
 struct PathMapReadZipperGet {
-    map: BytesTrieMap<usize>,
+    map: PathMap<usize>,
 }
 
 struct PathMapWriteZipperInsert  {
-    map: BytesTrieMap<usize>,
+    map: PathMap<usize>,
 }
 
 trait TestParams<'map, 'head> {
@@ -277,7 +277,7 @@ impl<'map, 'head> TestParams<'map, 'head> for PathMapReadZipperGet {
     type InZipperT = ReadZipperUntracked<'head, 'static, usize>;
     fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
         let elements_per_thread = element_cnt / real_thread_cnt;
-        let mut map = BytesTrieMap::<usize>::new();
+        let mut map = PathMap::<usize>::new();
         for n in 0..real_thread_cnt {
             let path = [n as u8];
             let mut zipper = map.write_zipper_at_path(&path);
@@ -315,7 +315,7 @@ impl<'map, 'head>  TestParams<'map, 'head>  for PathMapWriteZipperInsert  {
     type InZipperT = WriteZipperUntracked<'head, 'static, usize>;
     fn init(_element_cnt: usize, _real_thread_cnt: usize) -> Self {
         Self {
-            map: BytesTrieMap::<usize>::new(),
+            map: PathMap::<usize>::new(),
         }
     }
     fn prepare(&'map mut self) -> Self::HeadT {

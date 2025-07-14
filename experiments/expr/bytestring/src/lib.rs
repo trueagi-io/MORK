@@ -1920,7 +1920,6 @@ pub fn serialize(bytes: &[u8]) -> String {
     result
 }
 
-use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 
 pub struct ExprMapSolver {

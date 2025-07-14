@@ -6,7 +6,7 @@ use log::*;
 use bucket_map::SharedMappingHandle;
 use mork_frontend::{bytestring_parser::{ParseContext, Parser, ParserErrorType}};
 use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
-use pathmap::{trie_map::BytesTrieMap, morphisms::Catamorphism, zipper::*};
+use pathmap::{PathMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
     ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
@@ -235,7 +235,7 @@ pub trait Space: Sized {
     ///
     /// The return value is: `(read_map, template_prefixes, writers)`
     ///
-    /// * read_map: BytesTrieMap<()>
+    /// * read_map: PathMap<()>
     ///    A PathMap in which all readers can be acquired
     ///
     /// * template_prefixes: Vec<(usize, usize)>
@@ -252,7 +252,7 @@ pub trait Space: Sized {
         patterns            : &[E],
         templates           : &[E],
         auth                : &Self::Auth,
-    ) -> Result<(BytesTrieMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
+    ) -> Result<(PathMap<()>, Vec<(usize, usize)>, Vec<Self::Writer<'s>>), ExecError<Self>> {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
         // ************************************************************************
@@ -296,7 +296,7 @@ pub trait Space: Sized {
         // Permission Acquisition
         // ************************************************************************
 
-        let mut read_map = BytesTrieMap::new();
+        let mut read_map = PathMap::new();
         let mut writers = Vec::with_capacity(writer_slots.len());
         self.new_multiple(|perm_head| {
 
@@ -329,7 +329,7 @@ pub trait Space: Sized {
     fn transform_multi_multi<'s, E: ExprTrait>(
         &'s self,
         patterns : &[E],
-        read_map: &BytesTrieMap<()>,
+        read_map: &PathMap<()>,
         templates : &[E],
         template_prefixes : &[(usize, usize)],
         writers : &mut [Self::Writer<'s>],

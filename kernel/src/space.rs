@@ -915,129 +915,11 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(
     space: &'s S, 
     thread_id_sexpr_str: &str, 
     max_retries: usize, 
-    mut step_cnt: usize, 
+    step_cnt: usize, 
     auth: &S::Auth,
 ) -> Result<(), ExecError<S>> {
-
-    //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
-    //
-    // (exec (<location> $priority) $patterns $templates)
-    let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
-    let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
-
-    // the invariant is that buffer should always be reset with at least the prefix
-    let mut buffer = Vec::from(prefix);
-
-    let mut retry = false;
-    let mut retry_cnt = max_retries;
-
-    let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
-        debug_assert!(buffer.len() >= prefix.len());
-        debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-        // ////////////////////////////////////////////////////////////////////
-        // Get a write permission to the exec sub-space for this MeTTa thread
-        // //////////////////////////////////////////////////////////////////
-        //
-        // This path should never be contended for long periods of time, although it is possible another
-        // command (such as a debugger command) has this path locked in order to communicate with us.  We
-        // should be able to get the write permission soon enough by retrying
-        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-            Ok(writer) => writer,
-            Err(_) => {
-                //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
-                // which means we've been trying for a whole second.  It also likely means the path
-                // is held indefinitely, which is a bug somewhere, although not here.
-                //We ought to write an error into the status map and abort execution
-                todo!()
-            }
-        };
-        let mut exec_wz = space.write_zipper(&mut exec_permission);
-
-        // //////////////////////////////////////
-        // Find an expression we can execute  //
-        // ////////////////////////////////////
-        let mut rz = exec_wz.fork_read_zipper();
-        rz.descend_to(&buffer[prefix.len()..]);
-
-        if !rz.to_next_val() {
-            if retry {
-                if retry_cnt > 0 {
-                    retry_cnt -= 1;
-                } else {
-                    break 'process_execs Err(ExecError::RetryLimit("".to_string()))
-                }
-
-                //Try again from the beginning
-                buffer.truncate(prefix.len());
-                std::thread::sleep(core::time::Duration::from_millis(1));
-                continue 'process_execs;
-            }
-
-            //Sucessfully consumed all execs.  This MeTTa thread is done
-            break 'process_execs Ok(())
-        }
-        buffer.truncate(prefix.len());
-        buffer.extend_from_slice(rz.path());
-        drop(rz);
-
-        // Remove expr, which means we are "claiming" it
-        exec_wz.descend_to(&buffer[prefix.len()..]);
-        exec_wz.remove_value();
-
-        // journal exec_removal of buffer;
-        
-        drop(exec_wz);
-        drop(exec_permission);
-
-        //------------------------------------------------------------------------------
-        // Here the exec has been removed from the space, but the transform permissions
-        // have not yet been acquired.
-        //------------------------------------------------------------------------------
-
-        // for journaling, interpret_impl needs to be a 2 step action, first it returns a Result of a struct that holds the Writer Subsuption set, and the Reader outside subsumption set, and the copy map,
-        // If Ok(permissions), we ask for a time_stamp to journal, we then drop the Reader set
-        //    then run interpret. When interpret succeeds, we write the journal entry with our timestamp and exec expr. and drop the Writers set
-        // If Err(err), we reinsert the buffer exec expr, and journal the insertion.
-        match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
-            Ok(()) => {
-                retry = false;
-                retry_cnt = max_retries;
-                buffer.truncate(prefix.len());
-                if step_cnt > 0 {
-                    step_cnt -= 1
-                } else {
-                    //Finished running the allotted number of steps
-                    break 'process_execs Ok(())
-                }
-            },
-            Err(err) => {
-                match err {
-                    ExecError::UserPermissionErr(_) => {
-                        //We couldn't get permissions for this particular exec expression, so we need to
-                        // put the expression back in the space and then try with another one.
-                        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-                            Ok(writer) => writer,
-                            Err(_) => {
-                                //See similar code above...
-                                todo!()
-                            }
-                        };
-                        let mut exec_wz = space.write_zipper(&mut exec_permission);
-                        exec_wz.descend_to(&buffer[prefix.len()..]);
-                        exec_wz.set_value(());
-                        retry = true;
-                    },
-                    _ => {
-                        //Any error but a UserPermissionError means we halt the execution
-                        break 'process_execs Err(err)
-                    }
-                }
-            }
-        }
-    };
-
-    exec_result
+    // Remy (2025/07/11) : if this ends up being the only caller we should inline it.
+    metta_calculus::metta_calculus_impl_statemachine_poc(space, thread_id_sexpr_str, max_retries, step_cnt, auth)
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
@@ -2072,7 +1954,7 @@ impl<S: Space> ExecError<S> {
     /// classified as a [ExecError::UserPermissionErr] or a [ExecError::SystemPermissionErr], the former
     /// indicating that another command is holding the required paths and therefore a retry is in order,
     /// while the latter indicating that an illegal request has been made.
-    pub(crate) fn perm_err(space: &S, perm_err: S::PermissionErr) -> Self {
+    pub fn perm_err(space: &S, perm_err: S::PermissionErr) -> Self {
         let path = perm_err.path();
 
         //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
@@ -2315,9 +2197,9 @@ pub mod metta_calculus {
 
 
 
-    use std::ops::ControlFlow;
-    type CF<B,C> = ControlFlow<B,C>;
-    use crate::space::*;
+use std::ops::ControlFlow;
+type CF<B,C> = ControlFlow<B,C>;
+use crate::space::*;
 
 macro_rules! states {
     ($( $STATE:ident $DOC:literal,)+) => {
@@ -2711,7 +2593,7 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
                                                                      },
         };
         // journal removal
-        
+
         // close the loop
         start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
             Ok(ok)                                => {
@@ -2736,6 +2618,36 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
     }
 }
 
+impl<'machine, 'space, S : Space> MachineHandle<'machine, 'space, S> {
+    pub fn advance(self) -> ControlFlow<Result<(), (Self, ExecError<S>)>, Self> {
+        type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
+        ControlFlow::Continue(match self {
+            MH::LoopStart            (controller) => match controller.exec_permission() {
+                                                         Ok(ok)      => ok.to_handle(),
+                                                         Err((c,e)) => {
+                                                             let s = c.inspect_machine().space;
+                                                             return ControlFlow::Break(Err((c.to_handle(), ExecError::perm_err(s, e))))
+                                                         }
+                                                     },
+            MH::ExecRemovalPermission(controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return ControlFlow::Break(Ok(()));},
+            MH::ExecRemovedGuard     (controller) => controller.drop_permission().to_handle(),
+            MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
+            MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
+                                                         Ok(ok)                                 => ok.to_handle(),
+                                                         Err(TransformErr::Syntax((c,e)))       => return ControlFlow::Break(Err((c.to_handle(), ExecError::Syntax(e)))),
+                                                         Err(TransformErr::Permission((c, _e))) => match c.defer_guard() {
+                                                                                                       Ok(ok)     => ok.to_handle(),
+                                                                                                       Err((c,e)) => {
+                                                                                                           let s = c.inspect_machine().space;
+                                                                                                           return ControlFlow::Break( Err((c.to_handle(), ExecError::perm_err(s, e))))
+                                                                                                       }
+                                                                                                   },
+                                                     },
+            MH::DeferGuard           (controller) => controller.defer_current_exec().to_handle(), // journal deferal reinsertion
+        })
+    }
+}
+
 #[allow(unused)]
 pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Space>(
     space               : &'space S,
@@ -2754,9 +2666,6 @@ pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Spa
                                                          Ok(ok)      => ok.to_handle(),
                                                          Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
                                                      },
-            MH::ExecRemovalPermission(controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return Ok(());},
-            MH::ExecRemovedGuard     (controller) => controller.drop_permission().to_handle(),
-            MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
             MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
                                                          Ok(ok)                                 => {
                                                                                                       if step_cnt > 0 {
@@ -2773,157 +2682,12 @@ pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Spa
                                                                                                        Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
                                                                                                    },
                                                      },
-            MH::DeferGuard           (controller) => controller.defer_current_exec().to_handle(), // journal deferal reinsertion
+            otherwise => match otherwise.advance() {
+                ControlFlow::Continue(c) => c,
+                ControlFlow::Break(b)    => return b.map_err(|(_,e)|e),
+            }
         };
     }
 }
-
-// // for reference
-// pub(crate) fn metta_calculus_impl_<'space, S: Space>(
-//     space               : &'space S,
-//     thread_id_sexpr_str : &str,
-//     max_retries         : usize,
-//     mut step_cnt        : usize,
-//     auth                : &S::Auth,
-// ) -> Result<(), ExecError<S>> {
-
-//     //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
-//     //
-//     // (exec (<location> $priority) $patterns $templates)
-//     let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
-//     let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
-
-//     // the invariant is that buffer should always be reset with at least the prefix
-//     let mut buffer = Vec::from(prefix);
-
-//     let mut retry = false;
-//     let mut retry_cnt = max_retries;
-
-// // INIT
-
-//     let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
-// // EXEC PERMISSION
-//         debug_assert!(buffer.len() >= prefix.len());
-//         debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-//         // ////////////////////////////////////////////////////////////////////
-//         // Get a write permission to the exec sub-space for this MeTTa thread
-//         // //////////////////////////////////////////////////////////////////
-//         //
-//         // This path should never be contended for long periods of time, although it is possible another
-//         // command (such as a debugger command) has this path locked in order to communicate with us.  We
-//         // should be able to get the write permission soon enough by retrying
-//         let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-//             Ok(writer) => writer,
-//             Err(_) => {
-//                 //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
-//                 // which means we've been trying for a whole second.  It also likely means the path
-//                 // is held indefinitely, which is a bug somewhere, although not here.
-//                 //We ought to write an error into the status map and abort execution
-//                 todo!()
-//             }
-//         };
-// // EXEC LOOKUP
-//         let mut exec_wz = space.write_zipper(&mut exec_permission);
-
-//         // //////////////////////////////////////
-//         // Find an expression we can execute  //
-//         // ////////////////////////////////////
-//         let mut rz = exec_wz.fork_read_zipper();
-//         rz.descend_to(&buffer[prefix.len()..]);
-
-//         if !rz.to_next_val() {
-//             drop(rz);
-//             drop(exec_wz);
-
-            
-//             if retry {
-// // RETRY
-//                 if retry_cnt > 0 {
-//                     retry_cnt -= 1;
-//                 } else {
-//                     drop(exec_permission);
-//                     break 'process_execs Err(ExecError::RetryLimit("".to_string()))
-//                 }
-
-//                 //Try again from the beginning
-//                 buffer.truncate(prefix.len());
-                
-//                 drop(exec_permission);
-//                 std::thread::sleep(core::time::Duration::from_millis(1));
-//                 continue 'process_execs;
-//             }
-
-//             drop(exec_permission);
-//             //Sucessfully consumed all execs.  This MeTTa thread is done
-//             break 'process_execs Ok(())
-// // THREAD COMPLETE
-//         }
-//         buffer.truncate(prefix.len());
-//         buffer.extend_from_slice(rz.path());
-//         drop(rz);
-
-//         // Remove expr, which means we are "claiming" it
-//         exec_wz.descend_to(&buffer[prefix.len()..]);
-//         exec_wz.remove_value();
-
-//         // journal exec_removal of buffer;
-        
-//         drop(exec_wz);
-// // EXEC REMOVED
-//         drop(exec_permission);
-// // EXEC PERMISSION DROPED
-
-//         // for journaling, interpret_impl needs to be a 2 step action, first it returns a Result of a struct that holds the Writer Subsuption set, and the Reader outside subsumption set, and the copy map,
-//         // If Ok(permissions), we ask for a time_stamp to journal, we then drop the Reader set
-//         //    then run interpret. When interpret succeeds, we write the journal entry with our timestamp and exec expr. and drop the Writers set
-//         // If Err(err), we reinsert the buffer exec expr, and journal the insertion.
-        
-//         match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
-//             Ok(()) => {
-//                 retry = false;
-//                 retry_cnt = max_retries;
-//                 buffer.truncate(prefix.len());
-//                 if step_cnt > 0 {
-//                     step_cnt -= 1
-//                 } else {
-//                     //Finished running the allotted number of steps
-//                     break 'process_execs Ok(())
-//                 }
-//             },
-//             Err(err) => {
-//                 match err {
-//                     ExecError::UserPermissionErr(_) => {
-//                         //We couldn't get permissions for this particular exec expression, so we need to
-//                         // put the expression back in the space and then try with another one.
-//                         let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-//                             Ok(writer) => writer,
-//                             Err(_) => {
-//                                 //See similar code above...
-//                                 todo!()
-//                             }
-//                         };
-//                         let mut exec_wz = space.write_zipper(&mut exec_permission);
-//                         exec_wz.descend_to(&buffer[prefix.len()..]);
-//                         exec_wz.set_value(());
-//                         retry = true;
-//                     },
-//                     _ => {
-//                         //Any error but a UserPermissionError means we halt the execution
-//                         break 'process_execs Err(err)
-//                     }
-//                 }
-//             }
-//         }
-//     };
-
-//     exec_result
-// }
-
-
-
-
-
-
 
 } // end mod metta_calculus

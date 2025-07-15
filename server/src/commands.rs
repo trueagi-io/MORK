@@ -947,7 +947,54 @@ impl CommandDefinition for MettaThreadCmd {
         let thread_id_sexpr_string_moved = thread_id_sexpr_string.clone();
         thread.dispatch_blocking_task(cmd, move |_| {
 
-            if let Err(exec_err) = ctx.0.space.metta_calculus(&thread_id_sexpr_string_moved, usize::MAX, &()) {
+            use mork::space::{metta_calculus::{TransformErr, LookupBaseCases}, ExecError};
+            let max_retries          = 2000;
+            let mut step_cnt         = 500;
+            let mut machine          = None;
+            let mut start_controller = ctx.0.space.metta_calculus_machine(&thread_id_sexpr_string_moved, &(), &mut machine);
+
+            type CF<B,C> = std::ops::ControlFlow<B,C>;
+
+            let exec_val = 'process_execs : loop {
+                let exec_permission = match start_controller.exec_permission_with_retries(max_retries) {
+                    Ok(ok)       => ok,
+                    Err((_c, e)) => break 'process_execs Err(ExecError::perm_err(&ctx.0.space, e)),
+                };
+
+                let removed = match exec_permission.exec_lookup() {
+                    CF::Continue(removed)                                 => removed,
+                    CF::Break(LookupBaseCases::Done)                      => return Ok(()),
+                    CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
+                                                                               start_controller = remaining.continue_loop();
+                                                                               continue 'process_execs;
+                                                                             },
+                };
+                // journal removal
+
+                // close the loop
+                start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
+                    Ok(ok)                                => {
+                                                                if step_cnt > 0 {
+                                                                    step_cnt -= 1
+                                                                } else {
+                                                                    //Finished running the allotted number of steps
+                                                                    break 'process_execs Ok(())
+                                                                }
+                                                                ok
+                                                             },
+                    Err(TransformErr::Syntax((_c,e)))      => break 'process_execs Err(ExecError::Syntax(e)),
+                    Err(TransformErr::Permission((c, _e))) => {
+                                                                let defer_guard = match c.defer_guard_with_retries(max_retries) {
+                                                                    Ok(ok)      => ok,
+                                                                    Err((_c,e)) => break 'process_execs Err(ExecError::perm_err(&ctx.0.space, e)),
+                                                                };
+                                                                // journal deferal reinsertion
+                                                                defer_guard.defer_current_exec()
+                                                              },
+                };
+            };
+
+            if let Err(exec_err) = exec_val {
                 let _ = ctx.0.space.set_user_status(status_loc.as_bytes(), StatusRecord::ExecError(format!("{exec_err:?}")));
             }
 
@@ -955,7 +1002,6 @@ impl CommandDefinition for MettaThreadCmd {
             Ok(())
         }).await;
 
-        // TODO! location needs to be pulled out with space!  GOAT: Please explain what you mean by this.
         Ok(Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched. Errors will be found at the status location: `{status_loc_sexpr}`")))
     }
 }

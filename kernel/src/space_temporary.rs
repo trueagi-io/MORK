@@ -366,6 +366,15 @@ pub trait Space: Sized {
         metta_calculus_impl(self, thread_id_sexpr_str, 2000, step_cnt, auth)
     }
 
+    fn metta_calculus_machine<'s : 'machine, 'machine>(
+        &'s self,
+        thread_id_sexpr_str : &str,
+        auth                : &'machine Self::Auth,
+        machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
+    ) -> crate::space::metta_calculus::Controller<'machine, 's, crate::space::metta_calculus::LoopStart, Self> {
+        crate::space::metta_calculus::Machine::init(machine, self, thread_id_sexpr_str, auth)
+    }
+
     #[cfg(feature="neo4j")]
     fn load_neo4j_triples<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
         let sm = self.symbol_table();

@@ -293,7 +293,7 @@ impl StatusMap {
 
         let mut user_map = self.0.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper_at_path(path);
-        zipper.set_value(new_status);
+        zipper.set_val(new_status);
 
         //Send the status to any streams monitoring this path
         self.send_new_status(path);
@@ -313,7 +313,7 @@ impl StatusMap {
         let mut zipper = user_map.write_zipper();
         zipper.descend_to(path);
         zipper.remove_branches();
-        zipper.remove_value();
+        zipper.remove_val();
         Ok(())
     }
 }

@@ -76,8 +76,8 @@ fn main() {
     for (i, s) in sequences.iter().enumerate() {
         if s.len() == 0 { continue }
         buildz.descend_to(&s[..]);
-        match buildz.value() {
-            None => { buildz.set_value(i); }
+        match buildz.val() {
+            None => { buildz.set_val(i); }
             Some(_v) => { /* keep the smallest integer sequence */ }
         }
         buildz.ascend(s.len());

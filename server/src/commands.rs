@@ -159,7 +159,7 @@ impl CommandDefinition for ClearCmd {
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches();
-        wz.remove_value();
+        wz.remove_val();
         Ok("ACK. Cleared".into())
     }
 }

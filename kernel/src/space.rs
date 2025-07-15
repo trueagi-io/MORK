@@ -636,7 +636,7 @@ impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving 
         let mut path = vec![Tag::SymbolSize(token.len() as u8).byte()];
         path.extend(token);
         self.wz.descend_to(&path[..]);
-        self.wz.set_value(());
+        self.wz.set_val(());
         self.wz.ascend(path.len());
     }
 }
@@ -977,7 +977,7 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
 
         // Remove expr, which means we are "claiming" it
         exec_wz.descend_to(&buffer[prefix.len()..]);
-        exec_wz.remove_value();
+        exec_wz.remove_val();
         drop(exec_wz);
         drop(exec_permission);
 
@@ -1012,7 +1012,7 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
                         };
                         let mut exec_wz = space.write_zipper(&mut exec_permission);
                         exec_wz.descend_to(&buffer[prefix.len()..]);
-                        exec_wz.set_value(());
+                        exec_wz.set_val(());
                         retry = true;
                     },
                     _ => {
@@ -1091,7 +1091,7 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
         }
         let new_data = &buf[..oz.loc];
         wz.descend_to(&new_data[constant_template_prefix.len()..]);
-        wz.set_value(());
+        wz.set_val(());
         wz.reset();
         i += 1;
         src_line.clear();
@@ -1240,7 +1240,7 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
             }
             // .insert(ez.span(), ()); // if only we had this function...
             wz.descend_to(ez.span());
-            wz.set_value(());
+            wz.set_val(());
             wz.reset();
 
             count += 1;
@@ -1305,7 +1305,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                         wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                         wz.descend_to(internal_v);
 
-                        wz.set_value(());
+                        wz.set_val(());
 
                         wz.ascend(internal_v.len() + 1);
                     }
@@ -1314,7 +1314,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                     wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                     wz.descend_to(internal_v);
 
-                    wz.set_value(());
+                    wz.set_val(());
 
                     wz.ascend(internal_v.len() + 1);
                 }
@@ -1379,7 +1379,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
                 wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                 wz.descend_to(internal_v);
 
-                wz.set_value(());
+                wz.set_val(());
 
                 wz.ascend(internal_v.len() + 1);
 
@@ -1430,7 +1430,7 @@ where
                     }
                     let new_data = &buffer[..oz.loc];
                     wz.descend_to(&new_data[constant_template_prefix.len()..]);
-                    wz.set_value(());
+                    wz.set_val(());
                     wz.reset();
                 }
                 Err(mut err) => {
@@ -1901,7 +1901,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
 
                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
                 // println!("insert path {}", serialize(&buffer[..oz.loc]));
-                any_new |= wz.set_value(()).is_none();
+                any_new |= wz.set_val(()).is_none();
                 wz.reset();
             }
             Ok::<(), ()>(())

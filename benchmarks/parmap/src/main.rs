@@ -95,7 +95,7 @@ fn parallel_map() {
                                 let vr = (v as f64).sqrt() as u64;
                                 // println!("calculated f({v}) = {vr}");
                                 work_output.descend_to(&vr.to_be_bytes()[..]);
-                                work_output.set_value(());
+                                work_output.set_val(());
                                 work_output.reset();
                             }
                         }
@@ -127,7 +127,7 @@ fn parallel_map() {
                         let vr = (v as f64).sqrt() as u64;
                         // println!("calculated f({v}) = {vr}");
                         work_output.descend_to(&vr.to_be_bytes()[..]);
-                        work_output.set_value(());
+                        work_output.set_val(());
                         work_output.reset();
                     }
                 }
@@ -203,7 +203,7 @@ fn task_parallel_map() {
                     let vr = (v as f64).sqrt() as u64;
                     // println!("calculated f({v}) = {vr}");
                     work_output.descend_to(&vr.to_be_bytes()[..]);
-                    work_output.set_value(());
+                    work_output.set_val(());
                     work_output.reset();
                 }
                 unsafe { COUNTER.fetch_sub(1, Ordering::Relaxed) };
@@ -249,7 +249,7 @@ fn sequential_map() {
         let vr = (v as f64).sqrt() as u64;
         // println!("calculated f({v}) = {vr}");
         oz.descend_to(&vr.to_be_bytes()[..]);
-        oz.set_value(());
+        oz.set_val(());
         oz.reset();
     }
     drop(oz);

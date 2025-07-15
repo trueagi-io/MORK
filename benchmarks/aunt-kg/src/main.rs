@@ -26,7 +26,7 @@ impl Parser for DataParser {
         // return unsafe { std::mem::transmute(s) };
         if s.len() == 0 { return Self::EMPTY }
         let mut z = self.symbols.write_zipper_at_path(s);
-        let r = z.get_value_or_insert_with(|| {
+        let r = z.get_val_or_set_mut_with(|| {
             self.count += 1;
             u64::from_be(self.count)
         });
@@ -139,7 +139,7 @@ fn main() -> Result<(),&'static str> {
         let slice = &rhsz.span()[child_path.len()..];
 
         child_zipper.descend_to(slice);
-        child_zipper.set_value(());
+        child_zipper.set_val(());
         child_zipper.reset();
     }
     drop(child_zipper);
@@ -246,7 +246,7 @@ fn main() -> Result<(),&'static str> {
         drop_symbol_head_2(&mut sister_query_out_zipper);
         sister_query_out_zipper.meet(&female_zipper);
         if sister_query_out_zipper.descend_to(person_rzipper.path()) {
-            sister_query_out_zipper.remove_value();
+            sister_query_out_zipper.remove_val();
         }
     }
     drop(sister_query_out_zipper);

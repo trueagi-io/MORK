@@ -117,7 +117,6 @@ class MORK:
             Raises:
                 TimeoutError: If the timeout is reached before the path is clear.
             """
-            print("Listening status ...")
             start_time = monotonic()
             
             try:
@@ -127,10 +126,8 @@ class MORK:
 
                     status = msg.get("status")
                     if status == "pathClear":
-                        print("path cleared")
                         return ""
                     elif status == "pathForbiddenTemporary":
-                        print("waiting for path to clear")
                         continue
                     else:
                         return msg
@@ -639,7 +636,7 @@ def _main_mm2():
         # for i, item in enumerate(server.history):
         #     print(i, str(item))
 
-def test_sse_status():
+def _test_sse_status():
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         DATASETS = (
             "royal92",
@@ -656,8 +653,7 @@ def test_sse_status():
 
 if __name__ == '__main__':
     # _main()
-    # _main_mm2()
-    test_sse_status()
+    _main_mm2()
 
 
 

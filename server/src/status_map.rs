@@ -186,7 +186,7 @@ impl StatusMap {
     /// Adds the sender end of a stream's channel to the `StatusMap`'s streams table
     pub fn add_stream(&self, path: &[u8], stream_id: u64, sender: tokio::sync::mpsc::Sender<StatusRecord>) {
         let mut guard = self.0.streams.write().unwrap();
-        let senders_vec = guard.get_value_mut_or_set_with(path, || vec![]);
+        let senders_vec = guard.get_val_or_set_mut_with_at(path, || vec![]);
         senders_vec.push((stream_id, sender));
     }
 
@@ -293,7 +293,7 @@ impl StatusMap {
 
         let mut user_map = self.0.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper_at_path(path);
-        zipper.set_value(new_status);
+        zipper.set_val(new_status);
 
         //Send the status to any streams monitoring this path
         self.send_new_status(path);
@@ -313,7 +313,7 @@ impl StatusMap {
         let mut zipper = user_map.write_zipper();
         zipper.descend_to(path);
         zipper.remove_branches();
-        zipper.remove_value();
+        zipper.remove_val();
         Ok(())
     }
 }

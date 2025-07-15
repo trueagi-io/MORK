@@ -302,7 +302,7 @@ impl<'map, 'head> TestParams<'map, 'head> for PathMapReadZipperGet {
         let elements_per_thread = element_cnt / real_thread_cnt;
         for i in (thread_idx * elements_per_thread)..((thread_idx+1) * elements_per_thread) {
             zipper.descend_to(prefix_key(&(i as u64)));
-            assert_eq!(zipper.get_value().unwrap(), &i);
+            assert_eq!(zipper.val().unwrap(), &i);
             zipper.reset();
         }
     }

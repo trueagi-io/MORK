@@ -34,4 +34,5 @@ gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for
 [workspace.dependencies.pathmap]
 git = "https://github.com/Adam-Vandervorst/PathMap.git"
 features = ["jemalloc", "zipper_tracking", "arena_compact"]
+branch = "master"
 # features = ["jemalloc", "zipper_tracking", "arena_compact", "all_dense_nodes"]

@@ -497,6 +497,10 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
                 writeln!(writer, "{:?}", rz.path()).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
             }
         }
+        #[cfg(not(feature="interning"))]
+        DataFormat::Paths => {
+            pathmap::path_serialization::serialize_paths_(ctx.0.space.read_zipper(&mut reader), writer).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
+        }
     };
     Ok(())
 }
@@ -659,6 +663,8 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
 
 enum DataFormat {
     Metta, Json, Csv, Raw,
+    #[cfg(not(feature="interning"))]
+    Paths,
 }
 
 impl DataFormat {
@@ -669,6 +675,8 @@ impl DataFormat {
             "json" => Some(DataFormat::Json),
             "csv" => Some(DataFormat::Csv),
             "raw" => Some(DataFormat::Raw),
+            #[cfg(not(feature="interning"))]
+            "paths" => Some(DataFormat::Paths),
             _ => { None }
         }
     }
@@ -704,6 +712,11 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
         },
         DataFormat::Raw => {
             return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Unimplemnted Import from raw format")))
+        }
+        #[cfg(not(feature="interning"))]
+        DataFormat::Paths => {
+            let pathmap::path_serialization::DeserializationStats { path_count, .. } = pathmap::path_serialization::deserialize_paths_(space.write_zipper(writer), src, ()).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {path_count} paths from `.paths` file");
         }
     }
     Ok(())

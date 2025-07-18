@@ -11,7 +11,7 @@ use common::*;
 /// Opens one client request
 #[tokio::test]
 async fn simple_request_test() -> Result<(), Error> {
-    const URL: &str = concat!( 
+    const URL: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "2000",
@@ -38,13 +38,13 @@ async fn simple_request_test() -> Result<(), Error> {
 async fn busywait_contention_test() -> Result<(), Error> {
     decl_lit!{top_expr!() => "(busywait_contention_test $v)"}
 
-    const TOP_READER: &str = concat!( 
+    const TOP_READER: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "500",
         "/?", "expr1=", top_expr!()
     );
-    const TOP_WRITER: &str = concat!( 
+    const TOP_WRITER: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "500",
@@ -92,7 +92,7 @@ async fn busywait_contention_test() -> Result<(), Error> {
 #[ignore]
 #[tokio::test]
 async fn many_request_instant_test() -> Result<(), Error> {
-    const URL: &str = concat!( 
+    const URL: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "2000",
@@ -141,7 +141,7 @@ async fn many_request_instant_test() -> Result<(), Error> {
 #[ignore]
 #[tokio::test]
 async fn many_request_delayed_test() -> Result<(), Error> {
-    const URL: &str = concat!( 
+    const URL: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "2000",
@@ -190,12 +190,12 @@ async fn many_request_delayed_test() -> Result<(), Error> {
 #[ignore]
 #[tokio::test]
 async fn zzz_stop_request_test() -> Result<(), Error> {
-    const URL: &str = concat!( 
+    const URL: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "2000",
     );
-    const STOP_URL: &str = concat!( 
+    const STOP_URL: &str = concat!(
         server_url!(),
         "/", "stop",
     );
@@ -272,14 +272,14 @@ async fn zzz_stop_request_test() -> Result<(), Error> {
 #[tokio::test]
 async fn simple_listen_request_test() -> Result<(), Error> {
     decl_lit!{space_expr!() => "(simple_listen_request_test $v)"}
-    const WAIT_URL: &str = concat!( 
+    const WAIT_URL: &str = concat!(
         server_url!(),
         "/", "busywait",
         "/", "1000",
         "/?", "expr1=", space_expr!(),
         "&", "writer1"
     );
-    const LISTEN_URL: &str = concat!( 
+    const LISTEN_URL: &str = concat!(
         server_url!(),
         "/", "status_stream",
         "/", space_expr!(),
@@ -343,25 +343,25 @@ async fn import_request_test() -> Result<(), Error> {
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = concat!( 
+    const IMPORT_URL: &str = concat!(
         server_url!(),
         "/", "import",
         "/", file_expr!(),
         "/", space_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
-    const STATUS_URL: &str = concat!( 
+    const STATUS_URL: &str = concat!(
         server_url!(),
         "/", "status",
         "/", space_expr!(),
     );
-    const COUNT_URL: &str = concat!( 
+    const COUNT_URL: &str = concat!(
         server_url!(),
         "/", "count",
         "/", space_expr!(),
     );
     // A file that doesn't exist, fails to fetch
-    const BOGUS_URL: &str = concat!( 
+    const BOGUS_URL: &str = concat!(
         server_url!(),
         "/", "import",
         "/", file_expr!(),
@@ -369,7 +369,7 @@ async fn import_request_test() -> Result<(), Error> {
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/no_such_file.metta",
     );
     // A file that exists, but fails to parse
-    const BAD_FILE_URL: &str = concat!( 
+    const BAD_FILE_URL: &str = concat!(
         server_url!(),
         "/", "import",
         "/", file_expr!(),
@@ -475,7 +475,7 @@ async fn export_request_test() -> Result<(), Error> {
                             \n(parent Tom Liz)\
                             \n(parent Tom Bob)\
     \n";
-    const STATUS_URL: &str = concat!( 
+    const STATUS_URL: &str = concat!(
         server_url!(),
         "/", "status",
         "/", space_expr!(),
@@ -544,25 +544,25 @@ async fn copy_request_test() -> Result<(), Error> {
 
     //GOAT: Should host the content on a local server with predictable delays, to cut down
     // on spurious failures from external servers behaving erratically.)
-    const IMPORT_URL: &str = concat!( 
+    const IMPORT_URL: &str = concat!(
         server_url!(),
         "/", "import",
         "/", file_expr!(),
         "/", in_expr!(),
         "/?", "uri=https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/toy.metta",
     );
-    const STATUS_URL: &str = concat!( 
+    const STATUS_URL: &str = concat!(
         server_url!(),
         "/", "status",
         "/", in_expr!(),
     );
-    const COPY_URL: &str = concat!( 
+    const COPY_URL: &str = concat!(
         server_url!(),
         "/", "copy",
         "/", in_expr!(),
         "/", alt_expr!(),
     );
-    const EXPORT_URL: &str = concat!( 
+    const EXPORT_URL: &str = concat!(
         server_url!(),
         "/", "export",
         "/", alt_expr!(),
@@ -608,18 +608,18 @@ async fn clear_request_test() -> Result<(), Error> {
     decl_lit!{space_expr!() => "(clear_test $v)"}
     decl_lit!{file_expr!() => "$v"}
 
-    const UPLOAD_URL: &str = concat!( 
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload",
         "/", file_expr!(),
         "/", space_expr!(),
     );
-    const CLEAR_URL: &str = concat!( 
+    const CLEAR_URL: &str = concat!(
         server_url!(),
         "/", "clear",
         "/", space_expr!(),
     );
-    const EXPORT_URL: &str = concat!( 
+    const EXPORT_URL: &str = concat!(
         server_url!(),
         "/", "export",
         "/", space_expr!(),
@@ -677,7 +677,7 @@ async fn explore_request_test() -> Result<(), Error> {
                             \n(parent Tom Liz)\
                             \n(parent Tom Bob)\
     \n";
-    const STATUS_URL: &str = concat!( 
+    const STATUS_URL: &str = concat!(
         server_url!(),
         "/", "status",
         "/", space_expr!(),
@@ -752,7 +752,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     decl_lit!{space_out_expr!() => "(transform_basic_test out $v)"}
     decl_lit!{id_pattern_template!() => "$v"}
 
-    const UPLOAD_URL: &str = concat!( 
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload",
         "/", id_pattern_template!(),
@@ -763,7 +763,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
                            \n";
 
     const TRANSFORM_REQUEST_URL: &str =
-        concat!( 
+        concat!(
             server_url!(),
             "/", "transform",
         );
@@ -830,7 +830,7 @@ async fn transform_basic_request_test() -> Result<(), Error> {
     println!("(out ?) Pre-transformed response:\n{}", response_src_text);
 
     // Export the pre-transformed data in MeTTa form
-    let response_src = reqwest::get(EXPORT_ORIGINAL_URL).await.unwrap();    
+    let response_src = reqwest::get(EXPORT_ORIGINAL_URL).await.unwrap();
     if !response_src.status().is_success() {
         panic!("Error response: {} - {}", response_src.status(), response_src.text().await.unwrap())
     }
@@ -865,7 +865,7 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     decl_lit!{space_out_expr!() => "(transform_ooga_booga_regression_test out $v)"}
     decl_lit!{id_pattern_template!() => "$v"}
 
-    const UPLOAD_URL: &str = concat!( 
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload",
         "/", id_pattern_template!(),
@@ -874,12 +874,12 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     const UPLOAD_PAYLOAD : &str = "(Sound (caveman (OOGA BOOGA)))";
 
     const TRANSFORM_REQUEST_URL: &str =
-        concat!( 
+        concat!(
             server_url!(),
             "/", "transform",
         );
 
-    const TRANSFORM_PAYLOAD : &str = 
+    const TRANSFORM_PAYLOAD : &str =
      "(transform\
     \n    (, (transform_ooga_booga_regression_test in (Sound ($n $s)) ))\
     \n    (, (transform_ooga_booga_regression_test out (The $n is a creature that makes the following sound: $s) ))\
@@ -942,6 +942,136 @@ async fn transform_ooga_booga_regression_test() -> Result<(), Error> {
     Ok(())
 }
 
+
+#[cfg(not(feature="interning"))]
+#[tokio::test]
+async fn upload_export_paths() -> Result<(), Error> {
+    use std::io::BufRead;
+
+    decl_lit!{io_expr!() =>  "(upload_export_paths $v)"}
+    decl_lit!{id_pattern_template!() => "$v"}
+
+
+    const SEXPR_UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", io_expr!(),
+    );
+    const SEXPR_PAYLOAD : &str = concat!(
+       "(a b c d)\n",
+       "(a b c)\n",
+       "(a b)\n",
+       "(a)",
+    )
+    ;
+    const EXPORT_PATHS_URL: &str =
+        concat!(
+            server_url!(),
+            "/", "export",
+            "/", io_expr!(),
+            "/", id_pattern_template!(),
+            "/?", "format=paths"
+        );
+    const CLEAR_URL : &str = concat!(
+        server_url!(),
+        "/", "clear",
+        "/", io_expr!(),
+    );
+    const STATUS_URL : &str = concat!(
+        server_url!(),
+        "/", "status",
+        "/", io_expr!(),
+    );
+    const PATHS_UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", io_expr!(),
+        "/?", "format=paths"
+    );
+    const EXPORT_SEXPR_URL: &str =
+        concat!(
+            server_url!(),
+            "/", "export",
+            "/", io_expr!(),
+            "/", id_pattern_template!(),
+        );
+
+    wait_for_server().await.unwrap();
+
+    // upload Sexprs
+    let response = reqwest::Client::new().post(SEXPR_UPLOAD_URL).body(SEXPR_PAYLOAD).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // export as `paths`
+    let response = reqwest::Client::new().get(EXPORT_PATHS_URL).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        panic!("Error response: {} - {}", status, response.text().await?)
+    }
+    let path_bytes   = response.bytes().await.unwrap();
+
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // clear
+
+    let response = reqwest::Client::new().get(CLEAR_URL).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+    let response_ = reqwest::Client::new().get(EXPORT_PATHS_URL).send().await?;
+    // let response_ = reqwest::Client::new().get(EXPORT_SEXPR_URL).send().await?;
+    let status = response_.status();
+    if !status.is_success() {
+        panic!("Error response: {} - {}", status, response_.text().await?)
+    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+
+    // upload as `paths``
+
+    let response = reqwest::Client::new().post(PATHS_UPLOAD_URL).body(path_bytes).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // export as Sexprs
+        wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+    // let response_ = reqwest::Client::new().get(EXPORT_PATHS_URL).send().await?;
+    let response_ = reqwest::Client::new().get(EXPORT_SEXPR_URL).send().await?;
+    let status = response_.status();
+    if !status.is_success() {
+        panic!("Error response: {} - {}", status, response_.text().await?)
+    }
+    let sexpr_bytes   = response_.bytes().await.unwrap();
+
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+
+    let mut map = pathmap::PathMap::new();
+    for each in SEXPR_PAYLOAD.lines() {
+        map.set_val_at(each, ());
+    }
+    for each_ in sexpr_bytes.lines() {
+        let each = each_.unwrap();
+        let Some(_) = map.set_val_at(
+            each, ())
+            else { panic!() };
+    }
+
+
+    Ok(())
+}
+
 /// Tests that it's at least possible to write to the root of the space
 ///
 /// This test is ignored because it pollutes the root of the space with crap and holds a lock that
@@ -952,14 +1082,14 @@ async fn root_writer_test() -> Result<(), Error> {
     decl_lit!{space_in_expr!() => "$v"}
     decl_lit!{id_pattern_template!() => "$v"}
 
-    const UPLOAD_URL: &str = concat!( 
+    const UPLOAD_URL: &str = concat!(
         server_url!(),
         "/", "upload",
         "/", id_pattern_template!(),
         "/", space_in_expr!(),
     );
     const UPLOAD_PAYLOAD : &str = "(just a list)";
-    const STATUS_URL: &str = concat!( 
+    const STATUS_URL: &str = concat!(
         server_url!(),
         "/", "status",
         "/", space_in_expr!(),

@@ -43,8 +43,8 @@ pub struct LoadNeo4JNodePropertiesError(String);
 #[derive(Debug)]
 pub struct LoadNeo4JNodeLabelsError(String);
 
-pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
-impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyValues<'s, ()> + ZipperReadOnlyIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
+pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
+impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
 
 pub trait SpaceWriterZipper : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
 impl<T> SpaceWriterZipper for T where T : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}

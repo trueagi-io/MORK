@@ -802,7 +802,7 @@ mod neo4j_commands {
                             cmd.args[LoadNeo4jArg::Neo4jUser as usize].as_str(),
                             cmd.args[LoadNeo4jArg::Neo4jPassword as usize].as_str(),
                         ).map(|_|{}).map_err(|e| {
-                            let e_ : Box<(dyn std::error::Error + Send + Sync + 'static)> = Box::new( std::io::Error::other(format!("{e:?}")));
+                            let e_ : Box<dyn std::error::Error + Send + Sync + 'static> = Box::new( std::io::Error::other(format!("{e:?}")));
                             e_
                         })
                     }).await;

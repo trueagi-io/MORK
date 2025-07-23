@@ -4,11 +4,12 @@ use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
+use std::ptr::slice_from_raw_parts;
 use std::usize;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -20,7 +21,7 @@ use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use futures_util::Stream;
 use url::Url;
-
+use mork_bytestring::{Expr, ExprZipper};
 use super::{BoxedErr, MorkService, WorkThreadHandle};
 use super::status_map::{StatusRecord, FetchError, ParseError};
 use super::resource_store::ResourceHandle;
@@ -497,9 +498,35 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
                 writeln!(writer, "{:?}", rz.path()).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
             }
         }
-        #[cfg(not(feature="interning"))]
+        // #[cfg(not(feature="interning"))]
         DataFormat::Paths => {
-            pathmap::path_serialization::serialize_paths_(ctx.0.space.read_zipper(&mut reader), writer).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
+            // println!("serializing...");
+            thread_local!{
+                static buf: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
+            }
+            buf.with(|b| {
+                let mut rz = ctx.0.space.read_zipper(&mut reader);
+                let wn = rz.witness();
+                pathmap::path_serialization::for_each_path_serialize(writer, || {
+                    while let Some(()) = rz.to_next_get_val_with_witness(&wn) {
+                        let p = rz.origin_path();
+                        let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
+                        // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                        match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                            Ok(()) => unsafe {
+                                // println!("success {:?}", Expr{ ptr: (*b.get()).as_mut_ptr() });
+                                return Ok(Some(slice_from_raw_parts((*b.get()).as_ptr(), oz.loc).as_ref().unwrap()))
+                            }
+                            Err(_e) => {
+                                // println!("failure");
+                                continue
+                            }
+                        }
+                    }
+                    Ok(None)
+                }
+            )
+            }).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
         }
     };
     Ok(())
@@ -670,12 +697,13 @@ enum DataFormat {
 impl DataFormat {
     pub fn from_str(fmt_name: &str) -> Option<DataFormat> {
         let name_string = fmt_name.to_lowercase();
+        // println!("gotten format {name_string}");
         match name_string.as_str() {
             "metta" => Some(DataFormat::Metta),
             "json" => Some(DataFormat::Json),
             "csv" => Some(DataFormat::Csv),
             "raw" => Some(DataFormat::Raw),
-            #[cfg(not(feature="interning"))]
+            // #[cfg(not(feature="interning"))]
             "paths" => Some(DataFormat::Paths),
             _ => { None }
         }
@@ -713,9 +741,28 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
         DataFormat::Raw => {
             return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Unimplemnted Import from raw format")))
         }
-        #[cfg(not(feature="interning"))]
+        // #[cfg(not(feature="interning"))] // use at own risk with interning
         DataFormat::Paths => {
-            let pathmap::path_serialization::DeserializationStats { path_count, .. } = pathmap::path_serialization::deserialize_paths_(space.write_zipper(writer), src, ()).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            let bl = writer.path().len();
+            let mut wz = space.write_zipper(writer);
+            thread_local!{
+                static buf: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
+            }
+            let pathmap::path_serialization::DeserializationStats { path_count, .. } = buf.with(|b| {
+                // println!("for each deserialized...");
+                pathmap::path_serialization::for_each_deserialized_path(src, |k, p| {
+                    let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
+                    // println!("transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                    match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                        Ok(()) => unsafe {
+                            wz.move_to_path(slice_from_raw_parts((*b.get()).as_ptr().offset(bl as _), oz.loc).as_ref().unwrap());
+                            wz.set_val(());
+                        }
+                        Err(_e) => {}
+                    }
+                    std::io::Result::Ok(())
+                })
+            }).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
             println!("Loaded {path_count} paths from `.paths` file");
         }
     }

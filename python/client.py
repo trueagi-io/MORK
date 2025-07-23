@@ -10,7 +10,6 @@ from urllib.parse import quote, quote_from_bytes
 
 import requests
 from requests import request, RequestException
-from requests_sse import EventSource, InvalidStatusCodeError, InvalidContentTypeError
 from subprocess import Popen
 
 class MORK:
@@ -88,6 +87,8 @@ class MORK:
             return meta
 
         def listen(self):
+            from requests_sse import EventSource, InvalidStatusCodeError, InvalidContentTypeError
+
             """
             Listens to server side events on the status of a request.
             """
@@ -194,12 +195,13 @@ class MORK:
         A request to import data from a file or remotely hosted resource
         """
         #TODO: Specify format
-        def __init__(self, pattern, template, file_uri):
+        def __init__(self, pattern, template, file_uri, fileformat="metta"):
+            self.fileformat = fileformat
             self.pattern = pattern
             self.template = template
             self.uri = file_uri
             self.status_loc = template
-            super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
+            super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}")
 
         def poll(self):
             is_finished, result = super().poll()
@@ -215,12 +217,13 @@ class MORK:
         A request to export data to a file
         """
         #TODO: Specify format
-        def __init__(self, pattern, template, file_uri):
+        def __init__(self, pattern, template, file_uri, fileformat="metta"):
+            self.fileformat = fileformat
             self.pattern = pattern
             self.template = template
             self.status_loc = template
             self.uri = file_uri
-            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
+            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}")
 
     class Transform(Request):
         """
@@ -379,6 +382,19 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
+    def paths_export_(self, file_uri):
+        return self.paths_export("$x", "$x", file_uri)
+
+    def paths_export(self, pattern, template, file_uri):
+        """
+        Export items from `pattern` in the space and format them in `file` using `template`
+        """
+        io = self.ns.format(pattern)
+        cmd = self.Export(io, template, file_uri, fileformat="paths")
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
     def sexpr_import_(self, file_uri):
         return self.sexpr_import("$x", "$x", file_uri)
 
@@ -388,6 +404,19 @@ class MORK:
         """
         io = self.ns.format(template)
         cmd = self.Import(pattern, io, file_uri)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
+    def paths_import_(self, file_uri):
+        return self.sexpr_import("$x", "$x", file_uri)
+
+    def paths_import(self, pattern, template, file_uri):
+        """
+        Import s-expressions from the specified URI match `pattern` into `template`
+        """
+        io = self.ns.format(template)
+        cmd = self.Import(pattern, io, file_uri, fileformat="paths")
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd

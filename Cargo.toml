@@ -32,7 +32,8 @@ freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } 
 gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for dag_serialization
 
 [workspace.dependencies.pathmap]
-git = "https://github.com/Adam-Vandervorst/PathMap.git"
+# for stability reasons, use local. For convenience, use git...
+#git = "https://github.com/Adam-Vandervorst/PathMap.git"
+#branch = "master"
+path = "../PathMap"
 features = ["jemalloc", "zipper_tracking", "arena_compact"]
-branch = "master"
-# features = ["jemalloc", "zipper_tracking", "arena_compact", "all_dense_nodes"]

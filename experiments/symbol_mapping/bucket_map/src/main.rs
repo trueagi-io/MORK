@@ -6,7 +6,7 @@ use bucket_map::*;
 use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 // use pathmap::zipper::WriteZipper;
 // use bstr::ByteSlice;
 // use naive_map;
@@ -42,7 +42,7 @@ fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+                Ok(()) => { btm.set_val_at(&stack[..ez.loc], ()); }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
             }
@@ -119,7 +119,7 @@ impl Parser for SequentialDataParser {
         let bs = (8 - r.trailing_zeros()/8) as usize;
         let l = bs.max(1);
         let interned: &[u8] = unsafe { std::slice::from_raw_parts_mut((r as *mut u64 as *mut u8).byte_offset((8 - l) as isize), l) };
-        self.strings.insert(interned, unsafe { mem::transmute(s) });
+        self.strings.set_val_at(interned, unsafe { mem::transmute(s) });
         interned
     }
 }
@@ -135,7 +135,7 @@ fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+                Ok(()) => { btm.set_val_at(&stack[..ez.loc], ()); }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
             }
@@ -213,7 +213,7 @@ fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+                Ok(()) => { btm.set_val_at(&stack[..ez.loc], ()); }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
             }
@@ -292,7 +292,7 @@ Involuntary context switches: 13194
 */
 /*** bucket-map interning, multi-threaded ***/
 
-struct PromiseSafe(BytesTrieMap<()>);
+struct PromiseSafe(PathMap<()>);
 
 unsafe impl Send for PromiseSafe {}
 
@@ -317,8 +317,8 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = ParseContext::new(slice);
     let mut parser = ParDataParser::new(handle);
     #[allow(unused_variables)]
@@ -327,7 +327,7 @@ fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<(
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr_(&mut it, &mut ez) {
-            Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+            Ok(()) => { btm.set_val_at(&stack[..ez.loc], ()); }
             Err(err) => {
                 if err.error_type == ParserErrorType::InputFinished{
                     break
@@ -381,7 +381,7 @@ fn main() {
     println!("par took {} millis", tpar.elapsed().as_millis());
     println!("fold");
     let tfold = Instant::now();
-    let m: BytesTrieMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(BytesTrieMap::new()), |a, b| {
+    let m: PathMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(PathMap::new()), |a, b| {
         PromiseSafe(a.0.join(&b.0))
     }).0;
     println!("fold took {} millis", tfold.elapsed().as_millis());
@@ -446,7 +446,7 @@ fn make_map<'a>(handle: &'a naive_map::SharedMappingHandle, slice: &[u8]) -> Byt
         unsafe {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
-                Ok(()) => { btm.insert(&stack[..ez.loc], ()); }
+                Ok(()) => { btm.set_val_at(&stack[..ez.loc], ()); }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
             }

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use log::*;
@@ -41,7 +41,7 @@ impl DefaultSpace {
     /// Creates a new empty `DefaultSpace`
     pub fn new() -> Self {
         Self {
-            map: Arc::new(BytesTrieMap::new().into_zipper_head([])),
+            map: Arc::new(PathMap::new().into_zipper_head([])),
             permission_guard: Mutex::new(()),
             sm: SharedMapping::new(),
         }
@@ -636,7 +636,7 @@ impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving 
         let mut path = vec![Tag::SymbolSize(token.len() as u8).byte()];
         path.extend(token);
         self.wz.descend_to(&path[..]);
-        self.wz.set_value(());
+        self.wz.set_val(());
         self.wz.ascend(path.len());
     }
 }
@@ -796,26 +796,6 @@ impl DefaultSpace {
         Ok(i)
     }
      */
-}
-
-/// Executes a single MM2 expression in the expected form
-///
-/// (exec (<thread_id> <priority>) (, <src1> <src2> <srcn)
-///                                (, <dst1> <dst2> <dstm>))
-pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
-    info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
-
-    let (srcs, dsts) = destructure_exec_expr(space, rt).map_err(ExecError::Syntax)?.collect_inner();
-
-    let (mut read_map, template_prefixes, mut writers) = space.acquire_transform_permissions(&srcs, &dsts, auth, ||{}).map_err(|perm_err| ExecError::perm_err(space, perm_err))?;
-
-    //Insert the self expression into the read_map
-    read_map.insert(unsafe { rt.span().as_ref().unwrap() }, ());
-
-    let res = space.transform_multi_multi(&srcs, &read_map, &dsts, &template_prefixes, &mut writers);
-
-    trace!(target: "interpret", "(run, changed) = {:?}", res);
-    Ok(())
 }
 
 /// Validates the format of an MM2 expression, and extracts the patterns and templates from it
@@ -986,7 +966,7 @@ pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
         }
         let new_data = &buf[..oz.loc];
         wz.descend_to(&new_data[constant_template_prefix.len()..]);
-        wz.set_value(());
+        wz.set_val(());
         wz.reset();
         i += 1;
         src_line.clear();
@@ -1135,7 +1115,7 @@ pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &m
             }
             // .insert(ez.span(), ()); // if only we had this function...
             wz.descend_to(ez.span());
-            wz.set_value(());
+            wz.set_val(());
             wz.reset();
 
             count += 1;
@@ -1200,7 +1180,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                         wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                         wz.descend_to(internal_v);
 
-                        wz.set_value(());
+                        wz.set_val(());
 
                         wz.ascend(internal_v.len() + 1);
                     }
@@ -1209,7 +1189,7 @@ pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle,
                     wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                     wz.descend_to(internal_v);
 
-                    wz.set_value(());
+                    wz.set_val(());
 
                     wz.ascend(internal_v.len() + 1);
                 }
@@ -1274,7 +1254,7 @@ pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut 
                 wz.descend_to_byte(Tag::SymbolSize(internal_v.len() as _).byte());
                 wz.descend_to(internal_v);
 
-                wz.set_value(());
+                wz.set_val(());
 
                 wz.ascend(internal_v.len() + 1);
 
@@ -1325,7 +1305,7 @@ where
                     }
                     let new_data = &buffer[..oz.loc];
                     wz.descend_to(&new_data[constant_template_prefix.len()..]);
-                    wz.set_value(());
+                    wz.set_val(());
                     wz.reset();
                 }
                 Err(mut err) => {
@@ -1537,7 +1517,7 @@ impl DefaultSpace {
         // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(path)?;
         // let mut rz = tree.read_zipper();
         // while rz.to_next_val() {
-        //     self.btm.insert(rz.path(), ());
+        //     self.btm.set_val_at(rz.path(), ());
         // }
         // Ok(())
     }
@@ -1610,14 +1590,14 @@ where
         virtual_path.extend_from_slice(first_pattern_prefix);
 
         //Make a temp map for the first pattern
-        let mut first_temp_map = BytesTrieMap::new();
+        let mut first_temp_map = PathMap::new();
         first_temp_map.write_zipper_at_path(&virtual_path[..]).graft(rz0);
         let first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
 
         //Make temp maps for the rest of the patterns
         let mut tmp_maps = vec![];
         for (rz, pat) in rz_rest.iter().zip(pat_rest) {
-            let mut temp_map = BytesTrieMap::new();
+            let mut temp_map = PathMap::new();
             let prefix = make_prefix(&pat.borrow());
             if !rz.path_exists() {
                 trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));
@@ -1796,7 +1776,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
 
                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
                 // println!("insert path {}", serialize(&buffer[..oz.loc]));
-                any_new |= wz.set_value(()).is_none();
+                any_new |= wz.set_val(()).is_none();
                 wz.reset();
             }
             Ok::<(), ()>(())

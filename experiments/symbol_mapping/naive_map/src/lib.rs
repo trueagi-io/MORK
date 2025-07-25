@@ -1,12 +1,12 @@
 use std::sync::Arc;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 
 type Symbol = i64;
 
 pub struct SharedMapping {
   next_sym   : core::sync::atomic::AtomicI64,
-  to_symbols : std::sync::RwLock<BytesTrieMap<Symbol>>,
-  to_bytes   : std::sync::RwLock<BytesTrieMap<Vec<u8>>>
+  to_symbols : std::sync::RwLock<PathMap<Symbol>>,
+  to_bytes   : std::sync::RwLock<PathMap<Vec<u8>>>
 }
 
 
@@ -14,21 +14,21 @@ impl SharedMapping {
   pub fn new()-> SharedMappingHandle {
     SharedMappingHandle(Arc::new(SharedMapping{
       next_sym : core::sync::atomic::AtomicI64::new(1),
-      to_symbols: std::sync::RwLock::new(BytesTrieMap::new()), 
-      to_bytes: std::sync::RwLock::new(BytesTrieMap::new()) }))
+      to_symbols: std::sync::RwLock::new(PathMap::new()), 
+      to_bytes: std::sync::RwLock::new(PathMap::new()) }))
   }
 
   pub fn get_bytes(&self, sym : Symbol) -> Option<&[u8]> {
     '_lock_scope : {
       let lock = self.to_bytes.read().unwrap();
-      lock.get(&sym.to_ne_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
+      lock.get_val_at(&sym.to_ne_bytes()).map(|v|unsafe {core::mem::transmute(&v[..])})
     }
   }
 
   pub fn get_sym(&self, bytes : &[u8]) -> Option<Symbol> {
     '_lock_scope : {
       let lock = self.to_symbols.read().unwrap();
-      lock.get(bytes).copied()
+      lock.get_val_at(bytes).copied()
     }
   }
 }
@@ -52,7 +52,7 @@ impl<'a> WritePermit<'a> {
   pub fn get_sym_or_insert(&self, bytes : &[u8])->Symbol {
     '_lock_scope_sym : {
       let mut lock_sym = self.to_symbols.write().unwrap();
-      if let Some(sym) = lock_sym.get(bytes) {
+      if let Some(sym) = lock_sym.get_val_at(bytes) {
         return *sym;
       }
 
@@ -60,9 +60,9 @@ impl<'a> WritePermit<'a> {
       let sym = self.next_sym.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
       '_lock_scope_bytes : {
         let mut lock_bytes = self.to_bytes.write().unwrap();
-        lock_bytes.insert(sym.to_ne_bytes(), store);
-        
-        lock_sym.insert(bytes, sym);
+        lock_bytes.set_val_at(sym.to_ne_bytes(), store);
+
+        lock_sym.set_val_at(bytes, sym);
         sym
       }
     }

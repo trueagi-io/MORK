@@ -20,7 +20,7 @@
 extern crate alloc;
 
 use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr, AtomicU64}};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 
 mod handle;
 pub use handle::SharedMappingHandle;
@@ -75,9 +75,9 @@ pub struct SharedMapping {
   pub(crate) count             : AtomicU64,
   pub(crate) flags             : AtomicU64,
   pub(crate) permissions       : AlignArray<ThreadPermission>,
-  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
+  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<PathMap<Symbol>>>,
   /// the path is a Symbol as __big endian bytes__.
-  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
+  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<PathMap<ThinBytes>>>,
 }
 
 impl SharedMapping {
@@ -101,8 +101,8 @@ impl SharedMapping {
       let mut i = 0;
       while i <= MAX_WRITER_THREAD_INDEX {
         (&raw mut (*inner).permissions[i]).write(AlignCache(ThreadPermission::init(i as u8)));
-        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
-        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(PathMap::new())));
+        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(PathMap::new())));
 
         i+=1;
       }
@@ -118,7 +118,7 @@ impl SharedMapping {
     let bucket = sym[SYMBOL_THREAD_PERMIT_BYTE_POS];
 
     let res = self.to_bytes[bucket as usize].0.read().unwrap();
-    res.get(sym).map(|t| unsafe {&*t.as_raw_slice()})
+    res.get_val_at(sym).map(|t| unsafe {&*t.as_raw_slice()})
   }
 
   /// This function is not inherently unsafe, but should only be used as a last resort when
@@ -138,7 +138,7 @@ impl SharedMapping {
     '_lock_scope:{
       let lock_guard = trie_lock.read().unwrap();
 
-      lock_guard.get(bytes).copied()
+      lock_guard.get_val_at(bytes).copied()
     }
   }
 }

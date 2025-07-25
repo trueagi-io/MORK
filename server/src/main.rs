@@ -11,12 +11,13 @@ use tokio::sync::Notify;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 
 use hyper::service::Service;
-use hyper::header::{HeaderValue, CONNECTION};
+use hyper::header::{CONNECTION, CONTENT_TYPE, CACHE_CONTROL};
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper::body::{Incoming as IncomingBody, Bytes};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use http_body_util::StreamBody;
 
 const SERVER_ADDR_ENV_VAR: &str = "MORK_SERVER_ADDR";
 const SERVER_PORT_ENV_VAR: &str = "MORK_SERVER_PORT";
@@ -124,7 +125,11 @@ impl MorkService {
                     let future = shutdown_watcher.watch(conn);
                     tokio::task::spawn(async move {
                         if let Err(err) = future.await {
-                            println!("Internal Server Error: Failed to serve connection: {:?}", err); //GOAT log this.  Likely the client closed the connection before we could reply
+                            if err.is_incomplete_message() || err.is_closed() {
+                                //The client closed the connection
+                            } else {
+                                println!("Internal Server Error: Failed to serve connection: {:?}", err); //GOAT log this
+                            }
                         }
                     });
                 },
@@ -177,16 +182,29 @@ impl MorkService {
         let ctx = self.clone();
         Box::pin(async move {
             println!("Processing: cmd={}, args={:?}", command.def.name(), command.args); //GOAT Log this
-            let mut response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
-                Ok(response_bytes) => {
-                    ok_response(response_bytes)
+            let response = match command.def.work(ctx.clone(), command.clone(), work_thread, req).await {
+                Ok(WorkResult::Immediate(b)) => {
+                    let resp = ok_response::<Bytes>(b.into());
+                    resp
                 },
+                Ok(WorkResult::Streamed(stream)) => {
+                    let boxed_body: BoxBody<Bytes, hyper::Error> = StreamBody::new(stream).boxed();
+
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONNECTION, "keep-alive")
+                        .header(CONTENT_TYPE, "text/event-stream")
+                        .header(CACHE_CONTROL, "no-cache")
+                        .body(boxed_body)
+                        .unwrap()
+                }
+
                 Err(err) => {
                     let response = MorkServerError::cmd_err(err, &command).error_response();
                     response
                 }
             };
-            response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+
             Ok(response)
         })
     }
@@ -545,6 +563,7 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => ExportCmd
             | GET => ImportCmd
             | GET => StatusCmd
+            | GET => StatusStreamCmd
             | GET => StopCmd
             | POST => UploadCmd
             // neo4j

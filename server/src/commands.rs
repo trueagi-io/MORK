@@ -1,29 +1,76 @@
-
 use core::pin::Pin;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
+use std::ptr::slice_from_raw_parts;
 use std::usize;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting};
+use pathmap::path_serialization::PathIterator;
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
 use bytes::BytesMut;
 use hyper::{Request, StatusCode};
-use hyper::body::{Incoming as IncomingBody, Bytes};
+use hyper::body::{Incoming as IncomingBody, Bytes, Frame};
 use http_body_util::BodyExt;
+use tokio::sync::mpsc;
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use futures_util::Stream;
 use url::Url;
-
+use mork_bytestring::{Expr, ExprZipper};
 use super::{BoxedErr, MorkService, WorkThreadHandle};
 use super::status_map::{StatusRecord, FetchError, ParseError};
 use super::resource_store::ResourceHandle;
 use super::server_space::*;
 use super::status_map::*;
+
+pub type BoxStream = Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, hyper::Error>> + Send + Sync + 'static>>;
+
+pub enum WorkResult {
+    Immediate(Bytes), // previous behavior
+    Streamed(BoxStream),  // support for streaming responses
+}
+
+impl WorkResult {
+    pub fn is_immediate(&self) -> bool {
+        match self {
+            WorkResult::Immediate(_) => true,
+            WorkResult::Streamed(_) => false,
+        }
+    }
+
+    pub fn is_streamed(&self) -> bool {
+        match self {
+            WorkResult::Immediate(_) => false,
+            WorkResult::Streamed(_) => true,
+        }
+    }
+
+    pub fn get_bytes(&self) -> Option<Bytes> {
+        match self {
+            WorkResult::Immediate(b) => Some(b.clone()),
+            WorkResult::Streamed(_) => None,
+        }
+    }
+}
+
+impl From<&str> for WorkResult {
+    fn from(b: &str) -> WorkResult {
+        WorkResult::Immediate(Bytes::copy_from_slice(b.as_bytes()))
+    }
+}
+
+impl From<String> for WorkResult {
+    fn from(b: String) -> WorkResult {
+        WorkResult::Immediate(Bytes::copy_from_slice(b.as_bytes()))
+    }
+}
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // busywait
@@ -59,7 +106,7 @@ impl CommandDefinition for BusywaitCmd {
             required: false
         }]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
 
         let expr1 = cmd.properties[0].as_ref().map(|prop| prop.as_expr_bytes());
         let writer1 = cmd.properties[1].is_some();
@@ -108,15 +155,14 @@ impl CommandDefinition for ClearCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let mut writer = ctx.0.space.new_writer_async(prefix, &()).await?;
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches();
-        wz.remove_value();
-        
+        wz.remove_val();
         '_journal_event : {
             // JOURNAL.append_event(Clear(prefix))
 
@@ -155,7 +201,7 @@ impl CommandDefinition for CopyCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let src_expr = cmd.args[0].as_expr_bytes();
         let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_till_last_constant();
         let mut reader = ctx.0.space.new_reader_async(src_prefix, &()).await?;
@@ -202,7 +248,7 @@ impl CommandDefinition for CountCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
@@ -278,13 +324,13 @@ impl CommandDefinition for ExploreCmd {
         }]
     }
     fn properties() -> &'static [PropDef] { &[] }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
 
         let expr = cmd.args[0].as_expr_bytes().to_vec();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
 
-        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+        let out = tokio::task::spawn_blocking(move || -> Result<WorkResult, CommandError> {
             do_bfs(&ctx, cmd, reader, expr)
         }).await??;
 
@@ -295,7 +341,7 @@ impl CommandDefinition for ExploreCmd {
     }
 }
 
-fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr: Vec<u8>) -> Result<Bytes, CommandError> {
+fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr: Vec<u8>) -> Result<WorkResult, CommandError> {
 
     let focus_token = cmd.args[1].as_path();
     let result_paths = ctx.0.space.token_bfs(focus_token, mork_bytestring::Expr { ptr: expr.as_mut_ptr() }, &mut reader);
@@ -339,7 +385,7 @@ fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr:
     writer.flush()?;
     drop(writer);
 
-    Ok(hyper::body::Bytes::from(buffer))
+    Ok(WorkResult::Immediate(hyper::body::Bytes::from(buffer)))
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
@@ -381,7 +427,7 @@ impl CommandDefinition for ExportCmd {
             required: false
         }]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
 
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
             .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
@@ -417,7 +463,7 @@ impl CommandDefinition for ExportCmd {
             None => None
         };
 
-        let out = tokio::task::spawn_blocking(move || -> Result<Bytes, CommandError> {
+        let out = tokio::task::spawn_blocking(move || -> Result<WorkResult, CommandError> {
             do_export(&ctx, (pat_reader, pattern), template, format, file_path)
         }).await??;
 
@@ -429,7 +475,7 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, file_path: Option<PathBuf>) -> Result<Bytes, CommandError> {
+fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, file_path: Option<PathBuf>) -> Result<WorkResult, CommandError> {
     let buffer = match &file_path {
         Some(file_path) => {
             // The rendered output will go to a file
@@ -451,7 +497,7 @@ fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), 
         }
     };
 
-    Ok(hyper::body::Bytes::from(buffer))
+    Ok(WorkResult::Immediate(hyper::body::Bytes::from(buffer)))
 }
 
 fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat) -> Result<(), CommandError> {
@@ -468,6 +514,46 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
             while rz.to_next_val() {
                 writeln!(writer, "{:?}", rz.path()).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
             }
+        }
+        // #[cfg(not(feature="interning"))]
+        DataFormat::Paths => {
+            // println!("serializing...");
+            thread_local!{
+                static BUF: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
+            }
+            BUF.with(|b| {
+                let mut rz = ctx.0.space.read_zipper(&mut reader);
+                let wn = rz.witness();
+
+                struct PathIterInst<'a,F>(F, core::marker::PhantomData<&'a()>);
+                impl<'a, F : FnMut() -> Result<Option<&'a[u8]>, std::io::Error> > PathIterator for PathIterInst<'a, F> {
+                    fn next_path(&mut self) -> Result<Option<&[u8]>, std::io::Error> {
+                        self.0()
+                    }
+                }
+
+                pathmap::path_serialization::for_each_path_serialize(writer, PathIterInst(||  {
+                    while let Some(()) = rz.to_next_get_val_with_witness(&wn) {
+                        let p = rz.origin_path();
+                        let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
+                        // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                        match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                            Ok(()) => unsafe {
+                                // println!("success {:?}", Expr{ ptr: (*b.get()).as_mut_ptr() });
+                                return Ok(Some(slice_from_raw_parts((*b.get()).as_ptr(), oz.loc).as_ref().unwrap()))
+                            }
+                            Err(_e) => {
+                                // println!("failure");
+                                continue
+                            }
+                        }
+                    }
+                    Ok(None)
+                },
+                    PhantomData
+                )
+            )
+            }).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
         }
     };
     Ok(())
@@ -506,7 +592,7 @@ impl CommandDefinition for ImportCmd {
             required: true
         }]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         //Make sure we can get a place to download the file to, and we don't have an existing download in-progress
         let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
         let file_handle = ctx.0.resource_store.new_resource(file_uri, cmd.cmd_id).await?;
@@ -640,16 +726,21 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
 
 enum DataFormat {
     Metta, Json, Csv, Raw,
+    #[cfg(not(feature="interning"))]
+    Paths,
 }
 
 impl DataFormat {
     pub fn from_str(fmt_name: &str) -> Option<DataFormat> {
         let name_string = fmt_name.to_lowercase();
+        // println!("gotten format {name_string}");
         match name_string.as_str() {
             "metta" => Some(DataFormat::Metta),
             "json" => Some(DataFormat::Json),
             "csv" => Some(DataFormat::Csv),
             "raw" => Some(DataFormat::Raw),
+            // #[cfg(not(feature="interning"))]
+            "paths" => Some(DataFormat::Paths),
             _ => { None }
         }
     }
@@ -685,6 +776,30 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
         },
         DataFormat::Raw => {
             return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Unimplemnted Import from raw format")))
+        }
+        // #[cfg(not(feature="interning"))] // use at own risk with interning
+        DataFormat::Paths => {
+            let bl = writer.path().len();
+            let mut wz = space.write_zipper(writer);
+            thread_local!{
+                static BUF: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
+            }
+            let pathmap::path_serialization::DeserializationStats { path_count, .. } = BUF.with(|b| {
+                // println!("for each deserialized...");
+                pathmap::path_serialization::for_each_deserialized_path(src, |_k, p| {
+                    let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
+                    // println!("transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                    match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                        Ok(()) => unsafe {
+                            wz.move_to_path(slice_from_raw_parts((*b.get()).as_ptr().offset(bl as _), oz.loc).as_ref().unwrap());
+                            wz.set_val(());
+                        }
+                        Err(_e) => {}
+                    }
+                    std::io::Result::Ok(())
+                })
+            }).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+            println!("Loaded {path_count} paths from `.paths` file");
         }
     }
     Ok(())
@@ -758,7 +873,7 @@ mod neo4j_commands {
                 fn properties() -> &'static [PropDef] {
                     &[]
                 }
-                async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+                async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
                     let mut output = ctx.0.space.new_writer_async(cmd.args[LoadNeo4jArg::OutputPath as usize].as_path(), &()).await?;
 
                     let thread = thread.unwrap();
@@ -770,12 +885,12 @@ mod neo4j_commands {
                             cmd.args[LoadNeo4jArg::Neo4jUser as usize].as_str(),
                             cmd.args[LoadNeo4jArg::Neo4jPassword as usize].as_str(),
                         ).map(|_|{}).map_err(|e| {
-                            let e_ : Box<(dyn std::error::Error + Send + Sync + 'static)> = Box::new( std::io::Error::other(format!("{e:?}")));
+                            let e_ : Box<dyn std::error::Error + Send + Sync + 'static> = Box::new( std::io::Error::other(format!("{e:?}")));
                             e_
                         })
                     }).await;
 
-                    Ok(Bytes::from("Load Neo4j Triples query sent"))
+                    Ok(WorkResult::Immediate(Bytes::from("Load Neo4j Triples query sent")))
                 }
             }
         };
@@ -846,7 +961,7 @@ impl CommandDefinition for MettaThreadCmd {
             }
         ]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let thread = _thread.unwrap();
 
         let bad_request = |s : &str| Err(CommandError::external(StatusCode::BAD_REQUEST, s));
@@ -1002,7 +1117,11 @@ impl CommandDefinition for MettaThreadCmd {
             Ok(())
         }).await;
 
-        Ok(Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched. Errors will be found at the status location: `{status_loc_sexpr}`")))
+        // TODO! location needs to be pulled out with space!  GOAT: Please explain what you mean by this.
+        Ok(
+            WorkResult::Immediate(
+                Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched. Errors will be found at the status location: `{status_loc_sexpr}`")))
+        )
     }
 }
 
@@ -1039,7 +1158,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let exec_loc_sexpr = cmd.args[0].as_str().to_owned();
         let Ok(exec_loc_expr)  = ctx.0.space.sexpr_to_expr(&exec_loc_sexpr)  else { return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("Invalid Sexpr for exec location : {:?}", exec_loc_sexpr))); };
         if !exec_loc_expr.borrow().is_ground() {
@@ -1090,7 +1209,6 @@ impl CommandDefinition for MettaThreadSuspendCmd {
 
         suspend_wz.descend_to(exec_prefix_expr.as_bytes());
         suspend_wz.graft_map(pats_templates);
-
         '_journal_event : {
             // JOURNAL.append_event(Suspend(exec_loc))
 
@@ -1098,7 +1216,10 @@ impl CommandDefinition for MettaThreadSuspendCmd {
             drop((suspend_wz, exec_wz))
         }
 
-        Ok(Bytes::from(format!("Ack. Thread {} cleared, now frozen at `({} (exec ({} $priorities) $patterns $templates))`", exec_loc_sexpr, suspend_loc_sexpr, exec_loc_sexpr)))
+        Ok(
+            WorkResult::Immediate(
+                Bytes::from(format!("Ack. Thread {} cleared, now frozen at `({} (exec ({} $priorities) $patterns $templates))`", exec_loc_sexpr, suspend_loc_sexpr, exec_loc_sexpr)))
+        )
     }
 }
 
@@ -1125,13 +1246,97 @@ impl CommandDefinition for StatusCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
         let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
 
         let status = ctx.0.space.get_status(&prefix);
         let json_string = serde_json::to_string(&status)?;
         Ok(json_string.into())
+    }
+}
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// status_stream
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// Opens a Server-Side-Events stream, to monitor an expression / path for status updates
+pub struct StatusStreamCmd;
+
+impl CommandDefinition for StatusStreamCmd {
+    const NAME: &'static str = "status_stream";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = false;
+
+    fn args() -> &'static [ArgDef] {
+        &[ArgDef{
+            arg_type: ArgType::Expr,
+            name: "expr",
+            desc: "The expression on which to return the status.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
+            required: true
+        }]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(
+        ctx: MorkService,
+        cmd: Command,
+        _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>
+    ) -> Result<WorkResult, CommandError> {
+
+        let expr = cmd.args[0].as_expr_bytes();
+        let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
+
+        //Make a channel to send status updates to the client
+        let (tx, rx) = mpsc::channel::<StatusRecord>(100);
+
+        //Send the current status right away.  It'll be buffered because we haven't composed the reply yet
+        let status = ctx.0.space.get_status(&prefix);
+        let _ = tx.send(status).await;
+
+        //Put the sender in the StatusMap, so we can send updates to the stream
+        ctx.0.space.status_map.add_stream(prefix, cmd.cmd_id, tx);
+
+        //Finally, Make a StatusStream from the channel, so we can return it to the client, and clean up the
+        // StatusMap if the client closes the stream
+        let stream = ReceiverStream::new(rx).map(|quote| {
+            let data = serde_json::to_string(&quote).unwrap();
+            let event = format!("data: {}\n\n", data);
+            Ok(Frame::data(Bytes::from(event)))
+        });
+        let stream = StatusStream::new(ctx.0.space.status_map.clone(), prefix.to_vec(), cmd.cmd_id, stream);
+
+        Ok(WorkResult::Streamed(Box::pin(stream)))
+    }
+}
+
+/// Wraps a stream, so the stream will be removed from the server's status_streams map when the client closes the connection
+pub(crate) struct StatusStream<S> {
+    inner: S,
+    stream_id: u64,
+    status_map: StatusMap,
+    path: Vec<u8>,
+}
+
+impl<S> Drop for StatusStream<S> {
+    fn drop(&mut self) {
+        //When this is called, it tells us that the client has closed the channel, so remove the sender from the map
+        self.status_map.remove_stream(&self.path, self.stream_id);
+    }
+}
+
+impl<S> StatusStream<S> {
+    pub(crate) fn new(status_map: StatusMap, path: Vec<u8>, stream_id: u64, inner: S) -> Self {
+        StatusStream { path, status_map, stream_id, inner }
+    }
+}
+
+impl<S: Stream + Unpin> Stream for StatusStream<S> where S::Item : core::fmt::Debug {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
@@ -1159,7 +1364,7 @@ impl CommandDefinition for StopCmd {
             }
         ]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         const IDLE_TIME_MS: u128 = 1000; //The server must be idle for 1s before shutdown will begin from a `wait_for_idle` request
         let wait_for_idle = cmd.properties[0].is_some();
 
@@ -1222,7 +1427,7 @@ impl CommandDefinition for TransformCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let work_thread = thread.unwrap();
 
         let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
@@ -1245,7 +1450,7 @@ impl CommandDefinition for TransformCmd {
             Ok(())
         }).await;
 
-        Ok(Bytes::from("ACK. TranformMultiMulti dispatched"))
+        Ok(WorkResult::Immediate(Bytes::from("ACK. TranformMultiMulti dispatched")))
     }
 }
 
@@ -1377,7 +1582,7 @@ impl CommandDefinition for UploadCmd {
             }
         ]
     }
-    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut req: Request<IncomingBody>) -> Result<Bytes, CommandError> {
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
 
@@ -1394,7 +1599,7 @@ impl CommandDefinition for UploadCmd {
         let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            let out = do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)?;
+            do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)?;
             '_journal_event : {
                 // JOURNAL.append_event(Upload(Pattern, template, src_buf))
                             
@@ -1468,7 +1673,7 @@ pub trait CommandDefinition where Self: 'static + Send + Sync {
 
     /// Method to perform the execution.  If anything CPU-intensive is done in this method,
     /// it should call `dispatch_blocking_task` for that work
-    fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> impl Future<Output=Result<Bytes, CommandError>> + Sync + Send;
+    fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> impl Future<Output=Result<WorkResult, CommandError>> + Sync + Send;
 }
 
 /// Object-safe wrapper over CommandDefinition
@@ -1477,7 +1682,7 @@ pub trait CmdDefObject: 'static + Send + Sync {
     fn consume_worker(&self) -> bool;
     // fn args(&self) -> &'static [ArgDef];
     // fn properties(&self) -> &'static [PropDef];
-    fn work(&self, ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>>;
+    fn work(&self, ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<WorkResult, CommandError>> + Sync + Send>>;
 }
 
 impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + CommandDefinition {
@@ -1493,7 +1698,7 @@ impl<CmdDef> CmdDefObject for CmdDef where CmdDef: 'static + Send + Sync + Comma
     // fn properties(&self) -> &'static [PropDef] {
     //     Self::properties()
     // }
-    fn work(&self, ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<Bytes, CommandError>> + Sync + Send>> {
+    fn work(&self, ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, req: Request<IncomingBody>) -> Pin<Box<dyn Future<Output=Result<WorkResult, CommandError>> + Sync + Send>> {
         Box::pin(Self::work(ctx, cmd, thread, req))
     }
 }

@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use rayon::ThreadPoolBuilder;
 use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperIteration, ZipperAbsolutePath};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 const K: u64 = 1_000_000_000;
@@ -39,11 +39,11 @@ fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &m
 fn parallel_map() {
     const TC: u32 = 64;
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
 
@@ -95,7 +95,7 @@ fn parallel_map() {
                                 let vr = (v as f64).sqrt() as u64;
                                 // println!("calculated f({v}) = {vr}");
                                 work_output.descend_to(&vr.to_be_bytes()[..]);
-                                work_output.set_value(());
+                                work_output.set_val(());
                                 work_output.reset();
                             }
                         }
@@ -127,7 +127,7 @@ fn parallel_map() {
                         let vr = (v as f64).sqrt() as u64;
                         // println!("calculated f({v}) = {vr}");
                         work_output.descend_to(&vr.to_be_bytes()[..]);
-                        work_output.set_value(());
+                        work_output.set_val(());
                         work_output.reset();
                     }
                 }
@@ -155,11 +155,11 @@ fn task_parallel_map() {
     let pool = ThreadPoolBuilder::new().num_threads(TC as usize).build().unwrap();
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
 
     let mut work_zippers = vec![];
@@ -203,7 +203,7 @@ fn task_parallel_map() {
                     let vr = (v as f64).sqrt() as u64;
                     // println!("calculated f({v}) = {vr}");
                     work_output.descend_to(&vr.to_be_bytes()[..]);
-                    work_output.set_value(());
+                    work_output.set_val(());
                     work_output.reset();
                 }
                 unsafe { COUNTER.fetch_sub(1, Ordering::Relaxed) };
@@ -227,11 +227,11 @@ fn task_parallel_map() {
 #[allow(unused)]
 fn sequential_map() {
 
-    let mut map = BytesTrieMap::new();
+    let mut map = PathMap::new();
     let zh = map.zipper_head();
 
     let mut buildz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[0]) };
-    buildz.graft_map(BytesTrieMap::range::<true, u64>(0, K, 1, ()));
+    buildz.graft_map(pathmap::utils::ints::gen_int_range(0, K, 1, ()));
     drop(buildz);
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
     let mut oz = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&[1]) };
@@ -249,7 +249,7 @@ fn sequential_map() {
         let vr = (v as f64).sqrt() as u64;
         // println!("calculated f({v}) = {vr}");
         oz.descend_to(&vr.to_be_bytes()[..]);
-        oz.set_value(());
+        oz.set_val(());
         oz.reset();
     }
     drop(oz);

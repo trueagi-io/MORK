@@ -2,7 +2,7 @@ from typing import Optional
 import os
 import json
 import time
-from time import monotonic_ns, sleep
+from time import monotonic, sleep
 from base64 import b32encode
 import re
 from io import StringIO, FileIO
@@ -53,6 +53,7 @@ class MORK:
 
             # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
+            print("poll status: ", status_response.text)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
                 return_status = status_info['status']
@@ -85,6 +86,37 @@ class MORK:
                     raise StopIteration
             return meta
 
+        def listen(self):
+            from requests_sse import EventSource, InvalidStatusCodeError, InvalidContentTypeError
+
+            """
+            Listens to server side events on the status of a request.
+            """
+
+            url = self.server.base + f"/status_stream/{quote(self.status_loc)}"
+
+            def on_error():
+                raise Exception("error")
+
+            with EventSource(
+                url,
+                timeout=30,
+                on_error=on_error,
+            ) as event_source:
+                try:
+                    print("listening...")
+                    for event in event_source:
+                        if event.data:
+                            msg = json.loads(event.data)
+                            print("msg: ", msg)
+                            if msg['status'] == "pathClear":
+                                return
+
+                except Exception as e:
+                    print("error: ", e)
+
+
+
         def __str__(self):
             return str(vars(self))
 
@@ -115,7 +147,7 @@ class MORK:
 
         def dispatch(self, server):
             super().dispatch(server)
-            print("download status code:", self.response.status_code)
+            # print("download status code:", self.response.status_code)
             if self.response and self.response.status_code == 200:
                 self.data = self.response.text
 
@@ -163,12 +195,13 @@ class MORK:
         A request to import data from a file or remotely hosted resource
         """
         #TODO: Specify format
-        def __init__(self, pattern, template, file_uri):
+        def __init__(self, pattern, template, file_uri, fileformat="metta"):
+            self.fileformat = fileformat
             self.pattern = pattern
             self.template = template
             self.uri = file_uri
             self.status_loc = template
-            super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
+            super().__init__("get", f"/import/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}")
 
         def poll(self):
             is_finished, result = super().poll()
@@ -184,12 +217,13 @@ class MORK:
         A request to export data to a file
         """
         #TODO: Specify format
-        def __init__(self, pattern, template, file_uri):
+        def __init__(self, pattern, template, file_uri, fileformat="metta"):
+            self.fileformat = fileformat
             self.pattern = pattern
             self.template = template
             self.status_loc = template
             self.uri = file_uri
-            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}")
+            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}")
 
     class Transform(Request):
         """
@@ -348,6 +382,19 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
+    def paths_export_(self, file_uri):
+        return self.paths_export("$x", "$x", file_uri)
+
+    def paths_export(self, pattern, template, file_uri):
+        """
+        Export items from `pattern` in the space and format them in `file` using `template`
+        """
+        io = self.ns.format(pattern)
+        cmd = self.Export(io, template, file_uri, fileformat="paths")
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
     def sexpr_import_(self, file_uri):
         return self.sexpr_import("$x", "$x", file_uri)
 
@@ -357,6 +404,19 @@ class MORK:
         """
         io = self.ns.format(template)
         cmd = self.Import(pattern, io, file_uri)
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
+    def paths_import_(self, file_uri):
+        return self.sexpr_import("$x", "$x", file_uri)
+
+    def paths_import(self, pattern, template, file_uri):
+        """
+        Import s-expressions from the specified URI match `pattern` into `template`
+        """
+        io = self.ns.format(template)
+        cmd = self.Import(pattern, io, file_uri, fileformat="paths")
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd
@@ -401,7 +461,8 @@ class MORK:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if "clear" in self.finalization: self.clear().block()
+        if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
+        if "clear" in self.finalization: self.clear().listen()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
 
@@ -432,12 +493,19 @@ class MORK:
         self.finalization += ("clear",)
         return self
 
-#GOAT: What is this for?
-def retry(f, count):
-    for i in range(count):
-        res = f()
-        if res is None: continue
-        return res
+    def and_time(self):
+        self.t0 = monotonic()
+        self.finalization += ("time",)
+        return self
+
+    def _bare(self) -> 'MORK':
+        return _BareMORK(self.base, self.ns)
+
+class _BareMORK(MORK):
+    def __init__(self, base, ns):
+        self.base = base
+        self.ns = ns
+        self.history = []
 
 class ManagedMORK(MORK):
     """
@@ -556,7 +624,7 @@ def _main():
 
             print("data", ins.download_().data)
 
-            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").block()
+            ins.sexpr_import_("https://raw.githubusercontent.com/trueagi-io/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
 
             print("data", ins.download_().data)
 
@@ -568,14 +636,24 @@ def _main_mm2():
     # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
-        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).block()
-        server.exec(thread_id="test").block()
+        server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen()
+        server.exec(thread_id="test").listen()
         print("data", server.download_().data)
 
         for i, item in enumerate(server.history):
             print(i, str(item))
 
+def test_sse_status():
+    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+        server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
+
+
 
 if __name__ == '__main__':
     # _main()
     _main_mm2()
+    # test_sse_status()
+
+
+
+

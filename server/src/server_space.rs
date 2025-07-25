@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use hyper::StatusCode;
 
-use pathmap::{trie_map::BytesTrieMap, zipper::ZipperHeadOwned};
+use pathmap::{PathMap, zipper::ZipperHeadOwned};
 use pathmap::zipper_tracking::Conflict;
 use pathmap::zipper::*;
 
@@ -22,7 +22,7 @@ pub struct ServerSpace {
     /// ZipperHead for accessing the primary map
     primary_map: ZipperHeadOwned<()>,
     /// ZipperHead for accessing status and permissions associated with paths
-    status_map: StatusMap,
+    pub(crate) status_map: StatusMap,
     /// Guard to ensure high-level operations can be atomic
     permission_guard: Mutex<()>,
 }
@@ -36,7 +36,7 @@ impl ServerSpace {
 
         // Load the PathMap from the last snapshot
         //GOAT, ACTually load it!!
-        let primary_map = BytesTrieMap::<()>::new();
+        let primary_map = PathMap::<()>::new();
         let primary_map = primary_map.into_zipper_head([]);
 
         // Load the status map also

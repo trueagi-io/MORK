@@ -1,20 +1,20 @@
 use std::io::Read;
 use std::time::Instant;
 use mork_bytestring::*;
-use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserError, ParserErrorType};
-use pathmap::trie_map::BytesTrieMap;
+use mork_frontend::bytestring_parser::{ParseContext, Parser, ParserErrorType};
+use pathmap::PathMap;
 use pathmap::zipper::*;
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<u64>,
+    symbols: PathMap<u64>,
 }
 
 impl DataParser {
     fn new() -> Self {
         Self {
             count: 3,
-            symbols: BytesTrieMap::new(),
+            symbols: PathMap::new(),
         }
     }
 
@@ -26,7 +26,7 @@ impl Parser for DataParser {
         // return unsafe { std::mem::transmute(s) };
         if s.len() == 0 { return Self::EMPTY }
         let mut z = self.symbols.write_zipper_at_path(s);
-        let r = z.get_value_or_insert_with(|| {
+        let r = z.get_val_or_set_mut_with(|| {
             self.count += 1;
             u64::from_be(self.count)
         });
@@ -76,15 +76,15 @@ fn main() -> Result<(),&'static str> {
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
-    let mut family = BytesTrieMap::new();
-    let mut output = BytesTrieMap::new();
+    let mut family = PathMap::new();
+    let mut output = PathMap::new();
     let mut i = 0u64;
     let mut stack = [0u8; 1 << 19];
     loop {
         let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
         match parser.sexpr_(&mut it, &mut ez) {
             Ok(()) => {
-                family.insert(&stack[..ez.loc], ());
+                family.set_val_at(&stack[..ez.loc], ());
             }
             Err(err) => if err.error_type == ParserErrorType::InputFinished {
                 break
@@ -139,7 +139,7 @@ fn main() -> Result<(),&'static str> {
         let slice = &rhsz.span()[child_path.len()..];
 
         child_zipper.descend_to(slice);
-        child_zipper.set_value(());
+        child_zipper.set_val(());
         child_zipper.reset();
     }
     drop(child_zipper);
@@ -246,7 +246,7 @@ fn main() -> Result<(),&'static str> {
         drop_symbol_head_2(&mut sister_query_out_zipper);
         sister_query_out_zipper.meet(&female_zipper);
         if sister_query_out_zipper.descend_to(person_rzipper.path()) {
-            sister_query_out_zipper.remove_value();
+            sister_query_out_zipper.remove_val();
         }
     }
     drop(sister_query_out_zipper);

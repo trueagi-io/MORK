@@ -2170,30 +2170,8 @@ fn bfs_test() {
 
 
 pub mod metta_calculus {
-// ///////////////////
-// SEMANTIC TARGET //
-// /////////////////
-//
-// par for thread in threads
-//   'from_start
-//   let it = space.at(`[4] exec [2] `thread``)
-//   'from_current
-//   let stmt = it.next(`(exec (`thread` $loc) $patterns $templates)`)
-//   try
-//     atomic
-//       let read_permissions = get_read_permissions(stmt)
-//       let write_permissions = get_write_permissions(stmt)
-//     space.transform(stmt, read_permissions, write_permissions)
-//     goto 'from_start
-//   except PermissionError
-//     goto 'from_current
-//   except Exception as e
-//     space.add(`(exec (`thread` $loc) `e`)`)
-//     goto 'done
-//   finally
-//     drop(read_permissions)
-//     drop(write_permissions)
-// 'done
+//! The Metta Calculus [`Machine`] is the state machine that allows running the Calculus 
+//! while being able to run outside logic while maintaing the internal consistancy on the Calculus state.
 
 
 
@@ -2204,7 +2182,7 @@ use crate::space::*;
 macro_rules! states {
     ($( $STATE:ident $DOC:literal,)+) => {
         mod sealed {
-            pub trait StateT {} 
+            pub trait StateT {}
             use super::{Space, Controller, MachineHandle};
             #[allow(private_interfaces)]
             pub trait StateVal : StateT + Sized { const SELF : Self; fn handle_constructor<'machine, 'space, S:Space>(c : Controller<'machine, 'space, Self, S>)->MachineHandle<'machine, 'space, S>;}
@@ -2279,7 +2257,7 @@ impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
         // (exec (<location> $priority) $patterns $templates)
         let prefix_expr = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
         let prefix = unsafe { prefix_expr.borrow().prefix().unwrap().as_ref().unwrap() };
-        
+
         let prefix_len = prefix.len();
         let buffer     = Vec::from(prefix);
 
@@ -2310,7 +2288,7 @@ impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
 }
 
 
-/// The [`Machine`] is only ever interacted with via the [`Controller`]. 
+/// The [`Machine`] is only ever interacted with via the [`Controller`].
 pub struct Controller<'machine, 'space, State : StateT, S : Space>{
     /// The availible methods are dictated by the type state.
     _state  : State,
@@ -2408,7 +2386,7 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermiss
     /// - on [`ControlFlow::Break`] permission is dropped:
     ///   - either all execs were executed([`LookupBaseCases::Done`], execution finishes)
     ///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`], type state moves to [`ExecsRemaining`]);
-    /// 
+    ///
     /// - on [`ControlFlow::Continue`] the permission is dropped, unlocking the space at the prefix ( type state moves to [`ExecRemovedGuard`])
     #[inline(always)]
     pub fn exec_lookup(self)
@@ -2452,7 +2430,7 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermiss
         CF::Continue(self.next_state(ExecRemovedGuard{}))
     }
 
-    /// Calls [`Self::exec_lookup`] and converts the nested cases that are type states into a [`MachineHandle`] 
+    /// Calls [`Self::exec_lookup`] and converts the nested cases that are type states into a [`MachineHandle`]
     #[inline(always)]
     pub fn exec_lookup_to_handle(self)
     ->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
@@ -2461,7 +2439,7 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermiss
             ControlFlow::Continue(c) => CF::Continue(MachineHandle::ExecRemovedGuard(c)),
             ControlFlow::Break(LookupBaseCases::Done) => CF::Break(()),
             ControlFlow::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::ExecsRemaining(remaining)),
-        }   
+        }
     }
 }
 
@@ -2503,11 +2481,11 @@ pub enum TransformErr<'machine, 'space, S : Space> {
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
     /// Parse the exec,
-    /// 
+    ///
     /// on a syntax err the state moves back to [`LoopStart`];
-    /// 
+    ///
     /// if the Reader/Writer permission set cannot be aquired atomically, the state remains [`PreTransform`];
-    /// 
+    ///
     /// if it succeeds durring the critical section the callback `at_critical_section` will be called after the transform completes, then moves to [`LoopStart`].
     #[inline(always)]
     pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>))
@@ -2574,7 +2552,7 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
         }
     }
     /// Adds retry logic to [`Self::defer_guard`];
-    /// 
+    ///
     /// Retry logic should mirror [`Controller<'machine, 'space, LoopStart, S>::exec_permission_with_retries`].
     #[inline(always)]
     pub fn defer_guard_with_retries(mut self, max_retries : usize) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
@@ -2592,7 +2570,6 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
 }
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, DeferGuard, S> {
-    
     /// Reinsert the current exec, and drop the permission, moving back to [`LoopStart`].
     #[inline(always)]
     pub fn defer_current_exec(self)
@@ -2737,4 +2714,69 @@ pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Spa
     }
 }
 
+
+
+// ///////////////////
+// SEMANTIC MODEL //
+// /////////////////
+//
+// par for thread in threads
+//   'from_start
+//   let it = space.at(`[4] exec [2] `thread``)
+//   'from_current
+//   let stmt = it.next(`(exec (`thread` $loc) $patterns $templates)`)
+//   try
+//     atomic
+//       let read_permissions = get_read_permissions(stmt)
+//       let write_permissions = get_write_permissions(stmt)
+//     space.transform(stmt, read_permissions, write_permissions)
+//     goto 'from_start
+//   except PermissionError
+//     goto 'from_current
+//   except Exception as e
+//     space.add(`(exec (`thread` $loc) `e`)`)
+//     goto 'done
+//   finally
+//     drop(read_permissions)
+//     drop(write_permissions)
+// 'done
+
+// this models the the behavior of the upper semantic model as closely as described
+#[allow(unused)]
+pub(crate) fn metta_calculus_model<'space, S: Space>(
+    space               : &'space S,
+    thread_id_sexpr_str : &str,
+    auth                : &S::Auth,
+) -> Result<(), ExecError<S>> {
+    let mut machine = None;
+    let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, auth);
+    const MAX_RETRIES : usize = usize::MAX;
+
+    'process_execs : loop {
+        let exec_permission = match start_controller.exec_permission_with_retries(MAX_RETRIES) {
+            Ok(ok)       => ok,
+            Err((_c, e)) => panic!("Reached the end of the universe."),
+        };
+
+        let removed = match exec_permission.exec_lookup() {
+            CF::Continue(removed)                                 => removed,
+            CF::Break(LookupBaseCases::Done)                      => return Ok(()),
+            CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
+                                                                       start_controller = remaining.continue_loop();
+                                                                       continue 'process_execs;
+                                                                     },
+        };
+        start_controller = match removed.transform(|_|{}) {
+            Ok(ok)                                 => ok,
+            Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
+            Err(TransformErr::Permission((c, _e))) => {
+                                                        let defer_guard = match c.defer_guard_with_retries(MAX_RETRIES) {
+                                                            Ok(ok)      => ok,
+                                                            Err((_c,e)) => panic!("Reached the end of the universe."),
+                                                        };
+                                                        defer_guard.defer_current_exec()
+                                                      },
+        };
+    }
+}
 } // end mod metta_calculus

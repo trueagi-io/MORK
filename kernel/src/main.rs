@@ -1,8 +1,11 @@
+use std::io::Read;
+use pathmap::trie_map::BytesTrieMap;
+use pathmap::zipper::{ZipperCreation, ZipperMoving};
 // // use std::future::Future;
 // // use std::task::Poll;
 // use std::time::Instant;
 // use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
-// use mork::{expr, Space};
+use mork::{expr, PathCount, Space};
 // use mork::space::DefaultSpace;
 
 // // Remy : Adam, You seem does not seem to like using the test framework for benchmarks, I'm sure you have reasons.
@@ -755,4 +758,56 @@
 //     std::process::exit(0)
 // }
 
-fn main() {}
+fn main() {
+    let space = mork::space::DefaultSpace::new();
+
+    let paths = std::fs::read_dir("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts/").unwrap();
+    let mut n = 0usize;
+    for (i, path) in paths.enumerate() {
+        let name = path.unwrap().path();
+        
+        let f = std::fs::File::open(name.clone());
+        let mut s = String::new();
+        f.unwrap().read_to_string(&mut s).unwrap();
+        let file_name = name.file_name().unwrap().display().to_string();
+        let sexpr = format!("({} $x)", &file_name[..file_name.len()-5]);
+        // println!("{file_name}, {sexpr}");
+        let e = space.sexpr_to_expr(sexpr.as_str()).unwrap();
+        let mut writer = space.new_writer(&e.as_bytes()[..e.as_bytes().len()-1], &()).unwrap();
+        match space.load_json_old(s.as_str(), &mut writer) {
+            Ok(k) => { n+= k }
+            Err(e) => { println!("ERROR {e:?} at {name:?}") }
+        }
+        
+        // if i > 100 { break; }
+        if i % 1000 == 0 {
+            println!("Name {} ({})", name.display(), n);    
+        }
+    }
+
+    // let mut of = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.metta").unwrap();
+    let mut opathsf = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.paths").unwrap();
+    // let mut oactf = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.act").unwrap();
+    // let dumped = space.dump_all_sexpr(&mut of).unwrap();
+    // println!("present {}", space.map.read_zipper_at_path(&[]).unwrap().val_count());
+    // let dumped = space.dump_sexpr(expr!(space, "$"), expr!(space, "_1"), &mut of).unwrap();
+
+    println!("paths {:?}", pathmap::path_serialization::serialize_paths_(space.map.read_zipper_at_path(&[]).unwrap(), &mut opathsf).unwrap());
+    let act = pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(space.map.read_zipper_at_path(&[]).unwrap(), |_| 0, "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.act").unwrap();
+    println!("act {:?}", act.counters());
+    // println!("dumped {} ({})", dumped, n);
+    
+    // let mut opathsf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.paths").unwrap();
+    // 
+    // let mut btm = BytesTrieMap::new();
+    // let des = pathmap::path_serialization::deserialize_paths_(btm.write_zipper(), opathsf, ());
+    // println!("deserialized {:?}", des);
+
+    // let oact = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.act").unwrap();
+    // 
+    // let act = pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(oact.read_zipper(), |_| 0, "/dev/shm/submissions.act").unwrap();
+    // // let act = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.act").unwrap();
+    // 
+    // println!("act {:?}", act.counters());
+    println!("cnt {:?}", act.read_zipper().val_count());
+}

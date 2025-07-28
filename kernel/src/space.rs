@@ -29,7 +29,7 @@ use crate::SpaceWriterZipper;
 /// A default minimalist implementation of [Space]
 pub struct DefaultSpace {
     /// The [PathMap] containing everything in the space
-    map: Arc<ZipperHeadOwned<()>>,
+    pub map: Arc<ZipperHeadOwned<()>>,
     /// Guards access to create new permissions, so we can ensure high level operations
     /// that involve exchanging permissions are atomic
     permission_guard: Mutex<()>,
@@ -633,8 +633,9 @@ impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving 
         use mork_bytestring::Tag;
 
         let token = self.pdp.tokenizer(s.into().as_bytes());
-        let mut path = vec![Tag::SymbolSize(token.len() as u8).byte()];
-        path.extend(token);
+        let path = if token.len() == 0 { vec![Tag::Arity(0).byte()] } else {
+        let mut p = vec![Tag::SymbolSize(token.len() as u8).byte()];
+        p.extend(token); p };
         self.wz.descend_to(&path[..]);
         self.wz.set_val(());
         self.wz.ascend(path.len());
@@ -785,7 +786,7 @@ impl DefaultSpace {
                     ez.reset();
                     ez.write_arity(a);
                     wz.descend_to(&stack[..total]);
-                    wz.set_value(());
+                    wz.set_val(());
                     wz.reset();
                     i += 1;
                 }
@@ -977,7 +978,7 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_st
 
         // Remove expr, which means we are "claiming" it
         exec_wz.descend_to(&buffer[prefix.len()..]);
-        exec_wz.remove_val();
+        exec_wz.remove_value();
         drop(exec_wz);
         drop(exec_permission);
 
@@ -1494,27 +1495,25 @@ impl DefaultSpace {
 
     /// GOAT, What is the point of this function?  Why doesn't it just call `dump_sexpr`??
     pub fn dump_all_sexpr<W : Write>(&self, w: &mut W) -> Result<usize, String> {
-
-        unimplemented!();
-
-        // let mut rz = self.btm.read_zipper();
-        // let mut i = 0usize;
-        // while rz.to_next_val() {
-        //     Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
-        //         #[cfg(feature="interning")]
-        //         {
-        //             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-        //             let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-        //             // println!("symbol {symbol:?}, bytes {mstr:?}");
-        //             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-        //         }
-        //         #[cfg(not(feature="interning"))]
-        //         unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-        //     });
-        //     w.write(&[b'\n']).map_err(|x| x.to_string())?;
-        //     i += 1;
-        // }
-        // Ok(i)
+        let mut reader = self.new_reader(&[], &()).unwrap();
+        let mut rz = self.read_zipper(&mut reader);
+        let mut i = 0usize;
+        while rz.to_next_val() {
+            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
+                #[cfg(feature="interning")]
+                {
+                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                    // println!("symbol {symbol:?}, bytes {mstr:?}");
+                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+                }
+                #[cfg(not(feature="interning"))]
+                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+            });
+            w.write(&[b'\n']).map_err(|x| x.to_string())?;
+            i += 1;
+        }
+        Ok(i)
     }
 
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {

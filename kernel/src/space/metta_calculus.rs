@@ -548,6 +548,8 @@ let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, auth).t
 // SEMANTIC MODEL //
 // /////////////////
 //
+// A step countdown for sucessful iterations should be included
+//
 // par for thread in threads
 //   'from_start
 //   let it = space.at(`[4] exec [2] `thread``)
@@ -574,6 +576,8 @@ let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, auth).t
 pub(crate) fn metta_calculus_model<'space, S: Space>(
 space               : &'space S,
 thread_id_sexpr_str : &str,
+// adding a step counter was requested as an ammendment to the "semantic model"
+mut step_cnt        : usize,
 auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
 let mut machine = None;
@@ -595,7 +599,15 @@ const MAX_RETRIES : usize = usize::MAX;
                                                                  },
     };
     start_controller = match removed.transform(|_|{}) {
-        Ok(ok)                                 => ok,
+        Ok(ok)                                 => {
+                                                     if step_cnt > 0 {
+                                                         step_cnt -= 1
+                                                     } else {
+                                                         //Finished running the allotted number of steps
+                                                         break 'process_execs Ok(())
+                                                     }
+                                                     ok
+                                                  },
         Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
         Err(TransformErr::Permission((c, _e))) => {
                                                     let defer_guard = match c.defer_guard_with_retries(MAX_RETRIES) {

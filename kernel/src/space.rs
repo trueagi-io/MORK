@@ -1558,16 +1558,27 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
         }
 
         // &buffer[constant_template_prefix.len()..oz.loc]
+        let mut varbuf = [0u8; 66];
+        varbuf[0] = b'"';
+
         Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
             #[cfg(feature="interning")]
-            {
+            let s_slice = {
                 let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                 let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
                 // println!("symbol {symbol:?}, bytes {mstr:?}");
                 unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-            }
+            };
             #[cfg(not(feature="interning"))]
-            unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+            let s_slice: &str = unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) };
+
+            if s_slice.contains(|b: char| b.is_whitespace()) {
+                varbuf[1..1+s.len()].copy_from_slice(s);
+                varbuf[1+s.len()] = b'"';
+                unsafe { std::mem::transmute(std::str::from_utf8(&varbuf[..s.len() + 2]).unwrap()) } 
+            } else {
+                s_slice
+            }
         });
 
         // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory

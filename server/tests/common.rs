@@ -63,7 +63,7 @@ pub async fn get_url_status(url : &str) -> Result<String, reqwest::Error> {
     let response = reqwest::get(url).await?;
     assert!(response.status().is_success());
     let response_text = response.text().await?;
-    println!("Status (polling) response: {}", response_text);
+    // println!("Status (polling) response: {}", response_text);
     let response_json: serde_json::Value = serde_json::from_str(&response_text).unwrap();
     Ok(response_json.get("status").unwrap().as_str().unwrap().to_string())
 }

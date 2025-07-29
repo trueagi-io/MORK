@@ -53,7 +53,7 @@ class MORK:
 
             # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
-            print("poll status: ", status_response.text)
+            # print("poll status: ", status_response.text)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
                 return_status = status_info['status']
@@ -462,7 +462,7 @@ class MORK:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
-        if "clear" in self.finalization: self.clear().listen()
+        if "clear" in self.finalization: self.clear().block()
         if "spin_down" in self.finalization: self.spin_down()
         if "stop" in self.finalization: self.stop()
 
@@ -519,6 +519,7 @@ class ManagedMORK(MORK):
         try:
             return cls(base_url=url, *args)
         except (ConnectionError, RequestException) as e:
+            print("starting... upon trying to connect: ", e)
             return cls.start(binary_path, *args)
 
     @classmethod
@@ -644,16 +645,12 @@ def _main_mm2():
             print(i, str(item))
 
 def test_sse_status():
+    # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
-
-
+    print("done listening")
 
 if __name__ == '__main__':
     # _main()
     _main_mm2()
     # test_sse_status()
-
-
-
-

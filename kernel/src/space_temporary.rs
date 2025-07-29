@@ -173,10 +173,13 @@ pub trait Space: Sized {
         writer   : &mut W,
         (prefix_reader, pattern)  : (&mut Self::Reader<'s>, Expr),
         template : Expr,
+        max_write: usize
     )  -> Result<PathCount, DumpSExprError> {
-        dump_as_sexpr_impl(self.symbol_table(), pattern, self.read_zipper(prefix_reader), template, writer, 
-        || "IO Write Error")
-        .map_err(|e| DumpSExprError( e.to_string() ))
+        let s = "IoWriteError";
+        let mut error = false;
+        let c = dump_as_sexpr_impl(self.symbol_table(), pattern, self.read_zipper(prefix_reader), template, writer,
+                           || unsafe { std::ptr::write_volatile(&mut error, true); }, max_write);
+        if error { Err(DumpSExprError(s.to_string())) } else { Ok(c) }
     }
 
     fn load_csv<'s, SrcStream: BufRead>(

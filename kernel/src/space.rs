@@ -1520,30 +1520,38 @@ impl DefaultSpace {
         let mut reader = self.new_reader(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }, &())?;
         let rz = self.read_zipper(&mut reader);
 
-        dump_as_sexpr_impl(
+        let s = "IoWriteError";
+        let mut error = false;
+        let c = dump_as_sexpr_impl(
             &self.sm,
             pattern,
             rz,
             template,
             w, 
-            || "IoWriteError"
-        ).map_err(|e| format!("{:?}", e))
+            || unsafe { std::ptr::write_volatile(&mut error, true); },
+            usize::MAX
+        );
+        if error { Err(s.to_string()) } else { Ok(c) }
     }
 }
 
-pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
     #[allow(unused)] // Symbol table mapping only used when interning feature is enabled
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
     template    : Expr,
     w           : &mut W,
-    f           : impl Fn()->IoWriteError, 
-) -> Result<usize, IoWriteError>
+    mut f       : impl FnMut(),
+    max_write   : usize
+) -> usize
     where
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
 {
+    // let max_write   : usize = 10;
     let mut buffer = [0u8; 4096];
+    let mut i = 0usize;
+    // panic!("sizeof {}", std::mem::size_of::<IoWriteError>());
 
     query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
@@ -1581,12 +1589,18 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
             }
         });
 
-        // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
-        // w.write(&[b'\n']).map_err(|x| x.to_string())?;
-        w.write(&[b'\n']).map_err(|x| f())?;
-
-        Ok(())
-    })
+        if i < max_write {
+            // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
+            // w.write(&[b'\n']).map_err(|x| x.to_string())?;
+            match w.write(&[b'\n']) {
+                Ok(_) => { i += 1; true }
+                Err(_) => { f(); false }
+            }
+        } else {
+            false
+        }
+    });
+    i
 }
 
 pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
@@ -1671,7 +1685,7 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-    pub fn query_multi<Err: Copy, F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>>(&self, patterns: &[Expr], effect: F) -> Result<usize, Err> {
+    pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {
         let mut readers = patterns.iter().map(|p| {
             self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
@@ -1684,17 +1698,16 @@ impl DefaultSpace {
     }
 }
 
-pub(crate) fn query_multi_impl<'s, E, RZ, Err, F>
+pub(crate) fn query_multi_impl<'s, E, RZ, F>
 (
     patterns    : &[E],
     pattern_rzs : &[RZ],
     mut effect  : F,
-) -> Result<usize, Err>
+) -> usize
 where
     E: ExprTrait,
-    Err: Copy,
     RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>,
+    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
@@ -1708,11 +1721,11 @@ where
             );
         }
 
-        let [pat_0, pat_rest @ ..] = patterns else { return Ok(0); };
-        let [rz0, rz_rest @ ..] = pattern_rzs else { return Ok(0); };
+        let [pat_0, pat_rest @ ..] = patterns else { return 0; };
+        let [rz0, rz_rest @ ..] = pattern_rzs else { return 0; };
 
         let first_pattern_prefix = make_prefix(&pat_0.borrow());
-        if !rz0.path_exists() { return Ok(0); }
+        if !rz0.path_exists() { return 0; }
 
         //GOAT??  What is the theory behind this code???
         //It looks like it's composing an expression made out of all the pattern expressions
@@ -1736,7 +1749,7 @@ where
             let prefix = make_prefix(&pat.borrow());
             if !rz.path_exists() {
                 trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));
-                return Ok(0)
+                return 0
             }
             temp_map.write_zipper_at_path(prefix).graft(rz);
             tmp_maps.push(temp_map);
@@ -1761,10 +1774,10 @@ where
 
         let mut references: Vec<ExprEnv> = vec![];
         let mut candidate = 0;
+        let mut early = false;
 
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
-            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
         }
 
         let pat = Expr { ptr: pattern_expr.as_mut_ptr() };
@@ -1807,46 +1820,28 @@ where
                                 };
                                 // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
 
-                                match effect(Err((bs, oi, ni, assignments)), e) {
-                                    Ok(()) => {}
-                                    Err(t) => {
-                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Err>()) };
-                                        unsafe { std::ptr::write(t_ptr as *mut Err, t) };
-                                        RET.set(t_ptr);
-                                        unsafe { longjmp(a, 1) }
-                                    }
-                                }
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-
+                                if !effect(Err((bs, oi, ni, assignments)), e) {
+                                    unsafe { std::ptr::write_volatile(&mut early, true); }
+                                    unsafe { longjmp(a, 1) }
+                                }
                             }
                             Err(failed) => {
                                 trace!(target: "query_multi", "failed {:?}", failed)
                             }
                         }
                     } else {
-                        match effect(Ok(refs), e) {
-                            Ok(()) => {}
-                            Err(t) => {
-                                let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Err>()) };
-                                unsafe { std::ptr::write(t_ptr as *mut Err, t) };
-                                RET.set(t_ptr);
-                                unsafe { longjmp(a, 1) }
-                            }
-                        }
                         unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+                        if !effect(Ok(refs), e) {
+                            unsafe { std::ptr::write_volatile(&mut early, true); }
+                            unsafe { longjmp(a, 1) }
+                        }
                     }
                 })
             }
         });
-        RET.with(|mptr| {
-            if mptr.get().is_null() { Ok(candidate) }
-            else {
-                let tref = mptr.get();
-                let t = unsafe { std::ptr::read(tref as _) };
-                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<Err>()) };
-                Err(t)
-            }
-        })
+    
+        candidate
 }
 
 impl DefaultSpace {
@@ -1914,8 +1909,8 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
                 any_new |= wz.set_val(()).is_none();
                 wz.reset();
             }
-            Ok::<(), ()>(())
-        }).unwrap();
+            true
+        });
 
         (touched, any_new)
 }
@@ -1933,8 +1928,8 @@ impl DefaultSpace {
     pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
         self.query_multi(&[pattern], |_refs, e| {
             effect(e);
-            Ok::<(), ()>(())
-        } ).unwrap();
+            true
+        } );
     }
 
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {

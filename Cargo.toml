@@ -29,11 +29,11 @@ bucket_map = {features = ["debug_api"], path = "./experiments/symbol_mapping/buc
 
 # External to MORK
 freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } #Fixes build on MacOS
-gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for dag_serialization
+gxhash = {version="3.5", git="https://github.com/ogxd/gxhash"} # for dag_serialization
 
 [workspace.dependencies.pathmap]
 # for stability reasons, use local. For convenience, use git...
 #git = "https://github.com/Adam-Vandervorst/PathMap.git"
 #branch = "master"
 path = "../PathMap"
-features = ["jemalloc", "zipper_tracking", "arena_compact"]
+features = ["zipper_tracking", "arena_compact"]

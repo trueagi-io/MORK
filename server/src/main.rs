@@ -449,6 +449,24 @@ fn get_query_key_flag<'a>(in_str: &'a str, key: &str) -> Option<ArgVal> {
     }
 }
 
+fn get_query_key_u64<'a>(in_str: &'a str, key: &str) -> Option<ArgVal> {
+    match get_query_key_raw(in_str, key) {
+        Some(query_str) => {
+            query_str.parse().map(|x| ArgVal::UInt(x)).ok()
+        },
+        None => None
+    }
+}
+
+fn get_query_key_i64<'a>(in_str: &'a str, key: &str) -> Option<ArgVal> {
+    match get_query_key_raw(in_str, key) {
+        Some(query_str) => {
+            query_str.parse().map(|x| ArgVal::Int(x)).ok()
+        },
+        None => None
+    }
+}
+
 /// Extracts `key` from a URI query string formatted as `key=value&key2=value2`
 fn get_query_key_bytes<'a>(in_str: &'a str, key: &str) -> Result<Option<Cow<'a, [u8]>>, BoxedErr> {
     match get_query_key_raw(in_str, key) {
@@ -495,8 +513,8 @@ fn get_query_key_expr<'a>(space: &ServerSpace, in_str: &'a str, key: &str) -> Re
 fn parse_property(space: &ServerSpace, in_str: &str, prop_def: &PropDef) -> Result<Option<ArgVal>, BoxedErr> {
     match prop_def.arg_type {
         ArgType::Flag => Ok(get_query_key_flag(in_str, prop_def.name)),
-        ArgType::Int |
-        ArgType::UInt => { unimplemented!() },
+        ArgType::Int => Ok(get_query_key_i64(in_str, prop_def.name)),
+        ArgType::UInt => Ok(get_query_key_u64(in_str, prop_def.name)),
         ArgType::Path => Ok(get_query_key_bytes(in_str, prop_def.name)?.map(|val| ArgVal::Path(val.to_vec()))),
         ArgType::Expr => Ok(get_query_key_expr(space, in_str, prop_def.name)?.map(|expr| ArgVal::Expr(expr))),
         ArgType::String => Ok(get_query_key_str(in_str, prop_def.name)?.map(|val| ArgVal::String(val.to_string()))),

@@ -1,13 +1,13 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use rayon::ThreadPoolBuilder;
-use pathmap::zipper::{Zipper, ReadZipperUntracked, ZipperIteration, ZipperAbsolutePath};
+use pathmap::zipper::{ZipperValues, ZipperIteration, ZipperAbsolutePath};
 use pathmap::PathMap;
 use pathmap::zipper::*;
 
 const K: u64 = 1_000_000_000;
 
-fn homo<F: FnMut(u32, &mut ReadZipperUntracked<()>) -> ()>(at_least: u32, rz: &mut ReadZipperUntracked<()>, f: &mut F) {
+fn homo<Z: ZipperMoving + ZipperValues<()>, F: FnMut(u32, &mut Z) -> ()>(at_least: u32, rz: &mut Z, f: &mut F) {
     rz.descend_until();
 
     let mut cs = rz.child_mask().iter().fold(0, |t, x| t + x.count_ones());
@@ -55,7 +55,7 @@ fn parallel_map() {
         let mut run = 0;
         let mut units = vec![];
         let mut handles = vec![];
-        homo(TC, &mut dz, &mut |cs, z: &mut ReadZipperUntracked<()>| {
+        homo(TC, &mut dz, &mut |cs, z| {
             let cutoff = cs.div_ceil(TC);
             z.descend_first_byte();
             loop {
@@ -166,7 +166,7 @@ fn task_parallel_map() {
     let mut dz = unsafe { zh.read_zipper_at_path_unchecked(&[0]) };
     let mut chunks = 0;
     let t0 = Instant::now();
-    homo(TC, &mut dz, &mut |_, z: &mut ReadZipperUntracked<()>| {
+    homo(TC, &mut dz, &mut |_, z| {
         z.descend_first_byte();
         loop {
             chunks += 1;
@@ -176,7 +176,7 @@ fn task_parallel_map() {
             opath.extend_from_slice(&z.path()[..]);
             // println!("dispatched zpath={:?} ({}) opath={opath:?}", z.path(), z.val_count());
             let work_output = unsafe { zh.write_zipper_at_exclusive_path_unchecked(&opath[..]) };
-            unsafe { COUNTER.fetch_add(1, Ordering::Relaxed) };
+            COUNTER.fetch_add(1, Ordering::Relaxed);
 
             work_zippers.push((work_input, work_output));
 
@@ -206,7 +206,7 @@ fn task_parallel_map() {
                     work_output.set_val(());
                     work_output.reset();
                 }
-                unsafe { COUNTER.fetch_sub(1, Ordering::Relaxed) };
+                COUNTER.fetch_sub(1, Ordering::Relaxed);
             });
         }
         println!("delegating {chunks} chunks took {} micros", t0.elapsed().as_micros());
@@ -214,7 +214,7 @@ fn task_parallel_map() {
         t1 = Instant::now();
     });
 
-    while unsafe { COUNTER.load(Ordering::Acquire) > 0 } {}
+    while COUNTER.load(Ordering::Acquire) > 0 {}
     println!("processing took {} micros", t1.elapsed().as_micros());
 
     let rz = unsafe { zh.read_zipper_at_path_unchecked(&[]) };

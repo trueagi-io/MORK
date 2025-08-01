@@ -29,7 +29,7 @@ use crate::{space_temporary, SpaceWriterZipper};
 /// A default minimalist implementation of [Space]
 pub struct DefaultSpace {
     /// The [PathMap] containing everything in the space
-    map: Arc<ZipperHeadOwned<()>>,
+    pub map: Arc<ZipperHeadOwned<()>>,
     /// Guards access to create new permissions, so we can ensure high level operations
     /// that involve exchanging permissions are atomic
     permission_guard: Mutex<()>,
@@ -633,8 +633,9 @@ impl <'a, 'c, WZ> SpaceTranscriber<'a, 'c, WZ> where WZ : Zipper + ZipperMoving 
         use mork_bytestring::Tag;
 
         let token = self.pdp.tokenizer(s.into().as_bytes());
-        let mut path = vec![Tag::SymbolSize(token.len() as u8).byte()];
-        path.extend(token);
+        let path = if token.len() == 0 { vec![Tag::Arity(0).byte()] } else {
+        let mut p = vec![Tag::SymbolSize(token.len() as u8).byte()];
+        p.extend(token); p };
         self.wz.descend_to(&path[..]);
         self.wz.set_val(());
         self.wz.ascend(path.len());
@@ -785,7 +786,7 @@ impl DefaultSpace {
                     ez.reset();
                     ez.write_arity(a);
                     wz.descend_to(&stack[..total]);
-                    wz.set_value(());
+                    wz.set_val(());
                     wz.reset();
                     i += 1;
                 }
@@ -891,6 +892,7 @@ impl DefaultSpace {
     }
 }
 
+<<<<<<< HEAD
 pub(crate) fn metta_calculus_impl<'s, S: Space>(
     space: &'s S, 
     thread_id_sexpr_str: &str, 
@@ -900,6 +902,122 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(
 ) -> Result<(), ExecError<S>> {
     // Remy (2025/07/11) : if this ends up being the only caller we should inline it.
     metta_calculus::metta_calculus_impl_statemachine_poc(space, thread_id_sexpr_str, max_retries, step_cnt, auth)
+=======
+pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) -> Result<(), ExecError<S>> {
+
+    //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
+    //
+    // (exec (<location> $priority) $patterns $templates)
+    let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
+    let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
+
+    // the invariant is that buffer should always be reset with at least the prefix
+    let mut buffer = Vec::from(prefix);
+
+    let mut retry = false;
+    let mut retry_cnt = max_retries;
+
+    let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
+        debug_assert!(buffer.len() >= prefix.len());
+        debug_assert_eq!(&buffer[..prefix.len()], prefix);
+
+        // ////////////////////////////////////////////////////////////////////
+        // Get a write permission to the exec sub-space for this MeTTa thread
+        // //////////////////////////////////////////////////////////////////
+        //
+        // This path should never be contended for long periods of time, although it is possible another
+        // command (such as a debugger command) has this path locked in order to communicate with us.  We
+        // should be able to get the write permission soon enough by retrying
+        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+            Ok(writer) => writer,
+            Err(_) => {
+                //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
+                // which means we've been trying for a whole second.  It also likely means the path
+                // is held indefinitely, which is a bug somewhere, although not here.
+                //We ought to write an error into the status map and abort execution
+                todo!()
+            }
+        };
+        let mut exec_wz = space.write_zipper(&mut exec_permission);
+
+        // //////////////////////////////////////
+        // Find an expression we can execute  //
+        // ////////////////////////////////////
+        let mut rz = exec_wz.fork_read_zipper();
+        rz.descend_to(&buffer[prefix.len()..]);
+
+        if !rz.to_next_val() {
+            if retry {
+                if retry_cnt > 0 {
+                    retry_cnt -= 1;
+                } else {
+                    break 'process_execs Err(ExecError::RetryLimit("".to_string()))
+                }
+
+                //Try again from the beginning
+                buffer.truncate(prefix.len());
+                std::thread::sleep(core::time::Duration::from_millis(1));
+                continue 'process_execs;
+            }
+
+            //Sucessfully consumed all execs.  This MeTTa thread is done
+            break 'process_execs Ok(())
+        }
+        buffer.truncate(prefix.len());
+        buffer.extend_from_slice(rz.path());
+        drop(rz);
+
+        // Remove expr, which means we are "claiming" it
+        exec_wz.descend_to(&buffer[prefix.len()..]);
+        exec_wz.remove_value();
+        drop(exec_wz);
+        drop(exec_permission);
+
+        //------------------------------------------------------------------------------
+        // Here the exec has been removed from the space, but the transform permissions
+        // have not yet been acquired.
+        //------------------------------------------------------------------------------
+
+        match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
+            Ok(()) => {
+                retry = false;
+                retry_cnt = max_retries;
+                buffer.truncate(prefix.len());
+                if step_cnt > 0 {
+                    step_cnt -= 1
+                } else {
+                    //Finished running the allotted number of steps
+                    break 'process_execs Ok(())
+                }
+            },
+            Err(err) => {
+                match err {
+                    ExecError::UserPermissionErr(_) => {
+                        //We couldn't get permissions for this particular exec expression, so we need to
+                        // put the expression back in the space and then try with another one.
+                        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
+                            Ok(writer) => writer,
+                            Err(_) => {
+                                //See similar code above...
+                                todo!()
+                            }
+                        };
+                        let mut exec_wz = space.write_zipper(&mut exec_permission);
+                        exec_wz.descend_to(&buffer[prefix.len()..]);
+                        exec_wz.set_val(());
+                        retry = true;
+                    },
+                    _ => {
+                        //Any error but a UserPermissionError means we halt the execution
+                        break 'process_execs Err(err)
+                    }
+                }
+            }
+        }
+    };
+
+    exec_result
+>>>>>>> origin/server
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(
@@ -1369,57 +1487,63 @@ impl DefaultSpace {
 
     /// GOAT, What is the point of this function?  Why doesn't it just call `dump_sexpr`??
     pub fn dump_all_sexpr<W : Write>(&self, w: &mut W) -> Result<usize, String> {
-
-        unimplemented!();
-
-        // let mut rz = self.btm.read_zipper();
-        // let mut i = 0usize;
-        // while rz.to_next_val() {
-        //     Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
-        //         #[cfg(feature="interning")]
-        //         {
-        //             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-        //             let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-        //             // println!("symbol {symbol:?}, bytes {mstr:?}");
-        //             unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-        //         }
-        //         #[cfg(not(feature="interning"))]
-        //         unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-        //     });
-        //     w.write(&[b'\n']).map_err(|x| x.to_string())?;
-        //     i += 1;
-        // }
-        // Ok(i)
+        let mut reader = self.new_reader(&[], &()).unwrap();
+        let mut rz = self.read_zipper(&mut reader);
+        let mut i = 0usize;
+        while rz.to_next_val() {
+            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
+                #[cfg(feature="interning")]
+                {
+                    let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
+                    // println!("symbol {symbol:?}, bytes {mstr:?}");
+                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+                }
+                #[cfg(not(feature="interning"))]
+                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+            });
+            w.write(&[b'\n']).map_err(|x| x.to_string())?;
+            i += 1;
+        }
+        Ok(i)
     }
 
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
         let mut reader = self.new_reader(unsafe { pattern.prefix().unwrap_or_else(|_| pattern.span()).as_ref().unwrap() }, &())?;
         let rz = self.read_zipper(&mut reader);
 
-        dump_as_sexpr_impl(
+        let s = "IoWriteError";
+        let mut error = false;
+        let c = dump_as_sexpr_impl(
             &self.sm,
             pattern,
             rz,
             template,
             w, 
-            || "IoWriteError"
-        ).map_err(|e| format!("{:?}", e))
+            || unsafe { std::ptr::write_volatile(&mut error, true); },
+            usize::MAX
+        );
+        if error { Err(s.to_string()) } else { Ok(c) }
     }
 }
 
-pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
+pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
     #[allow(unused)] // Symbol table mapping only used when interning feature is enabled
     sm          : &SharedMapping,
     pattern     : Expr,
     pattern_rz  : RZ,
     template    : Expr,
     w           : &mut W,
-    f           : impl Fn()->IoWriteError, 
-) -> Result<usize, IoWriteError>
+    mut f       : impl FnMut(),
+    max_write   : usize
+) -> usize
     where
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
 {
+    // let max_write   : usize = 10;
     let mut buffer = [0u8; 4096];
+    let mut i = 0usize;
+    // panic!("sizeof {}", std::mem::size_of::<IoWriteError>());
 
     query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
@@ -1434,24 +1558,41 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write, IoWriteError: Copy>(
         }
 
         // &buffer[constant_template_prefix.len()..oz.loc]
+        let mut varbuf = [0u8; 66];
+        varbuf[0] = b'"';
+
         Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
             #[cfg(feature="interning")]
-            {
+            let s_slice = {
                 let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
                 let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
                 // println!("symbol {symbol:?}, bytes {mstr:?}");
                 unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-            }
+            };
             #[cfg(not(feature="interning"))]
-            unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+            let s_slice: &str = unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) };
+
+            if s_slice.contains(|b: char| b.is_whitespace()) {
+                varbuf[1..1+s.len()].copy_from_slice(s);
+                varbuf[1+s.len()] = b'"';
+                unsafe { std::mem::transmute(std::str::from_utf8(&varbuf[..s.len() + 2]).unwrap()) } 
+            } else {
+                s_slice
+            }
         });
 
-        // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
-        // w.write(&[b'\n']).map_err(|x| x.to_string())?;
-        w.write(&[b'\n']).map_err(|x| f())?;
-
-        Ok(())
-    })
+        if i < max_write {
+            // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
+            // w.write(&[b'\n']).map_err(|x| x.to_string())?;
+            match w.write(&[b'\n']) {
+                Ok(_) => { i += 1; true }
+                Err(_) => { f(); false }
+            }
+        } else {
+            false
+        }
+    });
+    i
 }
 
 pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
@@ -1536,7 +1677,7 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-    pub fn query_multi<Err: Copy, F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>>(&self, patterns: &[Expr], effect: F) -> Result<usize, Err> {
+    pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {
         let mut readers = patterns.iter().map(|p| {
             self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
@@ -1549,17 +1690,16 @@ impl DefaultSpace {
     }
 }
 
-pub(crate) fn query_multi_impl<'s, E, RZ, Err, F>
+pub(crate) fn query_multi_impl<'s, E, RZ, F>
 (
     patterns    : &[E],
     pattern_rzs : &[RZ],
     mut effect  : F,
-) -> Result<usize, Err>
+) -> usize
 where
     E: ExprTrait,
-    Err: Copy,
     RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), Err>,
+    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
@@ -1573,11 +1713,11 @@ where
             );
         }
 
-        let [pat_0, pat_rest @ ..] = patterns else { return Ok(0); };
-        let [rz0, rz_rest @ ..] = pattern_rzs else { return Ok(0); };
+        let [pat_0, pat_rest @ ..] = patterns else { return 0; };
+        let [rz0, rz_rest @ ..] = pattern_rzs else { return 0; };
 
         let first_pattern_prefix = make_prefix(&pat_0.borrow());
-        if !rz0.path_exists() { return Ok(0); }
+        if !rz0.path_exists() { return 0; }
 
         //GOAT??  What is the theory behind this code???
         //It looks like it's composing an expression made out of all the pattern expressions
@@ -1601,7 +1741,7 @@ where
             let prefix = make_prefix(&pat.borrow());
             if !rz.path_exists() {
                 trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));
-                return Ok(0)
+                return 0
             }
             temp_map.write_zipper_at_path(prefix).graft(rz);
             tmp_maps.push(temp_map);
@@ -1626,10 +1766,10 @@ where
 
         let mut references: Vec<ExprEnv> = vec![];
         let mut candidate = 0;
+        let mut early = false;
 
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
-            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(std::ptr::null_mut()) };
         }
 
         let pat = Expr { ptr: pattern_expr.as_mut_ptr() };
@@ -1672,46 +1812,28 @@ where
                                 };
                                 // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
 
-                                match effect(Err((bs, oi, ni, assignments)), e) {
-                                    Ok(()) => {}
-                                    Err(t) => {
-                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Err>()) };
-                                        unsafe { std::ptr::write(t_ptr as *mut Err, t) };
-                                        RET.set(t_ptr);
-                                        unsafe { longjmp(a, 1) }
-                                    }
-                                }
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-
+                                if !effect(Err((bs, oi, ni, assignments)), e) {
+                                    unsafe { std::ptr::write_volatile(&mut early, true); }
+                                    unsafe { longjmp(a, 1) }
+                                }
                             }
                             Err(failed) => {
                                 trace!(target: "query_multi", "failed {:?}", failed)
                             }
                         }
                     } else {
-                        match effect(Ok(refs), e) {
-                            Ok(()) => {}
-                            Err(t) => {
-                                let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Err>()) };
-                                unsafe { std::ptr::write(t_ptr as *mut Err, t) };
-                                RET.set(t_ptr);
-                                unsafe { longjmp(a, 1) }
-                            }
-                        }
                         unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+                        if !effect(Ok(refs), e) {
+                            unsafe { std::ptr::write_volatile(&mut early, true); }
+                            unsafe { longjmp(a, 1) }
+                        }
                     }
                 })
             }
         });
-        RET.with(|mptr| {
-            if mptr.get().is_null() { Ok(candidate) }
-            else {
-                let tref = mptr.get();
-                let t = unsafe { std::ptr::read(tref as _) };
-                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<Err>()) };
-                Err(t)
-            }
-        })
+    
+        candidate
 }
 
 impl DefaultSpace {
@@ -1779,8 +1901,8 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
                 any_new |= wz.set_val(()).is_none();
                 wz.reset();
             }
-            Ok::<(), ()>(())
-        }).unwrap();
+            true
+        });
 
         (touched, any_new)
 }
@@ -1798,8 +1920,8 @@ impl DefaultSpace {
     pub fn query<F : FnMut(Expr) -> ()>(&self, pattern: Expr, mut effect: F) {
         self.query_multi(&[pattern], |_refs, e| {
             effect(e);
-            Ok::<(), ()>(())
-        } ).unwrap();
+            true
+        } );
     }
 
     pub fn interpret_datalog(&mut self, rt: Expr) -> bool {

@@ -18,16 +18,16 @@ def preprocessing(server, datasets=DATASETS):
                     src.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/{dataset}.metta")\
                         .block()
                     # test: see the names of the people in the dataset
-                    # downloaded = src.download("(Individuals $i (Fullname $name))", "$name")
-                    # print("names", dataset, downloaded.data)
+                    downloaded = src.download("(Individuals $i (Fullname $name))", "$name", max_results=5)
+                    print("5 names", dataset, downloaded.data)
 
                 scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Fullname $name)))"),
-                                ("(simple (hasName $id $name))", "(simple (hasId $name $id))"))
+                                ("(simple (hasName $id $name))", "(simple (hasId $name $id))")).block()
 
                 scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"M\")))"),
-                                ("(simple (male $id))",))
+                                ("(simple (male $id))",)).block()
                 scope.transform(("(src (Individuals $i (Id $id)))", "(src (Individuals $i (Sex \"F\")))"),
-                                ("(simple (female $id))",))
+                                ("(simple (female $id))",)).block()
 
                 scope.transform(("(src (Relations $r (Husband $id)))", "(src (Relations $r (Children $lci $cid)))"),
                                 ("(simple (parent $id $cid))",)).block()
@@ -40,7 +40,8 @@ def preprocessing(server, datasets=DATASETS):
                                 ("(simple (parent $id $cid))",)).block()
 
 
-    ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", "file://" + __file__.rpartition("/")[0] + "/simple_all.metta")
+        path = "file://" + __file__.rpartition("/")[0] + "/simple_all.metta"
+        ins.sexpr_export("($dataset (simple $x))", "($dataset $x)", path).block()
 
     # test: see the steps performed by the server
     # for i, item in enumerate(ins.history):
@@ -49,8 +50,8 @@ def preprocessing(server, datasets=DATASETS):
 
 def is_different_hack(scope, ids, leave_out_id):
     # note that `leave_out_id` is a prefix and thread-specific, hence allowed to happen in parallel
-    scope.upload_("".join(f'(simple (isIdDifferent "{leave_out_id}" "{id0}"))\n'
-                          for id0 in ids if id0 != leave_out_id))
+    with scope.work_at(namespace=f'(simple (isIdDifferent "{leave_out_id}" "{{}}"))') as private_ns:
+        private_ns.upload_("\n".join(id0 for id0 in ids if id0 != leave_out_id))
 
 def hack(server, datasets=DATASETS, parallel=True):
     # HACK: Generate isIdDifferent relations so that sister relations aren't reflective
@@ -85,7 +86,7 @@ def _main():
     with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
         server.clear().block()
         preprocessing(server)
-        hack(server)
+        hack(server, parallel=True)
         processing(server, human_readable=False)
 
 if __name__ == '__main__':

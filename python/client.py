@@ -1,3 +1,4 @@
+import random
 from typing import Optional
 import os
 import json
@@ -53,7 +54,7 @@ class MORK:
 
             # status_loc == subdir  or  status_loc == unique_id
             status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
-            print("poll status: ", status_response.text)
+            # print("poll status: ", status_response.text)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
                 return_status = status_info['status']
@@ -139,11 +140,11 @@ class MORK:
         A request to download data from the server
         """
         #TODO: Specify format
-        def __init__(self, pattern, template):
+        def __init__(self, pattern, template, max_results=None):
             self.pattern = pattern
             self.template = template
             self.data = None
-            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/")
+            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/" + (f"?max_write={max_results}" if max_results else ""))
 
         def dispatch(self, server):
             super().dispatch(server)
@@ -217,13 +218,13 @@ class MORK:
         A request to export data to a file
         """
         #TODO: Specify format
-        def __init__(self, pattern, template, file_uri, fileformat="metta"):
+        def __init__(self, pattern, template, file_uri, fileformat="metta", max_write=None):
             self.fileformat = fileformat
             self.pattern = pattern
             self.template = template
             self.status_loc = template
             self.uri = file_uri
-            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}")
+            super().__init__("get", f"/export/{quote(self.pattern)}/{quote(self.template)}/?uri={self.uri}&format={fileformat}" + (f"&max_write={max_write}" if max_write else ""))
 
     class Transform(Request):
         """
@@ -352,32 +353,32 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
-    def download_(self):
+    def download_(self, max_results=None):
         """
         Download everything in the scope
         """
-        return self.download("$x", "$x")
+        return self.download("$x", "$x", max_results)
 
-    def download(self, pattern, template):
+    def download(self, pattern, template, max_results=None):
         """
         Download items from `pattern` and format them using `template`
         """
         #TODO: Specify format
         io = self.ns.format(pattern)
-        cmd = self.Download(io, template)
+        cmd = self.Download(io, template, max_results)
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd
 
-    def sexpr_export_(self, file_uri):
-        return self.sexpr_export("$x", "$x", file_uri)
+    def sexpr_export_(self, file_uri, max_write=None):
+        return self.sexpr_export("$x", "$x", file_uri, max_write=max_write)
 
-    def sexpr_export(self, pattern, template, file_uri):
+    def sexpr_export(self, pattern, template, file_uri, max_write=None):
         """
         Export items from `pattern` in the space and format them in `file` using `template`
         """
         io = self.ns.format(pattern)
-        cmd = self.Export(io, template, file_uri)
+        cmd = self.Export(io, template, file_uri, max_write=max_write)
         self.history.append(cmd)
         cmd.dispatch(self)
         return cmd
@@ -447,11 +448,13 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
-    def work_at(self, name, finalization=(), **kwargs):
+    def work_at(self, name=None, finalization=(), **kwargs):
         """
         Creates a new scoped subspace to work inside of
         """
-        return MORK(**kwargs, namespace=self.ns.format(f"({name} {{}})"), finalization=finalization, parent=self, history=self.history)
+        name = b32encode(random.randbytes(6)) if name is None else name
+        ns = kwargs.pop("namespace") if "namespace" in kwargs else self.ns.format(f"({name} {{}})")
+        return MORK(namespace=ns, finalization=finalization, parent=self, history=self.history, **kwargs)
 
     def __enter__(self):
         # io = self.ns.format("$x")
@@ -462,9 +465,13 @@ class MORK:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
-        if "clear" in self.finalization: self.clear().listen()
-        if "spin_down" in self.finalization: self.spin_down()
-        if "stop" in self.finalization: self.stop()
+        if "clear" in self.finalization: self.clear().block()
+        if "spin_down" in self.finalization:
+            try: self.spin_down()
+            except requests.ConnectionError as e: print("on spin down:", e)
+        if "stop" in self.finalization:
+            try: self.stop()
+            except requests.ConnectionError as e: print("on stop:", e)
 
     def spin_down(self):
         c = self.Stop(wait_for_idle=True)
@@ -519,6 +526,7 @@ class ManagedMORK(MORK):
         try:
             return cls(base_url=url, *args)
         except (ConnectionError, RequestException) as e:
+            print("starting... upon trying to connect: ", e)
             return cls.start(binary_path, *args)
 
     @classmethod
@@ -611,8 +619,8 @@ class ManagedMORK(MORK):
             if exc_type is None:
                 print("normal termination")
             else:
-                print(exc_type, exc_val, exc_tb, "caused terminate")
-            self.cleanup()
+                print(exc_type, exc_val, "caused terminate")
+            self.process.terminate()
 
 
 def _main():
@@ -644,16 +652,12 @@ def _main_mm2():
             print(i, str(item))
 
 def test_sse_status():
+    # smoke test
     with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
-
-
+    print("done listening")
 
 if __name__ == '__main__':
     # _main()
     _main_mm2()
     # test_sse_status()
-
-
-
-

@@ -425,6 +425,12 @@ impl CommandDefinition for ExportCmd {
             name: "uri",
             desc: "A file url to export to.  If this property is provided then the returned body won't contain any result data",
             required: false
+        },
+        PropDef {
+            arg_type: ArgType::UInt,
+            name: "max_write",
+            desc: "Max number of expressions to export",
+            required: false
         }]
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
@@ -463,8 +469,10 @@ impl CommandDefinition for ExportCmd {
             None => None
         };
 
+        let max_write = cmd.properties[2].as_ref().map(|x| x.as_u64() as usize).unwrap_or(usize::MAX);
+        
         let out = tokio::task::spawn_blocking(move || -> Result<WorkResult, CommandError> {
-            do_export(&ctx, (pat_reader, pattern), template, format, file_path)
+            do_export(&ctx, (pat_reader, pattern), template, format, file_path, max_write)
         }).await??;
 
         thread.unwrap().finalize().await;
@@ -475,13 +483,13 @@ impl CommandDefinition for ExportCmd {
 }
 
 /// Do the actual serialization
-fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, file_path: Option<PathBuf>) -> Result<WorkResult, CommandError> {
+fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, file_path: Option<PathBuf>, max_write: usize) -> Result<WorkResult, CommandError> {
     let buffer = match &file_path {
         Some(file_path) => {
             // The rendered output will go to a file
             let file = std::fs::File::create(&file_path)?;
             let mut writer = std::io::BufWriter::new(file);
-            dump_as_format(ctx, &mut writer, (reader, pattern), template, format)?;
+            dump_as_format(ctx, &mut writer, (reader, pattern), template, format, max_write)?;
             writer.flush()?;
             drop(writer);
             format!("Output written to file: {file_path:?}").into_bytes()
@@ -490,7 +498,7 @@ fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), 
             // The rendered output will be returned directly
             let mut buffer = Vec::with_capacity(4096);
             let mut writer = std::io::BufWriter::new(&mut buffer);
-            dump_as_format(ctx, &mut writer, (reader, pattern), template, format)?;
+            dump_as_format(ctx, &mut writer, (reader, pattern), template, format, max_write)?;
             writer.flush()?;
             drop(writer);
             buffer
@@ -500,10 +508,10 @@ fn do_export(ctx: &MorkService, (reader, pattern): (ReadPermission, OwnedExpr), 
     Ok(WorkResult::Immediate(hyper::body::Bytes::from(buffer)))
 }
 
-fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat) -> Result<(), CommandError> {
+fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W>, (mut reader, pattern): (ReadPermission, OwnedExpr), template: OwnedExpr, format: DataFormat, max_write: usize) -> Result<(), CommandError> {
     match format {
         DataFormat::Metta => {
-            ctx.0.space.dump_as_sexpr(writer, (&mut reader, pattern.borrow()), template.borrow()).map_err(|e| CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
+            ctx.0.space.dump_as_sexpr(writer, (&mut reader, pattern.borrow()), template.borrow(), max_write).map_err(|e| CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;
         },
         DataFormat::Csv |
         DataFormat::Json => {
@@ -1925,7 +1933,7 @@ async fn misbehaving_transform() -> Result<(), ()> {
     let mut reader = s.new_reader(pat_prefix, &()).unwrap();
 
     let mut out = Vec::new();
-    s.dump_as_sexpr(&mut out, (&mut reader, pattern.borrow()), template.borrow()).unwrap();
+    s.dump_as_sexpr(&mut out, (&mut reader, pattern.borrow()), template.borrow(), usize::MAX).unwrap();
 
     // this prints "c" !
     println!("{}", String::from_utf8(out).unwrap());

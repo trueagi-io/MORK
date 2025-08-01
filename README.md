@@ -12,7 +12,7 @@ Get Rust https://rustup.rs/
 
 `cargo build --release` on [https://github.com/Adam-Vandervorst/PathMap](https://github.com/Adam-Vandervorst/PathMap)
 
-`cargo build --release` on [https://github.com/trueagi-io/MORK/tree/server](https://github.com/trueagi-io/MORK/tree/server/server)
+`cd server ; cargo build --release` on [https://github.com/trueagi-io/MORK/tree/server](https://github.com/trueagi-io/MORK/tree/server/server) 
 
 in /python
 

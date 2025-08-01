@@ -370,9 +370,10 @@ pub trait Space: Sized {
         &'s self,
         thread_id_sexpr_str : &str,
         auth                : &'machine Self::Auth,
+        step_cnt            : usize,
         machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
     ) -> crate::space::metta_calculus::Controller<'machine, 's, crate::space::metta_calculus::LoopStart, Self> {
-        crate::space::metta_calculus::Machine::init(machine, self, thread_id_sexpr_str, auth)
+        crate::space::metta_calculus::Machine::init(machine, self, thread_id_sexpr_str, step_cnt, auth)
     }
 
     #[cfg(feature="neo4j")]

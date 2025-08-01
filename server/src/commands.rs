@@ -1064,13 +1064,12 @@ impl CommandDefinition for MettaThreadCmd {
 
             use mork::space::{metta_calculus::{TransformErr, LookupBaseCases}, ExecError};
             let max_retries          = 2000;
-            let mut step_cnt         = 500;
             let mut machine          = None;
-            let mut start_controller = ctx.0.space.metta_calculus_machine(&thread_id_sexpr_string_moved, &(), &mut machine);
+            let mut start_controller = ctx.0.space.metta_calculus_machine(&thread_id_sexpr_string_moved, &(), 500, &mut machine);
 
             type CF<B,C> = std::ops::ControlFlow<B,C>;
 
-            let exec_val = 'process_execs : loop {
+            let exec_val : Result<(), ExecError<ServerSpace>> = 'process_execs : loop {
                 let exec_permission = match start_controller.exec_permission_with_retries(max_retries) {
                     Ok(ok)       => ok,
                     Err((_c, e)) => break 'process_execs Err(ExecError::perm_err(&ctx.0.space, e)),
@@ -1088,15 +1087,7 @@ impl CommandDefinition for MettaThreadCmd {
 
                 // close the loop
                 start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
-                    Ok(ok)                                => {
-                                                                if step_cnt > 0 {
-                                                                    step_cnt -= 1
-                                                                } else {
-                                                                    //Finished running the allotted number of steps
-                                                                    break 'process_execs Ok(())
-                                                                }
-                                                                ok
-                                                             },
+                    Ok(ok)                                => ok,
                     Err(TransformErr::Syntax((_c,e)))      => break 'process_execs Err(ExecError::Syntax(e)),
                     Err(TransformErr::Permission((c, _e))) => {
                                                                 let defer_guard = match c.defer_guard_with_retries(max_retries) {

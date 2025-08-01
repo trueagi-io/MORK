@@ -59,6 +59,8 @@ buffer                 : Vec<u8>,
 /// if an exec is defered, this flag is set. It is unset when a an exec suceeds to run.
 retry_remaining        : bool,
 
+steps_remaining        : usize,
+
 // /////////////
 // LOOP VARS //
 // ///////////
@@ -77,6 +79,7 @@ pub fn init(
     machine             : &'machine mut Option<Self>,
     space               : &'space S,
     thread_id_sexpr_str : &str,
+    steps               : usize,
     auth                : &'machine S::Auth,
 ) -> Controller<'machine, 'space, LoopStart, S> {
 
@@ -98,6 +101,7 @@ pub fn init(
             prefix_len,
             buffer,
             retry_remaining,
+            steps_remaining   : steps,
             exec_permission   : None,
             pattern_templates : None,
         }
@@ -210,21 +214,40 @@ Done,
 ExecsRemaining(Controller<'machine, 'space, ExecsRemaining, S>),
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovalPermission, S> {
-/// lookup the next exec in the space:
-/// - on [`ControlFlow::Break`] permission is dropped:
-///   - either all execs were executed([`LookupBaseCases::Done`], execution finishes)
-///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`], type state moves to [`ExecsRemaining`]);
-///
-/// - on [`ControlFlow::Continue`] the permission is dropped, unlocking the space at the prefix ( type state moves to [`ExecRemovedGuard`])
-#[inline(always)]
-pub fn exec_lookup(self)
-->  ControlFlow<
-        LookupBaseCases<'machine, 'space, S>,
-        Controller<'machine, 'space, ExecRemovedGuard, S>,
-    >
+    /// lookup the next exec in the space:
+    /// - on [`ControlFlow::Break`] permission is dropped:
+    ///   - either all execs were executed([`LookupBaseCases::Done`], execution finishes)
+    ///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`], type state moves to [`ExecsRemaining`]);
+    ///
+    /// - on [`ControlFlow::Continue`] the permission is dropped, unlocking the space at the prefix ( type state moves to [`ExecRemovedGuard`])
+    #[inline(always)]
+    pub fn exec_lookup(self) ->  ControlFlow<LookupBaseCases<'machine, 'space, S>, Controller<'machine, 'space, ExecRemovedGuard, S>,> { exec_lookup_impl(self) }
+
+
+    /// Calls [`Self::exec_lookup`] and converts the nested cases that are type states into a [`MachineHandle`]
+    #[inline(always)]
+    pub fn exec_lookup_to_handle(self)
+    ->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
+    {
+        match self.exec_lookup() {
+            ControlFlow::Continue(c) => CF::Continue(MachineHandle::ExecRemovedGuard(c)),
+            ControlFlow::Break(LookupBaseCases::Done) => CF::Break(()),
+            ControlFlow::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::ExecsRemaining(remaining)),
+        }
+    }
+}
+
+
+fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machine, 'space, ExecRemovalPermission, S> ) 
+-> ControlFlow< LookupBaseCases<'machine, 'space, S>, Controller<'machine, 'space, ExecRemovedGuard, S>,>
 {
-    let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, .. } = machine_mut!(self);
+    let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, steps_remaining, .. } = machine_mut!(controller);
     core::debug_assert!(exec_permission.is_some());
+
+    // this might not be the best place to do this, but until the refactor is done, this gives the correct semantics without changing function signatures
+    if *steps_remaining == 0 {
+        return CF::Break(LookupBaseCases::Done);
+    } 
 
     let mut exec_wz = space.write_zipper(unsafe { exec_permission.as_mut().unwrap_unchecked() });
 
@@ -239,11 +262,11 @@ pub fn exec_lookup(self)
 
 
         if *retry_remaining {
-            return CF::Break(LookupBaseCases::ExecsRemaining( self.next_state(ExecsRemaining {})));
+            return CF::Break(LookupBaseCases::ExecsRemaining( controller.next_state(ExecsRemaining {})));
         }
 
         // Sucessfully consumed all execs.  This MeTTa thread is done
-        *self.machine = None;
+        *controller.machine = None;
         return CF::Break(LookupBaseCases::Done)
     }
     buffer.truncate(*prefix_len);
@@ -255,118 +278,130 @@ pub fn exec_lookup(self)
     exec_wz.remove_val();
 
     drop(exec_wz);
-    CF::Continue(self.next_state(ExecRemovedGuard{}))
+    CF::Continue(controller.next_state(ExecRemovedGuard{}))
 }
-
-/// Calls [`Self::exec_lookup`] and converts the nested cases that are type states into a [`MachineHandle`]
-#[inline(always)]
-pub fn exec_lookup_to_handle(self)
-->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
-{
-    match self.exec_lookup() {
-        ControlFlow::Continue(c) => CF::Continue(MachineHandle::ExecRemovedGuard(c)),
-        ControlFlow::Break(LookupBaseCases::Done) => CF::Break(()),
-        ControlFlow::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::ExecsRemaining(remaining)),
-    }
-}
-}
-
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecsRemaining, S> {
-/// restart the [`Machine`] from the beginning, change to [`LoopStart`]
-#[inline(always)]
-pub fn continue_loop(self) ->  Controller<'machine, 'space, LoopStart, S>
-{
-    let Machine { prefix_len, buffer, exec_permission, .. } = machine_mut!(self);
+    /// restart the [`Machine`] from the beginning, change to [`LoopStart`]
+    #[inline(always)]
+    pub fn continue_loop(self) ->  Controller<'machine, 'space, LoopStart, S> { continue_loop_impl(self) }
+}
+
+fn continue_loop_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, ExecsRemaining, S>) -> Controller<'machine, 'space, LoopStart, S> {
+    let Machine { prefix_len, buffer, exec_permission, .. } = machine_mut!(controller);
     core::debug_assert!(exec_permission.is_none());
 
     buffer.truncate(*prefix_len);
-    self.next_state(LoopStart {})
+    controller.next_state(LoopStart {})
 }
-}
-impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovedGuard, S> {
 
-/// Drop the permission, move to [`PreTransform`] type state
-#[inline(always)]
-pub fn drop_permission(self) ->  Controller<'machine, 'space, PreTransform, S>
+impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecRemovedGuard, S> {
+    /// Drop the permission, move to [`PreTransform`] type state
+    #[inline(always)]
+    pub fn drop_permission(self) ->  Controller<'machine, 'space, PreTransform, S>{ drop_permission_impl(self) }
+
+    /// skip explicitly dropping the permission (it is still implicitly dropped) and go directly to [`Controller<'machine,'state, PreTransform, S>::transform`]
+    #[inline(always)]
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>
+    {
+        self.drop_permission().transform(at_critical_section)
+    }
+}
+
+fn drop_permission_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, ExecRemovedGuard, S>) ->  Controller<'machine, 'space, PreTransform, S>
 {
-    let Machine { exec_permission, .. } = machine_mut!(self);
+    let Machine { exec_permission, .. } = machine_mut!(controller);
     core::debug_assert!(exec_permission.is_some());
     *exec_permission = None;
-    self.next_state(PreTransform {})
-}
-/// skip explicitly dropping the permission (it is still implicitly dropped) and go directly to [`Controller<'machine,'state, PreTransform, S>::transform`]
-#[inline(always)]
-pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>
-{
-    self.drop_permission().transform(at_critical_section)
-}
+    controller.next_state(PreTransform {})
 }
 
 pub enum TransformErr<'machine, 'space, S : Space> {
-Syntax    ((Controller<'machine, 'space, LoopStart,    S>, ExecSyntaxError )),
-Permission((Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)),
+    Syntax    ((Controller<'machine, 'space, LoopStart,    S>, ExecSyntaxError )),
+    Permission((Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)),
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
-/// Parse the exec,
-///
-/// on a syntax err the state moves back to [`LoopStart`];
-///
-/// if the Reader/Writer permission set cannot be aquired atomically, the state remains [`PreTransform`];
-///
-/// if it succeeds durring the critical section the callback `at_critical_section` will be called after the transform completes, then moves to [`LoopStart`].
-#[inline(always)]
-pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>))
-->  Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>
-{
+    /// Parse the exec,
+    ///
+    /// on a syntax err the state moves back to [`LoopStart`];
+    ///
+    /// if the Reader/Writer permission set cannot be aquired atomically, the state remains [`PreTransform`];
+    ///
+    /// if it succeeds durring the critical section the callback `at_critical_section` will be called after the transform completes, then moves to [`LoopStart`].
+    #[inline(always)]
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>{ transform_impl(self, at_critical_section) }
 
-    let m_mut = machine_mut!(self);
+
+    /// If an exec cannot be run, then the current exec can be defered by reinserting it into the space.
+    /// Aquiring the [`DeferGuard`] means we have the permission for reinsertion:
+    /// - on [`Ok`]  the permission is held in the [`Machine`], state becomes [`DeferGuard`];
+    /// - on [`Err`] the [`Machine`] stays in the [`PreTransform`] state.
+    #[inline(always)]
+    pub fn defer_guard(self) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)> { defer_guard_impl(self) }
+
+    /// Adds retry logic to [`Self::defer_guard`];
+    ///
+    /// Retry logic should mirror [`Controller<'machine, 'space, LoopStart, S>::exec_permission_with_retries`].
+    #[inline(always)]
+    pub fn defer_guard_with_retries(mut self, max_retries : usize) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
+    {
+        let mut err = None;
+        for _each in 0..max_retries.max(1) {
+            match self.defer_guard() {
+                Ok(ok)     => return Ok(ok),
+                Err((c,e)) => { (self, err) = (c, Some(e))},
+            };
+            std::thread::sleep(core::time::Duration::from_micros(500));
+        }
+        Err((self, err.unwrap()))
+    }
+}
+
+fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,> {
+    let m_mut = machine_mut!(controller);
     let rt = Expr{ ptr: m_mut.buffer.as_mut_ptr() };
     // if this code get revisited we want to avoid this branch
     if m_mut.pattern_templates.is_none() {
         m_mut.pattern_templates = Some(match destructure_exec_expr(m_mut.space, rt) {
             Ok(ok)   => ok,
-            Err(err) => return Err(TransformErr::Syntax((self.next_state(LoopStart{}), err))),
+            Err(err) => return Err(TransformErr::Syntax((controller.next_state(LoopStart{}), err))),
         }.collect_inner());
     }
 
 
     // we need an shared reference for the critical section
-    let m_ref = machine_ref!(self);
+    let m_ref = machine_ref!(controller);
     core::debug_assert!( m_ref.pattern_templates.is_some() );
     let (patterns, templates) = unsafe { m_ref.pattern_templates.as_ref().unwrap_unchecked() };
 
     let (mut read_map, template_prefixes, mut writers) = match m_ref.space.acquire_transform_permissions(patterns, templates, m_ref.auth, ||at_critical_section(m_ref)) {
         Ok(ok)   => ok,
-        Err(err) => return Err(TransformErr::Permission((self, err))),
+        Err(err) => return Err(TransformErr::Permission((controller, err))),
     };
 
 
     // We switch back to the mutable reference
-    let Machine { space, prefix_len, buffer, retry_remaining, pattern_templates, .. } = machine_mut!(self);
+    let Machine { space, prefix_len, buffer, retry_remaining, pattern_templates, steps_remaining, .. } = machine_mut!(controller);
     core::debug_assert!( pattern_templates.is_some() );
     let (patterns, templates) = unsafe { pattern_templates.as_ref().unwrap_unchecked() };
 
-    //Insert the self expression into the read_map
+    //Insert the controller expression into the read_map
     read_map.set_val_at(unsafe { rt.span().as_ref().unwrap() }, ());
 
     space.transform_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
-
+ 
+    core::debug_assert!(*steps_remaining > 0);
+    *steps_remaining -= 1;
     *pattern_templates = None;
     *retry_remaining = false;
     buffer.truncate(*prefix_len);
 
-    Ok(self.next_state(LoopStart{}))
+    Ok(controller.next_state(LoopStart{}))
 }
 
-/// If an exec cannot be run, then the current exec can be defered by reinserting it into the space.
-/// Aquiring the [`DeferGuard`] means we have the permission for reinsertion:
-/// - on [`Ok`]  the permission is held in the [`Machine`], state becomes [`DeferGuard`];
-/// - on [`Err`] the [`Machine`] stays in the [`PreTransform`] state.
-#[inline(always)]
-pub fn defer_guard(self) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
+fn defer_guard_impl <'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)>
 {
-    let Machine { space, prefix_len, auth, buffer, exec_permission, pattern_templates, ..  } = machine_mut!(self);
+    let Machine { space, prefix_len, auth, buffer, exec_permission, pattern_templates, ..  } = machine_mut!(controller);
     // we are reusing this for a different permission
     core::debug_assert!(exec_permission.is_none());
 
@@ -374,36 +409,20 @@ pub fn defer_guard(self) -> Result<Controller<'machine, 'space, DeferGuard, S>, 
         Ok(writer) => {
                         *pattern_templates = None;
                         *exec_permission = Some(writer);
-                        Ok(self.next_state(DeferGuard {}))
+                        Ok(controller.next_state(DeferGuard {}))
                       },
-        Err(err)   => Err((self, err)),
+        Err(err)   => Err((controller, err)),
     }
-}
-/// Adds retry logic to [`Self::defer_guard`];
-///
-/// Retry logic should mirror [`Controller<'machine, 'space, LoopStart, S>::exec_permission_with_retries`].
-#[inline(always)]
-pub fn defer_guard_with_retries(mut self, max_retries : usize) -> Result<Controller<'machine, 'space, DeferGuard, S>, (Self, S::PermissionErr)>
-{
-    let mut err = None;
-    for _each in 0..max_retries.max(1) {
-        match self.defer_guard() {
-            Ok(ok)     => return Ok(ok),
-            Err((c,e)) => { (self, err) = (c, Some(e))},
-        };
-        std::thread::sleep(core::time::Duration::from_micros(500));
-    }
-    Err((self, err.unwrap()))
-}
 }
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, DeferGuard, S> {
-/// Reinsert the current exec, and drop the permission, moving back to [`LoopStart`].
-#[inline(always)]
-pub fn defer_current_exec(self)
--> Controller<'machine, 'space, LoopStart, S>
-{
-    let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, ..  } = machine_mut!(self);
+    /// Reinsert the current exec, and drop the permission, moving back to [`LoopStart`].
+    #[inline(always)]
+    pub fn defer_current_exec(self) -> Controller<'machine, 'space, LoopStart, S> { defer_current_exec_impl(self) }
+}
+
+fn defer_current_exec_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, DeferGuard, S>) -> Controller<'machine, 'space, LoopStart, S> {
+    let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, ..  } = machine_mut!(controller);
     core::debug_assert!(exec_permission.is_some());
     let mut writer = unsafe { exec_permission.take().unwrap_unchecked() };
 
@@ -412,7 +431,37 @@ pub fn defer_current_exec(self)
     exec_wz.set_val(());
     *retry_remaining = true;
 
-    self.next_state(LoopStart {})
+    controller.next_state(LoopStart {})
+}
+
+impl<'machine, 'space, S : Space> MachineHandle<'machine, 'space, S> {
+/// This gives the basic logic of metta_calculus via the [`MachineHandle`] with no retries, but tries to defer on a failed transform. Otherwise it bubbles up an error
+pub fn advance(self) -> ControlFlow<Result<(), (Self, ExecError<S>)>, Self> {
+    type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
+    ControlFlow::Continue(match self {
+        MH::LoopStart            (controller) => match controller.exec_permission() {
+                                                     Ok(ok)      => ok.to_handle(),
+                                                     Err((c,e)) => {
+                                                         let s = c.inspect_machine().space;
+                                                         return ControlFlow::Break(Err((c.to_handle(), ExecError::perm_err(s, e))))
+                                                     }
+                                                 },
+        MH::ExecRemovalPermission(controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return ControlFlow::Break(Ok(()));},
+        MH::ExecRemovedGuard     (controller) => controller.drop_permission().to_handle(),
+        MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
+        MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
+                                                     Ok(ok)                                 => ok.to_handle(),
+                                                     Err(TransformErr::Syntax((c,e)))       => return ControlFlow::Break(Err((c.to_handle(), ExecError::Syntax(e)))),
+                                                     Err(TransformErr::Permission((c, _e))) => match c.defer_guard() {
+                                                                                                   Ok(ok)     => ok.to_handle(),
+                                                                                                   Err((c,e)) => {
+                                                                                                       let s = c.inspect_machine().space;
+                                                                                                       return ControlFlow::Break( Err((c.to_handle(), ExecError::perm_err(s, e))))
+                                                                                                   }
+                                                                                               },
+                                                 },
+        MH::DeferGuard           (controller) => controller.defer_current_exec().to_handle(), // journal deferal reinsertion
+    })
 }
 }
 
@@ -426,7 +475,7 @@ mut step_cnt        : usize,
 auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
 let mut machine = None;
-let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, auth);
+let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, step_cnt, auth);
 
 'process_execs : loop {
     let exec_permission = match start_controller.exec_permission_with_retries(max_retries) {
@@ -468,36 +517,7 @@ let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_st
 }
 }
 
-impl<'machine, 'space, S : Space> MachineHandle<'machine, 'space, S> {
-/// This gives the basic logic of metta_calculus via the [`MachineHandle`] with no retries, but tries to defer on a failed transform. Otherwise it bubbles up an error
-pub fn advance(self) -> ControlFlow<Result<(), (Self, ExecError<S>)>, Self> {
-    type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
-    ControlFlow::Continue(match self {
-        MH::LoopStart            (controller) => match controller.exec_permission() {
-                                                     Ok(ok)      => ok.to_handle(),
-                                                     Err((c,e)) => {
-                                                         let s = c.inspect_machine().space;
-                                                         return ControlFlow::Break(Err((c.to_handle(), ExecError::perm_err(s, e))))
-                                                     }
-                                                 },
-        MH::ExecRemovalPermission(controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return ControlFlow::Break(Ok(()));},
-        MH::ExecRemovedGuard     (controller) => controller.drop_permission().to_handle(),
-        MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
-        MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
-                                                     Ok(ok)                                 => ok.to_handle(),
-                                                     Err(TransformErr::Syntax((c,e)))       => return ControlFlow::Break(Err((c.to_handle(), ExecError::Syntax(e)))),
-                                                     Err(TransformErr::Permission((c, _e))) => match c.defer_guard() {
-                                                                                                   Ok(ok)     => ok.to_handle(),
-                                                                                                   Err((c,e)) => {
-                                                                                                       let s = c.inspect_machine().space;
-                                                                                                       return ControlFlow::Break( Err((c.to_handle(), ExecError::perm_err(s, e))))
-                                                                                                   }
-                                                                                               },
-                                                 },
-        MH::DeferGuard           (controller) => controller.defer_current_exec().to_handle(), // journal deferal reinsertion
-    })
-}
-}
+
 
 /// The basic implementation using [`MachineHandle`] and including retry logic. comments show points one could include intermidiate actions like journaling
 #[allow(unused)]
@@ -510,7 +530,7 @@ auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
 type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
 let mut machine = None;
-let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, auth).to_handle();
+let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, step_cnt, auth).to_handle();
 
 'process_execs : loop {
     handle = match handle {
@@ -519,15 +539,7 @@ let mut handle = Machine::init(&mut machine, space, thread_id_sexpr_str, auth).t
                                                      Err((_c,e)) => return Err(ExecError::perm_err(space, e)),
                                                  },
         MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
-                                                     Ok(ok)                                 => {
-                                                                                                  if step_cnt > 0 {
-                                                                                                      step_cnt -= 1
-                                                                                                  } else {
-                                                                                                      //Finished running the allotted number of steps
-                                                                                                      break 'process_execs Ok(())
-                                                                                                  }
-                                                                                                  ok.to_handle()
-                                                                                               },
+                                                     Ok(ok)                                 => ok.to_handle(),
                                                      Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
                                                      Err(TransformErr::Permission((c, _e))) => match c.defer_guard_with_retries(max_retries) {
                                                                                                    Ok(ok)      => ok.to_handle(),
@@ -581,7 +593,7 @@ mut step_cnt        : usize,
 auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
 let mut machine = None;
-let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, auth);
+let mut start_controller = Machine::init(&mut machine, space, thread_id_sexpr_str, step_cnt, auth);
 const MAX_RETRIES : usize = usize::MAX;
 
 'process_execs : loop {
@@ -599,15 +611,7 @@ const MAX_RETRIES : usize = usize::MAX;
                                                                  },
     };
     start_controller = match removed.transform(|_|{}) {
-        Ok(ok)                                 => {
-                                                     if step_cnt > 0 {
-                                                         step_cnt -= 1
-                                                     } else {
-                                                         //Finished running the allotted number of steps
-                                                         break 'process_execs Ok(())
-                                                     }
-                                                     ok
-                                                  },
+        Ok(ok)                                 => ok,
         Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
         Err(TransformErr::Permission((c, _e))) => {
                                                     let defer_guard = match c.defer_guard_with_retries(MAX_RETRIES) {

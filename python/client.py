@@ -409,6 +409,19 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
+    def csv_import_(self, file_uri):
+        return self.csv_import("$x", "$x", file_uri)
+
+    def csv_import(self, pattern, template, file_uri):
+        """
+        Import CSV from the specified URI match `pattern` into `template`
+        """
+        io = self.ns.format(template)
+        cmd = self.Import(pattern, io, file_uri, fileformat="csv")
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
     def paths_import_(self, file_uri):
         return self.sexpr_import("$x", "$x", file_uri)
 

@@ -108,9 +108,11 @@ impl ServerPermissionErr {
         Self {path: path.to_vec(), message}
     }
     pub fn from_conflict(conflict: Conflict, path: &[u8]) -> Self {
+        let nice_path = mork_bytestring::serialize(path);
+        let nice_existing_path = mork_bytestring::serialize(conflict.path());
         Self {
             path: path.to_vec(),
-            message: format!("permission conflict: {conflict}, with path: {path:?}")
+            message: format!("{conflict} trying to take path: `{nice_path}` while `{nice_existing_path}` was already taken")
         }
     }
 }

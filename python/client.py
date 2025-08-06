@@ -467,7 +467,7 @@ class MORK:
         """
         name = b32encode(random.randbytes(6)) if name is None else name
         ns = kwargs.pop("namespace") if "namespace" in kwargs else self.ns.format(f"({name} {{}})")
-        return MORK(namespace=ns, finalization=finalization, parent=self, history=self.history, **kwargs)
+        return MORK(namespace=ns, finalization=finalization, parent=self, history=self.history, base_url=self.base, **kwargs)
 
     def __enter__(self):
         # io = self.ns.format("$x")

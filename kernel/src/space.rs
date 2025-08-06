@@ -1813,7 +1813,7 @@ where
                                 let (oi, ni) = {
                                     let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                                     let mut stack: Vec<(u8, u8)> = vec![];
-                                    let mut scratch = [0u8; 512];
+                                    let mut scratch = Vec::with_capacity(1 << 32);
                                     let r = apply(0, 0, 0, &mut ExprZipper::new(pat), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments);
                                     // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                                     r

@@ -1,6 +1,6 @@
 
 extern crate alloc;
-use std::io::{BufRead, Read};
+use std::{io::{BufRead, Read}, marker::PhantomData, path, usize};
 use log::*;
 
 use bucket_map::SharedMappingHandle;
@@ -375,9 +375,22 @@ pub trait Space: Sized {
         auth                : &'machine Self::Auth,
         step_cnt            : usize,
         machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
-    ) -> crate::space::metta_calculus::Controller<'machine, 's, crate::space::metta_calculus::LoopStart, Self> {
-        crate::space::metta_calculus::Machine::init(machine, self, thread_id_sexpr_str, step_cnt, auth)
+    ) -> Result<crate::space::metta_calculus::Controller<'machine, 's, crate::space::metta_calculus::LoopStart, Self>, Self::PermissionErr> {
+
+        crate::space::metta_calculus::Machine::machine_spec(self, thread_id_sexpr_str, step_cnt, auth).map(|ms|crate::space::metta_calculus::Machine::init(self, auth, machine, ms))
     }
+
+    fn metta_calculus_machine_spec<'s>(
+        &'s self,
+        thread_id_sexpr_str : &str,
+        auth                : &Self::Auth,
+        step_cnt            : usize,
+        // machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
+    ) -> Result<crate::space::metta_calculus::MachineSpec<Self::Writer<'s>>, Self::PermissionErr> {
+
+        crate::space::metta_calculus::Machine::machine_spec(self, thread_id_sexpr_str, step_cnt, auth)
+    }
+
 
     #[cfg(feature="neo4j")]
     fn load_neo4j_triples<'s>(&'s self, writer : &mut Self::Writer<'s>, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, LoadNeo4JTriplesError> {
@@ -427,4 +440,5 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
 
     result.ok_or_else(|| ParseError(format!("Failed to parse S-Expression: {data}")))
 }
+
 

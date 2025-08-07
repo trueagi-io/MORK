@@ -10,7 +10,6 @@ use std::usize;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::path_serialization::PathIterator;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
@@ -533,14 +532,7 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
                 let mut rz = ctx.0.space.read_zipper(&mut reader);
                 let wn = rz.witness();
 
-                struct PathIterInst<'a,F>(F, core::marker::PhantomData<&'a()>);
-                impl<'a, F : FnMut() -> Result<Option<&'a[u8]>, std::io::Error> > PathIterator for PathIterInst<'a, F> {
-                    fn next_path(&mut self) -> Result<Option<&[u8]>, std::io::Error> {
-                        self.0()
-                    }
-                }
-
-                pathmap::path_serialization::for_each_path_serialize(writer, PathIterInst(||  {
+                pathmap::path_serialization::for_each_path_serialize(writer, ||  {
                     while let Some(()) = rz.to_next_get_val_with_witness(&wn) {
                         let p = rz.origin_path();
                         let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
@@ -557,9 +549,7 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
                         }
                     }
                     Ok(None)
-                },
-                    PhantomData
-                )
+                }
             )
             }).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
         }
@@ -1067,23 +1057,19 @@ impl CommandDefinition for MettaThreadCmd {
             // // TODO! JOURNAL INSERTION of INITIAL_EXEC
 
 
-        let thread_id_sexpr_string_moved = thread_id_sexpr_string.clone();
+        let spec = ctx.0.space.metta_calculus_machine_spec(&thread_id_sexpr_string, &(), 500)?;
+
         thread.dispatch_blocking_task(cmd, move |_| {
 
             use mork::space::{metta_calculus::{TransformErr, LookupBaseCases}, ExecError};
-            let max_retries          = 2000;
             let mut machine          = None;
-            let mut start_controller = ctx.0.space.metta_calculus_machine(&thread_id_sexpr_string_moved, &(), 500, &mut machine);
+            let mut start_controller = spec.init(&ctx.0.space, &(), &mut machine);
+            
 
             type CF<B,C> = std::ops::ControlFlow<B,C>;
 
             let exec_val : Result<(), ExecError<ServerSpace>> = 'process_execs : loop {
-                let exec_permission = match start_controller.exec_permission_with_retries(max_retries) {
-                    Ok(ok)       => ok,
-                    Err((_c, e)) => break 'process_execs Err(ExecError::perm_err(&ctx.0.space, e)),
-                };
-
-                let removed = match exec_permission.exec_lookup() {
+                let removed = match start_controller.exec_lookup() {
                     CF::Continue(removed)                                 => removed,
                     CF::Break(LookupBaseCases::Done)                      => return Ok(()),
                     CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
@@ -1091,20 +1077,12 @@ impl CommandDefinition for MettaThreadCmd {
                                                                                continue 'process_execs;
                                                                              },
                 };
-                // journal removal
 
                 // close the loop
                 start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
                     Ok(ok)                                => ok,
                     Err(TransformErr::Syntax((_c,e)))      => break 'process_execs Err(ExecError::Syntax(e)),
-                    Err(TransformErr::Permission((c, _e))) => {
-                                                                let defer_guard = match c.defer_guard_with_retries(max_retries) {
-                                                                    Ok(ok)      => ok,
-                                                                    Err((_c,e)) => break 'process_execs Err(ExecError::perm_err(&ctx.0.space, e)),
-                                                                };
-                                                                // journal deferal reinsertion
-                                                                defer_guard.defer_current_exec()
-                                                              },
+                    Err(TransformErr::Permission((c, _e))) => { c.defer() },
                 };
             };
 

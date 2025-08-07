@@ -892,7 +892,6 @@ impl DefaultSpace {
     }
 }
 
-<<<<<<< HEAD
 pub(crate) fn metta_calculus_impl<'s, S: Space>(
     space: &'s S, 
     thread_id_sexpr_str: &str, 
@@ -902,122 +901,6 @@ pub(crate) fn metta_calculus_impl<'s, S: Space>(
 ) -> Result<(), ExecError<S>> {
     // Remy (2025/07/11) : if this ends up being the only caller we should inline it.
     metta_calculus::metta_calculus_impl_statemachine_poc(space, thread_id_sexpr_str, max_retries, step_cnt, auth)
-=======
-pub(crate) fn metta_calculus_impl<'s, S: Space>(space: &'s S, thread_id_sexpr_str: &str, max_retries: usize, mut step_cnt: usize, auth: &S::Auth) -> Result<(), ExecError<S>> {
-
-    //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
-    //
-    // (exec (<location> $priority) $patterns $templates)
-    let prefix_e = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
-    let prefix = unsafe { prefix_e.borrow().prefix().unwrap().as_ref().unwrap() };
-
-    // the invariant is that buffer should always be reset with at least the prefix
-    let mut buffer = Vec::from(prefix);
-
-    let mut retry = false;
-    let mut retry_cnt = max_retries;
-
-    let exec_result : Result<(), ExecError<S>> = 'process_execs : loop {
-        debug_assert!(buffer.len() >= prefix.len());
-        debug_assert_eq!(&buffer[..prefix.len()], prefix);
-
-        // ////////////////////////////////////////////////////////////////////
-        // Get a write permission to the exec sub-space for this MeTTa thread
-        // //////////////////////////////////////////////////////////////////
-        //
-        // This path should never be contended for long periods of time, although it is possible another
-        // command (such as a debugger command) has this path locked in order to communicate with us.  We
-        // should be able to get the write permission soon enough by retrying
-        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-            Ok(writer) => writer,
-            Err(_) => {
-                //GOAT, we panicked after 2000 attempts to get the exec space, 500 microseconds apart,
-                // which means we've been trying for a whole second.  It also likely means the path
-                // is held indefinitely, which is a bug somewhere, although not here.
-                //We ought to write an error into the status map and abort execution
-                todo!()
-            }
-        };
-        let mut exec_wz = space.write_zipper(&mut exec_permission);
-
-        // //////////////////////////////////////
-        // Find an expression we can execute  //
-        // ////////////////////////////////////
-        let mut rz = exec_wz.fork_read_zipper();
-        rz.descend_to(&buffer[prefix.len()..]);
-
-        if !rz.to_next_val() {
-            if retry {
-                if retry_cnt > 0 {
-                    retry_cnt -= 1;
-                } else {
-                    break 'process_execs Err(ExecError::RetryLimit("".to_string()))
-                }
-
-                //Try again from the beginning
-                buffer.truncate(prefix.len());
-                std::thread::sleep(core::time::Duration::from_millis(1));
-                continue 'process_execs;
-            }
-
-            //Sucessfully consumed all execs.  This MeTTa thread is done
-            break 'process_execs Ok(())
-        }
-        buffer.truncate(prefix.len());
-        buffer.extend_from_slice(rz.path());
-        drop(rz);
-
-        // Remove expr, which means we are "claiming" it
-        exec_wz.descend_to(&buffer[prefix.len()..]);
-        exec_wz.remove_value();
-        drop(exec_wz);
-        drop(exec_permission);
-
-        //------------------------------------------------------------------------------
-        // Here the exec has been removed from the space, but the transform permissions
-        // have not yet been acquired.
-        //------------------------------------------------------------------------------
-
-        match interpret_impl(space, Expr{ ptr: buffer.as_mut_ptr() }, auth) {
-            Ok(()) => {
-                retry = false;
-                retry_cnt = max_retries;
-                buffer.truncate(prefix.len());
-                if step_cnt > 0 {
-                    step_cnt -= 1
-                } else {
-                    //Finished running the allotted number of steps
-                    break 'process_execs Ok(())
-                }
-            },
-            Err(err) => {
-                match err {
-                    ExecError::UserPermissionErr(_) => {
-                        //We couldn't get permissions for this particular exec expression, so we need to
-                        // put the expression back in the space and then try with another one.
-                        let mut exec_permission = match space.new_writer_retry(&prefix, max_retries, auth) {
-                            Ok(writer) => writer,
-                            Err(_) => {
-                                //See similar code above...
-                                todo!()
-                            }
-                        };
-                        let mut exec_wz = space.write_zipper(&mut exec_permission);
-                        exec_wz.descend_to(&buffer[prefix.len()..]);
-                        exec_wz.set_val(());
-                        retry = true;
-                    },
-                    _ => {
-                        //Any error but a UserPermissionError means we halt the execution
-                        break 'process_execs Err(err)
-                    }
-                }
-            }
-        }
-    };
-
-    exec_result
->>>>>>> origin/server
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(

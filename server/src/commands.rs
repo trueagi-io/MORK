@@ -1,6 +1,5 @@
 use core::pin::Pin;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;

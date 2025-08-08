@@ -24,6 +24,7 @@ pub use crate::space_temporary::{
     PathPermissionErr,
     SpaceReaderZipper,
 };
+#[allow(unused)]
 use crate::{space_temporary, SpaceWriterZipper};
 
 /// A default minimalist implementation of [Space]
@@ -224,6 +225,7 @@ fn label(l: u8) -> String {
     }.to_string()
 }
 
+#[allow(unused)]
 fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
     s.as_ref().iter().copied().map(label).reduce(|mut x, y| {
         x.push(' ');
@@ -537,6 +539,7 @@ fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
     }
 }
 
+#[allow(unused)]
 fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Vec<u8> {
     let mut v = mork_bytestring::traverseh!((), (), (Vec<u8>, usize), e, (vec![], from),
         |(v, from): &mut (Vec<u8>, usize), o| {
@@ -1477,7 +1480,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
     i
 }
 
-pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, sm: &SharedMapping) -> Result<(), std::io::Error> {
+pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut W, #[allow(unused_variables)]sm: &SharedMapping) -> Result<(), std::io::Error> {
 
     Expr{ ptr: src_expr_ptr }.serialize(dst, |s| {
         #[cfg(feature="interning")]
@@ -1522,6 +1525,7 @@ impl DefaultSpace {
                                            path.as_ref()).map(|_| ())
     }
 
+    #[allow(unused_variables)]
     pub fn restore_from_dag(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
         unimplemented!()
         // let new_map = pathmap::serialization::deserialize_file(path, |_| ())?;
@@ -1529,12 +1533,14 @@ impl DefaultSpace {
         // Ok(())
     }
 
+    #[allow(unused_variables)]
     pub fn backup_tree<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
         unimplemented!()
         // pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
         //     self.btm.read_zipper(), |_v| 0, path).map(|_tree| ())
     }
 
+    #[allow(unused_variables)]
     pub fn restore_tree(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
         unimplemented!()
         // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(path)?;
@@ -1662,7 +1668,7 @@ where
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, introduced, loc| {
+                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, #[allow(unused_variables)]introduced, loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
 
                     if true  { // introduced != 0
@@ -1741,8 +1747,10 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
         let mut buffer = [0u8; 512];
 
         let mut any_new = false;
+        #[allow(unused_variables)]
         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
 
+            #[allow(unused_variables, unused_mut)]
             let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
             #[cfg(debug_assertions)]
             bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
@@ -1762,6 +1770,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
                     vec![]
                 };
                 // let mut ass = vec![];
+                #[allow(unused_variables)]
                 let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
                 // println!("res {:?}", res);
                 // (oi, ni) = res;

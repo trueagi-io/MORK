@@ -698,6 +698,7 @@ mod worker_pool {
             self.available_workers() == self.thread_count
         }
 
+        #[allow(unused)]
         /// Returns the monotonically incrementing job counter for the worker pool
         pub fn job_counter(&self) -> u64 {
             self.job_counter.load(std::sync::atomic::Ordering::Relaxed)

@@ -1,10 +1,12 @@
 use std::io::Read;
+#[allow(unused, deprecated)]
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperCreation, ZipperMoving};
 // // use std::future::Future;
 // // use std::task::Poll;
 // use std::time::Instant;
 // use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
+#[allow(unused)]
 use mork::{expr, PathCount, Space};
 // use mork::space::DefaultSpace;
 

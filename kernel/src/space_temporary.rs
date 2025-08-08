@@ -1,6 +1,6 @@
 
 extern crate alloc;
-use std::{io::{BufRead, Read}, marker::PhantomData, path, usize};
+use std::{io::{BufRead, Read}, usize};
 use log::*;
 
 use bucket_map::SharedMappingHandle;
@@ -8,8 +8,10 @@ use mork_frontend::{bytestring_parser::{ParseContext, Parser, ParserErrorType}};
 use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{PathMap, morphisms::Catamorphism, zipper::*};
 
+#[allow(unused)]
+use crate::space;
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, metta_calculus::{Machine, MachineSpecArgs}, metta_calculus_impl, token_bfs_impl, transform_multi_multi_impl, ExecError, ParDataParser
+    dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, metta_calculus::{Machine}, metta_calculus_impl, token_bfs_impl, transform_multi_multi_impl, ExecError, ParDataParser
 };
 
 #[cfg(feature="neo4j")]

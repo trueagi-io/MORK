@@ -964,42 +964,6 @@ impl CommandDefinition for MettaThreadCmd {
 
         let bad_request = |s : &str| Err(CommandError::external(StatusCode::BAD_REQUEST, s));
 
-        // // substitution related code (for reference when it gets implemented)
-            // let initial_sexpr = cmd.args[0].as_str().to_owned();
-            // let Ok(initial_expr) = ctx.0.space.sexpr_to_expr(&initial_sexpr) else { return bad_request("malformed priority sexpr") };
-            // let initial_expr_raw = initial_expr.borrow();
-            // Validate shape of initial
-            // '_validate_initial : {
-            //     let malformed_exec = || Err(CommandError::external(StatusCode::BAD_REQUEST, "malformed initial_exec, expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"));
-            //     let mut initial_ez = mork_bytestring::ExprZipper::new(initial_expr_raw);
-            //     let Ok(mork_bytestring::Tag::Arity(4)) = initial_ez.item() else { return malformed_exec(); };
-            //     initial_ez.next();
-            //     // exec
-            //     if unsafe { initial_ez.subexpr().span().as_ref().unwrap() } !=  unsafe { mork::expr!(ctx.0.space, "exec").span().as_ref().unwrap() } { return malformed_exec();};
-            //     initial_ez.next();
-
-            //     // ($loc <priority>)
-            //     let Ok(mork_bytestring::Tag::Arity(2)) = initial_ez.item() else { return malformed_exec(); };
-            //     '_loc_priority : {
-            //         let mut sub = mork_bytestring::ExprZipper::new(initial_ez.subexpr());
-            //         sub.next();
-            //         let Ok(Tag::NewVar) = sub.item() else { return malformed_exec(); };
-            //         sub.next();
-            //         if !sub.subexpr().is_ground() { return malformed_exec(); }
-            //     }
-            //     initial_ez.next_child();
-
-            //     if let Err(e) = check_pattern_template(&ctx.0.space, &mut initial_ez) {
-            //         match e {
-            //             mork::space::ExecSyntaxError::ExpectedArity4(_)             => unreachable!("Already checked"),
-            //             mork::space::ExecSyntaxError::ExpectedCommaListPatterns(_)  => return bad_request("the initial_exec pattern list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-            //             mork::space::ExecSyntaxError::ExpectedCommaListTemplates(_) => return bad_request("the initial_exec template list was not syntactically correct; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-            //             mork::space::ExecSyntaxError::ExpectedGroundPriority(_)     => return bad_request("the initial_exec priority was not ground; expected `(exec ($location <priority>) (, <..patterns>) (, <..templates>))`"),
-            //         };
-            //     };
-            // }
-
-
         // //////////////////////////////////////////////////////////////////////////////////////
         // Get a unique identifier or grounded sub-expression for this MeTTa thread
         // //////////////////////////////////////////////////////////////////////////////////////
@@ -1025,79 +989,40 @@ impl CommandDefinition for MettaThreadCmd {
         let status_loc_sexpr = format!("(exec {})", &thread_id_sexpr_string);
         let status_loc = <_>::sexpr_to_expr(&ctx.0.space, &status_loc_sexpr).unwrap();
 
-        let Ok(status_writer) = (&ctx.0.space).new_writer(status_loc.as_bytes(), &()) else { return  Err(CommandError::external(StatusCode::CONFLICT, "Thread is already running at that loacation.")); };
-
         // //////////////
         // BUILD TASK //
         // ////////////
-
-        // // substitution related code (for reference when it gets implemented)
-            // // insert initial
-            // let mut substitution_buffer = vec![0u8;4096];
-            // let mut oz = mork_bytestring::ExprZipper::new(mork_bytestring::Expr{ptr : substitution_buffer.as_mut_ptr()});
-            // initial_expr_raw
-            // .substitute_one_de_bruijn(
-            //     0, 
-            //     expr.borrow(), 
-            //     &mut oz
-            // );
-
-            // let mut attempts_left = 1000;
-            // loop {
-            //     if attempts_left == 0 {
-            //         return Err(CommandError::external(StatusCode::CONFLICT, "Location was under heavy contention, could not insert initial_exec"));
-            //     }
-            //     attempts_left -=1;
-            //     let span = unsafe { &*mork_bytestring::Expr{ptr:substitution_buffer.as_mut_ptr()}.span() };
-            //     if let Ok(mut w) = ctx.0.space.new_writer_async(span, &()).await {
-            //         ctx.0.space.write_zipper(&mut w).set_value(());
-            //         break;
-            //     }
-            // }
-            // // TODO! JOURNAL INSERTION of INITIAL_EXEC
-
 
         let spec = ctx.0.space.metta_calculus_machine_spec(&thread_id_sexpr_string, &(), 500)?;
 
         thread.dispatch_blocking_task(cmd, move |_| {
 
-            use mork::space::{metta_calculus::{TransformErr, LookupBaseCases}, ExecError};
+            use mork::space::metta_calculus::LookupBaseCases;
             let mut machine          = None;
             let mut start_controller = spec.init(&ctx.0.space, &(), &mut machine);
             
 
             type CF<B,C> = std::ops::ControlFlow<B,C>;
 
-            let exec_val : Result<(), ExecError<ServerSpace>> = 'process_execs : loop {
+            'process_execs : loop {
                 let removed = match start_controller.exec_lookup() {
                     CF::Continue(removed)                                 => removed,
-                    CF::Break(LookupBaseCases::Done)                      => return Ok(()),
+                    CF::Break(LookupBaseCases::Done)                      => { drop(status_loc) ;return Ok(())},
                     CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
-                                                                               start_controller = remaining.continue_loop();
+                                                                               start_controller = remaining;
                                                                                continue 'process_execs;
                                                                              },
                 };
 
                 // close the loop
-                start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
-                    Ok(ok)                                => ok,
-                    Err(TransformErr::Syntax((_c,e)))      => break 'process_execs Err(ExecError::Syntax(e)),
-                    Err(TransformErr::Permission((c, _e))) => { c.defer() },
-                };
+                start_controller = removed.transform_or_defer(|_|{/* journal transform in critical section */});
             };
-
-            if let Err(exec_err) = exec_val {
-                let _ = ctx.0.space.set_user_status(status_loc.as_bytes(), StatusRecord::ExecError(format!("{exec_err:?}")));
-            }
-
-            drop(status_writer);
-            Ok(())
         }).await;
 
         // TODO! location needs to be pulled out with space!  GOAT: Please explain what you mean by this.
         Ok(
             WorkResult::Immediate(
-                Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched. Errors will be found at the status location: `{status_loc_sexpr}`")))
+                Bytes::from(format!("Thread `{thread_id_sexpr_string}` was dispatched.")))
         )
     }
 }

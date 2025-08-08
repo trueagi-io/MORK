@@ -9,7 +9,7 @@ use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{PathMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, metta_calculus_impl, token_bfs_impl, transform_multi_multi_impl, ExecError, ParDataParser
+    self, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, metta_calculus::{Machine, MachineSpecArgs}, metta_calculus_impl, token_bfs_impl, transform_multi_multi_impl, ExecError, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -366,7 +366,7 @@ pub trait Space: Sized {
         auth: &Self::Auth,
     ) -> Result<(), ExecError<Self>>
     {
-        metta_calculus_impl(self, thread_id_sexpr_str, 2000, step_cnt, auth)
+        metta_calculus_impl(self, thread_id_sexpr_str, step_cnt, auth)
     }
 
     fn metta_calculus_machine<'s : 'machine, 'machine>(
@@ -376,8 +376,7 @@ pub trait Space: Sized {
         step_cnt            : usize,
         machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
     ) -> Result<crate::space::metta_calculus::Controller<'machine, 's, crate::space::metta_calculus::LoopStart, Self>, Self::PermissionErr> {
-
-        crate::space::metta_calculus::Machine::machine_spec(self, thread_id_sexpr_str, step_cnt, auth).map(|ms|crate::space::metta_calculus::Machine::init(self, auth, machine, ms))
+        Machine::spec_args(self, thread_id_sexpr_str, step_cnt, auth).init(machine)
     }
 
     fn metta_calculus_machine_spec<'s>(
@@ -387,8 +386,7 @@ pub trait Space: Sized {
         step_cnt            : usize,
         // machine             : &'machine mut Option<crate::space::metta_calculus::Machine<'s, 'machine, Self>>
     ) -> Result<crate::space::metta_calculus::MachineSpec<Self::Writer<'s>>, Self::PermissionErr> {
-
-        crate::space::metta_calculus::Machine::machine_spec(self, thread_id_sexpr_str, step_cnt, auth)
+        Machine::spec_args(self, thread_id_sexpr_str, step_cnt, auth).make()
     }
 
 

@@ -3,7 +3,7 @@
 
 
 
-use std::ops::ControlFlow;
+use std::{fmt::Debug, ops::ControlFlow};
 type CF<B,C> = ControlFlow<B,C>;
 use crate::space::*;
 
@@ -17,6 +17,7 @@ macro_rules! states {($( $STATE:ident $DOC:literal,)+) => {
         use sealed::{StateT, StateVal};
         $(
         #[doc=$DOC]
+        #[derive(Debug)]
         pub struct $STATE {}
         impl sealed::StateT for $STATE {}
         #[allow(private_interfaces)]
@@ -31,7 +32,6 @@ macro_rules! states {($( $STATE:ident $DOC:literal,)+) => {
 
 states!{
     LoopStart             "The machine is initialized to a valid state; \n\ncontinue to start iterating the loop.",
-    ExecsRemaining        "There were conflicts that have been skipped; \n\ncontinue to restart the loop.",
     PreTransform          "Permission was droped; \n\nnext, try to run the transform",
 }
 
@@ -56,6 +56,9 @@ pub struct Machine<'space, 'auth, S: Space> {
 
     steps_remaining        : usize,
 
+    #[cfg(debug_assertions)]
+    hard_stop              : usize,
+
     // /////////////
     // LOOP VARS //
     // ///////////
@@ -64,69 +67,74 @@ pub struct Machine<'space, 'auth, S: Space> {
     exec_permission     : Option<<S as Space>::Writer<'space>>,
     /// This holds the patterns and templates until the current exec either succeeds or sucessfully defers.
     pattern_templates   : Option<(Vec<Expr>, Vec<Expr>)>,
-
 }
 
-pub struct MachineSpec<W>{
-    // space               : &'space S,
+pub struct MachineSpec<W> {
     exec_permission     : W,
-    // auth                : &'auth S::Auth,
     prefix_len          : usize,
     buffer              : Vec<u8>,
     steps_remaining     : usize,
 }
-impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
 
-    pub fn machine_spec(
-        space               : &'space S,
-        thread_id_sexpr_str : &str,
-        steps               : usize,
-        auth                : &'machine S::Auth
-    ) -> Result<MachineSpec<S::Writer<'space>>, S::PermissionErr> {
+pub struct MachineSpecArgs<'space, 'auth, 'arg, S : Space> {
+    pub space               : &'space S,
+    pub thread_id_sexpr_str : &'arg str,
+    pub steps               : usize,
+    pub auth                : &'auth S::Auth
+}
+impl<'space, 'auth, 'arg, S : Space> MachineSpecArgs<'space, 'auth, 'arg, S> {
+    pub fn make(self) -> Result<MachineSpec<S::Writer<'space>>, S::PermissionErr> {
+        let MachineSpecArgs { space, thread_id_sexpr_str, steps, auth } = self;
+        
         // //GOAT, MM2-Syntax.  we need to lift these patterns out as constants so we can tweak the MM2 syntax without hunting through the implementation
         // //
         // // (exec (<location> $priority) $patterns $templates)
-
         let prefix_expr = space.sexpr_to_expr(&format!("(exec ({} $) $ $)", thread_id_sexpr_str)).unwrap();
         let prefix = unsafe { prefix_expr.borrow().prefix().unwrap().as_ref().unwrap() };
-
-        let prefix_len = prefix.len();
-        let buffer     = Vec::from(prefix);
-
-        let writer = space.new_writer_retry(prefix, 1000, auth)?;
-
-        Ok(MachineSpec { exec_permission: writer, prefix_len, buffer, steps_remaining: steps })
+        
+        Ok(MachineSpec { 
+            exec_permission : space.new_writer_retry(prefix, 1000, auth)?, 
+            prefix_len      : prefix.len(),
+            buffer          : Vec::from(prefix),
+            steps_remaining : steps
+        })
+    }
+    /// helper method where the return value is the same as [`Self::make`], but the error type is upcast to an [`crate::space::ExecError`]
+    pub fn make_in_exec(self) -> Result<MachineSpec<S::Writer<'space>>, ExecError<S>> {
+        let space = self.space;
+        self.make().map_err(|perm_err|ExecError::perm_err(space, perm_err))
     }
 
-    /// Initializes the machine in the [`LoopStart`] state.
+    /// Initializes the machine directly into the [`LoopStart`] state.
     /// the `place` argument value should be [`Option::None`], as it will be replaced with the new [`Machine`] inside a [`Some`].
     #[inline(always)]
-    pub fn init(
+    pub fn init<'machine>(
+        self,
+        machine : &'auth mut Option<Machine<'space,'auth, S>>,
+    ) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, S::PermissionErr> {
+        let (space, auth) = (self.space, self.auth);
+        self.make().map(|ms|ms.init(space, auth, machine))
+    }
+
+    /// helper method that has the same return type as [`Self::init`], but it upcasts the error to an [`ExecError`]
+    #[inline(always)]
+    pub fn init_in_exec(
+        self,
+        machine : &'auth mut Option<Machine<'space,'auth, S>>,
+    ) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, ExecError<S>> {
+        let (space, auth) = (self.space, self.auth);
+        self.make_in_exec().map(|ms|ms.init(space, auth, machine))
+    }
+}
+
+impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
+    pub fn spec_args<'arg>(
         space               : &'space S,
-        auth                : &'machine S::Auth,
-        machine             : &'machine mut Option<Self>,
-        machine_spec        : MachineSpec<S::Writer<'space>>,
-    ) -> Controller<'machine, 'space, LoopStart, S> {
-
-
-
-        let MachineSpec { exec_permission, prefix_len, buffer, steps_remaining } = machine_spec;
-
-        let retry_remaining = false;
-
-        *machine = Some(
-            Machine {
-                space,
-                auth,
-                prefix_len,
-                buffer,
-                retry_remaining,
-                steps_remaining   : steps_remaining,
-                exec_permission   : Some(exec_permission),
-                pattern_templates : None,
-            }
-        );
-        Controller { _state: LoopStart {}, machine }
+        thread_id_sexpr_str : &'arg str,
+        steps               : usize,
+        auth                : &'machine S::Auth   
+    ) -> MachineSpecArgs<'space, 'machine, 'arg, S> {
+        MachineSpecArgs { space, thread_id_sexpr_str, steps, auth }
     }
 
     // The following methods are primarily here for inspection by users, without fear of breaking the integrity of the state machine.
@@ -140,13 +148,39 @@ impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
 }
 
 impl<'space, W> MachineSpec<W> {
-pub fn init<'machine, S>(self, space : &'space S, auth : &'machine S::Auth, machine : &'machine mut Option<Machine<'space, 'machine, S>>) -> Controller<'machine, 'space, LoopStart, S> 
+    pub fn init<'machine, S>(self, space : &'space S, auth : &'machine S::Auth, machine : &'machine mut Option<Machine<'space, 'machine, S>>) -> Controller<'machine, 'space, LoopStart, S> 
     where S : Space<Writer<'space> = W>
     {
-        Machine::init(space, auth, machine, self)
+        let MachineSpec { exec_permission, prefix_len, buffer, steps_remaining } = self;
+        *machine = Some(
+            Machine {
+                space,
+                auth,
+                prefix_len,
+                buffer,
+                retry_remaining   : false,
+                steps_remaining,
+                exec_permission   : Some(exec_permission),
+                pattern_templates : None,
+
+                // this is to protect your computer in debug from blowing your memory.
+                #[cfg(debug_assertions)]
+                hard_stop : 2000,
+            }
+        );
+        // #[cfg(debug_assertions)] {
+        //     let Machine { prefix_len, buffer, retry_remaining, steps_remaining, .. } = machine.as_mut().unwrap();
+        //     println!("MACHINE\
+        //         \n\t| state           : init -> {:?}\
+        //         \n\t| buffer          : {buffer:?}\
+        //         \n\t| prefix_len      : {prefix_len}\
+        //         \n\t| retry_remaining : {retry_remaining}\
+        //         \n\t| steps_remianing : {steps_remaining}\
+        //         ", LoopStart{});
+        // }
+        Controller { _state: LoopStart {}, machine: machine }
     }
 }
-
 
 /// The [`Machine`] is only ever interacted with via the [`Controller`].
 pub struct Controller<'machine, 'space, State : StateT, S : Space>{
@@ -176,35 +210,43 @@ macro_rules! machine_ref {
 }};
 }
 
-impl<'space, 'machine, State : StateT, S: Space> Controller<'machine, 'space, State, S> {
+impl<'space, 'machine, State : StateT + Debug, S: Space> Controller<'machine, 'space, State, S> {
     /// This is used internally only after a transition has successfully be done.
     #[inline(always)]
-    fn next_state<NextState : StateVal>(self, _s : NextState)-> Controller<'machine, 'space, NextState, S> {
+    fn next_state<NextState : StateVal + Debug>(self, _s : NextState)-> Controller<'machine, 'space, NextState, S> {
         core::debug_assert!(self.machine.is_some());
+        // #[cfg(debug_assertions)] {
+        //     let Machine { prefix_len, buffer, retry_remaining, steps_remaining, ..} = self.inspect_machine();
+        //     println!("MACHINE\
+        //         \n\t| state           : {:?} -> {:?}\
+        //         \n\t| buffer          : {buffer:?}\
+        //         \n\t| prefix_len      : {prefix_len}\
+        //         \n\t| retry_remaining : {retry_remaining}\
+        //         \n\t| steps_remianing : {steps_remaining}\
+        //         ", &self._state, &_s);
+        // }
+        #[cfg(debug_assertions)] { self.machine.as_mut().unwrap().hard_stop -=1}
+
         Controller { _state: NextState::SELF, machine : self.machine }
     }
 
     #[inline(always)]
-    pub fn inspect_machine(&self)->&Machine<'space, 'machine, S> {
-        machine_ref!(self)
-    }
+    pub fn inspect_machine(&self)->&Machine<'space, 'machine, S> { machine_ref!(self) }
 
     /// Helper method to convert the explict [`Controller`] with type states into the [`MachineHandle`] type.
     #[inline(always)]
-    pub fn to_handle(self)->MachineHandle<'machine, 'space, S> where State : StateVal{
-        State::handle_constructor(self)
-    }
+    pub fn to_handle(self)->MachineHandle<'machine, 'space, S> where State : StateVal{ State::handle_constructor(self) }
 }
 
 pub enum LookupBaseCases<'machine, 'space, S : Space> {
     Done,
-    ExecsRemaining(Controller<'machine, 'space, ExecsRemaining, S>),
+    ExecsRemaining(Controller<'machine, 'space, LoopStart, S>),
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
     /// lookup the next exec in the space:
     /// - on [`ControlFlow::Break`]
     ///   - either all execs were executed([`LookupBaseCases::Done`], execution finishes)
-    ///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`], type state moves to [`ExecsRemaining`]);
+    ///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`];
     ///
     /// - on [`ControlFlow::Continue`] ( type state moves to [`PreTransform`])
     #[inline(always)]
@@ -216,9 +258,9 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
     ->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
     {
         match self.exec_lookup() {
-            ControlFlow::Continue(c) => CF::Continue(MachineHandle::PreTransform(c)),
-            ControlFlow::Break(LookupBaseCases::Done) => CF::Break(()),
-            ControlFlow::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::ExecsRemaining(remaining)),
+            CF::Continue(c)                                       => CF::Continue(MachineHandle::PreTransform(c)),
+            CF::Break(LookupBaseCases::Done)                      => CF::Break(()),
+            CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::LoopStart(remaining)),
         }
     }
 }
@@ -228,11 +270,13 @@ fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machin
 -> ControlFlow< LookupBaseCases<'machine, 'space, S>, Controller<'machine, 'space, PreTransform, S>,>
 {
     let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, steps_remaining, .. } = machine_mut!(controller);
-    core::debug_assert!(exec_permission.is_some());
 
     if *steps_remaining == 0 {
+        // release the exec space
+        *exec_permission = None;
         return CF::Break(LookupBaseCases::Done);
     }
+    core::debug_assert!(exec_permission.is_some());
 
     let mut exec_wz = space.write_zipper(unsafe { exec_permission.as_mut().unwrap_unchecked() });
 
@@ -245,7 +289,9 @@ fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machin
 
 
         if *retry_remaining {
-            return CF::Break(LookupBaseCases::ExecsRemaining( controller.next_state(ExecsRemaining {})));
+            buffer.truncate(*prefix_len);
+            *retry_remaining = false;
+            return CF::Break(LookupBaseCases::ExecsRemaining( controller));
         }
 
         // Sucessfully consumed all execs.  This MeTTa thread is done
@@ -256,31 +302,24 @@ fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machin
     buffer.extend_from_slice(rz.path());
     drop(rz);
 
-    // Remove expr, which means we are "claiming" it
-    exec_wz.descend_to(&buffer[*prefix_len..]);
-    exec_wz.remove_val();
-
     drop(exec_wz);
     CF::Continue(controller.next_state(PreTransform{}))
-}
-
-impl<'space, 'machine, S: Space> Controller<'machine, 'space, ExecsRemaining, S> {
-    /// restart the [`Machine`] from the beginning, change to [`LoopStart`]
-    #[inline(always)]
-    pub fn continue_loop(self) ->  Controller<'machine, 'space, LoopStart, S> { continue_loop_impl(self) }
-}
-
-fn continue_loop_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, ExecsRemaining, S>) -> Controller<'machine, 'space, LoopStart, S> {
-    let Machine { prefix_len, buffer, exec_permission, .. } = machine_mut!(controller);
-    core::debug_assert!(exec_permission.is_none());
-
-    buffer.truncate(*prefix_len);
-    controller.next_state(LoopStart {})
 }
 
 pub enum TransformErr<'machine, 'space, S : Space> {
     Syntax    ((Controller<'machine, 'space, LoopStart,    S>, ExecSyntaxError )),
     Permission((Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)),
+}
+
+impl<'machine, 'space, S : Space> TransformErr<'machine, 'space, S> {
+    pub fn ignore_err(self)
+    -> ControlFlow<Controller<'machine, 'space, PreTransform, S>, Controller<'machine, 'space, LoopStart, S>>
+    {
+        match self {
+            TransformErr::Syntax((c,_))     => CF::Continue(c),
+            TransformErr::Permission((c,_)) => CF::Break(c),
+        }
+    }
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
     /// Parse the exec,
@@ -291,19 +330,46 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
     ///
     /// if it succeeds durring the critical section the callback `at_critical_section` will be called after the transform completes, then moves to [`LoopStart`].
     #[inline(always)]
-    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>{ transform_impl(self, at_critical_section) }
+    pub fn transform_explicit(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>{ transform_impl(self, at_critical_section) }
 
+    /// ignores "Errors" from [`Self::transform_explicit`]
+    #[inline(always)]
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> ControlFlow< Controller<'machine, 'space, PreTransform, S>,
+                 Controller<'machine, 'space, LoopStart, S>,
+    >{ 
+        match self.transform_explicit(at_critical_section) {
+            Ok(ok) => CF::Continue(ok),
+            Err(e) => e.ignore_err()
+        }
+    }
+
+    #[inline(always)]
+    pub fn transform_to_handle(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> MachineHandle<'machine, 'space, S> {
+        match self.transform(at_critical_section) {
+            CF::Continue (c) => c.to_handle(),
+            CF::Break    (c) => c.to_handle(),
+        }
+    }
+
+    /// calls [`Self::defer`] on the case where a [`Self::transform`] would have a permission error.
+    #[inline(always)]
+    pub fn transform_or_defer(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>))->Controller<'machine, 'space, LoopStart, S> {
+        match self.transform(at_critical_section)
+        {
+            CF::Continue(c) => c,
+            CF::Break(b)    => b.defer(),
+        }
+    }
 
     /// If an exec cannot be run, then the current exec can be defered by reinserting it into the space.
     /// Aquiring the [`DeferGuard`] means we have the permission for reinsertion:
     /// - on [`Ok`]  the permission is held in the [`Machine`], state becomes [`DeferGuard`];
     /// - on [`Err`] the [`Machine`] stays in the [`PreTransform`] state.
     #[inline(always)]
-    pub fn defer(self) -> Controller<'machine, 'space, LoopStart, S> { 
-        defer_impl(self)
-    }
+    pub fn defer(self) -> Controller<'machine, 'space, LoopStart, S> { defer_impl(self) }
 }
 
+#[inline(always)]
 fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,> {
     let m_mut = machine_mut!(controller);
     let rt = Expr{ ptr: m_mut.buffer.as_mut_ptr() };
@@ -323,14 +389,19 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
     core::debug_assert!( m_ref.pattern_templates.is_some() );
     let (patterns, templates) = unsafe { m_ref.pattern_templates.as_ref().unwrap_unchecked() };
 
-    let ExecPermissions {mut read_map, template_prefixes, mut writers, exec_writer_index, .. } = 
-    match acquire_exec_permissions(m_ref.space, patterns, templates, m_ref.auth, exec_writer, ||at_critical_section(m_ref)) {
-        Ok(ok)   => ok,
-        Err(err) => return Err(TransformErr::Permission((controller, err))),
-    };
-
+    let maybe_permissions = acquire_exec_permissions(m_ref.space, patterns, templates, m_ref.auth, exec_writer, ||at_critical_section(m_ref));
+    
     // We switch back to the mutable reference
     let Machine { space, prefix_len, buffer, retry_remaining, pattern_templates, steps_remaining, exec_permission, .. } = machine_mut!(controller);
+    
+    let ExecPermissions {mut read_map, template_prefixes, mut writers, exec_writer_index, .. } = 
+    match maybe_permissions {
+        Ok(ok)   => ok,
+        Err((ew, err)) => { *exec_permission = Some(ew);
+                            return Err(TransformErr::Permission((controller, err)))
+                          },
+    };
+
     core::debug_assert!( pattern_templates.is_some() );
     let (patterns, templates) = unsafe { pattern_templates.as_ref().unwrap_unchecked() };
 
@@ -340,8 +411,9 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
     // remove current exec from space
     {
         let mut wz = space.write_zipper(&mut writers[exec_writer_index]);
-        core::debug_assert_eq!(wz.path(), &buffer[..*prefix_len]);
-        wz.descend_to(&buffer[*prefix_len..]);        
+        core::debug_assert_eq!(wz.origin_path(), &buffer[..*prefix_len]);
+        wz.descend_to(&buffer[*prefix_len..]);
+        wz.remove_val();
     }
 
     space.transform_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
@@ -350,9 +422,7 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
     *exec_permission = Some(writers.swap_remove(exec_writer_index));
  
     core::debug_assert!(*steps_remaining > 0);
-    *steps_remaining -= 1;
-    *pattern_templates = None;
-    *retry_remaining = false;
+    (*steps_remaining, *pattern_templates, *retry_remaining) = (*steps_remaining-1, None, false);
     buffer.truncate(*prefix_len);
 
     Ok(controller.next_state(LoopStart{}))
@@ -361,58 +431,50 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
 fn defer_impl <'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>) -> Controller<'machine, 'space, LoopStart, S>
 {
     let Machine { pattern_templates, retry_remaining, ..  } = machine_mut!(controller);
-    
-    *retry_remaining   = true;
-    *pattern_templates = None;
-
+    (*retry_remaining,*pattern_templates) = (true, None);
     controller.next_state(LoopStart{})
 }
 
 impl<'machine, 'space, S : Space> MachineHandle<'machine, 'space, S> {
-/// This gives the basic logic of metta_calculus via the [`MachineHandle`] with no retries, but tries to defer on a failed transform. Otherwise it bubbles up an error
-pub fn advance(self) -> ControlFlow<Result<(), (Self, ExecError<S>)>, Self> {
-    type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
-    ControlFlow::Continue(match self {
-        MH::LoopStart            (controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return CF::Break(Ok(()));}
-                                                 ,
-        MH::ExecsRemaining       (controller) => controller.continue_loop().to_handle(),
-        MH::PreTransform         (controller) => match controller.transform(|_|{/* journal transform in critical section */}) {
-                                                     Ok(ok)                                 => ok.to_handle(),
-                                                     Err(TransformErr::Syntax((c,e)))       => return ControlFlow::Break(Err((c.to_handle(), ExecError::Syntax(e)))),
-                                                     Err(TransformErr::Permission((c, _e))) => c.defer().to_handle(),        
-                                                 },
-    })
-}
+    // the default advance strategy is to ignore "Errors" and continue running without modifying the space
+    #[inline(always)]
+    pub fn advance(self) -> ControlFlow<(), Self> {
+        type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
+        CF::Continue(match self {
+            MH::LoopStart      (controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return CF::Break(());},
+            MH::PreTransform   (controller) => match controller.transform(|_|{}) {
+                                                   CF::Continue (c) => c.to_handle(),
+                                                   CF::Break    (c) => c.defer().to_handle(),
+                                               },
+        })
+    }
 }
 
-/// The basic implementation using type state and including retry logic. comments show points one could include intermidiate actions like journaling
+/// The basic implementation using type state; comments show points one could include intermidiate actions like journaling
 #[allow(unused)]
 pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
     space               : &'space S,
     thread_id_sexpr_str : &str,
-    max_retries         : usize,
     mut step_cnt        : usize,
     auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
     let mut machine = None;
     let mut start_controller = 
-        Machine::machine_spec(space, thread_id_sexpr_str, step_cnt, auth).map_err(|perm_err|ExecError::perm_err(space, perm_err))?
-        .init(space, auth, &mut machine);
+        Machine::spec_args(space, thread_id_sexpr_str, step_cnt, auth).init_in_exec(&mut machine)?;
 
     'process_execs : loop {
         let lookup_success = match start_controller.exec_lookup() {
             CF::Continue(lookup_success)                          => lookup_success,
             CF::Break(LookupBaseCases::Done)                      => return Ok(()),
             CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
-                                                                       start_controller = remaining.continue_loop();
+                                                                       start_controller = remaining;
                                                                        continue 'process_execs;
                                                                      },
         };
         // close the loop
         start_controller = match lookup_success.transform(|_|{/* journal transform in critical section */}) {
-            Ok(ok)                                 => ok,
-            Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
-            Err(TransformErr::Permission((c, _e))) => { c.defer()},
+            CF::Continue(c) => c,
+            CF::Break(b)    => b.defer(),
         };
     }
 }
@@ -422,20 +484,18 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
 pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Space>(
     space               : &'space S,
     thread_id_sexpr_str : &str,
-    max_retries         : usize,
     mut step_cnt        : usize,
     auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
     type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
     let mut machine = None;
     let mut handle = 
-        Machine::machine_spec(space, thread_id_sexpr_str, step_cnt, auth).map_err(|perm_err|ExecError::perm_err(space, perm_err))?
-        .init(space, auth, &mut machine).to_handle();
+        Machine::spec_args( space, thread_id_sexpr_str, step_cnt, auth ).init_in_exec(&mut machine)?.to_handle();
 
     'process_execs : loop {
         handle = match handle.advance() {
-            ControlFlow::Continue(c) => c,
-            ControlFlow::Break(b)    => return b.map_err(|(_,e)|e),
+            CF::Continue(c) => c,
+            CF::Break(())   => return Ok(()),
         };
     }
 }
@@ -481,27 +541,20 @@ auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
     let mut machine = None;
     let mut start_controller = 
-        Machine::machine_spec(space, thread_id_sexpr_str, step_cnt, auth).map_err(|perm_err|ExecError::perm_err(space, perm_err))?
-        .init(space, auth, &mut machine);
+        Machine::spec_args( space, thread_id_sexpr_str, step_cnt, auth ).init_in_exec(&mut machine)?;
 
     // const MAX_RETRIES : usize = usize::MAX;
     'process_execs : loop {
-        let removed = match start_controller.exec_lookup() {
-            CF::Continue(removed)                                 => removed,
+        let exec_found = match start_controller.exec_lookup() {
+            CF::Continue(exec_found)                              => exec_found,
             CF::Break(LookupBaseCases::Done)                      => return Ok(()),
             CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
-                                                                       start_controller = remaining.continue_loop();
+                                                                       start_controller = remaining;
                                                                        continue 'process_execs;
                                                                      },
         };
-        // journal removal
-
         // close the loop
-        start_controller = match removed.transform(|_|{/* journal transform in critical section */}) {
-            Ok(ok)                                 => ok,
-            Err(TransformErr::Syntax((_c,e)))      => return Err(ExecError::Syntax(e)),
-            Err(TransformErr::Permission((c, _e))) => { c.defer()},
-        };
+        start_controller = exec_found.transform_or_defer(|_|{/* journal transform in critical section */});
     }
 }
 
@@ -530,7 +583,7 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
     mut exec_writer  : S::Writer<'s>,
 
     at_critical_section : impl FnOnce(),
-) -> Result<ExecPermissions<'s,S>, S::PermissionErr> {
+) -> Result<ExecPermissions<'s,S>, (S::Writer<'s>, S::PermissionErr)> {
     let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
     // this version of the function needs to remember what index holds the initial writer
@@ -549,10 +602,11 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
     
     // insert initial
     let wz = space.write_zipper(&mut exec_writer);
-    let mut exec_path = wz.path().to_owned();
+    let exec_path = wz.origin_path().to_owned();
     drop(wz);
     let last_index = template_path_table.len();
-    template_path_table.push((make_prefix(&Expr { ptr: exec_path.as_mut_ptr()}), template_path_table.len(), 0)); 
+    template_path_table.push((&exec_path, template_path_table.len(), 0)); 
+    // template_path_table.push((make_prefix(&Expr { ptr: exec_path.as_mut_ptr()}), template_path_table.len(), 0)); 
 
     // Is the swap needed?
     template_path_table.swap(0, last_index);
@@ -588,7 +642,10 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
             // force a permission error
             match space.new_writer(&exec_path, auth) {
                 Ok(_) => core::unreachable!(),
-                Err(e) => return Err(e),
+                Err(e) => { 
+println!("HERE : line {}", line!());
+                            return Err((exec_writer, e))
+                          },
             };
         }
     }
@@ -613,17 +670,43 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
 
     let mut some_initial_writer = Some(exec_writer);
 
-    space.new_multiple(|perm_head| {
+    match space.new_multiple(|perm_head| {
 
         //Make the "ReadMap" by copying each pattern from the space
         for pat in patterns {
             let path = make_prefix(&pat.borrow());
 
-            let mut reader = perm_head.new_reader(path, auth)?;
-            let rz = space.read_zipper(&mut reader);
+            let overlap =  pathmap::utils::find_prefix_overlap(path, &exec_path);
+            if overlap == exec_path.len() {
+                // the initial writer has not been taken yet, so this is infalible
+                let writer = some_initial_writer.as_mut().unwrap();
+                let mut wz = space.write_zipper(writer);
+                wz.descend_to(&path[exec_path.len()..]);
 
-            let mut wz = read_map.write_zipper_at_path(path);
-            wz.graft(&rz);
+                let s_map = wz.take_map();
+                if let Some(map) = s_map {
+                    wz.graft_map(map.clone());
+                    let mut wz_map = read_map.write_zipper_at_path(path);
+                    wz_map.graft_map(map);
+                }
+            } else {
+                // if it subsumes our exec_writer we want the error
+
+                let mut reader = match perm_head.new_reader(path, auth) {
+                    Ok(it) => it,
+                    Err(err) => {
+println!("HERE : line {}", line!());
+println!("| path = {:?}", path);
+                        
+                        return Err(err)
+                    },
+                };
+                let rz = space.read_zipper(&mut reader);
+    
+                let mut wz = read_map.write_zipper_at_path(path);
+                wz.graft(&rz);
+            }
+
         }
 
         //Acquire writers at each slot, knowing we any conflicts are with external clients
@@ -632,20 +715,37 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
                 let siw = some_initial_writer.take();
                 let s = siw.map(|iw| writers.push(iw));
 
+
                 #[cfg(debug_assertions)] s.expect("This should only unwrap once");
 
             } else {
-                let writer = perm_head.new_writer(path, auth)?;
+                let writer = match perm_head.new_writer(path, auth) {
+                    Ok(it) => it,
+                    Err(err) => {
+println!("HERE : line {}", line!());
+                            return Err(err)
+                        },
+                };
                 writers.push(writer);
             }
         }
 
         at_critical_section();
         Ok(())
-    })?;
+    }) {
+        Ok(())   => {},
+        Err(err) => { return Err (match some_initial_writer {
+                          Some(ew) => { 
+println!("HERE : line {}", line!());
+                                        (ew, err)
+                                      },
+                          None     => { // we should only be here if the new_multiple put the exec_writer into the writers vec
 
-    trace!(target: "transform", "templates {:?}", templates);
-    trace!(target: "transform", "prefixes {:?}", template_prefixes);
+                                        (writers.swap_remove(exec_writer_index), err) 
+                                      },
+                    })},
+    };
+
 
     Ok( ExecPermissions { 
         space : core::marker::PhantomData,

@@ -111,14 +111,14 @@ mod tests {
 (last_name Smith)
 (is_alive true)
 (age 27)
-(address (street_address 21 2nd Street))
-(address (city New York))
+(address (street_address "21 2nd Street"))
+(address (city "New York"))
 (address (state NY))
 (address (postal_code 10021-3100))
 (phone_numbers (0 (type home)))
-(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (0 (number "212 555-1234")))
 (phone_numbers (1 (type office)))
-(phone_numbers (1 (number 646 555-4567)))
+(phone_numbers (1 (number "646 555-4567")))
 (children (0 Catherine))
 (children (1 Thomas))
 (children (2 Trevor))
@@ -340,8 +340,8 @@ mod tests {
 
         let res = String::from_utf8(v).unwrap();
 
-        // println!("\nRESULTS\n");
-        // println!("{}", res);
+        println!("\nRESULTS\n");
+        println!("{}", res);
 
         assert_eq!(res.lines().count(), 3);
         core::assert_eq!(
@@ -447,9 +447,8 @@ mod tests {
         const SPACE_EXPRS: &str = 
         concat!
         ( ""
-        , "\n(exec (test_clears_two_execs PC0) (, (exec $loc $p $t)) (, (result-pc0 (exec $loc $p $t))))"
-
-        , "\n(exec (test_clears_two_execs PC1) (, (exec $loc $p $t)) (, (result-pc1 (exec $loc $p $t))))"
+        , "\n(exec (test_clears_two_execs PC0) (, (exec (test_clears_two_execs $priority) $p $t)) (, (result-pc0 (exec (test_clears_two_execs $priority) $p $t))))"
+        , "\n(exec (test_clears_two_execs PC1) (, (exec (test_clears_two_execs $priority) $p $t)) (, (result-pc1 (exec (test_clears_two_execs $priority) $p $t))))"
         );
 
         s.load_sexpr_simple(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
@@ -464,9 +463,9 @@ mod tests {
 
         assert_eq!(out.lines().count(), 3);
         core::assert_eq!(
-            "(result-pc0 (exec (test_clears_two_execs PC0) (, (exec $ $ $)) (, (result-pc0 (exec _1 _2 _3)))))\n\
-            (result-pc0 (exec (test_clears_two_execs PC1) (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
-            (result-pc1 (exec (test_clears_two_execs PC1) (, (exec $ $ $)) (, (result-pc1 (exec _1 _2 _3)))))\n\
+            "(result-pc0 (exec (test_clears_two_execs PC0) (, (exec (test_clears_two_execs $) $ $)) (, (result-pc0 (exec (test_clears_two_execs _1) _2 _3)))))\n\
+            (result-pc0 (exec (test_clears_two_execs PC1) (, (exec (test_clears_two_execs $) $ $)) (, (result-pc1 (exec (test_clears_two_execs _1) _2 _3)))))\n\
+            (result-pc1 (exec (test_clears_two_execs PC1) (, (exec (test_clears_two_execs $) $ $)) (, (result-pc1 (exec (test_clears_two_execs _1) _2 _3)))))\n\
             ", &out
         )
     }

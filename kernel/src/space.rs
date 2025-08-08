@@ -884,7 +884,7 @@ impl DefaultSpace {
             return Err("Thread is already running at that loacation.".to_string())
         };
 
-        self.metta_calculus(thread_id_sexpr_str, usize::MAX, &())
+        self.metta_calculus(thread_id_sexpr_str, 2000_usize, &())
             .map_err(|exec_err| format!("{exec_err:?}"))?;
 
         drop(status_writer);
@@ -895,12 +895,11 @@ impl DefaultSpace {
 pub(crate) fn metta_calculus_impl<'s, S: Space>(
     space: &'s S, 
     thread_id_sexpr_str: &str, 
-    max_retries: usize, 
     step_cnt: usize, 
     auth: &S::Auth,
 ) -> Result<(), ExecError<S>> {
     // Remy (2025/07/11) : if this ends up being the only caller we should inline it.
-    metta_calculus::metta_calculus_impl_statemachine_poc(space, thread_id_sexpr_str, max_retries, step_cnt, auth)
+    metta_calculus::metta_calculus_impl_statemachine_poc(space, thread_id_sexpr_str, step_cnt, auth)
 }
 
 pub(crate) fn load_csv_impl<'s, SrcStream, WZ>(

@@ -755,7 +755,7 @@ impl WorkerPool {
 // #[tokio::main(flavor = "current_thread")]
 fn main() {
     let mut runtime = tokio::runtime::Builder::new_multi_thread();
-    runtime.thread_stack_size(256*1024);
+    runtime.thread_stack_size(16*1024*1024);
     runtime.enable_io();
     runtime.enable_time();
     let mut runtime = runtime.build().unwrap();

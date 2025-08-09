@@ -4,8 +4,9 @@ use std::io::{BufRead, Write};
 use std::{process, usize};
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::{Arc, Mutex};
-
+use futures::TryFutureExt;
 use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
@@ -371,7 +372,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (ITER_SYMBOL $recursive:expr) => {
         let size = *last; last = last.offset(-1);
-        let mut v = [0; 64];
+        let mut v = [0u8; 64];
         for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
 
         if loc.descend_to_byte(Tag::SymbolSize(size).byte()) {
@@ -386,7 +387,7 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     (ITER_VAR_SYMBOL $recursive:expr) => {
         let size = *last; last = last.offset(-1);
-        let mut v = [0; 64];
+        let mut v = [0u8; 64];
         for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
 
         unroll!(ITER_VARIABLES $recursive);
@@ -499,10 +500,10 @@ fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnM
     };
     }
     // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
-    #[cfg(debug_assertions)]
+    // #[cfg(debug_assertions)]
     unroll!(CALL referential_transition(last, loc, references, introduced, f));
-    #[cfg(not(debug_assertions))]
-    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
+    // #[cfg(not(debug_assertions))]
+    // unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
     }
 }
 
@@ -1414,22 +1415,22 @@ where
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         // core::debug_assert_eq!(wz.origin_path().unwrap(), constant_template_prefix);
 
-        let mut buffer = [0u8; 4096];
+        let mut buffer = Vec::with_capacity(1 << 32);
         let mut it = ParseContext::new(src);
         let mut i = 0;
-        let mut stack = [0u8; 2048];
+        let mut stack = Vec::with_capacity(1 << 32);
         let mut parser = ParDataParser::new(sm);
         loop {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
             match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
-                    let data = &mut stack[..ez.loc];
+                    let data = unsafe { slice_from_raw_parts_mut(stack.as_mut_ptr(), ez.loc).as_mut().unwrap() };
                     let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
                     match (Expr{ ptr: data.as_mut_ptr() }.transformData(pattern, template, &mut oz)) {
                         Ok(()) => {}
                         Err(_e) => { continue }
                     }
-                    let new_data = &buffer[..oz.loc];
+                    let new_data = unsafe { slice_from_raw_parts(buffer.as_ptr(), oz.loc).as_ref().unwrap() };
                     wz.descend_to(&new_data[constant_template_prefix.len()..]);
                     wz.set_val(());
                     wz.reset();
@@ -1864,7 +1865,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
     RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
     WZ : ZipperMoving + ZipperWriting<()>
 {
-        let mut buffer = [0u8; 512];
+        let mut buffer = Vec::with_capacity(1 << 32);
 
         let mut any_new = false;
         let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
@@ -1902,7 +1903,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
                 trace!(target: "transform", "{i} out {:?}", oz.root);
                 // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
 
-                wz.descend_to(&buffer[*incremental_path_start..oz.loc]);
+                wz.descend_to(unsafe { &slice_from_raw_parts(buffer.as_ptr(), oz.loc).as_ref().unwrap()[*incremental_path_start..] });
 
                 // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
                 // println!("insert path {}", serialize(&buffer[..oz.loc]));

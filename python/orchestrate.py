@@ -1,33 +1,31 @@
 from client import MORK
+from time import sleep
 
 def _main():
+    N = 1024
+    T = 8
     with MORK(base_url="http://127.0.0.1:8001") as alice,\
          MORK(base_url="http://127.0.0.1:8002") as bob:
 
         tasks = []
         for i, participant in enumerate((alice, bob)):
-            with participant.work_at("main") as ins, ins.work_at("ints") as ints:
-                r = range(1000*i, 1000*(i+1))
-                print(f"uploading {r} to {participant} ({i})")
-                ints.upload_("\n".join(map(str, r)))
-                tasks.append(ints.transform(("$x","$y"), ("(pair $x $y)",)))
+            with participant.work_at("main") as ins:
+                ins.clear()
+                for core in range(T):
+                    Ncore = N//T
+                    j = T*i + core
+                    r = range(Ncore*j, Ncore*(j+1))
+                    print(f"uploading {r} to participant {i} ({j})")
+                    ins.upload_("\n".join(f"(ints {core} {k})" for k in r)) # blocking
+                for core in range(T):
+                    tasks.append(ins.transform((f"(ints {core} $x)", "(ints $core $y)"), (f"(pair {core} $x $y)",))) # non-blocking
 
+        print("dispatched")
         for task in tasks: task.block()
-        print("all completed")
+        print("processed")
 
         for i, participant in enumerate((alice, bob)):
-            print(participant.download("(main (ints (pair $x $y)))", "($x x $y)", max_results=5).data)
-
-        # todo implement more interesting task graph:
-        # task graph:
-        # upload alice   upload bob
-        # process AA     process BB
-        # export alice   export bob
-        # import bob     import alice
-        # process AB     process BA
-        # filter         filter
-        # download AA,AB download BA,BB
-
+            print(i, participant.download("(main (pair $core $x $y))", "($x x $y)").data.count("\n"))
 
 if __name__ == '__main__':
     # Be sure to fire up the two MORK server instances

@@ -623,9 +623,9 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-pub struct SpaceTranscriber<'a, 'c, WZ> { 
+pub struct SpaceTranscriber<'a, 'c, WZ> {
     /// count of unnested values == path_count
-    path_count : PathCount, 
+    path_count : PathCount,
     wz         : &'c mut WZ,
     pdp        : ParDataParser<'a> }
 
@@ -1111,8 +1111,8 @@ impl DefaultSpace {
     }
 }
 
-pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String> 
-    where 
+pub(crate) fn load_json_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, r: &str) -> Result<crate::space::PathCount, String>
+    where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
     let mut st = SpaceTranscriber{ path_count: 0, wz, pdp: ParDataParser::new(sm) };
@@ -1196,7 +1196,7 @@ impl DefaultSpace {
 }
 
 #[cfg(feature="neo4j")]
-pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, String> 
+pub(crate) fn load_neo4j_triples_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<PathCount, String>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -1265,7 +1265,7 @@ impl DefaultSpace {
     }
 }
 #[cfg(feature="neo4j")]
-pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String> 
+pub(crate) fn load_neo4j_node_properties_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(NodeCount, AttributeCount), String>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -1345,7 +1345,7 @@ impl DefaultSpace {
     }
 }
 #[cfg(feature="neo4j")]
-pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String> 
+pub fn load_neo4j_node_labels_impl<'s, WZ>(sm : &SharedMappingHandle, wz : &mut WZ, rt : &tokio::runtime::Handle, uri: &str, user: &str, pass: &str) -> Result<(usize, usize), String>
     where
         WZ : Zipper + ZipperMoving + ZipperWriting<()>
 {
@@ -1456,7 +1456,7 @@ where
 
     // let mut stack = vec![0; 1];
     // stack[0] = ACTION;
-    // 
+    //
     // let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
     // let shared = pathmap::utils::find_prefix_overlap(&token[..], prefix);
     // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(pattern, prefix.len())[..]);
@@ -1528,7 +1528,7 @@ impl DefaultSpace {
             pattern,
             rz,
             template,
-            w, 
+            w,
             || unsafe { std::ptr::write_volatile(&mut error, true); },
             usize::MAX
         );
@@ -1584,7 +1584,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
             if s_slice.contains(|b: char| b.is_whitespace()) {
                 varbuf[1..1+s.len()].copy_from_slice(s);
                 varbuf[1+s.len()] = b'"';
-                unsafe { std::mem::transmute(std::str::from_utf8(&varbuf[..s.len() + 2]).unwrap()) } 
+                unsafe { std::mem::transmute(std::str::from_utf8(&varbuf[..s.len() + 2]).unwrap()) }
             } else {
                 s_slice
             }
@@ -1686,7 +1686,7 @@ impl DefaultSpace {
         pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
     }
 
-    pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {
+    pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {
         let mut readers = patterns.iter().map(|p| {
             self.new_reader(unsafe { p.prefix().unwrap_or_else(|_| p.span()).as_ref().unwrap() }, &()).unwrap()
         }).collect::<Vec<_>>();
@@ -1708,7 +1708,7 @@ pub(crate) fn query_multi_impl<'s, E, RZ, F>
 where
     E: ExprTrait,
     RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
-    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> bool,
+    F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
@@ -1786,6 +1786,10 @@ where
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(&pattern_expr[..]));
         let mut pat_args = vec![];
         ExprEnv::new(0, pat).args(&mut pat_args);
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut tmp_args = vec![];
+        let mut vstack: Vec<(u8, u8)> = vec![];
+        let mut scratch = Vec::with_capacity(1 << 32);
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
@@ -1794,7 +1798,7 @@ where
 
                     if true  { // introduced != 0
                         // println!("pattern nvs {:?}", pat.newvars());
-                        let mut tmp_args = vec![];
+                        tmp_args.clear();
                         ExprEnv::new(1, e).args(&mut tmp_args);
 
                         let pairs: Vec<_> = pat_args.iter().zip(tmp_args.iter()).enumerate().map(|(i, (pat_arg, data_arg))| {
@@ -1810,19 +1814,20 @@ where
                         match bindings {
                             Ok(bs) => {
                                 // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
-                                let mut assignments: Vec<(u8, u8)> = vec![];
+
                                 let (oi, ni) = {
                                     let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                                    let mut stack: Vec<(u8, u8)> = vec![];
-                                    let mut scratch = Vec::with_capacity(1 << 32);
-                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments);
+                                    assignments.clear();
+                                    vstack.clear();
+                                    scratch.clear();
+                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut vstack, &mut assignments);
                                     // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                                     r
                                 };
                                 // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
 
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                                if !effect(Err((bs, oi, ni, assignments)), e) {
+                                if !effect(Err((bs, oi, ni, &assignments[..])), e) {
                                     unsafe { std::ptr::write_volatile(&mut early, true); }
                                     unsafe { longjmp(a, 1) }
                                 }
@@ -1841,7 +1846,7 @@ where
                 })
             }
         });
-    
+
         candidate
 }
 
@@ -1962,16 +1967,16 @@ impl DefaultSpace {
     // pub fn datalog(&mut self, statements: &[Expr]) {
     //     let last_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 0];
     //     let current_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 1];
-    
+
     //     for statement in statements {
     //         let patterns = f(statement);
     //         let last_wrapped_patterns = patterns;
     //         let template = g(statement);
     //         let current_wrapped_template = template;
     //         self.transform_multi(last_wrapped_patterns, current_wrapped_template);
-    
+
     //     }
-    
+
     //     loop {
     //         match self.btm.write_zipper_at_path(&current_wrapped[..]).join_into(&mut self.btm.write_zipper_at_path(&last_wrapped[..])) {
     //             AlgebraicStatus::Element => {}
@@ -2166,7 +2171,7 @@ fn comma_fun_args_asserted(s : &impl Space, e : Expr)->Vec<Expr> {
     ez.next_child();
     let comma = unsafe { expr!(s, ",").span().as_ref().unwrap() };
     assert_eq!(
-        unsafe { ez.subexpr().span().as_ref().unwrap() }, 
+        unsafe { ez.subexpr().span().as_ref().unwrap() },
         comma
     );
     ez.reset();

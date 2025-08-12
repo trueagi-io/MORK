@@ -760,7 +760,7 @@ fn bc3() {
       (, (goal (S $ts) (: $lhs (-> $synth $conclusion))) (goal (S $ts) (: $rhs $synth))))
 
     ((step app $ts)
-      (, (goal $ts $r)  (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+      (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
       (, (ev (: (@ $lhs $rhs) $r) ) ))
 
     (exec (clocked Z)

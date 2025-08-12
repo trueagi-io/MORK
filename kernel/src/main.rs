@@ -747,6 +747,64 @@ fn bc2() {
     assert!(res.contains("(@ ax-mp (@ ax-mp mp2b.1 mp2b.2) mp2b.3)\n"));
 }
 
+fn bc3() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+    ((step base $ts)
+      (, (goal $ts (: $proof $conclusion)) (kb (: $proof $conclusion)))
+      (, (ev (: $proof $conclusion) ) ))
+
+    ((step rec $ts)
+      (, (goal $ts (: (@ $lhs $rhs) $conclusion)))
+      (, (goal (S $ts) (: $lhs (-> $synth $conclusion))) (goal (S $ts) (: $rhs $synth))))
+
+    ((step app $ts)
+      (, (goal $ts $r)  (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+      (, (ev (: (@ $lhs $rhs) $r) ) ))
+
+    (exec (clocked Z)
+            (, ((step $x $ts) $p0 $t0)
+               (exec (clocked $ts) $p1 $t1) )
+            (, (exec (a $x) $p0 $t0)
+               (exec (clocked (S $ts)) $p1 $t1) ))
+    "#;
+
+    const KB_EXPRS: &str = r#"
+    (kb (: b B))
+    (kb (: ab_c (-> A (-> B C))))
+    (kb (: uncurry (-> (-> $a (-> $b $c)) (-> (* $a $b) $c))))
+    (kb (: sym (-> (* $a $b) (* $b $a))))
+    (kb (: . (-> (-> $b $c) (-> (-> $a $b) (-> $a $c)))))
+    (kb (: curry (-> (-> (* $a $b) $c) (-> $a (-> $b $c)))))
+
+    (goal Z (: $proof (-> A C)))
+    "#;
+
+    // P1:  (exec $p (, pat) (, (- temp) (+ x)))
+    // add subtracts to SUB space, and remove them at the end
+    // could not remove patterns under bindings
+    // P2:  (exec $p (, (take pat) ) (, temp x)
+    // only remove original patterns
+    // P3:  (exec $p (, pat ) (, (subtract pat) (subtract temp)) (, temp x)
+    //
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(17);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] ev [3] : $ [3] -> A C"), expr!(s, "_1"), &mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(@ (@ . (@ uncurry ab_c)) (@ (@ curry sym) b))\n"));
+}
+
 fn cm0() {
     let mut s = Space::new();
     
@@ -872,18 +930,19 @@ fn main() {
     // two_positive_equal();
     // two_positive_equal_crossed();
     // two_bipolar_equal_crossed();
-
-    // please profile this one
-    process_calculus();
+    //
+    // process_calculus();
     // process_calculus_reverse();
     // logic_query();
     // bc0();
     // bc1();
     // bc2();
+    bc3();
+    //
+    // cm0();
+    // bc0();
+    // bc1();
 
-    // and this one
-    cm0();
-    
     // I know they're both algorithmically stupid, but I feel like this will make up a large part of the workload anyway... 
 
     // match_case();

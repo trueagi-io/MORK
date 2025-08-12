@@ -13,6 +13,12 @@ import requests
 from requests import request, RequestException
 from subprocess import Popen
 
+vs = re.compile(r"[ ()\n]\$(\w+)[ ()\n]")
+
+def variables(pats):
+    for pat in pats:
+        yield from vs.search(pat).groups()
+
 class MORK:
     """
     Wrapper for the MORK server-based API.  Used to manage the server connection, or throught the `work_at`
@@ -326,6 +332,35 @@ class MORK:
             if status_req.response is None or status_req.response.status_code != 200:
                 raise ConnectionError(f"Failed to connect to MORK server at {base_url}")
 
+    def query(self, patterns, project=None, unit=None, target="{}", _wrap=None, ortho=False):
+        """
+        Initiate a transform with auto-generated template
+        Either submit variables to project into (all on empty), a unit to write out, or the patterns will be used as templates
+        With ortho=True, writes out each variable to its own expression prefixed by the variable name
+        target specifies the namespace to write to
+        """
+        patterns = list(patterns)
+        if unit is not None:
+            wrap = _wrap or target.format
+            return self.transform(patterns, (wrap(unit),))
+        elif project is not None:
+            project = set(project)
+            if len(project) == 0: project = set(variables(patterns))
+            vs = [v for v in variables(patterns) if v in project]
+            if not ortho:
+                wrap = _wrap or target.format("(" + " ".join("${}" for _ in vs) + ")").format
+                return self.transform(patterns, (wrap(*vs),))
+            else:
+                wrap = _wrap or (lambda x: target.format(f"({x} ${x})"))
+                return self.transform(patterns, tuple(map(wrap, vs)))
+        else:
+            if not ortho:
+                wrap = _wrap or target.format("(" + " ".join("{}" for _ in patterns) + ")").format
+                return self.transform(patterns, (wrap(*patterns),))
+            else:
+                wrap = _wrap or target.format
+                return self.transform(patterns, tuple(map(wrap,  patterns)))
+
     def transform(self, patterns, templates):
         """
         Initiate a transform
@@ -409,6 +444,19 @@ class MORK:
         cmd.dispatch(self)
         return cmd
 
+    def csv_import_(self, file_uri):
+        return self.csv_import("$x", "$x", file_uri)
+
+    def csv_import(self, pattern, template, file_uri):
+        """
+        Import CSV from the specified URI match `pattern` into `template`
+        """
+        io = self.ns.format(template)
+        cmd = self.Import(pattern, io, file_uri, fileformat="csv")
+        self.history.append(cmd)
+        cmd.dispatch(self)
+        return cmd
+
     def paths_import_(self, file_uri):
         return self.sexpr_import("$x", "$x", file_uri)
 
@@ -454,7 +502,7 @@ class MORK:
         """
         name = b32encode(random.randbytes(6)) if name is None else name
         ns = kwargs.pop("namespace") if "namespace" in kwargs else self.ns.format(f"({name} {{}})")
-        return MORK(namespace=ns, finalization=finalization, parent=self, history=self.history, **kwargs)
+        return MORK(namespace=ns, finalization=finalization, parent=self, history=self.history, base_url=self.base, **kwargs)
 
     def __enter__(self):
         # io = self.ns.format("$x")

@@ -1,0 +1,13 @@
+(created (person marko) (software 1))
+(date (created (person marko) (software 1)) 2017-12-10)
+(weight (created (person marko) (software 1)) 0.4)
+(created (person josh) (software 1))
+(date (created (person josh) (software 1)) 2009-11-11)
+(weight (created (person josh) (software 1)) 0.4)
+(created (person josh) (software 2))
+(date (created (person josh) (software 2)) 2017-12-10)
+(weight (created (person josh) (software 2)) 1.0)
+(created (person peter) (software 1))
+(date (created (person peter) (software 1)) 2017-03-24)
+(weight (created (person peter) (software 1)) 0.2)
+

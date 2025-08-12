@@ -1,6 +1,7 @@
 
 extern crate alloc;
-use std::{io::{BufRead, Read}, usize};
+use std::io::{BufRead, Read};
+use std::ptr::slice_from_raw_parts;
 use log::*;
 
 use bucket_map::SharedMappingHandle;
@@ -416,7 +417,7 @@ pub trait Space: Sized {
 
 pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<OwnedExpr, ParseError> {
     let mut it = ParseContext::new(data.as_bytes());
-    let mut stack = [0u8; 2048];
+    let mut stack = Vec::with_capacity(1 << 32);
     let mut parser = ParDataParser::new(sm);
     let mut result = None;
     loop {
@@ -426,7 +427,7 @@ pub(crate) fn sexpr_to_path(sm : &SharedMappingHandle, data: &str) -> Result<Own
                 if result.is_some() {
                     return Err(ParseError(format!("Found multiple S-Expressions in: {data}")))
                 }
-                result = Some(stack[..ez.loc].into());
+                result = Some(unsafe { slice_from_raw_parts(stack.as_ptr(), ez.loc).as_ref().unwrap() }.into());
             }
             Err(err) => {
                 if err.error_type == ParserErrorType::InputFinished {

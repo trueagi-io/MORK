@@ -752,17 +752,20 @@ impl WorkerPool {
 
 //GOAT, Use a "current_thread" runtime if we want a different thread pool for doing the actual work, and
 // the multi_thread runtime for the tokio threads option
-#[tokio::main(flavor = "multi_thread")]
+// #[tokio::main(flavor = "multi_thread")]
 // #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() {
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    runtime.thread_stack_size(16*1024*1024);
+    runtime.enable_io();
+    runtime.enable_time();
+    let mut runtime = runtime.build().unwrap();
 
     //Init the Mork network service
-    let service = MorkService::new().await;
+    let service = runtime.block_on(MorkService::new());
 
     //Run the Mork service
-    service.run(server_addr()).await?;
-
-    Ok(())
+    runtime.block_on(service.run(server_addr())).unwrap();
 }
 
 //GOAT

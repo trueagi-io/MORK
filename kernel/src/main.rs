@@ -751,15 +751,19 @@ fn bc3() {
     let mut s = Space::new();
 
     const SPACE_EXPRS: &str = r#"
-    ((step base $ts)
+    ((step (0 base) $ts)
       (, (goal $ts (: $proof $conclusion)) (kb (: $proof $conclusion)))
       (, (ev (: $proof $conclusion) ) ))
 
-    ((step rec $ts)
-      (, (goal $ts (: (@ $lhs $rhs) $conclusion)))
-      (, (goal (S $ts) (: $lhs (-> $synth $conclusion))) (goal (S $ts) (: $rhs $synth))))
+    ((step (1 abs) $ts)
+      (, (goal $k (: $proof $conclusion)))
+      (, (goal (S $ts) (: $lhs (-> $synth $conclusion)) ) ))
 
-    ((step app $ts)
+    ((step (2 rev) $ts)
+      (, (ev (: $lhs (-> $a $r)))  (goal $k (: $k $r)) )
+      (, (goal (S $ts) (: $rhs $a) ) ))
+
+    ((step (3 app) $ts)
       (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
       (, (ev (: (@ $lhs $rhs) $r) ) ))
 
@@ -771,15 +775,30 @@ fn bc3() {
     "#;
 
     const KB_EXPRS: &str = r#"
-    (kb (: b B))
-    (kb (: ab_c (-> A (-> B C))))
-    (kb (: uncurry (-> (-> $a (-> $b $c)) (-> (* $a $b) $c))))
-    (kb (: sym (-> (* $a $b) (* $b $a))))
-    (kb (: . (-> (-> $b $c) (-> (-> $a $b) (-> $a $c)))))
-    (kb (: curry (-> (-> (* $a $b) $c) (-> $a (-> $b $c)))))
+    (kb (: a A))
+    (kb (: ab (R A B)))
+    (kb (: bc (R B C)))
+    (kb (: MP (-> (R $p $q) (-> $p $q))))
 
-    (goal Z (: $proof (-> A C)))
+    (goal Z (: $proof C))
     "#;
+
+
+    // (kb (: a A))
+    //     (kb (: ab (-> A B)))
+    //
+    //     (goal Z (: $proof B))
+
+
+    // (kb (: b B))
+    //     (kb (: ab_c (-> A (-> B C))))
+    //     (kb (: uncurry (-> (-> $a (-> $b $c)) (-> (* $a $b) $c))))
+    // (kb (: sym (-> (* $a $b) (* $b $a))))
+    // (kb (: . (-> (-> $b $c) (-> (-> $a $b) (-> $a $c)))))
+    // (kb (: curry (-> (-> (* $a $b) $c) (-> $a (-> $b $c)))))
+    //
+    // (goal Z (: $proof (-> A C)))
+
 
     // P1:  (exec $p (, pat) (, (- temp) (+ x)))
     // add subtracts to SUB space, and remove them at the end
@@ -792,17 +811,35 @@ fn bc3() {
     s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
     s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
 
+
+    // let mut t0 = Instant::now();
+    // println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
     let mut t0 = Instant::now();
-    let steps = s.metta_calculus(17);
+    let steps = s.metta_calculus(60);
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    s.dump_sexpr(expr!(s, "[2] ev [3] : $ [3] -> A C"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] ev [3] : $ C"), expr!(s, "_1"), &mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
-    println!("result: {res}");
-    assert!(res.contains("(@ (@ . (@ uncurry ab_c)) (@ (@ curry sym) b))\n"));
+    println!("proof: {res}");
+
+
+    // for i in 0..14 {
+    //     println!("GEN {i}");
+    //     let steps = s.metta_calculus(1);
+    //     let mut v = vec![];
+    //     s.dump_all_sexpr(&mut v).unwrap();
+    //     // s.dump_sexpr(expr!(s, "[2] ev [3] : $ C"), expr!(s, "_1"), &mut v).unwrap();
+    //     let res = String::from_utf8(v).unwrap();
+    //
+    //     println!("result: {res}");
+    //
+    // }
+
+    // assert!(res.contains("(@ (@ . (@ uncurry ab_c)) (@ (@ curry sym) b))\n"));
 }
 
 fn cm0() {
@@ -916,6 +953,45 @@ fn cm0() {
     println!("result: {res}");
 }*/
 
+fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
+    use rand::{rngs::StdRng, SeedableRng, Rng};
+    let mut rng = StdRng::from_seed([0; 32]);
+    let mut s = Space::new();
+
+    let mut edges = String::new();
+
+    for k in 0..nedges {
+        let i = rng.random_range(0..nnodes);
+        let j = rng.random_range(0..nnodes);
+        edges.push_str(format!("(edge {i} {j})\n").as_str());
+    }
+
+    s.load_all_sexpr(edges.as_bytes()).unwrap();
+    println!("constructed {} nodes {} edges", nnodes, nedges);
+
+    let t0 = Instant::now();
+    s.interpret(expr!(s, "[4] exec 0 [3] , [3] edge $ $ [3] edge _2 $ [2] , [3] trans _1 _3"));
+    println!("trans elapsed {} µs", t0.elapsed().as_micros());
+
+    let t1 = Instant::now();
+    s.interpret(expr!(s, "[4] exec 0 [4] , [3] edge $ $ [3] edge _2 $ [3] edge _1 _3 [2] , [4] dtrans _1 _2 _3"));
+    println!("detect trans elapsed {} µs", t1.elapsed().as_micros());
+
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] trans $ $"), expr!(s, "[2] _1 _2"), &mut v).unwrap();
+    let ntrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
+    v.clear();
+    s.dump_sexpr(expr!(s, "[4] dtrans $ $ $"), expr!(s, "[3] _1 _2 _3"), &mut v).unwrap();
+    let ndtrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
+    println!("trans {} detected trans {}", ntrans, ndtrans);
+
+    // preliminary results unify-transition rework
+    // trans elapsed        23959320 µs
+    // detect trans elapsed 13628785 µs
+    // trans 19917429 detected trans 8716
+}
+
 fn main() {
     env_logger::init();
 
@@ -937,15 +1013,15 @@ fn main() {
     // bc0();
     // bc1();
     // bc2();
-    bc3();
+    // bc3();
     //
     // cm0();
     // bc0();
     // bc1();
 
-    // I know they're both algorithmically stupid, but I feel like this will make up a large part of the workload anyway... 
-
     // match_case();
+
+    bench_transitive_no_unify(50000, 1000000);
 
     return;
 

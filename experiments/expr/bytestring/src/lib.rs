@@ -2355,11 +2355,11 @@ impl Eq for ExprEnv {}
 
 impl std::hash::Hash for ExprEnv {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // state.write_u8(self.n);
-        // state.write_u8(self.v);
-        // state.write_u32(self.offset);
+        state.write_u8(self.n);
+        state.write_u8(self.v);
+        state.write_u32(self.offset);
         // state.write_u64(self.base.ptr as u64);
-        state.write(unsafe { &*slice_from_raw_parts(self as *const ExprEnv as *const u8, size_of::<ExprEnv>()) });
+        // state.write(unsafe { &*slice_from_raw_parts(self as *const ExprEnv as *const u8, size_of::<ExprEnv>()) });
     }
 }
 

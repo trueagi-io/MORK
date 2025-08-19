@@ -518,10 +518,17 @@ pub(crate) struct ExecPermissions<'s, S: Space> {
 
 
 
+
+
+
+
+
+
+
 // ///////////////////
 // SEMANTIC MODEL //
 // /////////////////
-//
+
 // there have been changes to the following :
 //     a max iteration step count has been added,
 //     the exec prefix permission is no longer dropped meaning that subsumption has an exceptional case where a reader/writer can never subsume the exec prefix.
@@ -577,8 +584,18 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
 
 
 
-// ! the following are helper methods, the core logic is above.
 
+
+
+
+
+
+
+
+
+// ////////////////////////////////////////////////////////////////
+// ! the following are helper methods, the core logic is above. //
+// //////////////////////////////////////////////////////////////
 
 /// The basic implementation using [`MachineHandle`]. one could modify it to match on the handle.
 #[allow(unused)]

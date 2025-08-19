@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::time::Instant;
 use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperCreation, ZipperMoving};
 // // use std::future::Future;
@@ -758,56 +759,51 @@ use mork::{expr, PathCount, Space};
 //     std::process::exit(0)
 // }
 
-fn main() {
-    let space = mork::space::DefaultSpace::new();
+fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
+    use rand::{rngs::StdRng, SeedableRng, Rng};
+    let mut rng = StdRng::from_seed([0; 32]);
+    let mut s = mork::space::DefaultSpace::new();
 
-    let paths = std::fs::read_dir("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts/").unwrap();
-    let mut n = 0usize;
-    for (i, path) in paths.enumerate() {
-        let name = path.unwrap().path();
-        
-        let f = std::fs::File::open(name.clone());
-        let mut s = String::new();
-        f.unwrap().read_to_string(&mut s).unwrap();
-        let file_name = name.file_name().unwrap().display().to_string();
-        let sexpr = format!("({} $x)", &file_name[..file_name.len()-5]);
-        // println!("{file_name}, {sexpr}");
-        let e = space.sexpr_to_expr(sexpr.as_str()).unwrap();
-        let mut writer = space.new_writer(&e.as_bytes()[..e.as_bytes().len()-1], &()).unwrap();
-        match space.load_json_old(s.as_str(), &mut writer) {
-            Ok(k) => { n+= k }
-            Err(e) => { println!("ERROR {e:?} at {name:?}") }
-        }
-        
-        // if i > 100 { break; }
-        if i % 1000 == 0 {
-            println!("Name {} ({})", name.display(), n);    
-        }
+    let mut edges = String::new();
+
+    for k in 0..nedges {
+        let i = rng.random_range(0..nnodes);
+        let j = rng.random_range(0..nnodes);
+        edges.push_str(format!("(edge {i} {j})\n").as_str());
     }
 
-    // let mut of = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.metta").unwrap();
-    let mut opathsf = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.paths").unwrap();
-    // let mut oactf = std::fs::File::create_new("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.act").unwrap();
-    // let dumped = space.dump_all_sexpr(&mut of).unwrap();
-    // println!("present {}", space.map.read_zipper_at_path(&[]).unwrap().val_count());
-    // let dumped = space.dump_sexpr(expr!(space, "$"), expr!(space, "_1"), &mut of).unwrap();
+    s.load_sexpr_simple(edges.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    println!("constructed {} nodes {} edges", nnodes, nedges);
 
-    println!("paths {:?}", pathmap::path_serialization::serialize_paths_(space.map.read_zipper_at_path(&[]).unwrap(), &mut opathsf).unwrap());
-    let act = pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(space.map.read_zipper_at_path(&[]).unwrap(), |_| 0, "/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/companyfacts.act").unwrap();
-    println!("act {:?}", act.counters());
-    // println!("dumped {} ({})", dumped, n);
-    
-    // let mut opathsf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.paths").unwrap();
-    // 
-    // let mut btm = BytesTrieMap::new();
-    // let des = pathmap::path_serialization::deserialize_paths_(btm.write_zipper(), opathsf, ());
-    // println!("deserialized {:?}", des);
+    let t0 = Instant::now();
+    mork::space::interpret_impl(&s, expr!(s, "[4] exec [2] 0 0 [3] , [3] edge $ $ [3] edge _2 $ [2] , [3] trans _1 _3"), &()).unwrap();
+    println!("trans elapsed {} µs", t0.elapsed().as_micros());
 
-    // let oact = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.act").unwrap();
-    // 
-    // let act = pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(oact.read_zipper(), |_| 0, "/dev/shm/submissions.act").unwrap();
-    // // let act = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/EDGAR/submissions.act").unwrap();
-    // 
-    // println!("act {:?}", act.counters());
-    println!("cnt {:?}", act.read_zipper().val_count());
+    let t1 = Instant::now();
+    mork::space::interpret_impl(&s, expr!(s, "[4] exec [2] 0 0 [4] , [3] edge $ $ [3] edge _2 $ [3] edge _1 _3 [2] , [4] dtrans _1 _2 _3"), &()).unwrap();
+    println!("detect trans elapsed {} µs", t1.elapsed().as_micros());
+
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] trans $ $"), expr!(s, "[2] _1 _2"), &mut v).unwrap();
+    let ntrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
+    v.clear();
+    s.dump_sexpr(expr!(s, "[4] dtrans $ $ $"), expr!(s, "[3] _1 _2 _3"), &mut v).unwrap();
+    let ndtrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
+    println!("trans {} detected trans {}", ntrans, ndtrans);
+
+    // -- trans 19917429 detected trans 8716
+    //  unify-transition rework
+    // trans elapsed        23959320 µs
+    // detect trans elapsed 13628785 µs
+    //  server branch
+    // trans elapsed        43160053 µs
+    // detect trans elapsed 11540761 µs
+    //  main
+
+}
+
+
+fn main() {
+    bench_transitive_no_unify(50_000, 1_000_000);
 }

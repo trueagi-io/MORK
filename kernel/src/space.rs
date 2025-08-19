@@ -804,7 +804,7 @@ impl DefaultSpace {
 ///
 /// (exec (<thread_id> <priority>) (, <src1> <src2> <srcn)
 ///                                (, <dst1> <dst2> <dstm>))
-pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
+pub fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
     info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
 
     let (srcs, dsts) = destructure_exec_expr(space, rt)?.collect_inner();

@@ -204,7 +204,7 @@ fn basic() {
     s.metta_calculus(100);
 
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
 
     println!("out {}", String::from_utf8(v).unwrap());
 
@@ -247,7 +247,7 @@ fn process_calculus() {
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
     // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
-    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
@@ -285,7 +285,7 @@ fn process_calculus_reverse() {
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
 
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
@@ -740,7 +740,7 @@ fn bc2() {
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    s.dump_sexpr(expr!(s, "[2] ev [3] : $ 𝜒"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] ev [3] : $ 𝜒"), expr!(s, "_1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("proof of 𝜒: {res}");
@@ -821,7 +821,7 @@ fn bc3() {
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    s.dump_sexpr(expr!(s, "[2] ev [3] : $ C"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] ev [3] : $ C"), expr!(s, "_1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("proof: {res}");
@@ -907,12 +907,12 @@ fn cm0() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v_ts = vec![];
-    s.dump_sexpr(expr!(s, "[3] state $ $"), expr!(s, "_1"), &mut v_ts).unwrap();
+    s.dump_sexpr(expr!(s, "[3] state $ $"), expr!(s, "_1"), &mut v_ts);
     let last_ts_tmp = String::from_utf8(v_ts).unwrap(); 
     let last_ts = last_ts_tmp.split("\n").max_by_key(|x| x.len()).unwrap();
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    s.dump_sexpr(expr!(s, "[3] state $ [3] REG 3 $"), expr!(s, "[2] _1 _2"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] state $ [3] REG 3 $"), expr!(s, "[2] _1 _2"), &mut v);
     let res = String::from_utf8(v).unwrap();
     
     // println!("{res}");
@@ -979,10 +979,10 @@ fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
 
 
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "[3] trans $ $"), expr!(s, "[2] _1 _2"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] trans $ $"), expr!(s, "[2] _1 _2"), &mut v);
     let ntrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
     v.clear();
-    s.dump_sexpr(expr!(s, "[4] dtrans $ $ $"), expr!(s, "[3] _1 _2 _3"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[4] dtrans $ $ $"), expr!(s, "[3] _1 _2 _3"), &mut v);
     let ndtrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
     println!("trans {} detected trans {}", ntrans, ndtrans);
 
@@ -1072,7 +1072,7 @@ _ _ _ 4 1 _ _ _ _"#;
     // println!("size {:?}", s.btm.val_count());
     
     let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
     
     println!("{}", String::from_utf8(v).unwrap());
     

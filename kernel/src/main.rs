@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
@@ -992,6 +993,85 @@ fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
     // trans 19917429 detected trans 8716
 }
 
+
+fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
+    fn binom_as_f64(n: u64, k: u64) -> f64 {
+        if k > n { return 0.0; }
+        let k = std::cmp::min(k, n - k);
+        let mut res = 1.0f64;
+        for i in 1..=k {
+            res *= (n - k + i) as f64;
+            res /= i as f64;
+        }
+        res
+    }
+
+    fn expected_fraction_kclique_gne(n: u64, e: u64, k: u64) -> f64 {
+        assert!(n >= 2, "n >= 2");
+        let m = n * (n - 1) / 2; // total possible edges
+        assert!(e <= m, "E must be <= C(n,2)");
+        let kk = k * (k - 1) / 2; // number of edges inside a k-clique
+        if kk == 0 { return 1.0; } // k=0 or 1
+        if e < kk { return 0.0; }  // not enough edges to cover a clique
+        let mut num = 1.0f64;
+        let mut den = 1.0f64;
+        for i in 0..kk {
+            num *= (e - i) as f64;
+            den *= (m - i) as f64;
+        }
+        num / den
+    }
+
+    fn expected_num_kclique_gne(n: u64, e: u64, k: u64) -> f64 {
+        binom_as_f64(n, k) * expected_fraction_kclique_gne(n, e, k)
+    }
+
+    fn clique_query(k: usize) -> String {
+        format!("(exec 0 (,{}) (, ({}-clique{})))",
+            (0..k).flat_map(|i| ((i + 1)..k).map(move |j| format!(" (edge $x{} $x{})", i, j))).collect::<String>(),
+            k,
+            (0..k).map(|i| format!(" $x{}", i)).collect::<String>()
+        )
+    }
+
+    use rand::{rngs::StdRng, SeedableRng, Rng};
+    let mut rng = StdRng::from_seed([0; 32]);
+    let mut s = Space::new();
+
+    let mut edges: HashSet<String> = HashSet::new();
+
+    // irreflexive degeneracy ordered graph
+    while edges.len() < nedges {
+        let i = rng.random_range(0..nnodes);
+        let j = rng.random_range(0..nnodes);
+        if i == j { continue }
+        if i < j { edges.insert(format!("(edge {i} {j})\n")); }
+        else { edges.insert(format!("(edge {j} {i})\n")); }
+    }
+
+    s.load_all_sexpr(edges.into_iter().collect::<String>().as_bytes()).unwrap();
+    println!("constructed {} nodes {} edges", nnodes, nedges);
+
+    for k in 3..(max_clique+1) {
+        let query = clique_query(k);
+        println!("executing query {}", query);
+        let t0 = Instant::now();
+        s.load_sexpr(query.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+        s.metta_calculus(1);
+        let nkcliques: usize = s.btm.read_zipper_at_path([item_byte(Tag::Arity((k+1) as _))]).val_count();
+        println!("found {} {k}-cliques (expected {}) in {} µs", nkcliques, expected_num_kclique_gne(nnodes as _, nedges as _, k as _).round(), t0.elapsed().as_micros());
+    }
+    // constructed 200 nodes 3600 edges
+    // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x1 $x2)) (, (3-clique $x0 $x1 $x2)))
+    // found 7824 3-cliques (expected 7770) in 42322 µs
+    // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x1 $x2) (edge $x1 $x3) (edge $x2 $x3)) (, (4-clique $x0 $x1 $x2 $x3)))
+    // found 2320 4-cliques (expected 2260) in 1190785 µs
+    // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x0 $x4) (edge $x1 $x2) (edge $x1 $x3) (edge $x1 $x4) (edge $x2 $x3) (edge $x2 $x4) (edge $x3 $x4)) (, (5-clique $x0 $x1 $x2 $x3 $x4)))
+    // found 102 5-cliques (expected 94) in 35128082 µs
+    // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x0 $x4) (edge $x0 $x5) (edge $x1 $x2) (edge $x1 $x3) (edge $x1 $x4) (edge $x1 $x5) (edge $x2 $x3) (edge $x2 $x4) (edge $x2 $x5) (edge $x3 $x4) (edge $x3 $x5) (edge $x4 $x5)) (, (6-clique $x0 $x1 $x2 $x3 $x4 $x5)))
+    // found 0 6-cliques (expected 1) in 1288009964 µs
+}
+
 fn main() {
     env_logger::init();
 
@@ -1021,7 +1101,8 @@ fn main() {
 
     // match_case();
 
-    bench_transitive_no_unify(50000, 1000000);
+    // bench_transitive_no_unify(50000, 1000000);
+    bench_clique_no_unify(200, 3600, 6);
 
     return;
 

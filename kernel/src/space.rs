@@ -4,7 +4,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts};
+use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
@@ -1236,7 +1236,8 @@ impl Space {
 
             match refs_bindings {
                 Ok(refs) => {
-                    template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                    // todo
+                    // template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
                 }
                 Err((ref bindings, ti, ni, _)) => {
                     mork_bytestring::apply(0, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
@@ -1315,7 +1316,7 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let mut pat_args = vec![];
@@ -1335,7 +1336,7 @@ impl Space {
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
-        let mut references: Vec<_> = vec![];
+        let mut references: Vec<u32> = vec![];
         let mut candidate = 0;
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
@@ -1343,7 +1344,7 @@ impl Space {
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                coreferential_transition(&mut prz, &mut stack, &mut references,&mut |loc| {
+                coreferential_transition(&mut prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },&mut |loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1389,7 +1390,7 @@ impl Space {
                         }
                     } else {
                         unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                        if !effect(Ok(&references[..])) {
+                        if !effect(Ok(unsafe { slice_from_raw_parts(references.as_ptr(), references.len()).as_ref().unwrap() }), e) {
                             unsafe { longjmp(a, 1) }
                         }
 

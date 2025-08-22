@@ -2,7 +2,6 @@
 //! while being able to run outside logic and maintaing the internal consistancy on the Calculus state.
 
 
-
 use std::{fmt::Debug, ops::ControlFlow};
 type CF<B,C> = ControlFlow<B,C>;
 use crate::space::*;
@@ -35,7 +34,6 @@ states!{
     PreTransform          "Run the transform",
 }
 
-pub struct Done;
 
 /// The [`Machine`] holds the state of a metta_calculus process.
 pub struct Machine<'space, 'auth, S: Space> {
@@ -56,6 +54,7 @@ pub struct Machine<'space, 'auth, S: Space> {
     /// the number successful transform iterations that will run
     steps_remaining        : usize,
 
+    /// this is to protect your computer in debug from blowing your memory. It caused me an OS shutdown.
     #[cfg(debug_assertions)]
     hard_stop              : usize,
 
@@ -63,14 +62,15 @@ pub struct Machine<'space, 'auth, S: Space> {
     // LOOP VARS //
     // ///////////
 
-    /// [`Some`] before removal of the current exec, or the reinsertion on a deferal; [`None`] once the removal/reinsertion is complete.
+    /// Holds the permission at the thread prefix, is taken out and reinserted when needed.
     exec_permission     : Option<<S as Space>::Writer<'space>>,
     /// This holds the patterns and templates until the current exec either succeeds or sucessfully defers.
     pattern_templates   : Option<(Vec<Expr>, Vec<Expr>)>,
 }
 
-pub struct MachineSpec<W> {
-    exec_permission     : W,
+/// Sometimes it is needed to aquire the permission fallibly, The MachineSpec makes it possible to separate that action, making following action infallible. 
+pub struct MachineSpec<W /* W is always a Space::WritePermission, but forcing that can make the lifetimes not work out; so it is left to be infered at the call sight.*/> {
+    exec_permission     : W ,
     prefix_len          : usize,
     buffer              : Vec<u8>,
     steps_remaining     : usize,
@@ -82,6 +82,7 @@ pub struct MachineSpecArgs<'space, 'auth, 'arg, S : Space> {
     pub steps               : usize,
     pub auth                : &'auth S::Auth
 }
+
 impl<'space, 'auth, 'arg, S : Space> MachineSpecArgs<'space, 'auth, 'arg, S> {
     /// Make the [`MachineSpec`]. This exits to aquire the exec prefix writer, without pinning the [`Machine`] until [`MachineSpec::init`] is called.
     /// This makes it possible to get the error earlier before dispating the [`Machine`].
@@ -119,10 +120,12 @@ impl<'space, 'machine, S: Space> Machine<'space, 'machine, S> {
     #[inline(always)] pub fn retry_remaining(&self) -> bool              { self.retry_remaining }
     #[inline(always)] pub fn space          (&self) -> &'space S         { self.space }
     #[inline(always)] pub fn auth           (&self) -> &'machine S::Auth { self.auth }
+
+    #[inline(always)] pub fn buffer_invariant(&self) { core::debug_assert!(self.buffer.len()>=self.prefix_len); }
 }
 
 impl<'space, W> MachineSpec<W> {
-    /// This sets the Machine in motion, from this point on the machine is effectively pinned.
+    /// This sets the [`Machine`] in motion, from this point on the machine is effectively pinned.
     pub fn init<'machine, S>(self, space : &'space S, auth : &'machine S::Auth, machine : &'machine mut Option<Machine<'space, 'machine, S>>) -> Controller<'machine, 'space, LoopStart, S>
     where S : Space<Writer<'space> = W>
     {
@@ -157,19 +160,18 @@ pub struct Controller<'machine, 'space, State : StateT, S : Space>{
 // The following macros are used because it avoids having to care about if self is by value or ref.
 // Thes are only ever used internaly
 macro_rules! machine_mut {($CONTROLLER:ident) => {unsafe {
-    core::debug_assert!($CONTROLLER.machine.is_some());
+    $CONTROLLER.assert_live();
     let machine = $CONTROLLER.machine.as_mut().unwrap_unchecked();
-    // This Safety invariant must _always_ be true, so might as well do it here.
-    core::debug_assert!(machine.buffer.len()>=machine.prefix_len);
+    machine.buffer_invariant();
     machine
 }};}
 macro_rules! machine_ref {($CONTROLLER:ident) => {unsafe {
-    core::debug_assert!($CONTROLLER.machine.is_some());
+    $CONTROLLER.assert_live();
     let machine = $CONTROLLER.machine.as_ref().unwrap_unchecked();
-    // This Safety invariant must _always_ be true, so might as well do it here.
-    core::debug_assert!(machine.buffer.len()>=machine.prefix_len);
+    machine.buffer_invariant();
     machine
 }};}
+
 
 impl<'space, 'machine, State : StateT, S: Space> Controller<'machine, 'space, State, S> {
     /// This is used internally only after a transition has successfully be done.
@@ -181,61 +183,55 @@ impl<'space, 'machine, State : StateT, S: Space> Controller<'machine, 'space, St
     }
 
     /// gives access to a read-only view of the internal machine for debugging.
-    #[inline(always)] pub fn inspect_machine(&self)->&Machine<'space, 'machine, S> { machine_ref!(self) }
+    #[inline(always)] pub fn inspect_machine(&self) -> &Machine<'space, 'machine, S> { machine_ref!(self) }
     /// Helper method to convert the explict [`Controller`] with type states into the [`MachineHandle`] type.
-    #[inline(always)] pub fn to_handle(self)->MachineHandle<'machine, 'space, S> where State : StateVal{ State::handle_constructor(self) }
+    #[inline(always)] pub fn to_handle(self) -> MachineHandle<'machine, 'space, S> where State : StateVal{ State::handle_constructor(self) }
+    #[inline(always)] pub fn assert_live(&self) {core::debug_assert!(self.machine.is_some());}
 }
 
-pub enum LookupBaseCases<'machine, 'space, S : Space> {
+pub enum LookupCases<'machine, 'space, S : Space> {
     Done,
     ExecsRemaining(Controller<'machine, 'space, LoopStart, S>),
+    NonReactiveExec(Controller<'machine, 'space, LoopStart, S>),
+    Success(Controller<'machine, 'space, PreTransform, S>),
 }
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
     /// lookup the next exec in the space:
-    /// - on [`ControlFlow::Break`]
-    ///   - either all execs were executed([`LookupBaseCases::Done`], execution finishes)
-    ///   - or there were deferals ([`LookupBaseCases::ExecsRemaining`];
-    ///
-    /// - on [`ControlFlow::Continue`] ( type state moves to [`PreTransform`])
+    ///   - either all execs were executed([`LookupCases::Done`], execution finishes)
+    ///   - or there were deferals ([`LookupCases::ExecsRemaining`];
+    ///   - on [`LookupCases::Success`] moves to the next state ( type state moves to [`PreTransform`])
     #[inline(always)]
-    pub fn exec_lookup(self) ->  ControlFlow<LookupBaseCases<'machine, 'space, S>, Controller<'machine, 'space, PreTransform, S>,> { exec_lookup_impl(self) }
+    pub fn exec_lookup_explicit(self) ->  LookupCases<'machine, 'space, S> { exec_lookup_impl(self) }
 }
 
-pub enum TransformErr<'machine, 'space, S : Space> {
-    Syntax    ((Controller<'machine, 'space, LoopStart,    S>, ExecSyntaxError )),
-    Permission((Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)),
-}
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
     /// Parse the exec,
     ///
-    /// on a syntax err the state moves back to [`LoopStart`];
+    /// If a value with a shared prefix is found, but does not match syntactically, state moves back to [`LoopStart`] ignoring it;
     ///
     /// if the Reader/Writer permission set cannot be aquired atomically, the state remains [`PreTransform`];
     ///
     /// if it succeeds durring the critical section the callback `at_critical_section` will be called after the transform completes, then moves to [`LoopStart`].
     #[inline(always)]
-    pub fn transform_explicit(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,>{ transform_impl(self, at_critical_section) }
+    pub fn transform_explicit(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, (Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)>
+    { transform_impl(self, at_critical_section) }
 
-    /// If an exec cannot be run, then the current exec can be defered by reinserting it into the space.
-    /// Aquiring the [`DeferGuard`] means we have the permission for reinsertion:
-    /// - on [`Ok`]  the permission is held in the [`Machine`], state becomes [`DeferGuard`];
-    /// - on [`Err`] the [`Machine`] stays in the [`PreTransform`] state.
+    /// If an exec cannot be run, then the current exec can be defered.
     #[inline(always)]
     pub fn defer(self) -> Controller<'machine, 'space, LoopStart, S> { defer_impl(self) }
-
 }
 
 
 fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machine, 'space, LoopStart, S> )
--> ControlFlow< LookupBaseCases<'machine, 'space, S>, Controller<'machine, 'space, PreTransform, S>,>
+-> LookupCases<'machine, 'space, S>
 {
     let Machine { space, prefix_len, buffer, retry_remaining, exec_permission, steps_remaining, .. } = machine_mut!(controller);
 
     if *steps_remaining == 0 {
         // release the exec space
         *exec_permission = None;
-        return CF::Break(LookupBaseCases::Done);
+        return LookupCases::Done;
     }
     core::debug_assert!(exec_permission.is_some());
 
@@ -252,33 +248,36 @@ fn exec_lookup_impl<'space, 'machine, S: Space>( controller : Controller<'machin
         if *retry_remaining {
             buffer.truncate(*prefix_len);
             *retry_remaining = false;
-            return CF::Break(LookupBaseCases::ExecsRemaining( controller));
+            return LookupCases::ExecsRemaining( controller);
         }
 
         // Sucessfully consumed all execs.  This MeTTa thread is done
         *controller.machine = None;
-        return CF::Break(LookupBaseCases::Done)
+        return LookupCases::Done
     }
     buffer.truncate(*prefix_len);
     buffer.extend_from_slice(rz.path());
     drop(rz);
 
     drop(exec_wz);
-    CF::Continue(controller.next_state(PreTransform{}))
+
+    let m_mut = machine_mut!(controller);
+    let rt = Expr{ ptr: m_mut.buffer.as_mut_ptr() };
+    m_mut.pattern_templates = Some(match destructure_exec_expr(m_mut.space, rt) {
+        Ok(ok)   => ok,
+        Err(_err) => return LookupCases::NonReactiveExec(controller.next_state(LoopStart{})),
+    }.collect_inner());
+
+    LookupCases::Success(controller.next_state(PreTransform{}))
 }
 
 
 #[inline(always)]
-fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> Result<Controller<'machine, 'space, LoopStart, S>, TransformErr<'machine, 'space, S>,> {
+fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 'space, PreTransform, S>, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) 
+    -> Result<Controller<'machine, 'space, LoopStart, S>, (Controller<'machine, 'space, PreTransform, S>, S::PermissionErr)>
+{
     let m_mut = machine_mut!(controller);
     let rt = Expr{ ptr: m_mut.buffer.as_mut_ptr() };
-    // if this code get revisited we want to avoid this branch
-    if m_mut.pattern_templates.is_none() {
-        m_mut.pattern_templates = Some(match destructure_exec_expr(m_mut.space, rt) {
-            Ok(ok)   => ok,
-            Err(err) => return Err(TransformErr::Syntax((controller.next_state(LoopStart{}), err))),
-        }.collect_inner());
-    }
 
     // take the exec out
     let exec_writer = m_mut.exec_permission.take().unwrap();
@@ -295,9 +294,9 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
 
     let ExecPermissions {mut read_map, template_prefixes, mut writers, exec_writer_index, .. } =
     match maybe_permissions {
-        Ok(ok)   => ok,
+        Ok(ok)         => ok,
         Err((ew, err)) => { *exec_permission = Some(ew);
-                            return Err(TransformErr::Permission((controller, err)))
+                            return Err((controller, err))
                           },
     };
 
@@ -335,7 +334,6 @@ fn defer_impl <'space, 'machine, S: Space>(controller : Controller<'machine, 'sp
 }
 
 
-
 /// Acquires the minimum set of permissions needed to perform an exec by applying the necessary
 /// subsumption logic.
 ///
@@ -349,6 +347,7 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
     mut exec_writer  : S::Writer<'s>,
 
     at_critical_section : impl FnOnce(),
+
 ) -> Result<ExecPermissions<'s,S>, (S::Writer<'s>, S::PermissionErr)> {
     let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
 
@@ -377,12 +376,6 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
     // We want the exec_writer to be most subsuming, so it must start at index 0
     template_path_table.swap(0, last_index);
     template_path_table.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
-
-    // we need to rememeber where the initial writer is for recovering it later.
-    let mut initial_position = 0;
-    while last_index != template_path_table[initial_position].1 {
-        initial_position += 1;
-    }
 
     let mut exec_writer_index = usize::MAX;
 
@@ -433,7 +426,7 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
 
     let mut some_initial_writer = Some(exec_writer);
 
-    match space.new_multiple(|perm_head| {
+    let new_multiple_result = space.new_multiple(|perm_head| {
         //Make the "ReadMap" by copying each pattern from the space
         for pat in patterns {
             let path = make_prefix(&pat.borrow());
@@ -479,15 +472,13 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
 
         at_critical_section();
         Ok(())
-    }) {
-        Ok(())   => {},
-        Err(err) => { return Err (match some_initial_writer {
-                          Some(ew) => (ew, err),
-                          None     => { // we should only be here if the new_multiple put the exec_writer into the writers vec
-                                        (writers.swap_remove(exec_writer_index), err)
-                                      },
-                    })},
-    };
+    });
+    if let Err(err) = new_multiple_result { return Err (match some_initial_writer {
+        Some(ew) => (ew, err),
+        None     => { // we should only be here if the new_multiple put the exec_writer into the writers vec
+                      (writers.swap_remove(exec_writer_index), err)
+                    },
+    })};
 
     Ok( ExecPermissions {
         space : core::marker::PhantomData,
@@ -497,7 +488,6 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
         exec_writer_index
     })
 }
-
 
 pub(crate) struct ExecPermissions<'s, S: Space> {
     /// This is here to accurately preserve the lifetime
@@ -526,7 +516,7 @@ pub(crate) struct ExecPermissions<'s, S: Space> {
 
 
 // ///////////////////
-// SEMANTIC MODEL //
+// SEMANTIC MODEL  //
 // /////////////////
 
 // there have been changes to the following :
@@ -568,13 +558,14 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
         Machine::spec_args(space, thread_id_sexpr_str, step_cnt, auth).init_in_exec(&mut machine)?;
 
     'process_execs : loop {
-        let lookup_success = match start_controller.exec_lookup() {
-            CF::Continue(lookup_success)                          => lookup_success,
-            CF::Break(LookupBaseCases::Done)                      => return Ok(()),
-            CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => {
-                                                                       start_controller = remaining;
-                                                                       continue 'process_execs;
-                                                                     },
+        let lookup_success = match start_controller.exec_lookup_explicit() {
+            LookupCases::Success(lookup_success) => lookup_success,
+            LookupCases::Done                         => return Ok(()),
+            LookupCases::NonReactiveExec(remaining) |
+            LookupCases::ExecsRemaining(remaining)    => {
+                                                           start_controller = remaining;
+                                                           continue 'process_execs;
+                                                         },
         };
         // close the loop
         start_controller = lookup_success.transform_or_defer(|_|{/* journal transform in critical section */});
@@ -602,13 +593,12 @@ pub(crate) fn metta_calculus_impl_statemachine_poc<'space, S: Space>(
 pub(crate) fn metta_calculus_impl_statemachine_poc_machine_handle<'space, S: Space>(
     space               : &'space S,
     thread_id_sexpr_str : &str,
-    step_cnt        : usize,
+    step_cnt            : usize,
     auth                : &S::Auth,
 ) -> Result<(), ExecError<S>> {
     type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
     let mut machine = None;
-    let mut handle =
-        Machine::spec_args( space, thread_id_sexpr_str, step_cnt, auth ).init_in_exec(&mut machine)?.to_handle();
+    let mut handle  = Machine::spec_args( space, thread_id_sexpr_str, step_cnt, auth ).init_in_exec(&mut machine)?.to_handle();
 
     'process_execs : loop {
         handle = match handle.advance() {
@@ -622,13 +612,9 @@ impl<'machine, 'space, S : Space> MachineHandle<'machine, 'space, S> {
     // the default advance strategy is to ignore "Errors" and continue running without modifying the space
     #[inline(always)]
     pub fn advance(self) -> ControlFlow<(), Self> {
-        type MH<'m, 's, S> = MachineHandle<'m, 's, S>;
         CF::Continue(match self {
-            MH::LoopStart      (controller) => if let CF::Continue(h) = controller.exec_lookup_to_handle() {h} else {return CF::Break(());},
-            MH::PreTransform   (controller) => match controller.transform(|_|{}) {
-                                                   CF::Continue (c) => c.to_handle(),
-                                                   CF::Break    (c) => c.defer().to_handle(),
-                                               },
+            MachineHandle::LoopStart      (controller) => if let CF::Continue(h) = controller.exec_lookup() {h} else {return CF::Break(());},
+            MachineHandle::PreTransform   (controller) => controller.transform_or_defer(|_|{}).to_handle(),
         })
     }
 }
@@ -637,10 +623,7 @@ impl<'space, 'auth, 'arg, S : Space> MachineSpecArgs<'space, 'auth, 'arg, S> {
     /// Initializes the machine directly into the [`LoopStart`] state.
     /// the `place` argument value should be [`Option::None`], as it will be replaced with the new [`Machine`] inside a [`Some`].
     #[inline(always)]
-    pub fn init<'machine>(
-        self,
-        machine : &'auth mut Option<Machine<'space,'auth, S>>,
-    ) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, S::PermissionErr> {
+    pub fn init<'machine>(self, machine : &'auth mut Option<Machine<'space,'auth, S>>) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, S::PermissionErr> {
         let (space, auth) = (self.space, self.auth);
         self.make().map(|ms|ms.init(space, auth, machine))
     }
@@ -651,27 +634,26 @@ impl<'space, 'auth, 'arg, S : Space> MachineSpecArgs<'space, 'auth, 'arg, S> {
         let space = self.space;
         self.make().map_err(|perm_err|ExecError::perm_err(space, perm_err))
     }
+    
     /// helper method that has the same return type as [`Self::init`], but it upcasts the error to an [`ExecError`]
     #[inline(always)]
-    pub fn init_in_exec(
-        self,
-        machine : &'auth mut Option<Machine<'space,'auth, S>>,
-    ) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, ExecError<S>> {
+    pub fn init_in_exec(self, machine : &'auth mut Option<Machine<'space,'auth, S>>) -> std::result::Result<Controller<'auth, 'space, LoopStart, S>, ExecError<S>> {
         let (space, auth) = (self.space, self.auth);
         self.make_in_exec().map(|ms|ms.init(space, auth, machine))
     }
 }
 
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
-    /// Calls [`Self::exec_lookup`] and converts the nested cases that are type states into a [`MachineHandle`]
+    /// Calls [`Self::exec_lookup_explicit`] and converts the nested cases that are type states into a [`MachineHandle`]
     #[inline(always)]
-    pub fn exec_lookup_to_handle(self)
+    pub fn exec_lookup(self)
     ->  ControlFlow<(), MachineHandle<'machine, 'space, S>>
     {
-        match self.exec_lookup() {
-            CF::Continue(c)                                       => CF::Continue(MachineHandle::PreTransform(c)),
-            CF::Break(LookupBaseCases::Done)                      => CF::Break(()),
-            CF::Break(LookupBaseCases::ExecsRemaining(remaining)) => CF::Continue(MachineHandle::LoopStart(remaining)),
+        match self.exec_lookup_explicit() {
+            LookupCases::Success(c)                => CF::Continue(MachineHandle::PreTransform(c)),
+            LookupCases::Done                      => CF::Break(()),
+            LookupCases::NonReactiveExec(remaining) |
+            LookupCases::ExecsRemaining(remaining) => CF::Continue(MachineHandle::LoopStart(remaining)),
         }
     }
 }
@@ -679,43 +661,13 @@ impl<'space, 'machine, S: Space> Controller<'machine, 'space, LoopStart, S> {
 impl<'space, 'machine, S: Space> Controller<'machine, 'space, PreTransform, S> {
     /// ignores "Errors" from [`Self::transform_explicit`]
     #[inline(always)]
-    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> ControlFlow< Controller<'machine, 'space, PreTransform, S>,
-                 Controller<'machine, 'space, LoopStart, S>,
-    >{
-        match self.transform_explicit(at_critical_section) {
-            Ok(ok) => CF::Continue(ok),
-            Err(e) => e.ignore_err()
-        }
+    pub fn transform(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> MachineHandle<'machine, 'space, S> {
+        self.transform_explicit(at_critical_section).map_or_else(|(c,_)|c.to_handle(), Controller::to_handle) 
     }
 
-    /// upcasts the [`ControlFlow`] variants into a [`MachineHandle`]
-    #[inline(always)]
-    pub fn transform_to_handle(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>)) -> MachineHandle<'machine, 'space, S> {
-        match self.transform(at_critical_section) {
-            CF::Continue (c) => c.to_handle(),
-            CF::Break    (c) => c.to_handle(),
-        }
-    }
-
-    /// calls [`Self::defer`] on the case where a [`Self::transform`] would have a permission error.
+    /// calls [`Self::defer`] on the case where a [`Self::transform`] would have not changed state on a falure to run an exec failing to aquire it's permissions.
     #[inline(always)]
     pub fn transform_or_defer(self, at_critical_section : impl FnOnce(&Machine<'space, 'machine, S>))->Controller<'machine, 'space, LoopStart, S> {
-        match self.transform(at_critical_section)
-        {
-            CF::Continue(c) => c,
-            CF::Break(b)    => b.defer(),
-        }
-    }
-}
-
-impl<'machine, 'space, S : Space> TransformErr<'machine, 'space, S> {
-    /// throws out the errors and converts to [`ControlFlow`]
-    pub fn ignore_err(self)
-    -> ControlFlow<Controller<'machine, 'space, PreTransform, S>, Controller<'machine, 'space, LoopStart, S>>
-    {
-        match self {
-            TransformErr::Syntax((c,_))     => CF::Continue(c),
-            TransformErr::Permission((c,_)) => CF::Break(c),
-        }
+        self.transform_explicit(at_critical_section).unwrap_or_else(|(c,_)|c.defer())
     }
 }

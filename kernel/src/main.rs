@@ -954,7 +954,7 @@ fn cm0() {
     println!("result: {res}");
 }*/
 
-fn lenses() {
+fn lens_aunt() {
     let mut s = Space::new();
     /*
     Tom x Pam
@@ -965,7 +965,7 @@ fn lenses() {
              |
             Jim
      */
-    let SPACE_MACHINE = r#"
+    let SPACE = r#"
     (exec QA (, (aunt $xc $x $y $yt) (data $xc) (exec QA $P $T)
                 (parent $p $x) (parent $gp $p) (parent $gp $y)
                 (female $y) ($p != $y))
@@ -992,7 +992,7 @@ fn lenses() {
     (Jim != Pam) (Jim != Liz) (Jim != Pat) (Jim != Ann) (Jim != Tom) (Jim != Bob) (Jim == Jim)
     "#;
 
-    s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1);
@@ -1005,6 +1005,34 @@ fn lenses() {
 
     println!("{res}");
     assert_eq!(res, "(Ann aunt of Jim)\n(Liz aunt of Ann)\n");
+}
+
+fn lens_composition() {
+    let mut s = Space::new();
+
+    let SPACE = r#"
+    (exec LC (, (compose $l0 $l1) 
+                (lens ($l0 $xc0 $x0 $y0 $yt0))
+                (lens ($l1 $x0 $x1 $y1 $y0)) )
+             (, (lens (($l0 o $l1) $xc0 $x1 $y1 $yt0))))
+    
+    (lens (aunt (poi $x) $x $y (result ($y aunt of $x))))
+    (lens (ns (users (adam (experiments $x))) $x $y (users (adam (experiments $y)))))
+    (compose ns aunt)
+    "#;
+
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{res}");
+    assert!(res.contains("(lens ((ns o aunt) (users (adam (experiments (poi $a)))) $a $b (users (adam (experiments (result ($b aunt of $a)))))))"));
 }
 
 fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
@@ -1152,7 +1180,8 @@ fn main() {
     // bc0();
     // bc1();
 
-    lenses();
+    // lens_aunt();
+    lens_composition();
 
     // match_case();
 

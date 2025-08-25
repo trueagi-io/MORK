@@ -4,7 +4,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
-use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts};
+use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::time::Instant;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
@@ -55,440 +55,139 @@ const VARS: [u64; 4] = {
     ret
 };
 
-const ITER_AT_DEPTH: u8 = 0;
-const ITER_SYMBOL_SIZE: u8 = 1;
-const ITER_SYMBOLS: u8 = 2;
-const ITER_VARIABLES: u8 = 3;
-const ITER_ARITIES: u8 = 4;
-const ITER_EXPR: u8 = 5;
-const ITER_NESTED: u8 = 6;
-const ITER_SYMBOL: u8 = 7;
-const ITER_ARITY: u8 = 8;
-const ITER_VAR_SYMBOL: u8 = 9;
-const ITER_VAR_ARITY: u8 = 10;
-const ACTION: u8 = 11;
-const BEGIN_RANGE: u8 = 12;
-const FINALIZE_RANGE: u8 = 13;
-const REFER_RANGE: u8 = 14;
-const RESERVED: u8 = 15;
 
-fn label(l: u8) -> String {
-    match l {
-        ITER_AT_DEPTH => { "ITER_AT_DEPTH" }
-        ITER_SYMBOL_SIZE => { "ITER_SYMBOL_SIZE" }
-        ITER_SYMBOLS => { "ITER_SYMBOLS" }
-        ITER_VARIABLES => { "ITER_VARIABLES" }
-        ITER_ARITIES => { "ITER_ARITIES" }
-        ITER_EXPR => { "ITER_EXPR" }
-        ITER_NESTED => { "ITER_NESTED" }
-        ITER_SYMBOL => { "ITER_SYMBOL" }
-        ITER_ARITY => {" ITER_ARITY" }
-        ITER_VAR_SYMBOL => { "ITER_VAR_SYMBOL" }
-        ITER_VAR_ARITY => { "ITER_VAR_ARITY" }
-        ACTION => { "ACTION" }
-        BEGIN_RANGE => { "BEGIN_RANGE" }
-        FINALIZE_RANGE => { "FINALIZE_RANGE" }
-        REFER_RANGE => { "REFER_RANGE" }
-        _ => { return l.to_string() }
-    }.to_string()
-}
-
-fn show_stack<R:AsRef<[u8]>>(s: R) -> String {
-    s.as_ref().iter().copied().map(label).reduce(|mut x, y| {
-        x.push(' ');
-        x.push_str(y.as_str());
-        x
-    }).unwrap()
-}
-
-fn referential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&[ExprEnv], u8, &mut Z) -> ()>(mut last: *mut u8, loc: &mut Z, references: &mut Vec<ExprEnv>, introduced: u8, f: &mut F) {
+// future Adam: don't fall for the temptation of keeping references of data->pattern, you tried it twice already: it's not worth the complexity, it's incompatible due to the PZ de-Bruijn level non-well-foundedness, it doesn't occur in most queries, and the performance is not worth it
+// others: this code has haphephobia, contact Adam when you run into problems
+// optimization opportunities:
+// - use u16 x u16 compressed byte mask to reduce stack size
+// - decrease the size of ExprEnv; it's too rich for this function
+// - symbol size can use more optimized descend at depth k implementation (PZ)
+// - this function gets massive (many thousands of instructions) but can do with less checked functions
+// - ascends may be avoided by using RZ refs instead of re-ascending in some cases
+// - the adiabatic crate may be used to get rid of the recursion (though currently the recursion is significantly faster)
+// - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
+// - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
+fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&mut Z) -> ()>(
+    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
     unsafe {
-    macro_rules! unroll {
-    (ACTION $recursive:expr) => {
-        trace!(target: "transition", "introduced {} in {}", introduced, serialize(loc.origin_path()));
-        f(&references[..], introduced, loc);
-    };
-    (ITER_AT_DEPTH $recursive:expr) => {
-        let level = *last; last = last.offset(-1);
+    trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
+    trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
+    match stack.pop() {
+        None => { f(loc) }
+        Some(e) => {
+            let e_byte = *e.base.ptr.add(e.offset as usize);
 
-        let mut i = 0;
-        while i < level {
-            if loc.descend_first_byte() {
-                i += 1
-            } else if loc.to_next_sibling_byte() {
-            } else if loc.ascend_byte() {
-                i -= 1
-            } else {
-                i = 0;
-                break
-            }
-        }
+            macro_rules! vs {
+                () => {{
+                    let m = loc.child_mask().and(&ByteMask(VARS));
+                    let mut it = m.iter();
 
-        while i > 0 {
-            if i == level {
-                referential_transition(last, loc, references, introduced, f);
-                if loc.to_next_sibling_byte() {
-                } else {
-                    assert!(loc.ascend_byte());
-                    i -= 1;
-                }
-            } else if i < level {
-                if loc.to_next_sibling_byte() {
-                    while i < level && loc.descend_first_byte() {
-                        i += 1;
+                    while let Some(b) = it.next() {
+                        if loc.descend_to_byte(b) {
+                            coreferential_transition(loc, stack, references, f);
+                        }
+                        loc.ascend_byte();
                     }
-                } else {
-                    assert!(loc.ascend_byte());
-                    i -= 1;
+                }};
+            }
+
+            match byte_item(e_byte) {
+                Tag::NewVar => {
+                    if e.n == 0 { references.push(loc.path().len() as u32); }
+                    else {
+                        trace!(target: "coref trans", "not putting {} {}", e.n, e.show());
+                    }
+
+                    vs!();
+
+                    let m = loc.child_mask().and(&ByteMask(SIZES));
+                    let mut it = m.iter();
+                    while let Some(b) = it.next() {
+                        if let Tag::SymbolSize(size) = byte_item(b) {
+                            if loc.descend_to_byte(b) {
+                                let mut i = 0;
+                                while i < size {
+                                    if loc.descend_first_byte() { i += 1 }
+                                    else if loc.to_next_sibling_byte() {}
+                                    else if loc.ascend_byte() { i -= 1 }
+                                    else { i = 0; break }
+                                }
+                                while i > 0 {
+                                    if i == size {
+                                        coreferential_transition(loc, stack, references, f);
+                                        if loc.to_next_sibling_byte() {}
+                                        else { assert!(loc.ascend_byte()); i -= 1 }
+                                    } else if i < size {
+                                        if loc.to_next_sibling_byte() { while i < size && loc.descend_first_byte() { i += 1 } }
+                                        else { assert!(loc.ascend_byte()); i -= 1 }
+                                    }
+                                }
+                            }
+                            loc.ascend_byte();
+                        } else { unreachable!("no symbol size next") }
+                    }
+
+                    let m = loc.child_mask().and(&ByteMask(ARITIES));
+                    let mut it = m.iter();
+                    while let Some(b) = it.next() {
+                        if let Tag::Arity(a) = byte_item(b) {
+                            if loc.descend_to_byte(b) {
+                                static nv: u8 = item_byte(Tag::NewVar);
+                                let ol = stack.len();
+                                for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                                coreferential_transition(loc, stack, references, f);
+                                stack.truncate(ol);
+                            }
+                            loc.ascend(1);
+                        } else { unreachable!("no arity next") }
+                    }
+
+                    if e.n == 0 { references.pop(); }
+                }
+                Tag::VarRef(i) => {
+                    // wrong addition v and n?
+                    let addition = if e.n == 0 {
+                        trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
+                        trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
+                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
+                    } else {
+                        trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
+                        static nv: u8 = item_byte(Tag::NewVar);
+                        ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
+                    };
+                    stack.push(addition);
+                    vs!();
+                    coreferential_transition(loc, stack, references, f);
+                    stack.pop();
+                }
+                Tag::SymbolSize(size) => {
+                    vs!();
+                    if loc.descend_to_byte(e_byte) {
+                        if loc.descend_to(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
+                            coreferential_transition(loc, stack, references, f);
+                        }
+                        loc.ascend(size as usize);
+                    }
+                    loc.ascend_byte();
+
+                }
+                Tag::Arity(arity) => {
+                    vs!();
+                    if loc.descend_to_byte(e_byte) {
+                        let stackl = stack.len();
+                        e.args(&mut stack);
+                        stack[stackl..].reverse();
+                        coreferential_transition(loc, stack, references, f);
+                        stack.truncate(stack.len() - arity as usize);
+                    }
+                    loc.ascend_byte();
                 }
             }
-        }
 
-        last = last.offset(1); *last = level;
-    };
-    (ITER_NESTED $recursive:expr) => {
-        let arity = *last; last = last.offset(-1);
-        if arity == 0 {
-          referential_transition(last, loc, references, introduced, f);
-        } else {
-            for _ in 0..arity-1 {
-                last = last.offset(1);
-                *last = ITER_EXPR;
-            }
-            unroll!(ITER_EXPR referential_transition(last, loc, references, introduced, f));
-
-            last = last.offset(-(arity as isize - 1));
-        }
-        last = last.offset(1); *last = arity;
-    };
-    (ITER_SYMBOL_SIZE $recursive:expr) => {
-        let m = loc.child_mask().and(&ByteMask(SIZES));
-        let mut it = m.iter();
-
-        while let Some(b) = it.next() {
-            if let Tag::SymbolSize(s) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
-                    let lastv = *last; last = last.offset(-1);
-                    last = last.offset(1); *last = s;
-                    last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, introduced, f);
-                    last = last.offset(-1);
-                    last = last.offset(-1);
-                    last = last.offset(1); *last = lastv;
-                }
-                loc.ascend(1);
-            } else {
-                unreachable!("no symbol size next")
-            }
-        }
-    };
-    (ITER_SYMBOLS $recursive:expr) => {
-         last = last.offset(1); *last = ITER_AT_DEPTH;
-         // last = last.offset(1); *last = ITER_SYMBOL_SIZE;
-         unroll!(ITER_SYMBOL_SIZE $recursive);
-         // last = last.offset(-1);
-         last = last.offset(-1);
-    };
-    (ITER_VARIABLES $recursive:expr) => {
-        let m = loc.child_mask().and(&ByteMask(VARS));
-        let mut it = m.iter();
-
-        while let Some(b) = it.next() {
-            let buf = [b];
-            if loc.descend_to(buf) {
-                let intro = if matches!(byte_item(b), Tag::NewVar) {
-                    introduced + 1
-                } else { introduced };
-                referential_transition(last, loc, references, intro, f);
-            }
-            loc.ascend(1);
-        }
-    };
-    (ITER_ARITIES $recursive:expr) => {
-        let m = loc.child_mask().and(&ByteMask(ARITIES));
-        let mut it = m.iter();
-
-        while let Some(b) = it.next() {
-            if let Tag::Arity(a) = byte_item(b) {
-                let buf = [b];
-                if loc.descend_to(buf) {
-                    let lastv = *last; last = last.offset(-1);
-                    last = last.offset(1); *last = a;
-                    last = last.offset(1); *last = lastv;
-                    referential_transition(last, loc, references, introduced, f);
-                    last = last.offset(-1);
-                    last = last.offset(-1);
-                    last = last.offset(1); *last = lastv;
-                }
-                loc.ascend(1);
-            } else {
-                unreachable!()
-            }
-        }
-    };
-    (ITER_EXPR $recursive:expr) => {
-        unroll!(ITER_VARIABLES $recursive);
-
-        unroll!(ITER_SYMBOLS $recursive);
-
-        last = last.offset(1); *last = ITER_NESTED;
-        // last = last.offset(1); *last = ITER_ARITIES;
-        unroll!(ITER_ARITIES $recursive);
-        // last = last.offset(-1);
-        last = last.offset(-1);
-    };
-    (ITER_SYMBOL $recursive:expr) => {
-        let size = *last; last = last.offset(-1);
-        let mut v = [0; 64];
-        for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
-
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
-            if loc.descend_to(&v[..size as usize]) {
-                $recursive;
-            }
-            loc.ascend(size as usize);
-        }
-        loc.ascend_byte();
-        for i in 0..size { last = last.offset(1); *last = *v.get_unchecked((size - i - 1) as usize) }
-        last = last.offset(1); *last = size;
-    };
-    (ITER_VAR_SYMBOL $recursive:expr) => {
-        let size = *last; last = last.offset(-1);
-        let mut v = [0; 64];
-        for i in 0..size { *v.get_unchecked_mut(i as usize) = *last; last = last.offset(-1); }
-
-        unroll!(ITER_VARIABLES $recursive);
-
-        if loc.descend_to_byte(item_byte(Tag::SymbolSize(size))) {
-            if loc.descend_to(&v[..size as usize]) {
-                referential_transition(last, loc, references, introduced, f);
-            }
-            loc.ascend(size as usize);
-        }
-        loc.ascend_byte();
-        for i in 0..size { last = last.offset(1); *last = *v.get_unchecked((size - i - 1) as usize) }
-        last = last.offset(1); *last = size;
-    };
-    (ITER_ARITY $recursive:expr) => {
-        let arity = *last; last = last.offset(-1);
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-            referential_transition(last, loc, references, introduced, f);
-        }
-        loc.ascend_byte();
-        last = last.offset(1); *last = arity;
-    };
-    (ITER_VAR_ARITY $recursive:expr) => {
-        let arity = *last; last = last.offset(-1);
-
-        unroll!(ITER_VARIABLES $recursive);
-
-        if loc.descend_to_byte(item_byte(Tag::Arity(arity))) {
-            referential_transition(last, loc, references, introduced, f);
-        }
-        loc.ascend_byte();
-        last = last.offset(1); *last = arity;
-    };
-    (BEGIN_RANGE $recursive:expr) => {
-        // references.push((loc.path().len() as u32, 0));
-        let p = loc.origin_path();
-        references.push(ExprEnv { n: 0, v: introduced, offset: p.len() as u32, base: Expr{ ptr: p.as_ptr().cast_mut() } });
-        $recursive;
-        references.pop();
-    };
-    (FINALIZE_RANGE $recursive:expr) => {
-        // references.last_mut().unwrap().1 = loc.path().len() as u32;
-        $recursive;
-        // references.last_mut().unwrap().1 = 0;
-    };
-    (REFER_RANGE $recursive:expr) => {
-        let index = *last; last = last.offset(-1);
-        let subexpr = references[index as usize].subsexpr();
-        let mut ez = ExprZipper::new(subexpr);
-        let mut v0 = last;
-        loop {
-            match ez.item() {
-                Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
-                    last = last.offset(1); *last = ITER_EXPR;
-                }
-                Ok(Tag::SymbolSize(_)) => { unreachable!() }
-                Err(s) => {
-                    last = last.offset(1); *last = ITER_VAR_SYMBOL;
-                    last = last.offset(1); *last = s.len() as u8;
-                    last = last.offset(1);
-                    ptr::copy_nonoverlapping(s.as_ptr(), last, s.len());
-                    last = last.offset((s.len() - 1) as isize);
-                }
-                Ok(Tag::Arity(a)) => {
-                    last = last.offset(1); *last = ITER_VAR_ARITY;
-                    last = last.offset(1); *last = a;
-                }
-            }
-            if !ez.next() {
-                let d = last.offset_from(v0) as usize;
-                std::ptr::slice_from_raw_parts_mut(v0.offset(1), d).as_mut().unwrap_unchecked().reverse();
-                break;
-            }
-        };
-
-        $recursive;
-        last = v0;
-
-        last = last.offset(1); *last = index;
-    };
-    (DISPATCH $s:ident $recursive:expr) => {
-        match $s {
-            ITER_AT_DEPTH => { unroll!(ITER_AT_DEPTH $recursive); }
-            ITER_SYMBOL_SIZE => { unroll!(ITER_SYMBOL_SIZE $recursive); }
-            ITER_SYMBOLS => { unroll!(ITER_SYMBOLS $recursive); }
-            ITER_VARIABLES => { unroll!(ITER_VARIABLES $recursive); }
-            ITER_ARITIES => { unroll!(ITER_ARITIES $recursive); }
-            ITER_EXPR => { unroll!(ITER_EXPR $recursive); }
-            ITER_NESTED => { unroll!(ITER_NESTED $recursive); }
-            ITER_SYMBOL => { unroll!(ITER_SYMBOL $recursive); }
-            ITER_ARITY => { unroll!(ITER_ARITY $recursive); }
-            ITER_VAR_SYMBOL => { unroll!(ITER_VAR_SYMBOL $recursive); }
-            ITER_VAR_ARITY => { unroll!(ITER_VAR_ARITY $recursive); }
-            ACTION => { unroll!(ACTION $recursive); }
-            BEGIN_RANGE => { unroll!(BEGIN_RANGE $recursive); }
-            FINALIZE_RANGE => { unroll!(FINALIZE_RANGE $recursive); }
-            REFER_RANGE => { unroll!(REFER_RANGE $recursive); }
-            RESERVED => { unreachable!("reserved opcode"); }
-            c => { unreachable!("invalid opcode {}", c); }
-        }
-    };
-    (CALL $recursive:expr) => {
-        {
-            let lastv = *last;
-            last = last.offset(-1);
-            unroll!(DISPATCH lastv $recursive);
-            last = last.offset(1);
-            *last = lastv;
-        }
-    };
-    }
-    // unroll!(CALL unroll!(CALL unroll!(CALL referential_transition(last, loc, references, f))));
-    #[cfg(debug_assertions)]
-    unroll!(CALL referential_transition(last, loc, references, introduced, f));
-    #[cfg(not(debug_assertions))]
-    unroll!(CALL unroll!(CALL referential_transition(last, loc, references, introduced, f)));
-    }
-}
-
-
-fn indiscriminate_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
-    let mut v = vec![];
-    loop {
-        match ez.item() {
-            Ok(Tag::NewVar) | Ok(Tag::VarRef(_)) => {
-                v.push(ITER_EXPR);
-            }
-            Ok(Tag::SymbolSize(_)) => { unreachable!() }
-            Err(s) => {
-                v.push(ITER_VAR_SYMBOL);
-                v.push(s.len() as u8);
-                v.extend(s);
-            }
-            Ok(Tag::Arity(a)) => {
-                v.push(ITER_VAR_ARITY);
-                v.push(a);
-            }
-        }
-        if !ez.next() {
-            v.reverse();
-            return v
+            stack.push(e);
         }
     }
-}
-
-fn referential_bidirectional_matching_stack(ez: &mut ExprZipper) -> Vec<u8> {
-    let mut v = vec![];
-    loop {
-        match ez.item() {
-            Ok(Tag::NewVar) => {
-                v.push(BEGIN_RANGE);
-                v.push(ITER_EXPR);
-                v.push(FINALIZE_RANGE);
-            }
-            Ok(Tag::VarRef(r)) => {
-                v.push(REFER_RANGE);
-                v.push(r);
-            }
-            Ok(Tag::SymbolSize(_)) => { unreachable!() }
-            Err(s) => {
-                v.push(ITER_VAR_SYMBOL);
-                v.push(s.len() as u8);
-                v.extend(s);
-            }
-            Ok(Tag::Arity(a)) => {
-                v.push(ITER_VAR_ARITY);
-                v.push(a);
-            }
-        }
-        if !ez.next() {
-            v.reverse();
-            return v
-        }
     }
-}
-
-// fn referential_bidirectional_matching_stack_traverse(e: Expr, limit: usize) -> Vec<u8> {
-//     let mut v = traverseh!((), (), Vec<u8>, e, vec![],
-//         |v: &mut Vec<u8>, o| {
-//             v.push(BEGIN_RANGE);
-//             v.push(ITER_EXPR);
-//             v.push(FINALIZE_RANGE);
-//         },
-//         |v: &mut Vec<u8>, o, i| {
-//             v.push(REFER_RANGE);
-//             v.push(i);
-//         },
-//         |v: &mut Vec<u8>, o, s: &[u8]| {
-//             v.push(ITER_VAR_SYMBOL);
-//             v.push(s.len() as u8);
-//             v.extend(s);
-//         },
-//         |v: &mut Vec<u8>, o, a| {
-//             v.push(ITER_VAR_ARITY);
-//             v.push(a);
-//         },
-//         |v, o, r, s| {},
-//         |v, o, r| {}
-//     ).0;
-//     v.reverse();
-//     v
-// }
-
-fn referential_bidirectional_matching_stack_traverse(e: Expr, from: usize) -> Vec<u8> {
-    let mut v = traverseh!((), (), (Vec<u8>, usize), e, (vec![], from),
-        |(v, from): &mut (Vec<u8>, usize), o| {
-            if o < *from { return }
-            v.push(BEGIN_RANGE);
-            v.push(ITER_EXPR);
-            v.push(FINALIZE_RANGE);
-        },
-        |(v, from): &mut (Vec<u8>, usize), o, i| {
-            if o < *from { return }
-            v.push(REFER_RANGE);
-            v.push(i);
-        },
-        |(v, from): &mut (Vec<u8>, usize), o, s: &[u8]| {
-            // likely wrong, what happens if `from` lies inside of a symbol?
-            if o < *from { return }
-            v.push(ITER_VAR_SYMBOL);
-            v.push(s.len() as u8);
-            v.extend(s);
-        },
-        |(v, from): &mut (Vec<u8>, usize), o, a| {
-            if o < *from { return }
-            v.push(ITER_VAR_ARITY);
-            v.push(a);
-        },
-        |v, o, r, s| {},
-        |v, o, r| {}
-    ).0.0;
-    v.reverse();
-    v
 }
 
 unsafe extern "C" {
@@ -621,7 +320,7 @@ macro_rules! expr {
         let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
         let table = $space.sym_table();
         let mut pdp = $crate::space::ParDataParser::new(&table);
-        let mut buf = [0u8; 2048];
+        let mut buf = [0u8; 4096];
         let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
         let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
         unsafe {
@@ -1012,13 +711,37 @@ impl Space {
         Ok((nodes, labels))
     }
 
+    pub fn load_all_sexpr(&mut self, r: &[u8]) -> Result<usize, String> {
+        let mut stack = Vec::with_capacity(1 << 32);
+        unsafe { stack.set_len(1 << 32); }
+        let mut it = Context::new(r);
+        let mut i = 0;
+        let mut parser = ParDataParser::new(&self.sm);
+        loop {
+            let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
+            match parser.sexpr(&mut it, &mut ez) {
+                Ok(()) => {
+                    let data = &stack[..ez.loc];
+                    self.btm.insert(data, ());
+                }
+                Err(ParserError::InputFinished) => { break }
+                Err(other) => { panic!("{:?}", other) }
+            }
+            i += 1;
+            it.variables.clear();
+        }
+        Ok(i)
+    }
+
     pub fn load_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
-        let mut buffer = [0u8; 4096];
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        unsafe { buffer.set_len(1 << 32); }
+        let mut stack = Vec::with_capacity(1 << 32);
+        unsafe { stack.set_len(1 << 32); }
         let mut it = Context::new(r);
         let mut i = 0;
-        let mut stack = [0u8; 2048];
         let mut parser = ParDataParser::new(&self.sm);
         loop {
             let mut ez = ExprZipper::new(Expr{ptr: stack.as_mut_ptr()});
@@ -1048,7 +771,7 @@ impl Space {
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
-            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize(w, |s| {
+            Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
@@ -1058,24 +781,27 @@ impl Space {
                 }
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-            });
+            }, |i, intro| { Expr::VARNAMES[i as usize] });
             w.write(&[b'\n']).map_err(|x| x.to_string())?;
             i += 1;
         }
         Ok(i)
     }
 
-    pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> Result<usize, String> {
+    pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> usize {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
 
         let mut buffer = [0u8; 4096];
+        let mut pat = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b','];
+        pat.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
 
-        Self::query_multi(&self.btm, &[pattern], |refs_bindings, loc| {
+        Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
             match refs_bindings {
                 Ok(refs) => {
-                    template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                    // todo
+                    // template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
                 }
                 Err((ref bindings, ti, ni, _)) => {
                     mork_bytestring::apply(0, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
@@ -1083,7 +809,7 @@ impl Space {
             }
 
             // &buffer[constant_template_prefix.len()..oz.loc]
-            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
+            Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
@@ -1093,10 +819,10 @@ impl Space {
                 }
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
-            });
-            w.write(&[b'\n']).map_err(|x| x.to_string())?;
+            }, |i, intro| { Expr::VARNAMES[i as usize] });
+            w.write(&[b'\n']).map_err(|x| x.to_string()).unwrap();
 
-            Ok(())
+            true
         })
     }
 
@@ -1154,142 +880,90 @@ impl Space {
         pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<T, F : FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, Vec<(u8, u8)>)>, Expr) -> Result<(), T>>(btm: &BytesTrieMap<()>, patterns: &[Expr], mut effect: F) -> Result<usize, T> {
-        let first_pattern_prefix = unsafe { patterns[0].prefix().unwrap_or_else(|x| patterns[0].span()).as_ref().unwrap() };
-        let mut rz = btm.read_zipper_at_path(first_pattern_prefix);
-        if !rz.path_exists() { return Ok(0); }
-        let mut first_temp_map = BytesTrieMap::new();
-        let mut first_zh = first_temp_map.zipper_head();
-        let mut virtual_path = vec![item_byte(Tag::Arity(patterns.len() as u8))];
-        let mut pattern_expr = virtual_path.clone();
-        for pattern in patterns.iter() {
-            trace!(target: "query_multi", "pattern {:?}", pattern);
-            pattern_expr.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() })
-        }
-        virtual_path.extend_from_slice(first_pattern_prefix);
-        first_zh.write_zipper_at_exclusive_path(&virtual_path[..]).unwrap().graft(&rz);
-        drop(first_zh);
-        let mut rz = first_temp_map.into_read_zipper(&[virtual_path[0]]);
-        let mut tmp_maps = vec![];
-        for p in patterns[1..].iter() {
-            let mut temp_map = BytesTrieMap::new();
-            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            let zh = temp_map.zipper_head();
-            let rz = btm.read_zipper_at_path(prefix);
-            if !rz.path_exists() {
-                trace!("for p={:?} prefix {} not in map", p, serialize(prefix));
-                return Ok(0)
-            }
-            zh.write_zipper_at_exclusive_path(prefix).unwrap().graft(&rz);
-            drop(zh);
-            tmp_maps.push(temp_map);
-        }
-        rz.descend_to(&[0; 4096]);
-        rz.reset();
-        let mut prz = ProductZipper::new(rz, patterns[1..].iter().enumerate().map(|(i, p)| {
-            let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
-            // tmp_maps[i].read_zipper_at_path(prefix)
-            tmp_maps[i].read_zipper()
+    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        let pat_newvars = pat_expr.newvars();
+        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
+        let mut pat_args = vec![];
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+
+        if pat_args.len() <= 1 { return 0 }
+
+        let mut rz = btm.read_zipper();
+        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+            btm.read_zipper()
         }));
-        prz.reserve_path_buffer(4096);
+        prz.reserve_buffers(1 << 32, 32);
 
-        let mut stack = vec![0; 1];
-        stack[0] = ACTION;
+        let mut stack = pat_args[1..].iter().rev().cloned().collect::<Vec<_>>();
 
-        for pattern in patterns.iter().rev() {
-            let prefix = unsafe { pattern.prefix().unwrap_or_else(|x| pattern.span()).as_ref().unwrap() };
-            stack.extend_from_slice(&referential_bidirectional_matching_stack(&mut ExprZipper::new(*pattern))[..]);
-            // stack.extend_from_slice(&referential_bidirectional_matching_stack_traverse(*pattern, prefix.len())[..]);
-        }
-        stack.reserve(4096);
+        let mut scratch = Vec::with_capacity(1 << 32);
 
-        let mut references: Vec<ExprEnv> = vec![];
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+        let mut references: Vec<u32> = vec![];
         let mut candidate = 0;
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
-            static RET: std::cell::Cell<*mut u8> = const { std::cell::Cell::new(null_mut()) };
         }
-
-        let pat = Expr { ptr: pattern_expr.as_mut_ptr() };
-        let pat_newvars = pat.newvars();
-        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(&pattern_expr[..]));
-        let mut pat_args = vec![];
-        ExprEnv::new(0, pat).args(&mut pat_args);
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                referential_transition(stack.last_mut().unwrap(), &mut prz, &mut references, 0, &mut |refs, introduced, loc| {
+                coreferential_transition(&mut prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },&mut |loc| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
+                    trace!(target: "query_multi", "pi {:?}", loc.path_indices());
+                    trace!(target: "query_multi", "at {:?}", e);
+                    for &other_i in loc.path_indices() {
+                        trace!(target: "query_multi", "at {:?}",
+                            Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                    }
 
                     if true  { // introduced != 0
-                        // println!("pattern nvs {:?}", pat.newvars());
-                        let mut tmp_args = vec![];
-                        ExprEnv::new(1, e).args(&mut tmp_args);
+                        let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
 
-                        let pairs: Vec<_> = pat_args.iter().zip(tmp_args.iter()).enumerate().map(|(i, (pat_arg, data_arg))| {
-                            (*pat_arg, ExprEnv::new((i + 1) as u8, data_arg.subsexpr()))
-                        }).collect();
-                        for pair in pairs[..].iter() {
-                            // println!("{}", pair.1.show());
+                        for (&pa, &other_i) in pat_args[2..].iter().zip(loc.path_indices()) {
+                            let fe = ExprEnv::new((pairs.len() + 1) as u8,
+                                                  Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                            pairs.push((pa, fe))
                         }
-                        let bindings = unify(
-                            pairs
-                        );
+
+                        // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
+
+                        let bindings = unify(pairs);
 
                         match bindings {
                             Ok(bs) => {
                                 // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
-                                let mut assignments: Vec<(u8, u8)> = vec![];
                                 let (oi, ni) = {
                                     let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                                    let mut stack: Vec<(u8, u8)> = vec![];
-                                    let mut scratch = [0u8; 512];
-                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments);
+                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                                    trace.clear();
+                                    assignments.clear();
                                     // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                                     r
                                 };
                                 // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
 
-                                match effect(Err((bs, oi, ni, assignments)), e) {
-                                    Ok(()) => {}
-                                    Err(t) => {
-                                        let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<T>()) };
-                                        unsafe { std::ptr::write(t_ptr as *mut T, t) };
-                                        RET.set(t_ptr);
-                                        unsafe { longjmp(a, 1) }
-                                    }
-                                }
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-
+                                if !effect(Err((bs, oi, ni, &assignments[..])), e) {
+                                    unsafe { longjmp(a, 1) }
+                                }
                             }
                             Err(failed) => {
                                 trace!(target: "query_multi", "failed {:?}", failed)
                             }
                         }
                     } else {
-                        match effect(Ok(refs), e) {
-                            Ok(()) => {}
-                            Err(t) => {
-                                let t_ptr = unsafe { std::alloc::alloc(std::alloc::Layout::new::<T>()) };
-                                unsafe { std::ptr::write(t_ptr as *mut T, t) };
-                                RET.set(t_ptr);
-                                unsafe { longjmp(a, 1) }
-                            }
-                        }
                         unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+                        if !effect(Ok(unsafe { slice_from_raw_parts(references.as_ptr(), references.len()).as_ref().unwrap() }), e) {
+                            unsafe { longjmp(a, 1) }
+                        }
+
                     }
                 })
             }
         });
-        RET.with(|mptr| {
-            if mptr.get().is_null() { Ok(candidate) }
-            else {
-                let tref = unsafe { mptr.get() };
-                let t = unsafe { std::ptr::read(tref as _) };
-                unsafe { std::alloc::dealloc(tref, std::alloc::Layout::new::<T>()) };
-                Err(t)
-            }
-        })
+
+        candidate
     }
 
     pub fn prefix_subsumption(prefixes: &[&[u8]]) -> Vec<usize> {
@@ -1316,73 +990,9 @@ impl Space {
 
         out
     }
-
-    pub fn transform_multi_multi(&mut self, patterns: &[Expr], templates: &[Expr]) -> (usize, bool) {
-        let mut buffer = [0u8; 512];
-        let mut template_prefixes = vec![unsafe { MaybeUninit::zeroed().assume_init() }; templates.len()];
-        let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
-        let mut placements = subsumption.clone();
-        let read_copy = self.btm.clone();
-        let mut template_wzs: Vec<_> = vec![];
-        // let mut write_copy = self.btm.clone();
-        template_prefixes.iter().enumerate().for_each(|(i, x)| {
-            if subsumption[i] == i {
-                // placements[i] = template_wzs.len();
-                template_wzs.push(self.write_zipper_at_unchecked(x));
-                // template_wzs.push(write_copy.write_zipper_at_path(x));
-            }
-        });
-        for i in 0..subsumption.len() {
-            subsumption[i] = placements[subsumption[i]]
-        }
-        trace!(target: "transform", "templates {:?}", templates);
-        trace!(target: "transform", "prefixes {:?}", template_prefixes);
-        trace!(target: "transform", "subsumption {:?}", subsumption);
-
-        let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, patterns, |refs_bindings, loc| {
-            // trace!(target: "transform", "pattern {}", serialize(unsafe { template.span().as_ref().unwrap()}));
-            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
-
-            for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
-                let wz = &mut template_wzs[subsumption[i]];
-                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
-                trace!(target: "transform", "{i} template {}", serialize(unsafe { template.span().as_ref().unwrap()}));
-                match refs_bindings {
-                    Ok(refs) => {
-                        trace!(target: "transform", "{i} refs {}", refs.iter().enumerate().map(|(k, e)| format!("{k} {}", e.show())).collect::<String>());
-                        template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
-                    }
-                    Err((ref bindings, ti, ni, _)) => {
-                        #[cfg(debug_assertions)]
-                        {
-                        bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
-                        }
-
-                        mork_bytestring::apply(1, ni as u8, ti as u8, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
-                    }
-                }
-                // loc.transformed(template,)
-                trace!(target: "transform", "{i} out {:?}", oz.root);
-                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
-                wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
-                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
-                // println!("insert path {}", serialize(&buffer[..oz.loc]));
-                any_new |= wz.set_value(()).is_none();
-                wz.reset();
-                // THIS DOES WORK v
-                // any_new |= unsafe { ((&self.btm) as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap() }.insert(&buffer[..oz.loc], ()).is_none();
-                
-            }
-            Ok::<(), ()>(())
-        }).unwrap();
-        drop(template_prefixes);
-        (touched, any_new)
-    }
-
-    pub fn transform_multi_multi_(&mut self, patterns: &[Expr], templates: &[Expr], add: Expr) -> (usize, bool) {
-        let mut buffer = [0u8; 512];
+    pub fn transform_multi_multi_(&mut self, pat_expr: Expr, templates: &[Expr], add: Expr) -> (usize, bool) {
+        let mut buffer = Vec::with_capacity(1 << 32);
+        unsafe { buffer.set_len(1 << 32); }
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
@@ -1404,8 +1014,11 @@ impl Space {
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
         trace!(target: "transform", "subsumption {:?}", subsumption);
 
+        let mut ass = Vec::with_capacity(64);
+        let mut astack = Vec::with_capacity(64);
+
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, patterns, |refs_bindings, loc| {
+        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
             let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
@@ -1418,47 +1031,34 @@ impl Space {
 
                 trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
                 // println!("ass len {}", assignments.len());
-                let mut ass = if i == 0 {
-                    // assignments.clone()
-                    vec![]
-                } else {
-                    // assignments[..1].to_vec()
-                    vec![]
-                };
                 // let mut ass = vec![];
-                let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
+                let res = mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                ass.clear();
+                astack.clear();
                 // println!("res {:?}", res);
-                // (oi, ni) = res;
-
-                //   0      1      2      3      4      5      6      7      8      9
-                //  [(1,3), (3,4), (3,5), (3,6), (3,0), (3,1), (3,7), (3,8), (3,2), (3,3)]
-                // <0, 3> = (, (petri (? <3,4> <3,5> <3,6>)) (petri (! <3,0> <3,1>)) (exec PC0 <3,7> <3,8>))
-                // <0, 4> = (, (petri <3,2>) (exec PC0 <3,3> <3,4>))
-                // [4] exec PC0 _4 _5
 
                 // loc.transformed(template,)
                 trace!(target: "transform", "{i} out {:?}", oz.root);
-                wz.descend_to(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
-                any_new |= wz.set_value(()).is_none();
-                wz.reset();
+                wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                any_new |= wz.set_val(()).is_none();
             }
-            Ok::<(), ()>(())
-        }).unwrap();
+            true
+        });
         (touched, any_new)
     }
 
 
-    pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {
-        self.transform_multi_multi(patterns, &[template])
-    }
+    // pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {
+    //     self.transform_multi_multi(patterns, &[template])
+    // }
 
-    pub fn transform(&mut self, pattern: Expr, template: Expr) -> (usize, bool) {
-        self.transform_multi_multi(&[pattern], &[template])
-    }
+    // pub fn transform(&mut self, pattern: Expr, template: Expr) -> (usize, bool) {
+    //     self.transform_multi_multi(&[pattern], &[template])
+    // }
 
-    pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
-        Self::query_multi(&self.btm, &[pattern], |refs, e| { effect(refs.unwrap(), e); Ok::<(), ()>(()) } ).unwrap();
-    }
+    // pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
+    //     Self::query_multi(&self.btm, &[pattern], |refs, e| { effect(refs.unwrap(), e); Ok::<(), ()>(()) } ).unwrap();
+    // }
 
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
@@ -1477,17 +1077,7 @@ impl Space {
         let loc = rtz.subexpr();
 
         assert!(rtz.next_child());
-        let mut srcz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(n)) = srcz.item() else { panic!() };
-        let mut srcs = Vec::with_capacity(n as usize - 1);
-        srcz.next();
-        assert_eq!(unsafe { srcz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for i in 0..n as usize - 1 {
-            srcz.next_child();
-            // println!("src {i} {:?}", unsafe { serialize(srcz.subexpr().span().as_ref().unwrap()) });
-            // println!("src {i} {:?}", srcz.subexpr());
-            srcs.push(srcz.subexpr());
-        }
+        let pat_expr = rtz.subexpr();
         assert!(rtz.next_child());
         let mut dstz = ExprZipper::new(rtz.subexpr());
         let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
@@ -1501,40 +1091,40 @@ impl Space {
             dsts.push(dstz.subexpr());
         }
 
-        let res = self.transform_multi_multi_(&srcs[..], &dsts[..], rt);
+        let res = self.transform_multi_multi_(pat_expr, &dsts[..], rt);
         trace!(target: "interpret", "(run, changed) = {:?}", res);
     }
 
-    pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
-        let mut rtz = ExprZipper::new(rt);
-        assert_eq!(rtz.item(), Ok(Tag::Arity(3)));
-        assert!(rtz.next());
-        assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "-:").span().as_ref().unwrap() });
-        assert!(rtz.next_child());
-        let mut dstz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-        let mut dsts = Vec::with_capacity(m as usize - 1);
-        dstz.next();
-        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for j in 0..m as usize - 1 {
-            dstz.next_child();
-            dsts.push(dstz.subexpr());
-        }
-        assert!(rtz.next_child());
-        let mut res = rtz.subexpr();
+    // pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
+    //     let mut rtz = ExprZipper::new(rt);
+    //     assert_eq!(rtz.item(), Ok(Tag::Arity(3)));
+    //     assert!(rtz.next());
+    //     assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "-:").span().as_ref().unwrap() });
+    //     assert!(rtz.next_child());
+    //     let mut dstz = ExprZipper::new(rtz.subexpr());
+    //     let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
+    //     let mut dsts = Vec::with_capacity(m as usize - 1);
+    //     dstz.next();
+    //     assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
+    //     for j in 0..m as usize - 1 {
+    //         dstz.next_child();
+    //         dsts.push(dstz.subexpr());
+    //     }
+    //     assert!(rtz.next_child());
+    //     let mut res = rtz.subexpr();
+    //
+    //     self.transform_multi(&dsts[..], res).1
+    // }
 
-        self.transform_multi(&dsts[..], res).1
-    }
-
-    pub fn datalog(&mut self, statements: &[Expr]) {
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for statement in statements {
-                changed |= self.interpret_datalog(*statement);
-            }
-        }
-    }
+    // pub fn datalog(&mut self, statements: &[Expr]) {
+    //     let mut changed = true;
+    //     while changed {
+    //         changed = false;
+    //         for statement in statements {
+    //             changed |= self.interpret_datalog(*statement);
+    //         }
+    //     }
+    // }
 
     // pub fn datalog(&mut self, statements: &[Expr]) {
     //     let last_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 0];
@@ -1558,7 +1148,7 @@ impl Space {
     //     }
     // }
 
-    pub fn metta_calculus(&mut self, mut steps: usize) {
+    pub fn metta_calculus(&mut self, mut steps: usize) -> usize {
         // MC CMD "TEXEC THREAD0"
         let mut done = 0;
         let prefix_e = expr!(self, "[4] exec $ $ $");
@@ -1578,6 +1168,8 @@ impl Space {
                 false
             }
         } { done += 1 }
+
+        done
     }
 
     // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {

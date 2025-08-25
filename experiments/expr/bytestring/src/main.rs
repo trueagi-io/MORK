@@ -1912,67 +1912,67 @@ fn unify_multi_multi() {
             _ => { panic!() }
         }
     }
-    {
-        // [4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $ [3] , [2] petri _3 [4] exec PC0 _4 _5
-        let mut tv = parse!(r"");
-        let t = Expr{ ptr: tv.as_mut_ptr() };
-
-        let mut xv = parse!(r"[4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $");
-        let x = Expr{ ptr: xv.as_mut_ptr() };
-        let mut yv0 = parse!(r"[2] petri [4] ? [2] add $ [2] [2] S $ $ [4] ? [2] add $ [2] _2 _3 [3] ! _1 [2] S _4");
-        let y0 = Expr{ ptr: yv0.as_mut_ptr() };
-        let mut yv1 = parse!(r"[2] petri [3] ! [2] add result [2] [2] S Z [2] S Z");
-        let y1 = Expr{ ptr: yv1.as_mut_ptr() };
-        let mut yv2 = parse!(r"[4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $ [3] , [2] petri _3 [4] exec PC0 _4 _5");
-        let y2 = Expr{ ptr: yv2.as_mut_ptr() };
-
-        let mut eov0 = parse!(r"[4] T0 $ $ _2");
-        let mut eov1 = parse!(r"[4] T1 $ $ _2");
-        let eo0 = Expr{ ptr: eov0.as_mut_ptr() };
-        let eo1 = Expr{ ptr: eov1.as_mut_ptr() };
-
-        let mut components = vec![];
-        ExprEnv::new(0, x).args(&mut components);
-        let mut stack = vec![(components[1], ExprEnv::new(1, y0)), (components[2], ExprEnv::new(2, y1))];
-        match unify(stack) {
-            Ok(bindings) => {
-                let (mut oi, mut ni) = {
-                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                    let mut stack: Vec<(u8, u8)> = vec![];
-                    let mut assignments: Vec<(u8, u8)> = vec![];
-                    let mut scratch = [0u8; 512];
-                    apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments)
-                };
-
-                println!("{:?}", bindings.iter().map(|(k, v)| {
-                    let ov = vec![0u8; 512];
-                    let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-                    // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                    println!("binding {:?} +{} {}", *k, v.v, v.show());
-                    // println!("output {:?}", o);
-                    (*k, v.subsexpr())
-                }).collect::<Vec<_>>());
-                let mut template_components = vec![];
-                ExprEnv::new(0, t).args(&mut  template_components);
-                for (tc, eo) in template_components[1..].iter().zip([eo0, eo1, eo2]) {
-                    let tov = vec![0u8; 512];
-                    let to = Expr{ ptr: tov.leak().as_mut_ptr() };
-                    let mut o = ExprZipper::new(to);
-
-                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                    let mut stack: Vec<(u8, u8)> = vec![];
-                    let mut assignments: Vec<(u8, u8)> = vec![];
-                    let (intro_offset, new_offset) = apply(0, oi, ni, &mut ExprZipper::new(tc.subsexpr()), &bindings, &mut o, &mut cycled, &mut stack, &mut assignments);
-                    oi = intro_offset;
-                    ni = new_offset;
-
-                    println!("res {:?}", to);
-                    // assert_eq!(format!("{:?}", to), format!("{:?}", eo));
-                }
-            }
-            _ => { panic!() }
-        }
-    }
+    // {
+    //     // [4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $ [3] , [2] petri _3 [4] exec PC0 _4 _5
+    //     let mut tv = parse!(r"");
+    //     let t = Expr{ ptr: tv.as_mut_ptr() };
+    //
+    //     let mut xv = parse!(r"[4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $");
+    //     let x = Expr{ ptr: xv.as_mut_ptr() };
+    //     let mut yv0 = parse!(r"[2] petri [4] ? [2] add $ [2] [2] S $ $ [4] ? [2] add $ [2] _2 _3 [3] ! _1 [2] S _4");
+    //     let y0 = Expr{ ptr: yv0.as_mut_ptr() };
+    //     let mut yv1 = parse!(r"[2] petri [3] ! [2] add result [2] [2] S Z [2] S Z");
+    //     let y1 = Expr{ ptr: yv1.as_mut_ptr() };
+    //     let mut yv2 = parse!(r"[4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $ [3] , [2] petri _3 [4] exec PC0 _4 _5");
+    //     let y2 = Expr{ ptr: yv2.as_mut_ptr() };
+    //
+    //     let mut eov0 = parse!(r"[4] T0 $ $ _2");
+    //     let mut eov1 = parse!(r"[4] T1 $ $ _2");
+    //     let eo0 = Expr{ ptr: eov0.as_mut_ptr() };
+    //     let eo1 = Expr{ ptr: eov1.as_mut_ptr() };
+    //
+    //     let mut components = vec![];
+    //     ExprEnv::new(0, x).args(&mut components);
+    //     let mut stack = vec![(components[1], ExprEnv::new(1, y0)), (components[2], ExprEnv::new(2, y1))];
+    //     match unify(stack) {
+    //         Ok(bindings) => {
+    //             let (mut oi, mut ni) = {
+    //                 let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+    //                 let mut stack: Vec<(u8, u8)> = vec![];
+    //                 let mut assignments: Vec<(u8, u8)> = vec![];
+    //                 let mut scratch = [0u8; 512];
+    //                 apply(0, 0, 0, &mut ExprZipper::new(x), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut stack, &mut assignments)
+    //             };
+    //
+    //             println!("{:?}", bindings.iter().map(|(k, v)| {
+    //                 let ov = vec![0u8; 512];
+    //                 let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+    //                 // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+    //                 println!("binding {:?} +{} {}", *k, v.v, v.show());
+    //                 // println!("output {:?}", o);
+    //                 (*k, v.subsexpr())
+    //             }).collect::<Vec<_>>());
+    //             let mut template_components = vec![];
+    //             ExprEnv::new(0, t).args(&mut  template_components);
+    //             for (tc, eo) in template_components[1..].iter().zip([eo0, eo1, eo2]) {
+    //                 let tov = vec![0u8; 512];
+    //                 let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+    //                 let mut o = ExprZipper::new(to);
+    //
+    //                 let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+    //                 let mut stack: Vec<(u8, u8)> = vec![];
+    //                 let mut assignments: Vec<(u8, u8)> = vec![];
+    //                 let (intro_offset, new_offset) = apply(0, oi, ni, &mut ExprZipper::new(tc.subsexpr()), &bindings, &mut o, &mut cycled, &mut stack, &mut assignments);
+    //                 oi = intro_offset;
+    //                 ni = new_offset;
+    //
+    //                 println!("res {:?}", to);
+    //                 // assert_eq!(format!("{:?}", to), format!("{:?}", eo));
+    //             }
+    //         }
+    //         _ => { panic!() }
+    //     }
+    // }
 }
 
 fn main() {

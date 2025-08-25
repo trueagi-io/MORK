@@ -954,6 +954,59 @@ fn cm0() {
     println!("result: {res}");
 }*/
 
+fn lenses() {
+    let mut s = Space::new();
+    /*
+    Tom x Pam
+     |   \
+    Liz  Bob
+         / \
+      Ann   Pat
+             |
+            Jim
+     */
+    let SPACE_MACHINE = r#"
+    (exec QA (, (aunt $xc $x $y $yt) (data $xc) (exec QA $P $T)
+                (parent $p $x) (parent $gp $p) (parent $gp $y)
+                (female $y) ($p != $y))
+             (, (data $yt) (exec QA $P $T)))
+
+    (data (poi Jim)) (data (poi Ann))
+    (aunt (poi $x) $x $y (result ($y aunt of $x)))
+
+    (parent Tom Bob)
+    (parent Pam Bob)
+    (parent Tom Liz)
+    (parent Bob Ann)
+    (parent Bob Pat)
+    (parent Pat Jim)
+    (female Pam) (female Liz) (female Pat) (female Ann)
+    (male Tom) (male Bob) (male Jim)
+
+    (Pam == Pam) (Pam != Liz) (Pam != Pat) (Pam != Ann) (Pam != Tom) (Pam != Bob) (Pam != Jim)
+    (Liz != Pam) (Liz == Liz) (Liz != Pat) (Liz != Ann) (Liz != Tom) (Liz != Bob) (Liz != Jim)
+    (Pat != Pam) (Pat != Liz) (Pat == Pat) (Pat != Ann) (Pat != Tom) (Pat != Bob) (Pat != Jim)
+    (Ann != Pam) (Ann != Liz) (Ann != Pat) (Ann == Ann) (Ann != Tom) (Ann != Bob) (Ann != Jim)
+    (Tom != Pam) (Tom != Liz) (Tom != Pat) (Tom != Ann) (Tom == Tom) (Tom != Bob) (Tom != Jim)
+    (Bob != Pam) (Bob != Liz) (Bob != Pat) (Bob != Ann) (Bob != Tom) (Bob == Bob) (Bob != Jim)
+    (Jim != Pam) (Jim != Liz) (Jim != Pat) (Jim != Ann) (Jim != Tom) (Jim != Bob) (Jim == Jim)
+    "#;
+
+    s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] data [2] result $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{res}");
+    assert_eq!(res, "(Ann aunt of Jim)\n(Liz aunt of Ann)\n");
+}
+
 fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
     use rand::{rngs::StdRng, SeedableRng, Rng};
     let mut rng = StdRng::from_seed([0; 32]);
@@ -1099,10 +1152,12 @@ fn main() {
     // bc0();
     // bc1();
 
+    lenses();
+
     // match_case();
 
     // bench_transitive_no_unify(50000, 1000000);
-    bench_clique_no_unify(200, 3600, 6);
+    // bench_clique_no_unify(200, 3600, 6);
 
     return;
 

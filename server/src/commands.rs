@@ -162,6 +162,7 @@ impl CommandDefinition for ClearCmd {
         wz.remove_branches();
         wz.remove_val();
         '_journal_event : {
+            test_journal_append(b"CLEAR",format!("{:?}", prefix).as_bytes());
             // JOURNAL.append_event(Clear(prefix))
 
             // explictly drop wz only after Journal event complete
@@ -214,6 +215,7 @@ impl CommandDefinition for CopyCmd {
 
 
         '_journal_event : {
+            test_journal_append(b"COPY", &format!("src({:?}) -> dst({:?})", src_expr, dst_expr).as_bytes());
             // JOURNAL.append_event(Copy( (src_expr, dst_expr)) ) // maybe Sexpr?
 
             // explictly drop (wz,rz) only after Journal event complete
@@ -692,9 +694,12 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
         let file_handle = std::fs::File::open(&file_path)?;
         let file_stream = BufReader::new(file_handle);
 
+        let pre_journal = format!("file({:?}) pattern({:?}) template({:?})", file_path, pattern.as_bytes(), template.as_bytes());
+
         do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)?;
 
         '_journal_event : {
+            test_journal_append(b"IMPORT", pre_journal.as_bytes());
             // JOURNAL.append_event(Import( (file, pattern, template)) ) // pattern : Sexpr, template : Sexpr
         
             // explictly drop `writer` only after Journal event complete
@@ -993,7 +998,20 @@ impl CommandDefinition for MettaThreadCmd {
                 };
 
                 // close the loop
-                start_controller = pre_transform.transform_or_defer(|_|{/* journal transform in critical section */});
+                start_controller = pre_transform.transform_or_defer(|machine|{
+                    
+                    /* journal transform in critical section */
+                    #[cfg(debug_assertions)]'_journal:{
+
+                        let current_exec = machine.current_exec().unwrap();
+                        let s = format!("current_exec({:?})", current_exec);
+
+                        test_journal_append(b"METTA_THREAD", s.as_bytes());
+                    }
+
+                    
+                
+                });
             };
         }).await;
 
@@ -1221,6 +1239,7 @@ impl CommandDefinition for TransformCmd {
         let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &(), ||{})?;
 
         '_journal_event : {
+            test_journal_append(b"TRANSFORM", format!("{:?}", post_bytes).as_bytes());
             // JOURNAL.append_event(Transform(Post_bytes))
 
             // explictly drop wz only after Journal event complete
@@ -1381,8 +1400,10 @@ impl CommandDefinition for UploadCmd {
         let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
+            let test_journal_s = format!("pattern({:?}) template({:?}) src_buf({:?})", pattern, template, &src_buf[..]);
             do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)?;
             '_journal_event : {
+                test_journal_append(b"UPLOAD", test_journal_s.as_bytes());
                 // JOURNAL.append_event(Upload(Pattern, template, src_buf))
                             
                 // explictly drop writer only after Journal event complete
@@ -1696,3 +1717,31 @@ fn prefix_assertions() {
     core::assert_ne!{e11, pe11.till_constant_to_full()};
     core::assert_eq!{pe11.till_constant_to_full(), pe7.till_constant_to_full()};
 }
+
+
+
+
+
+fn test_journal_append(header : &[u8], s : &[u8]) {
+    const TEST_JOURNAL : &str = "test_journal.txt";
+    let mut f_opts = std::fs::File::options();
+    f_opts.append(true);
+    f_opts.create(true);
+
+
+    static WAIT : std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    let e = WAIT.lock().unwrap();
+    
+    let path = std::path::PathBuf::from(std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("server").join(TEST_JOURNAL);
+    // let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(TEST_JOURNAL));
+    
+    let mut file = f_opts.open(path).unwrap();
+    file.write(header);
+    file.write(b":");
+    file.write(s);
+    file.write(b"\n");
+
+    drop(e)    
+}
+

@@ -4,8 +4,12 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::mem::MaybeUninit;
+use std::ops::{Coroutine, CoroutineState};
+use std::pin::Pin;
 use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::task::Poll;
 use std::time::Instant;
+use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
@@ -470,6 +474,80 @@ impl Space {
         Ok(st.count)
     }
 
+    pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], mut d: &mut W) -> Result<usize, String> {
+        pub struct ASpaceTranscriber<'a, 'c> { count: usize, wz: &'c mut Vec<u8>, pdp: ParDataParser<'a> }
+        impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
+            #[inline(always)] fn write<S : Into<String>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
+                gen {
+                let token = self.pdp.tokenizer(s.into().as_bytes());
+                let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
+                path.extend(token);
+                self.wz.extend_from_slice(&path[..]);
+                yield unsafe { std::mem::transmute(&self.wz[..]) };
+                self.wz.truncate(self.wz.len() - path.len());
+                }
+            }
+        }
+        impl <'a, 'c> crate::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
+            #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+                if first { self.wz.extend_from_slice(&[item_byte(Tag::Arity(2))]); }
+                let token = self.pdp.tokenizer(i.to_string().as_bytes());
+                self.wz.extend_from_slice(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.extend_from_slice(token);
+            }
+            #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+                self.wz.truncate(self.wz.len() - (self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1));
+                if last { self.wz.truncate(self.wz.len() - 1); }
+            }
+            #[inline(always)] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
+            #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+                if first { self.wz.extend_from_slice(&[item_byte(Tag::Arity(2))]); }
+                let token = self.pdp.tokenizer(k.to_string().as_bytes());
+                // let token = k.to_string();
+                self.wz.extend_from_slice(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.extend_from_slice(token);
+            }
+            #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+                let token = self.pdp.tokenizer(k.to_string().as_bytes());
+                // let token = k.to_string();
+                self.wz.truncate(self.wz.len() - token.len() + 1);
+                if last { self.wz.truncate(self.wz.len() - 1); }
+            }
+            #[inline(always)] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
+            #[inline(always)] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
+            #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
+                let mut s = String::new();
+                if negative { s.push('-'); }
+                s.push_str(mantissa.to_string().as_str());
+                if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
+                self.count += 1;
+                self.write(s)
+            }
+            #[inline(always)] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
+            #[inline(always)] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
+            #[inline(always)] fn write_null(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("null") }
+            #[inline(always)] fn begin(&mut self) -> () {}
+            #[inline(always)] fn end(&mut self) -> () {}
+        }
+
+        let mut sink = pathmap::path_serialization::apath_serialize(d);
+
+        let mut wz = vec![];
+        let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+
+        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        let mut coro = p.aparse(&mut st);
+        while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
+            Pin::new(&mut sink).resume(Some(n));
+        }
+        match std::pin::pin!(sink).resume(None) {
+            CoroutineState::Yielded(_) => { panic!() }
+            CoroutineState::Complete(summary) => { println!("{:?}", summary) }
+        }
+        drop(coro);
+        Ok(st.count)
+    }
+
     pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
         let mut wz = self.write_zipper_unchecked();
         let mut lines = 0usize;
@@ -917,7 +995,8 @@ impl Space {
                             Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
                     }
 
-                    if true  { // introduced != 0
+                    // if e.variables() != 0 {
+                    if true {
                         let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
 
                         for (&pa, &other_i) in pat_args[2..].iter().zip(loc.path_indices()) {
@@ -957,7 +1036,6 @@ impl Space {
                         if !effect(Ok(unsafe { slice_from_raw_parts(references.as_ptr(), references.len()).as_ref().unwrap() }), e) {
                             unsafe { longjmp(a, 1) }
                         }
-
                     }
                 })
             }
@@ -1021,28 +1099,43 @@ impl Space {
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
 
-            let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
-            #[cfg(debug_assertions)]
-            bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+            match refs_bindings {
+                Ok(refs) => {
+                    for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                        let wz = &mut template_wzs[subsumption[i]];
+                        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
-            for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
-                let wz = &mut template_wzs[subsumption[i]];
-                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+                        template.substitute(&refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }).collect::<Vec<_>>()[..], &mut oz);
 
-                trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
-                // println!("ass len {}", assignments.len());
-                // let mut ass = vec![];
-                let res = mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
-                ass.clear();
-                astack.clear();
-                // println!("res {:?}", res);
+                        trace!(target: "transform", "S {i} out {:?}", oz.root);
+                        wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        any_new |= wz.set_val(()).is_none();
+                    }
+                    true
+                }
+                Err((ref bindings, mut oi, mut ni, mut assignments)) => {
+                    #[cfg(debug_assertions)]
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                // loc.transformed(template,)
-                trace!(target: "transform", "{i} out {:?}", oz.root);
-                wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
-                any_new |= wz.set_val(()).is_none();
+                    for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                        let wz = &mut template_wzs[subsumption[i]];
+                        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+
+                        trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
+
+                        let res = mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        ass.clear();
+                        astack.clear();
+                        // println!("res {:?}", res);
+
+                        // loc.transformed(template,)
+                        trace!(target: "transform", "U {i} out {:?}", oz.root);
+                        wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        any_new |= wz.set_val(()).is_none();
+                    }
+                    true
+                }
             }
-            true
         });
         (touched, any_new)
     }

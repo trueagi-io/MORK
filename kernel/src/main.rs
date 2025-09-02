@@ -1072,6 +1072,35 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     // found 0 6-cliques (expected 1) in 1288009964 µs
 }
 
+fn json_upaths(src: &str, dst: &str) {
+    let everythingfs = r#"{
+"first_name": "John",
+"last_name": "Smith",
+"is_alive": true,
+"age": 27,
+"address": {
+  "street_address": "21 2nd Street",
+  "city": "New York",
+  "state": "NY",
+  "postal_code": "10021-3100"},
+"phone_numbers": [
+  {"type": "home", "number": "212 555-1234"},
+  {"type": "office", "number": "646 555-4567"}],
+"children": ["Catherine", "Thomas", "Trevor"],
+"spouse": null}"#;
+    let mut cv = vec![];
+
+    let mut s = Space::new();
+    let written = s.json_to_paths(everythingfs.as_bytes(), &mut cv).unwrap();
+    println!("written {written}");
+    // pathmap::path_serialization::deserialize_paths_(s.btm.write_zipper(), &cv[..], ()).unwrap();
+
+    // let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+    // println!("res {res}");
+}
+
 fn main() {
     env_logger::init();
 
@@ -1102,8 +1131,9 @@ fn main() {
     // match_case();
 
     // bench_transitive_no_unify(50000, 1000000);
-    bench_clique_no_unify(200, 3600, 6);
+    // bench_clique_no_unify(200, 3600, 5);
 
+    json_upaths("", "");
     return;
 
     let mut s = Space::new();

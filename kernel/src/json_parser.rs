@@ -871,7 +871,7 @@ impl<'a> Parser<'a> {
     }
 
     pub (crate) fn aparse<S, T : ATranscriber<S>>(&mut self, t: &mut T) -> impl std::ops::Coroutine<(), Yield=S, Return=Result<()>> {
-        let coro = #[coroutine] move || {
+        #[coroutine] move || {
         let mut stack = Vec::with_capacity(3);
         let mut ch = expect_byte_ignore_whitespace!(self);
         t.begin();
@@ -1021,8 +1021,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-    };
-    coro
+    }
     }
 }
 

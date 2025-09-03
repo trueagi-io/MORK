@@ -1072,8 +1072,8 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     // found 0 6-cliques (expected 1) in 1288009964 µs
 }
 
-fn json_upaths(src: &str, dst: &str) {
-    let everythingfs = r#"{
+fn json_upaths_smoke() {
+    let test = r#"{
 "first_name": "John",
 "last_name": "Smith",
 "is_alive": true,
@@ -1091,14 +1091,47 @@ fn json_upaths(src: &str, dst: &str) {
     let mut cv = vec![];
 
     let mut s = Space::new();
-    let written = s.json_to_paths(everythingfs.as_bytes(), &mut cv).unwrap();
+    // let written = s.load_json(test.as_bytes()).unwrap();
+    let written = s.json_to_paths(test.as_bytes(), &mut cv).unwrap();
+    // println!("{:?}", pathmap::path_serialization::serialize_paths_(btm.read_zipper(), &mut cv));
     println!("written {written}");
-    // pathmap::path_serialization::deserialize_paths_(s.btm.write_zipper(), &cv[..], ()).unwrap();
+    pathmap::path_serialization::deserialize_paths_(s.btm.write_zipper(), &cv[..], ()).unwrap();
 
-    // let mut v = vec![];
-    // s.dump_all_sexpr(&mut v).unwrap();
-    // let res = String::from_utf8(v).unwrap();
-    // println!("res {res}");
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+    println!("res {res}");
+    assert_eq!(res, r#"(age 27)
+(spouse null)
+(address (city New York))
+(address (state NY))
+(address (postal_code 10021-3100))
+(address (street_address 21 2nd Street))
+(children (0 Catherine))
+(children (1 Thomas))
+(children (2 Trevor))
+(is_alive true)
+(last_name Smith)
+(first_name John)
+(phone_numbers (0 (type home)))
+(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (1 (type office)))
+(phone_numbers (1 (number 646 555-4567)))
+"#);
+}
+
+fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
+    println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
+    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
+    let json_file = std::fs::File::open(json_path).unwrap();
+    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
+    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
+    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    let written = s.json_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
+    println!("written {written} in {} ms", t0.elapsed().as_millis());
 }
 
 fn main() {
@@ -1133,7 +1166,8 @@ fn main() {
     // bench_transitive_no_unify(50000, 1000000);
     // bench_clique_no_unify(200, 3600, 5);
 
-    json_upaths("", "");
+    let mut args: Vec<_> = std::env::args().collect();
+    json_upaths(args[1].as_str(), args[2].as_str());
     return;
 
     let mut s = Space::new();

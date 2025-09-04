@@ -1,12 +1,16 @@
 use core::pin::Pin;
+use std::collections::BTreeMap;
 use std::future::Future;
+use std::mem::MaybeUninit;
 use std::path::Path;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::any::Any;
 use std::path::PathBuf;
 use std::ptr::slice_from_raw_parts;
+use std::sync::Arc;
 use std::usize;
 
+use gxhash::gxhash64;
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
@@ -1400,9 +1404,19 @@ impl CommandDefinition for UploadCmd {
         let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            let test_journal_s = format!("pattern({:?}) template({:?}) src_buf({:?})", pattern, template, &src_buf[..]);
+            let (sexpr_pattern, sexpr_template) = (cmd.args[0].as_str(), cmd.args[1].as_str());
+            
             do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)?;
             '_journal_event : {
+                // this is only to reduce the degenerate behavior
+                const DEGENERACY_LIMIT : usize = u128::BITS as usize; 
+                if src_buf.len() > DEGENERACY_LIMIT {
+                    // Hash
+                    let hash =  gxhash::gxhash128(&src_buf[..], 0);
+
+
+                }
+                let test_journal_s = format!("pattern({:?}) template({:?}) src_buf({:?})", sexpr_pattern, sexpr_template, core::str::from_utf8(&src_buf[..]));
                 test_journal_append(b"UPLOAD", test_journal_s.as_bytes());
                 // JOURNAL.append_event(Upload(Pattern, template, src_buf))
                             
@@ -1720,6 +1734,62 @@ fn prefix_assertions() {
 
 
 
+// const CACHE_ELEMENT_LIMIT : usize = 4096;
+// type CacheOrder    = u64;
+// type ChacheHash     = u64;
+// type CacheVal       = (ChacheHash, Arc<[u8]>);
+// type CacheStrBuffer = Vec<u8>;
+// struct ArgsStrCache {
+//     order      : CacheOrder,
+//     next_evict : usize,
+//     hashes     : [ChacheHash     ; CACHE_ELEMENT_LIMIT],
+//     strs       : [CacheStrBuffer ; CACHE_ELEMENT_LIMIT],
+//     index      : BTreeMap<ChacheHash, usize>
+// }
+// enum HashCollision { Yes, No, }
+// impl ArgsStrCache {
+//     const fn init_cache() -> Self {
+//         let mut str_ = MaybeUninit::<[CacheStrBuffer; CACHE_ELEMENT_LIMIT]>::zeroed();
+//         let mut i = CACHE_ELEMENT_LIMIT;
+//         loop {
+//             if i == 0 { break; }
+//             i -=1;
+//             unsafe {core::ptr::write(&mut (*str_.as_mut_ptr())[i], CacheStrBuffer::new())};
+//         }
+//         ArgsStrCache {
+//             order      : 0,
+//             next_evict : 0,
+//             hashes     : [   0; CACHE_ELEMENT_LIMIT],
+//             strs       : unsafe {str_.assume_init()},
+//             index      : BTreeMap::new(),
+//         }
+//     }
+//     fn check_in_cache(&mut self, s : &[u8]) -> (HashCollision, ChacheHash, CacheOrder) {
+//         extern crate alloc;
+//         let hash = gxhash64(s, 0);
+
+
+//         match self.index.entry(hash) {
+//             alloc::collections::btree_map::Entry::Vacant(v) => {
+//                 let order       = self.order;
+//                 let next_evict  = self.next_evict;
+                
+//                 self.hashes[next_evict] = hash;
+//                 self.strs[next_evict].clear();
+
+//                 self.order      += 1;
+//                 self.next_evict = (self.order % CACHE_ELEMENT_LIMIT as u64) as usize ;
+                
+//             },
+//             alloc::collections::btree_map::Entry::Occupied(o) => {
+
+//             },
+//         }
+
+
+
+//     }
+// }
 
 
 fn test_journal_append(header : &[u8], s : &[u8]) {
@@ -1728,12 +1798,11 @@ fn test_journal_append(header : &[u8], s : &[u8]) {
     f_opts.append(true);
     f_opts.create(true);
 
-
     static WAIT : std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     let e = WAIT.lock().unwrap();
     
-    let path = std::path::PathBuf::from(std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("server").join(TEST_JOURNAL);
+    let path = std::path::PathBuf::from(std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("server").join("test_journal").join(TEST_JOURNAL);
     // let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(TEST_JOURNAL));
     
     let mut file = f_opts.open(path).unwrap();

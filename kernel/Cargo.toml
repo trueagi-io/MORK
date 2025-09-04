@@ -29,3 +29,4 @@ rand = "0.9.1"
 default = []
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
+nightly = ["pathmap/nightly"]

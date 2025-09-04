@@ -472,25 +472,25 @@ impl Space {
         Ok(st.count)
     }
 
+    #[cfg(all(feature = "nightly"))]
     pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<usize, String> {
         pub struct ASpaceTranscriber<'a, 'c> { count: usize, wz: &'c mut Vec<u8>, pdp: ParDataParser<'a> }
         impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
             #[inline(always)] fn write<S : AsRef<[u8]>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
                 gen move {
                 let token = self.pdp.tokenizer(s.as_ref());
-                let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
-                path.extend(token);
-                self.wz.extend_from_slice(&path[..]);
+                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
+                self.wz.extend_from_slice(token);
                 yield unsafe { std::mem::transmute(&self.wz[..]) };
-                self.wz.truncate(self.wz.len() - path.len());
+                self.wz.truncate(self.wz.len() - (token.len() + 1));
                 }
             }
         }
         impl <'a, 'c> crate::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
             #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
-                if first { self.wz.extend_from_slice(&[item_byte(Tag::Arity(2))]); }
+                if first { self.wz.push(item_byte(Tag::Arity(2))); }
                 let token = self.pdp.tokenizer(i.to_string().as_bytes());
-                self.wz.extend_from_slice(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
                 self.wz.extend_from_slice(token);
             }
             #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
@@ -499,9 +499,9 @@ impl Space {
             }
             #[inline(always)] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
             #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
-                if first { self.wz.extend_from_slice(&[item_byte(Tag::Arity(2))]); }
+                if first { self.wz.push(item_byte(Tag::Arity(2))); }
                 let token = self.pdp.tokenizer(k.as_bytes());
-                self.wz.extend_from_slice(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
+                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
                 self.wz.extend_from_slice(token);
             }
             #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
@@ -512,12 +512,14 @@ impl Space {
             #[inline(always)] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
             #[inline(always)] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
             #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
-                let mut s = String::new();
-                if negative { s.push('-'); }
-                s.push_str(mantissa.to_string().as_str());
-                if exponent != 0 { s.push('e'); s.push_str(exponent.to_string().as_str()); }
+                let mut buf = [0u8; 64];
+                let mut cur = std::io::Cursor::new(&mut buf[..]);
+                if negative { write!(cur, "-").unwrap(); }
+                write!(cur, "{}", mantissa).unwrap();
+                if exponent != 0 { write!(cur, "e{}", exponent).unwrap(); }
+                let len = cur.position() as usize;
                 self.count += 1;
-                self.write(s)
+                self.write(unsafe { std::mem::transmute::<_, &'static [u8]>(&cur.into_inner()[..len]) })
             }
             #[inline(always)] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
             #[inline(always)] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
@@ -532,7 +534,7 @@ impl Space {
         let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
 
         let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
-        let mut coro = p.aparse(&mut st);
+        let mut coro = p.parse_stream(&mut st);
         while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
             Pin::new(&mut sink).resume(Some(n));
         }

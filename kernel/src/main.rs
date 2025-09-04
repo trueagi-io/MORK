@@ -1072,6 +1072,7 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     // found 0 6-cliques (expected 1) in 1288009964 µs
 }
 
+#[cfg(all(feature = "nightly"))]
 fn json_upaths_smoke() {
     let test = r#"{
 "first_name": "John",
@@ -1120,6 +1121,7 @@ fn json_upaths_smoke() {
 "#);
 }
 
+#[cfg(all(feature = "nightly"))]
 fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
     println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
     println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
@@ -1132,6 +1134,11 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     let t0 = Instant::now();
     let written = s.json_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
     println!("written {written} in {} ms", t0.elapsed().as_millis());
+    // (zephy)
+    // mmapping JSON file "/home/adam/Downloads/G37S-9NQ.json"
+    // writing out unordered .paths file "G37S-9NQ.upaths"
+    // Ok(SerializationStats { bytes_out: 1415053, bytes_in: 12346358, path_count: 224769 })
+    // written 224769 in 193 ms
 }
 
 fn main() {
@@ -1166,8 +1173,12 @@ fn main() {
     // bench_transitive_no_unify(50000, 1000000);
     // bench_clique_no_unify(200, 3600, 5);
 
-    let mut args: Vec<_> = std::env::args().collect();
-    json_upaths(args[1].as_str(), args[2].as_str());
+    #[cfg(all(feature = "nightly"))]
+    json_upaths_smoke();
+    // let mut args: Vec<_> = std::env::args().collect();
+    // json_upaths(args[1].as_str(), args[2].as_str());
+    #[cfg(all(feature = "nightly"))]
+    json_upaths("/home/adam/Downloads/G37S-9NQ.json", "G37S-9NQ.upaths");
     return;
 
     let mut s = Space::new();

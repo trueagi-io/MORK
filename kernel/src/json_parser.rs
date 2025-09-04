@@ -349,8 +349,7 @@ macro_rules! expect_number {
         loop {
             #[allow(unreachable_code)]
             if $mantissa >= MAX_PRECISION {
-                panic!("max precision exceeded");
-                // result = $parser.read_big_number(num)?;
+                $parser.read_big_number(&mut $mantissa, &mut $exponent)?;
                 break;
             }
 
@@ -646,37 +645,39 @@ impl<'a> Parser<'a> {
     // but instead of continuing to read into the mantissa, it will increment
     // the exponent. Note that no digits are actually read here, as we already
     // exceeded the precision range of f64 anyway.
-    // fn read_big_number(&mut self, mut num: u64) -> Result<Number> {
-        // let mut e = 0i16;
-        // loop {
-        //     if self.is_eof() {
-        //         return Ok(unsafe { Number::from_parts_unchecked(true, num, e) });
-        //     }
-        //     let ch = self.read_byte();
-        //     match ch {
-        //         b'0' ..= b'9' => {
-        //             self.bump();
-        //             match num.checked_mul(10).and_then(|num| {
-        //                 num.checked_add((ch - b'0') as u64)
-        //             }) {
-        //                 Some(result) => num = result,
-        //                 None         => e = e.checked_add(1).ok_or_else(|| Error::ExceededDepthLimit)?,
-        //             }
-        //         },
-        //         b'.' => {
-        //             self.bump();
-        //             return Ok(expect_fraction!(self, num, e));
-        //         },
-        //         b'e' | b'E' => {
-        //             self.bump();
-        //             return self.expect_exponent(num, e);
-        //         }
-        //         _  => break
-        //     }
-        // }
-        //
-        // Ok(unsafe { Number::from_parts_unchecked(true, num, e) })
-        // }
+    fn read_big_number(&mut self, num: &mut u64, e: &mut i16) -> Result<()> {
+        loop {
+            if self.is_eof() {
+                return Ok(());
+            }
+            let ch = self.read_byte();
+            match ch {
+                b'0' ..= b'9' => {
+                    self.bump();
+                    match num.checked_mul(10).and_then(|num| {
+                        num.checked_add((ch - b'0') as u64)
+                    }) {
+                        Some(result) => *num = result,
+                        None         => *e = e.checked_add(1).ok_or_else(|| Error::ExceededDepthLimit)?,
+                    }
+                },
+                b'.' => {
+                    self.bump();
+                    let mut _num = *num; let mut _e = *e;
+                    expect_fraction!(self, _num, _e);
+                    *num = _num; *e = _e;
+                    return Ok(());
+                },
+                b'e' | b'E' => {
+                    self.bump();
+                    self.expect_exponent(e)?;
+                }
+                _  => break
+            }
+        }
+
+        Ok(())
+    }
 
     // Called in the rare case that a number with `e` notation has been
     // encountered. This is pretty straight forward, I guess.
@@ -870,7 +871,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub (crate) fn aparse<S, T : ATranscriber<S>>(&mut self, t: &mut T) -> impl std::ops::Coroutine<(), Yield=S, Return=Result<()>> {
+    #[cfg(all(feature = "nightly"))]
+    pub (crate) fn parse_stream<S, T : ATranscriber<S>>(&mut self, t: &mut T) -> impl std::ops::Coroutine<(), Yield=S, Return=Result<()>> {
         #[coroutine] move || {
         let mut stack = Vec::with_capacity(3);
         let mut ch = expect_byte_ignore_whitespace!(self);

@@ -514,24 +514,20 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
             }
             buf.with(|b| {
                 let mut rz = ctx.0.space.read_zipper(&mut reader);
-                let wn = rz.witness();
-                pathmap::path_serialization::for_each_path_serialize(writer, || {
-                    while let Some(()) = rz.to_next_get_val_with_witness(&wn) {
-                        let p = rz.origin_path();
-                        let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
-                        // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
-                        match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
-                            Ok(()) => unsafe {
-                                // println!("success {:?}", Expr{ ptr: (*b.get()).as_mut_ptr() });
-                                return Ok(Some(slice_from_raw_parts((*b.get()).as_ptr(), oz.loc).as_ref().unwrap()))
-                            }
-                            Err(_e) => {
-                                // println!("failure");
-                                continue
-                            }
+                pathmap::paths_serialization::serialize_paths_from_funcs(writer, &mut rz, |rz| Ok(rz.to_next_val()), |rz| {
+                    let p = rz.origin_path();
+                    let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
+                    // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                    match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                        Ok(()) => unsafe {
+                            // println!("success {:?}", Expr{ ptr: (*b.get()).as_mut_ptr() });
+                            Some(slice_from_raw_parts((*b.get()).as_ptr(), oz.loc).as_ref().unwrap())
+                        }
+                        Err(_e) => {
+                            // println!("failure");
+                            None
                         }
                     }
-                    Ok(None)
                 }
             )
             }).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
@@ -756,9 +752,9 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
             thread_local!{
                 static buf: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
             }
-            let pathmap::path_serialization::DeserializationStats { path_count, .. } = buf.with(|b| {
+            let pathmap::paths_serialization::DeserializationStats { path_count, .. } = buf.with(|b| {
                 // println!("for each deserialized...");
-                pathmap::path_serialization::for_each_deserialized_path(src, |k, p| {
+                pathmap::paths_serialization::for_each_deserialized_path(src, |k, p| {
                     let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
                     // println!("transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
                     match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {

@@ -954,6 +954,87 @@ fn cm0() {
     println!("result: {res}");
 }*/
 
+fn lens_aunt() {
+    let mut s = Space::new();
+    /*
+    Tom x Pam
+     |   \
+    Liz  Bob
+         / \
+      Ann   Pat
+             |
+            Jim
+     */
+    let SPACE = r#"
+    (exec QA (, (aunt $xc $x $y $yt) (data $xc) (exec QA $P $T)
+                (parent $p $x) (parent $gp $p) (parent $gp $y)
+                (female $y) ($p != $y))
+             (, (data $yt) (exec QA $P $T)))
+
+    (data (poi Jim)) (data (poi Ann))
+    (aunt (poi $x) $x $y (result ($y aunt of $x)))
+
+    (parent Tom Bob)
+    (parent Pam Bob)
+    (parent Tom Liz)
+    (parent Bob Ann)
+    (parent Bob Pat)
+    (parent Pat Jim)
+    (female Pam) (female Liz) (female Pat) (female Ann)
+    (male Tom) (male Bob) (male Jim)
+
+    (Pam == Pam) (Pam != Liz) (Pam != Pat) (Pam != Ann) (Pam != Tom) (Pam != Bob) (Pam != Jim)
+    (Liz != Pam) (Liz == Liz) (Liz != Pat) (Liz != Ann) (Liz != Tom) (Liz != Bob) (Liz != Jim)
+    (Pat != Pam) (Pat != Liz) (Pat == Pat) (Pat != Ann) (Pat != Tom) (Pat != Bob) (Pat != Jim)
+    (Ann != Pam) (Ann != Liz) (Ann != Pat) (Ann == Ann) (Ann != Tom) (Ann != Bob) (Ann != Jim)
+    (Tom != Pam) (Tom != Liz) (Tom != Pat) (Tom != Ann) (Tom == Tom) (Tom != Bob) (Tom != Jim)
+    (Bob != Pam) (Bob != Liz) (Bob != Pat) (Bob != Ann) (Bob != Tom) (Bob == Bob) (Bob != Jim)
+    (Jim != Pam) (Jim != Liz) (Jim != Pat) (Jim != Ann) (Jim != Tom) (Jim != Bob) (Jim == Jim)
+    "#;
+
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] data [2] result $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{res}");
+    assert_eq!(res, "(Ann aunt of Jim)\n(Liz aunt of Ann)\n");
+}
+
+fn lens_composition() {
+    let mut s = Space::new();
+
+    let SPACE = r#"
+    (exec LC (, (compose $l0 $l1)
+                (lens ($l0 $xc0 $x0 $y0 $yt0))
+                (lens ($l1 $x0 $x1 $y1 $y0)) )
+             (, (lens (($l0 o $l1) $xc0 $x1 $y1 $yt0))))
+
+    (lens (aunt (poi $x) $x $y (result ($y aunt of $x))))
+    (lens (ns (users (adam (experiments $x))) $x $y (users (adam (experiments $y)))))
+    (compose ns aunt)
+    "#;
+
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{res}");
+    assert!(res.contains("(lens ((ns o aunt) (users (adam (experiments (poi $a)))) $a $b (users (adam (experiments (result ($b aunt of $a)))))))"));
+}
+
 fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
     use rand::{rngs::StdRng, SeedableRng, Rng};
     let mut rng = StdRng::from_seed([0; 32]);
@@ -1072,6 +1153,78 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     // found 0 6-cliques (expected 1) in 1288009964 µs
 }
 
+fn bench_finite_domain() {
+    use rand::{rngs::StdRng, SeedableRng, Rng};
+    let mut rng = StdRng::from_seed([0; 32]);
+    const DS: usize = 64;
+    const SYM: [&'static str; 64] = ["䷁","䷗","䷆","䷒","䷎","䷣","䷭","䷊","䷏","䷲","䷧","䷵","䷽","䷶","䷟","䷡","䷇","䷂","䷜","䷻","䷦","䷾","䷯","䷄","䷬","䷐","䷮","䷹","䷞","䷰","䷛","䷪","䷖","䷚","䷃","䷨","䷳","䷕","䷑","䷙","䷢","䷔","䷿","䷥","䷷","䷝","䷱","䷍","䷓","䷩","䷺","䷼","䷴","䷤","䷸","䷈","䷋","䷘","䷅","䷉","䷠","䷌","䷫","䷀"];
+    // const SYM: [&'static str; 64] = ["À", "Á", "Â", "Ã", "Ä", "Å", "Æ", "Ç", "È", "É", "Ê", "Ë", "Ì", "Í", "Î", "Ï", "Ð", "Ñ", "Ò", "Ó", "Ô", "Õ", "Ö", "×", "Ø", "Ù", "Ú", "Û", "Ü", "Ý", "Þ", "ß", "à", "á", "â", "ã", "ä", "å", "æ", "ç", "è", "é", "ê", "ë", "ì", "í", "î", "ï", "ð", "ñ", "ò", "ó", "ô", "õ", "ö", "÷", "ø", "ù", "ú", "û", "ü", "ý", "þ", "ÿ"];
+
+    fn uop<F : Fn(usize) -> usize>(sym: &str, f: F) -> String {
+        let mut s = String::new();
+        for x in 0..DS {
+            let z = f(x);
+            if z == usize::MAX { continue }
+            s.push_str(format!("({} {} = {})\n", sym, SYM[x], SYM[z]).as_str());
+        }
+        s
+    }
+
+    fn bop<F : Fn(usize, usize) -> usize>(sym: &str, f: F) -> String {
+        let mut s = String::new();
+        for x in 0..DS {
+            for y in 0..DS {
+                let z = f(x, y);
+                if z == usize::MAX { continue }
+                s.push_str(format!("({} {} {} = {})\n", SYM[x], sym, SYM[y], SYM[z]).as_str());
+            }
+        }
+        s
+    }
+
+    let mut s = Space::new();
+
+    let sq = uop("²", |x| (x * x) % DS);
+    let sqrt = uop("√", |x| x.isqrt());
+
+    let add = bop("+", |x, y| (x + y) % DS);
+    let sub = bop("-", |x, y| ((DS + x) - y) % DS);
+    let mul = bop("*", |x, y| (x * y) % DS);
+    let div = bop("/", |x, y| if y == 0 { usize::MAX } else { x / y });
+    let join = bop("\\/", |x, y| x.max(y));
+    let meet = bop("/\\", |x, y| x.min(y));
+
+    let adds = bop("+s", |x, y| if x + y < DS { x + y } else { DS - 1 });
+    let muls = bop("*s", |x, y| if x * y < DS { x * y } else { DS - 1 });
+
+    let ops = [sq, sqrt, add, sub, mul, div, join, meet, adds, muls].concat();
+
+    s.load_sexpr(ops.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+
+    let mut args = String::new(); // e.g. (args ䷽ ䷣ ䷜ ䷣)
+    for i in 0..10_000 {
+        let x0 = rng.random_range(0..DS);
+        let x1 = rng.random_range(0..DS);
+        let y0 = rng.random_range(0..DS);
+        let y1 = rng.random_range(0..DS);
+        args.push_str(format!("(args {} {} {} {})", SYM[x0], SYM[x1], SYM[y0], SYM[y1]).as_str())
+    }
+    s.load_sexpr(args.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+
+    s.load_sexpr(r"(exec 0 (, (args $x0 $y0 $x1 $y1) ($x0 /\ $x1 = $xl) ($x0 \/ $x1 = $xh) ($y0 /\ $y1 = $yl) ($y0 \/ $y1 = $yh) ($xh - $xl = $dx) ($yh - $yl = $dy) (² $dx = $dx2) (² $dy = $dy2) ($dx2 + $dy2 = $d2) (√ $d2 = $d)) (, (res $d)))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    let t0 = Instant::now();
+    s.metta_calculus(1);
+    let t1 = Instant::now();
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] res $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{}", s.btm.val_count());
+    println!("{res} in {} µs", t1.duration_since(t0).as_micros());
+}
+
 #[cfg(all(feature = "nightly"))]
 fn json_upaths_smoke() {
     let test = r#"{
@@ -1141,6 +1294,7 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     // written 224769 in 193 ms
 }
 
+
 fn main() {
     env_logger::init();
 
@@ -1168,17 +1322,15 @@ fn main() {
     // bc0();
     // bc1();
 
-    // match_case();
+    // lens_aunt();
+    // lens_composition();
 
     // bench_transitive_no_unify(50000, 1000000);
-    // bench_clique_no_unify(200, 3600, 5);
+    // bench_clique_no_unify(200, 3600, 6);
+    // bench_finite_domain();
 
-    #[cfg(all(feature = "nightly"))]
-    json_upaths_smoke();
-    // let mut args: Vec<_> = std::env::args().collect();
-    // json_upaths(args[1].as_str(), args[2].as_str());
-    #[cfg(all(feature = "nightly"))]
-    json_upaths("/home/adam/Downloads/G37S-9NQ.json", "G37S-9NQ.upaths");
+    // #[cfg(all(feature = "nightly"))]
+    // json_upaths_smoke();
     return;
 
     let mut s = Space::new();

@@ -1096,7 +1096,7 @@ fn json_upaths_smoke() {
     let written = s.json_to_paths(test.as_bytes(), &mut cv).unwrap();
     // println!("{:?}", pathmap::path_serialization::serialize_paths_(btm.read_zipper(), &mut cv));
     println!("written {written}");
-    pathmap::path_serialization::deserialize_paths_(s.btm.write_zipper(), &cv[..], ()).unwrap();
+    pathmap::paths_serialization::deserialize_paths(s.btm.write_zipper(), &cv[..], ()).unwrap();
 
     let mut v = vec![];
     s.dump_all_sexpr(&mut v).unwrap();

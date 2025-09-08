@@ -1198,9 +1198,9 @@ fn bench_finite_domain() {
     let muls = bop("*s", |x, y| if x * y < DS { x * y } else { DS - 1 });
 
     let ops = [sq, sqrt, add, sub, mul, div, join, meet, adds, muls].concat();
-    
+
     s.load_sexpr(ops.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
-    
+
     let mut args = String::new(); // e.g. (args ䷽ ䷣ ䷜ ䷣)
     for i in 0..10_000 {
         let x0 = rng.random_range(0..DS);
@@ -1210,7 +1210,7 @@ fn bench_finite_domain() {
         args.push_str(format!("(args {} {} {} {})", SYM[x0], SYM[x1], SYM[y0], SYM[y1]).as_str())
     }
     s.load_sexpr(args.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
-    
+
     s.load_sexpr(r"(exec 0 (, (args $x0 $y0 $x1 $y1) ($x0 /\ $x1 = $xl) ($x0 \/ $x1 = $xh) ($y0 /\ $y1 = $yl) ($y0 \/ $y1 = $yh) ($xh - $xl = $dx) ($yh - $yl = $dy) (² $dx = $dx2) (² $dy = $dy2) ($dx2 + $dy2 = $d2) (√ $d2 = $d)) (, (res $d)))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
     let t0 = Instant::now();
     s.metta_calculus(1);
@@ -1224,6 +1224,76 @@ fn bench_finite_domain() {
     println!("{}", s.btm.val_count());
     println!("{res} in {} µs", t1.duration_since(t0).as_micros());
 }
+
+#[cfg(all(feature = "nightly"))]
+fn json_upaths_smoke() {
+    let test = r#"{
+"first_name": "John",
+"last_name": "Smith",
+"is_alive": true,
+"age": 27,
+"address": {
+  "street_address": "21 2nd Street",
+  "city": "New York",
+  "state": "NY",
+  "postal_code": "10021-3100"},
+"phone_numbers": [
+  {"type": "home", "number": "212 555-1234"},
+  {"type": "office", "number": "646 555-4567"}],
+"children": ["Catherine", "Thomas", "Trevor"],
+"spouse": null}"#;
+    let mut cv = vec![];
+
+    let mut s = Space::new();
+    // let written = s.load_json(test.as_bytes()).unwrap();
+    let written = s.json_to_paths(test.as_bytes(), &mut cv).unwrap();
+    // println!("{:?}", pathmap::path_serialization::serialize_paths_(btm.read_zipper(), &mut cv));
+    println!("written {written}");
+    pathmap::paths_serialization::deserialize_paths(s.btm.write_zipper(), &cv[..], ()).unwrap();
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+    println!("res {res}");
+    assert_eq!(res, r#"(age 27)
+(spouse null)
+(address (city New York))
+(address (state NY))
+(address (postal_code 10021-3100))
+(address (street_address 21 2nd Street))
+(children (0 Catherine))
+(children (1 Thomas))
+(children (2 Trevor))
+(is_alive true)
+(last_name Smith)
+(first_name John)
+(phone_numbers (0 (type home)))
+(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (1 (type office)))
+(phone_numbers (1 (number 646 555-4567)))
+"#);
+}
+
+#[cfg(all(feature = "nightly"))]
+fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
+    println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
+    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
+    let json_file = std::fs::File::open(json_path).unwrap();
+    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
+    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
+    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    let written = s.json_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
+    println!("written {written} in {} ms", t0.elapsed().as_millis());
+    // (zephy)
+    // mmapping JSON file "/home/adam/Downloads/G37S-9NQ.json"
+    // writing out unordered .paths file "G37S-9NQ.upaths"
+    // Ok(SerializationStats { bytes_out: 1415053, bytes_in: 12346358, path_count: 224769 })
+    // written 224769 in 193 ms
+}
+
 
 fn main() {
     env_logger::init();
@@ -1255,12 +1325,12 @@ fn main() {
     // lens_aunt();
     // lens_composition();
 
-    // match_case();
-
     // bench_transitive_no_unify(50000, 1000000);
     // bench_clique_no_unify(200, 3600, 6);
-    bench_finite_domain();
+    // bench_finite_domain();
 
+    // #[cfg(all(feature = "nightly"))]
+    // json_upaths_smoke();
     return;
 
     let mut s = Space::new();

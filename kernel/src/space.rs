@@ -3,6 +3,7 @@ use std::{mem, process, ptr};
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::hint::unreachable_unchecked;
 use std::mem::MaybeUninit;
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
@@ -20,6 +21,9 @@ use pathmap::zipper::*;
 use crate::json_parser::Transcriber;
 use crate::prefix::Prefix;
 use log::*;
+
+pub static mut transitions: usize = 0;
+pub static mut unifications: usize = 0;
 
 pub struct Space {
     pub btm: BytesTrieMap<()>,
@@ -71,11 +75,12 @@ const VARS: [u64; 4] = {
 // - the adiabatic crate may be used to get rid of the recursion (though currently the recursion is significantly faster)
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
-fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: FnMut(&mut Z) -> ()>(
+fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
     loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
     unsafe {
     trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
     trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
+    unsafe { transitions += 1 };
     match stack.pop() {
         None => { f(loc) }
         Some(e) => {
@@ -87,10 +92,9 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: F
                     let mut it = m.iter();
 
                     while let Some(b) = it.next() {
-                        if loc.descend_to_byte(b) {
-                            coreferential_transition(loc, stack, references, f);
-                        }
-                        loc.ascend_byte();
+                        if !loc.descend_to_byte(b) { unreachable_unchecked() };
+                        coreferential_transition(loc, stack, references, f);
+                        if !loc.ascend_byte() { unreachable_unchecked() };
                     }
                 }};
             }
@@ -107,43 +111,27 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath, F: F
                     let m = loc.child_mask().and(&ByteMask(SIZES));
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
-                        if let Tag::SymbolSize(size) = byte_item(b) {
-                            if loc.descend_to_byte(b) {
-                                let mut i = 0;
-                                while i < size {
-                                    if loc.descend_first_byte() { i += 1 }
-                                    else if loc.to_next_sibling_byte() {}
-                                    else if loc.ascend_byte() { i -= 1 }
-                                    else { i = 0; break }
-                                }
-                                while i > 0 {
-                                    if i == size {
-                                        coreferential_transition(loc, stack, references, f);
-                                        if loc.to_next_sibling_byte() {}
-                                        else { assert!(loc.ascend_byte()); i -= 1 }
-                                    } else if i < size {
-                                        if loc.to_next_sibling_byte() { while i < size && loc.descend_first_byte() { i += 1 } }
-                                        else { assert!(loc.ascend_byte()); i -= 1 }
-                                    }
-                                }
-                            }
-                            loc.ascend_byte();
-                        } else { unreachable!("no symbol size next") }
+                        let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
+                        if !loc.descend_to_byte(b) { unreachable_unchecked() }
+                        if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
+                        loop {
+                            coreferential_transition(loc, stack, references, f);   
+                            if !loc.to_next_k_path(size as _) { break }
+                        }
+                        if !loc.ascend_byte() { unreachable_unchecked() }
                     }
 
                     let m = loc.child_mask().and(&ByteMask(ARITIES));
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
-                        if let Tag::Arity(a) = byte_item(b) {
-                            if loc.descend_to_byte(b) {
-                                static nv: u8 = item_byte(Tag::NewVar);
-                                let ol = stack.len();
-                                for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
-                                coreferential_transition(loc, stack, references, f);
-                                stack.truncate(ol);
-                            }
-                            loc.ascend(1);
-                        } else { unreachable!("no arity next") }
+                        let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
+                        if !loc.descend_to_byte(b) { unreachable_unchecked() };
+                        static nv: u8 = item_byte(Tag::NewVar);
+                        let ol = stack.len();
+                        for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                        coreferential_transition(loc, stack, references, f);
+                        stack.truncate(ol);
+                        if !loc.ascend_byte() { unreachable_unchecked() };
                     }
 
                     if e.n == 0 { references.pop(); }
@@ -1097,7 +1085,7 @@ impl Space {
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
-
+            unsafe { unifications += 1; }
             match refs_bindings {
                 Ok(refs) => {
                     for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {

@@ -7,7 +7,7 @@ use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving}
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, prefix, sexpr};
 use mork::prefix::Prefix;
-use mork::space::Space;
+use mork::space::{transitions, unifications, Space};
 use mork_bytestring::{item_byte, Tag};
 /*fn main() {
     let mut s = Space::new();
@@ -212,14 +212,11 @@ fn basic() {
 
 }
 
-fn process_calculus() {
+fn process_calculus_bench(steps: usize, x: usize, y: usize) {
     let mut s = Space::new();
 
     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
-    let STEPS = 1000;
-    let X = 200;
-    let Y = 200;
-    let SPACE_EXPRS = format!(r#"
+    let space_exprs = format!(r#"
 (exec (IC 0 1 {})
                (, (exec (IC $x $y (S $c)) $sp $st)
                   ((exec $x) $p $t))
@@ -239,20 +236,25 @@ fn process_calculus() {
                                     (? (PN $x $y) $z (! $ret (S $z)))  )  ))
 (petri (? (add $ret) (Z $y) (! $ret $y)))
 (petri (! (add result) ({} {})))
-    "#, peano(STEPS), peano(X), peano(Y));
+    "#, peano(steps), peano(x), peano(y));
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.load_sexpr(space_exprs.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
-    let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
-
+    let t0 = Instant::now();
+    let mcalc_steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    let elapsed = t0.elapsed();
+    
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
     // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
     s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
-    println!("result: {res}");
-    assert_eq!(res, format!("{}\n", peano(X+Y)));
+    println!("{x}+{y} ({} steps) in {} µs result: {res}", steps, elapsed.as_micros());
+    assert_eq!(res, format!("{}\n", peano(x+y)));
+    println!("unifications {}, instructions {}", unsafe { unifications }, unsafe { transitions });
+    // (badbad)
+    // 200+200 (1000 steps) in 42716559 µs
 }
 
 fn process_calculus_reverse() {
@@ -1068,9 +1070,10 @@ fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
     let ndtrans: usize = v.iter().map(|c| if *c == b'\n' { 1 } else { 0 }).sum();
     println!("trans {} detected trans {}", ntrans, ndtrans);
 
-    // preliminary results unify-transition rework
-    // trans elapsed        23959320 µs
-    // detect trans elapsed 13628785 µs
+    // (badbad)
+    // constructed 50000 nodes 1000000 edges
+    // trans elapsed 17391765 µs
+    // detect trans elapsed 11928710 µs
     // trans 19917429 detected trans 8716
 }
 
@@ -1144,21 +1147,22 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     }
     // constructed 200 nodes 3600 edges
     // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x1 $x2)) (, (3-clique $x0 $x1 $x2)))
-    // found 7824 3-cliques (expected 7770) in 42322 µs
+    // found 7824 3-cliques (expected 7770) in 39910 µs
     // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x1 $x2) (edge $x1 $x3) (edge $x2 $x3)) (, (4-clique $x0 $x1 $x2 $x3)))
-    // found 2320 4-cliques (expected 2260) in 1190785 µs
+    // found 2320 4-cliques (expected 2260) in 1096909 µs
     // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x0 $x4) (edge $x1 $x2) (edge $x1 $x3) (edge $x1 $x4) (edge $x2 $x3) (edge $x2 $x4) (edge $x3 $x4)) (, (5-clique $x0 $x1 $x2 $x3 $x4)))
-    // found 102 5-cliques (expected 94) in 35128082 µs
+    // found 102 5-cliques (expected 94) in 24705340 µs
     // executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x0 $x4) (edge $x0 $x5) (edge $x1 $x2) (edge $x1 $x3) (edge $x1 $x4) (edge $x1 $x5) (edge $x2 $x3) (edge $x2 $x4) (edge $x2 $x5) (edge $x3 $x4) (edge $x3 $x5) (edge $x4 $x5)) (, (6-clique $x0 $x1 $x2 $x3 $x4 $x5)))
-    // found 0 6-cliques (expected 1) in 1288009964 µs
+    // found 0 6-cliques (expected 1) in <1288009964 µs
 }
 
-fn bench_finite_domain() {
+fn bench_finite_domain(terms: usize) {
     use rand::{rngs::StdRng, SeedableRng, Rng};
     let mut rng = StdRng::from_seed([0; 32]);
     const DS: usize = 64;
-    const SYM: [&'static str; 64] = ["䷁","䷗","䷆","䷒","䷎","䷣","䷭","䷊","䷏","䷲","䷧","䷵","䷽","䷶","䷟","䷡","䷇","䷂","䷜","䷻","䷦","䷾","䷯","䷄","䷬","䷐","䷮","䷹","䷞","䷰","䷛","䷪","䷖","䷚","䷃","䷨","䷳","䷕","䷑","䷙","䷢","䷔","䷿","䷥","䷷","䷝","䷱","䷍","䷓","䷩","䷺","䷼","䷴","䷤","䷸","䷈","䷋","䷘","䷅","䷉","䷠","䷌","䷫","䷀"];
+    const SYM: [&'static str; 64] = ["0","1","2","3","4","5","6","7","8","9","?","@","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z","a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"];
     // const SYM: [&'static str; 64] = ["À", "Á", "Â", "Ã", "Ä", "Å", "Æ", "Ç", "È", "É", "Ê", "Ë", "Ì", "Í", "Î", "Ï", "Ð", "Ñ", "Ò", "Ó", "Ô", "Õ", "Ö", "×", "Ø", "Ù", "Ú", "Û", "Ü", "Ý", "Þ", "ß", "à", "á", "â", "ã", "ä", "å", "æ", "ç", "è", "é", "ê", "ë", "ì", "í", "î", "ï", "ð", "ñ", "ò", "ó", "ô", "õ", "ö", "÷", "ø", "ù", "ú", "û", "ü", "ý", "þ", "ÿ"];
+    // const SYM: [&'static str; 64] = ["䷁","䷗","䷆","䷒","䷎","䷣","䷭","䷊","䷏","䷲","䷧","䷵","䷽","䷶","䷟","䷡","䷇","䷂","䷜","䷻","䷦","䷾","䷯","䷄","䷬","䷐","䷮","䷹","䷞","䷰","䷛","䷪","䷖","䷚","䷃","䷨","䷳","䷕","䷑","䷙","䷢","䷔","䷿","䷥","䷷","䷝","䷱","䷍","䷓","䷩","䷺","䷼","䷴","䷤","䷸","䷈","䷋","䷘","䷅","䷉","䷠","䷌","䷫","䷀"];
 
     fn uop<F : Fn(usize) -> usize>(sym: &str, f: F) -> String {
         let mut s = String::new();
@@ -1222,7 +1226,9 @@ fn bench_finite_domain() {
     let res = String::from_utf8(v).unwrap();
 
     println!("{}", s.btm.val_count());
-    println!("{res} in {} µs", t1.duration_since(t0).as_micros());
+    println!("{res} ({terms} inputs) in {} µs", t1.duration_since(t0).as_micros());
+    // (badbad)
+    // (10_000 inputs) in 85833 µs
 }
 
 #[cfg(all(feature = "nightly"))]
@@ -1292,6 +1298,11 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     // writing out unordered .paths file "G37S-9NQ.upaths"
     // Ok(SerializationStats { bytes_out: 1415053, bytes_in: 12346358, path_count: 224769 })
     // written 224769 in 193 ms
+    // (badbad)
+    // mmapping JSON file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.json"
+    // writing out unordered .paths file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths"
+    // Ok(SerializationStats { bytes_out: 231708224, bytes_in: 808333425, path_count: 15969490 })
+    // written 15969490 in 17441 ms
 }
 
 
@@ -1310,7 +1321,6 @@ fn main() {
     // two_positive_equal_crossed();
     // two_bipolar_equal_crossed();
     //
-    // process_calculus();
     // process_calculus_reverse();
     // logic_query();
     // bc0();
@@ -1326,11 +1336,14 @@ fn main() {
     // lens_composition();
 
     // bench_transitive_no_unify(50000, 1000000);
-    // bench_clique_no_unify(200, 3600, 6);
-    // bench_finite_domain();
+    // bench_clique_no_unify(200, 3600, 5);
+    // bench_finite_domain(10_000);
+    // process_calculus_bench(1000, 200, 200);
 
     // #[cfg(all(feature = "nightly"))]
     // json_upaths_smoke();
+    // #[cfg(all(feature = "nightly"))]
+    // json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
     return;
 
     let mut s = Space::new();

@@ -1676,14 +1676,14 @@ impl DefaultSpace {
         let mut file = File::create(path).unwrap();
         let mut reader = self.new_reader(&[], &()).unwrap();
         let rz = self.read_zipper(&mut reader);
-        pathmap::path_serialization::serialize_paths_(rz, &mut file)
+        pathmap::path_serialization::serialize_paths(rz, &mut file)
     }
 
     pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
         let mut writer = self.new_writer(&[], &()).unwrap();
         let wz = self.write_zipper(&mut writer);
-        pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
+        pathmap::path_serialization::deserialize_paths(wz, &mut file, ())
     }
 
     pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {

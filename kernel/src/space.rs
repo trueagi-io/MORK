@@ -528,7 +528,7 @@ impl Space {
             #[inline(always)] fn end(&mut self) -> () {}
         }
 
-        let mut sink = pathmap::path_serialization::path_serialize_sink(d);
+        let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
 
         let mut wz = Vec::with_capacity(4096);
         let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
@@ -947,14 +947,14 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
+    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::paths_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
-        pathmap::path_serialization::serialize_paths_(self.btm.read_zipper(), &mut file)
+        pathmap::paths_serialization::serialize_paths(self.btm.read_zipper(), &mut file)
     }
 
-    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
+    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::paths_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
-        pathmap::path_serialization::deserialize_paths_(self.btm.write_zipper(), &mut file, ())
+        pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
     pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> usize {

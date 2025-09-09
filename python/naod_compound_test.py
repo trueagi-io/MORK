@@ -22,7 +22,7 @@ def main_():
                '(date (created (person peter) (software 1)) $dc2a3e7b)',
                '(weight (created (person peter) (software 1)) $d9a82236)')
 
-    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/debug/mork-server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("main") as ins:
             for file in ("created", "software", "person", "knows"):
                 ins.sexpr_import_("file://" + __file__.rpartition("/")[0] + "/resources/" + file + ".metta").block()

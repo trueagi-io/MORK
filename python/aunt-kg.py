@@ -83,7 +83,7 @@ def processing(server, datasets=DATASETS, human_readable=True):
                 if human_readable: scope.transform(("(aunt $aid $cid)", "(hasName $aid $name0)", "(hasName $cid $name1)",), ("(auntByName $name0 $name1)",),).block()
 
 def _main():
-    with ManagedMORK.connect(binary_path="../target/release/mork_server").and_terminate() as server:
+    with ManagedMORK.connect(binary_path="../target/release/mork-server").and_terminate() as server:
         server.clear().block()
         preprocessing(server)
         hack(server, parallel=True)

@@ -33,7 +33,7 @@ gxhash = {version="3.5", git="https://github.com/ogxd/gxhash"} # for dag_seriali
 
 [workspace.dependencies.pathmap]
 # for stability reasons, use local. For convenience, use git...
-#git = "https://github.com/Adam-Vandervorst/PathMap.git"
-#branch = "master"
-path = "../PathMap"
+git = "https://github.com/Adam-Vandervorst/PathMap.git"
+branch = "master"
+#path = "../PathMap"
 features = ["zipper_tracking", "arena_compact"]

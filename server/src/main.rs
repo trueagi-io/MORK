@@ -76,6 +76,13 @@ struct MorkServiceInternals {
     /// A monotonically incrementing counter so each request has a unique ID
     request_counter: AtomicU64,
 
+    journal_next_file_number    : AtomicU64,
+    journal_counter             : AtomicU64,
+    journal_file_number_channel : (
+        crossbeam_channel::Sender<std::fs::File>,
+        crossbeam_channel::Receiver<std::fs::File>
+    )
+
     //GOAT, need cmd-logger to facilitate replay, and maybe a separate human-readable log
     //GOAT, need permissions model
 }
@@ -105,6 +112,10 @@ impl MorkService {
             resource_store,
             http_client,
             request_counter,
+
+            journal_counter          : AtomicU64::new(0),
+            journal_next_file_number : AtomicU64::new(0),
+            journal_file_number_channel : crossbeam_channel::bounded(u16::MAX as usize)
         };
         Self(Arc::new(internals))
     }

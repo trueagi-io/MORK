@@ -1,16 +1,19 @@
 use core::pin::Pin;
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::hash::Hasher;
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::any::Any;
 use std::path::PathBuf;
 use std::ptr::slice_from_raw_parts;
-use std::sync::Arc;
+use std::sync::{atomic, Arc};
 use std::usize;
 
-use gxhash::gxhash64;
+use crossbeam_channel::SendError;
+use futures_util::sink::Buffer;
+use gxhash::{gxhash64, GxHasher};
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
@@ -148,7 +151,7 @@ impl CommandDefinition for ClearCmd {
     const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "expr",
             desc: "The expression defining a subspace from which to clear.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
@@ -157,16 +160,23 @@ impl CommandDefinition for ClearCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
-        let expr = cmd.args[0].as_expr_bytes();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+    async fn work(ctx: MorkService, mut cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
+
+        let ArgVal::String(sexpr) = core::mem::replace(&mut cmd.args[0], ArgVal::None) else { unreachable!() };
+        let expr = ctx.0.space.sexpr_to_expr(&sexpr).map_err(|_|CommandError::external(StatusCode::BAD_REQUEST, format!("Clear command error ; input={:?}", sexpr)))?;
+
+        // let expr = cmd.args[0].as_expr_bytes();
+
+        let prefix = derive_prefix_from_expr_slice(&expr.as_bytes()).till_constant_to_till_last_constant();
         let mut writer = ctx.0.space.new_writer_async(prefix, &()).await?;
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches();
         wz.remove_val();
         '_journal_event : {
-            test_journal_append(b"CLEAR",format!("{:?}", prefix).as_bytes());
+            // get journal_counter
+            // thread_number == 0 // root
+            test_journal_append(&ctx ,b"CLEAR",format!("{:?}", sexpr).as_bytes());
             // JOURNAL.append_event(Clear(prefix))
 
             // explictly drop wz only after Journal event complete
@@ -189,13 +199,13 @@ impl CommandDefinition for CopyCmd {
     const CONSUME_WORKER: bool = false;
     fn args() -> &'static [ArgDef] {
         &[ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "src_expr",
             desc: "The expression defining a subspacespace from which to copy.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
         },
         ArgDef{
-            arg_type: ArgType::Expr,
+            arg_type: ArgType::String,
             name: "dst_expr",
             desc: "The expression defining a destination subspacespace into which to copy.  The path is relative to the first variable in the expression, e.g. `(test (data $v) _)`",
             required: true
@@ -204,13 +214,16 @@ impl CommandDefinition for CopyCmd {
     fn properties() -> &'static [PropDef] {
         &[]
     }
-    async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
-        let src_expr = cmd.args[0].as_expr_bytes();
-        let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_till_last_constant();
+    async fn work(ctx: MorkService, mut cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
+        
+        let ArgVal::String(src_sexpr) = core::mem::replace(&mut cmd.args[0], ArgVal::None) else {unreachable!()};
+        let src_expr = ctx.0.space.sexpr_to_expr(&src_sexpr).map_err(|_|CommandError::external(StatusCode::BAD_REQUEST, format!("Copy command error ; src_expr={:?}", src_sexpr)))?;
+        let src_prefix = derive_prefix_from_expr_slice(src_expr.as_bytes()).till_constant_to_till_last_constant();
         let mut reader = ctx.0.space.new_reader_async(src_prefix, &()).await?;
 
-        let dst_expr = cmd.args[1].as_expr_bytes();
-        let dst_prefix = derive_prefix_from_expr_slice(&dst_expr).till_constant_to_till_last_constant();
+        let ArgVal::String(dst_sexpr) = core::mem::replace(&mut cmd.args[1], ArgVal::None) else {unreachable!()};
+        let dst_expr = ctx.0.space.sexpr_to_expr(&dst_sexpr).map_err(|_|CommandError::external(StatusCode::BAD_REQUEST, format!("Copy command error ; dst_expr={:?}", dst_sexpr)))?;
+        let dst_prefix = derive_prefix_from_expr_slice(dst_expr.as_bytes()).till_constant_to_till_last_constant();
         let mut writer = ctx.0.space.new_writer_async(dst_prefix, &()).await?;
 
         let rz = ctx.0.space.read_zipper(&mut reader);
@@ -219,7 +232,9 @@ impl CommandDefinition for CopyCmd {
 
 
         '_journal_event : {
-            test_journal_append(b"COPY", &format!("src({:?}) -> dst({:?})", src_expr, dst_expr).as_bytes());
+            // get journal_counter
+            // thread_number == 0 // root
+            test_journal_append(&ctx, b"COPY", &format!("src({:?}) -> dst({:?})", src_expr, dst_expr).as_bytes());
             // JOURNAL.append_event(Copy( (src_expr, dst_expr)) ) // maybe Sexpr?
 
             // explictly drop (wz,rz) only after Journal event complete
@@ -606,7 +621,7 @@ impl CommandDefinition for ImportCmd {
         let writer = ctx.0.space.new_writer_async(derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_full(), &()).await?;
 
         tokio::task::spawn(async move {
-            match do_import(&ctx, thread.unwrap(), &cmd, pattern, template, writer, file_handle).await {
+            match do_import(&ctx, thread.unwrap(), &cmd, [&cmd.args[0], &cmd.args[1]].map(|x|x.as_str().to_owned()), [pattern, template], writer, file_handle).await {
                 Ok(()) => {},
                 Err(err) => {
                     println!("Internal Error occurred during import: {err:?}"); //GOAT Log this error
@@ -618,7 +633,17 @@ impl CommandDefinition for ImportCmd {
     }
 }
 
-async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, pattern: OwnedExpr, template: OwnedExpr, mut writer: WritePermission, mut file_resource: ResourceHandle) -> Result<(), CommandError> {
+type OwnedSexprPatternTemplate = [String;2];
+type OwnedExprPatternTemplate = [OwnedExpr;2];
+async fn do_import(
+    ctx        : &MorkService,
+    thread     : WorkThreadHandle,
+    cmd        : &Command,
+    [s_pattern, s_template] : OwnedSexprPatternTemplate,
+    [pattern, template]     : OwnedExprPatternTemplate,
+    mut writer              : WritePermission,
+    mut file_resource       : ResourceHandle
+) -> Result<(), CommandError> {
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
     let url = Url::parse(file_uri)?;
 
@@ -698,12 +723,14 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
         let file_handle = std::fs::File::open(&file_path)?;
         let file_stream = BufReader::new(file_handle);
 
-        let pre_journal = format!("file({:?}) pattern({:?}) template({:?})", file_path, pattern.as_bytes(), template.as_bytes());
+        let pre_journal = format!("file({:?}) pattern({:?}) template({:?})", file_path, s_pattern, s_template);
 
         do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)?;
 
         '_journal_event : {
-            test_journal_append(b"IMPORT", pre_journal.as_bytes());
+            // get journal_counter
+            // thread_number == 0 // root
+            test_journal_append(&ctx_clone, b"IMPORT", pre_journal.as_bytes());
             // JOURNAL.append_event(Import( (file, pattern, template)) ) // pattern : Sexpr, template : Sexpr
         
             // explictly drop `writer` only after Journal event complete
@@ -1008,9 +1035,10 @@ impl CommandDefinition for MettaThreadCmd {
                     #[cfg(debug_assertions)]'_journal:{
 
                         let current_exec = machine.current_exec().unwrap();
+                        
                         let s = format!("current_exec({:?})", current_exec);
 
-                        test_journal_append(b"METTA_THREAD", s.as_bytes());
+                        test_journal_append(&ctx, b"METTA_THREAD", s.as_bytes());
                     }
 
                     
@@ -1243,7 +1271,7 @@ impl CommandDefinition for TransformCmd {
         let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &(), ||{})?;
 
         '_journal_event : {
-            test_journal_append(b"TRANSFORM", format!("{:?}", post_bytes).as_bytes());
+            test_journal_append(&ctx, b"TRANSFORM", format!("{:?}", post_bytes).as_bytes());
             // JOURNAL.append_event(Transform(Post_bytes))
 
             // explictly drop wz only after Journal event complete
@@ -1417,7 +1445,7 @@ impl CommandDefinition for UploadCmd {
 
                 }
                 let test_journal_s = format!("pattern({:?}) template({:?}) src_buf({:?})", sexpr_pattern, sexpr_template, core::str::from_utf8(&src_buf[..]));
-                test_journal_append(b"UPLOAD", test_journal_s.as_bytes());
+                test_journal_append(&ctx, b"UPLOAD", test_journal_s.as_bytes());
                 // JOURNAL.append_event(Upload(Pattern, template, src_buf))
                             
                 // explictly drop writer only after Journal event complete
@@ -1734,83 +1762,79 @@ fn prefix_assertions() {
 
 
 
-// const CACHE_ELEMENT_LIMIT : usize = 4096;
-// type CacheOrder    = u64;
-// type ChacheHash     = u64;
-// type CacheVal       = (ChacheHash, Arc<[u8]>);
-// type CacheStrBuffer = Vec<u8>;
-// struct ArgsStrCache {
-//     order      : CacheOrder,
-//     next_evict : usize,
-//     hashes     : [ChacheHash     ; CACHE_ELEMENT_LIMIT],
-//     strs       : [CacheStrBuffer ; CACHE_ELEMENT_LIMIT],
-//     index      : BTreeMap<ChacheHash, usize>
-// }
-// enum HashCollision { Yes, No, }
-// impl ArgsStrCache {
-//     const fn init_cache() -> Self {
-//         let mut str_ = MaybeUninit::<[CacheStrBuffer; CACHE_ELEMENT_LIMIT]>::zeroed();
-//         let mut i = CACHE_ELEMENT_LIMIT;
-//         loop {
-//             if i == 0 { break; }
-//             i -=1;
-//             unsafe {core::ptr::write(&mut (*str_.as_mut_ptr())[i], CacheStrBuffer::new())};
-//         }
-//         ArgsStrCache {
-//             order      : 0,
-//             next_evict : 0,
-//             hashes     : [   0; CACHE_ELEMENT_LIMIT],
-//             strs       : unsafe {str_.assume_init()},
-//             index      : BTreeMap::new(),
-//         }
-//     }
-//     fn check_in_cache(&mut self, s : &[u8]) -> (HashCollision, ChacheHash, CacheOrder) {
-//         extern crate alloc;
-//         let hash = gxhash64(s, 0);
 
+pub(crate) mod journal {
 
-//         match self.index.entry(hash) {
-//             alloc::collections::btree_map::Entry::Vacant(v) => {
-//                 let order       = self.order;
-//                 let next_evict  = self.next_evict;
-                
-//                 self.hashes[next_evict] = hash;
-//                 self.strs[next_evict].clear();
+    // ticket queue
+    // static Tickets
 
-//                 self.order      += 1;
-//                 self.next_evict = (self.order % CACHE_ELEMENT_LIMIT as u64) as usize ;
-                
-//             },
-//             alloc::collections::btree_map::Entry::Occupied(o) => {
+    fn g() {
+        // let (tx, rx) = std::sync::mpmc::channel();
+        struct FILE;
+        let (tx, rx) = crossbeam_channel::bounded::<FILE>(6000);
 
-//             },
-//         }
+        rx.clone();
+    }
 
+    pub(crate) struct Copy { src_sexpr : String, dst_sexpr : String }
+    pub(crate) struct Clear { sexpr : String }
+    pub(crate) struct Import {
+        file           : String,
+        pattern_sexpr  : String,
+        template_sexpr : String,
+    }
+    pub(crate) struct Transform { sexpr : String }
+    pub(crate) struct Upload<'a> {
+        pattern_sexpr  : String,
+        template_sexpr : String,
+        data           : &'a str,
+    }
+    pub(crate) enum Entry<'a> {
+        Copy      (Copy     ),
+        Clear     (Clear    ),
+        Import    (Import   ),
+        Transform (Transform),
+        Upload    (Upload<'a>),
+    }
 
+} 
 
-//     }
-// }
+fn test_journal_append(ctx : &MorkService, header : &[u8], s : &[u8]) {
+    let (tx, rx) = ctx.0.journal_file_number_channel.clone();
 
+    let mut file = match rx.try_recv() {
+        Ok(ok) => ok,
+        Err(crossbeam_channel::TryRecvError::Empty) => {
+            // make a file
+            let next_file_number = ctx.0.journal_next_file_number.fetch_add(1, atomic::Ordering::Relaxed);
 
-fn test_journal_append(header : &[u8], s : &[u8]) {
-    const TEST_JOURNAL : &str = "test_journal.txt";
-    let mut f_opts = std::fs::File::options();
-    f_opts.append(true);
-    f_opts.create(true);
+            const TEST_JOURNAL : &str = "test_journal.txt";
+            let path = std::path::PathBuf::from(
+                std::env::var("CARGO_WORKSPACE_DIR").unwrap()
+            ).join("server")
+            .join("test_journal")
+            .join(format!("0x_{:0>8x}_test_journal", next_file_number));
+            
+            let mut f_opts = std::fs::File::options();
+            f_opts.append(true);
+            f_opts.create(true);
+            let mut file = f_opts.open(path).unwrap();
 
-    static WAIT : std::sync::Mutex<()> = std::sync::Mutex::new(());
+            file
+        },
+        Err(crossbeam_channel::TryRecvError::Disconnected) => unreachable!(),
+    };
 
-    let e = WAIT.lock().unwrap();
-    
-    let path = std::path::PathBuf::from(std::env::var("CARGO_WORKSPACE_DIR").unwrap()).join("server").join("test_journal").join(TEST_JOURNAL);
-    // let path = std::dbg!(std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(TEST_JOURNAL));
-    
-    let mut file = f_opts.open(path).unwrap();
+    let count = ctx.0.journal_counter.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    file.write(format!("0x_{:0>16x} ", count).as_bytes());
     file.write(header);
     file.write(b":");
     file.write(s);
     file.write(b"\n");
 
-    drop(e)    
+    if let Err(SendError(f)) =tx.send(file) {
+        drop(f /* give up on appending to this file */)
+    };
 }
 

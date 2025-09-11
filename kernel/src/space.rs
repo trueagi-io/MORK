@@ -319,6 +319,21 @@ macro_rules! expr {
             mork_bytestring::Expr{ ptr: b }
         }
     }};
+    ($space:ident, $s:expr) => {{
+        let mut src = mork_bytestring::parse::<4096>($s);
+        let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
+        let table = $space.sym_table();
+        let mut pdp = $crate::space::ParDataParser::new(&table);
+        let mut buf = [0u8; 4096];
+        let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
+        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
+        unsafe {
+            let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
+            std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
+            mork_bytestring::Expr{ ptr: b }
+        }
+    }};
+
 }
 
 #[macro_export]

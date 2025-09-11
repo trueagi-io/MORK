@@ -1305,9 +1305,185 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     // written 15969490 in 17441 ms
 }
 
+/// Based on Anneline's instantiation of PDDL domains
+fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
+    let mut s = Space::new();
+    for mde in std::fs::read_dir(ts_path).unwrap() {
+        let de = mde.unwrap();
+        let file_name = de.file_name();
+        let name = file_name.to_str().unwrap();
+        let metta_file = std::fs::File::open(de.path()).unwrap();
+        let metta_mmap = unsafe { memmap2::Mmap::map(&metta_file).unwrap() };
+        s.load_sexpr(&*metta_mmap, expr!(s, "$"), expr!(s, format!("[2] {} _1", &name[..name.len()-6]).as_str())).unwrap();
+    }
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    /*
+       WIP
+     */
+}
+
+fn exponential(max_steps: usize) {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+((step app)
+ (, (num $1) )
+ (, (num (M $1))
+    (num (W $1)) ))
+
+((step app)
+ (, (num (M $1))
+    (num (W $1)) )
+ (, (num (C $1)) ))
+
+(num Z)
+
+(exec metta
+      (, ((step $x) $p0 $t0)
+         (exec metta $p1 $t1) )
+      (, (exec $x $p0 $t0)
+         (exec metta $p1 $t1) ))
+"#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(max_steps);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+}
+
+fn exponential_fringe(steps: usize) {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+((step meet $k)
+ (, (num $k $1) (succ $k $sk) )
+ (, (num $sk (M $1))
+    (num $sk (W $1)) ))
+
+((step join $k)
+ (, (num $k (M $1)) (succ $k $sk)
+    (num $k (W $1)) )
+ (, (num $sk (C $1)) ))
+
+(num 0 Z)
+
+(exec (metta 0)
+      (, (exec (metta $k) $p1 $t1) (succ $k $sk)
+         ((step $x $k) $p0 $t0) )
+      (, (exec (0 $x) $p0 $t0)
+         (exec (metta $sk) $p1 $t1) ))
+"#;
+
+    let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+    //
+    // println!("result: {res}");
+}
+
+fn linear_fringe_alternating(steps: usize) {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+((step meet $k)
+ (, (num $k $1) )
+ (, (tojoin $k (M $1))
+    (tojoin $k (W $1)) ))
+
+((step join $k)
+ (, (tojoin $k (M $1)) (succ $k $sk)
+    (tojoin $k (W $1)) )
+ (, (num $sk (C $1)) ))
+
+(num 0 Z)
+
+(exec (metta 0)
+      (, (exec (metta $k) $p1 $t1) (succ $k $sk)
+         ((step meet $k) $p0 $t0) ((step join $k) $p2 $t2) )
+      (, (exec (0 meet) $p0 $t0) (exec (1 join) $p2 $t2)
+         (exec (metta $sk) $p1 $t1) ))
+"#;
+
+    let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+    //
+    // println!("result: {res}");
+}
+
+
+fn linear_alternating(steps: usize) {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+((step meet)
+ (, (num $1) )
+ (, (tojoin (M $1))
+    (tojoin (W $1)) ))
+
+((step join)
+ (, (tojoin (M $1))
+    (tojoin (W $1)) )
+ (, (num (C $1)) ))
+
+(num Z)
+
+(exec (metta 0)
+      (, (exec (metta $k) $p1 $t1) (succ $k $sk)
+         ((step meet) $p0 $t0) ((step join) $p2 $t2) )
+      (, (exec (0 meet) $p0 $t0) (exec (1 join) $p2 $t2)
+         (exec (metta $sk) $p1 $t1) ))
+"#;
+
+    let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+    //
+    // println!("result: {res}");
+}
+
 
 fn main() {
     env_logger::init();
+
+    // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
+    exponential(32);
+    exponential_fringe(15);
+    linear_fringe_alternating(15);
+    linear_alternating(15);
 
     // lookup();
     // positive();

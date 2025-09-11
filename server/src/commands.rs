@@ -1444,7 +1444,7 @@ impl CommandDefinition for UploadCmd {
 
 
                 }
-                let test_journal_s = format!("pattern({:?}) template({:?}) src_buf({:?})", sexpr_pattern, sexpr_template, core::str::from_utf8(&src_buf[..]));
+                let test_journal_s = format!("pattern({}) template({}) src_buf({})", sexpr_pattern, sexpr_template, core::str::from_utf8(&src_buf[..])?);
                 test_journal_append(&ctx, b"UPLOAD", test_journal_s.as_bytes());
                 // JOURNAL.append_event(Upload(Pattern, template, src_buf))
                             
@@ -1808,26 +1808,23 @@ fn test_journal_append(ctx : &MorkService, header : &[u8], s : &[u8]) {
             // make a file
             let next_file_number = ctx.0.journal_next_file_number.fetch_add(1, atomic::Ordering::Relaxed);
 
-            const TEST_JOURNAL : &str = "test_journal.txt";
             let path = std::path::PathBuf::from(
                 std::env::var("CARGO_WORKSPACE_DIR").unwrap()
             ).join("server")
             .join("test_journal")
-            .join(format!("0x_{:0>8x}_test_journal", next_file_number));
+            .join(format!("0x[{:0>8x}]_test_journal", next_file_number));
             
             let mut f_opts = std::fs::File::options();
             f_opts.append(true);
             f_opts.create(true);
-            let mut file = f_opts.open(path).unwrap();
-
-            file
+            f_opts.open(path).unwrap()
         },
         Err(crossbeam_channel::TryRecvError::Disconnected) => unreachable!(),
     };
 
     let count = ctx.0.journal_counter.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    file.write(format!("0x_{:0>16x} ", count).as_bytes());
+    file.write(format!("0x[{:0>16x}] ", count).as_bytes());
     file.write(header);
     file.write(b":");
     file.write(s);

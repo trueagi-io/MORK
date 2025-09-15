@@ -1314,17 +1314,72 @@ fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
         let name = file_name.to_str().unwrap();
         let metta_file = std::fs::File::open(de.path()).unwrap();
         let metta_mmap = unsafe { memmap2::Mmap::map(&metta_file).unwrap() };
-        s.load_sexpr(&*metta_mmap, expr!(s, "$"), expr!(s, format!("[2] {} _1", &name[..name.len()-6]).as_str())).unwrap();
+        s.load_sexpr(&*metta_mmap, expr!(s, "$"), expr!(s, format!("[3] U {} _1", &name[..name.len()-6]).as_str())).unwrap();
     }
 
+    let SPACE = r#"
+    (exec (action 0) (, (U $d (transition $s (drop $obj $room $gripper) $t))
+                        (U $d (value (carry $obj $gripper) T $s))
+                        (U $d (value (at-robby $room) T $s))
+                        (U $d (value (at $obj $room) T $t))
+                        (U $d (value (free $gripper) T $t))
+                        (U $d (value (carry $obj) F $t)))
+                     (, ((C 0) $d ($s $obj $room $gripper $t))))
+
+    (exec (action 1) (, (U $d (transition $s (move $from $to) $t))
+                        (U $d (value (at-robby $from) T $s))
+                        (U $d (value (at-robby $from) F $t))
+                        (U $d (value (at-robby $to) T $t)))
+                     (, ((C 1) $d ($s $from $to $t))))
+
+    (exec (action 2) (, (U $d (transition $s (pick $obj $room $gripper) $t))
+                        (U $d (value (at $obj $room) T $s))
+                        (U $d (value (at-robby $room) T $s))
+                        (U $d (value (free $gripper) T $s))
+                        (U $d (value (carry $obj $gripper) T $t))
+                        (U $d (value (free $gripper) F $t))
+                        (U $d (value (at $obj $room) F $t)))
+                     (, ((C 2) $d ($s $obj $room $gripper $t))))
+    "#;
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+
+    s.metta_calculus(3);
+
     let mut v = vec![];
-    s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_sexpr(expr!(s, "[3] U p-3-0 $"), expr!(s, "_1"), &mut v);
+    s.dump_sexpr(expr!(s, "[3] [2] C $ p-3-0 $"), expr!(s, "[2] _1 _2"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
     /*
        WIP
      */
+}
+
+fn stv_roman() {
+    let mut s = Space::new();
+    let SPACE = r#"
+    (exec (step (0 cpu))
+      (, (goal (CPU $f $arg $res)) (fun ($f $arg ($b1 $b2) $res)) (fun $b1) (fun $b2))
+      (, (ev $res)))
+
+    (fun (mp-formula ((STV $sa $ca) (STV $sb $cb)) ((mul ($sa $sb) $so) (mul ($ca $cb) $co)) (STV $so $co)))
+
+    (goal (CPU mp-formula ((STV 0.5 0.5) (STV 0.5 0.5)) $res))
+    "#;
+    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+    // let mut math_expr_buf = vec![];
+    // std::fs::File::open("/home/adam/Downloads/math_relations.metta").unwrap().read_to_end(&mut math_expr_buf).unwrap();
+    // s.load_sexpr(&math_expr_buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.load_sexpr("(fun (mul (0.5 0.5) 0.2))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    s.metta_calculus(1);
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] ev $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+    println!("result: {res}");
 }
 
 fn exponential(max_steps: usize) {
@@ -1480,10 +1535,7 @@ fn main() {
     env_logger::init();
 
     // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
-    exponential(32);
-    exponential_fringe(15);
-    linear_fringe_alternating(15);
-    linear_alternating(15);
+    stv_roman();
 
     // lookup();
     // positive();
@@ -1515,6 +1567,11 @@ fn main() {
     // bench_clique_no_unify(200, 3600, 5);
     // bench_finite_domain(10_000);
     // process_calculus_bench(1000, 200, 200);
+
+    // exponential(32);
+    // exponential_fringe(15);
+    // linear_fringe_alternating(15);
+    // linear_alternating(15);
 
     // #[cfg(all(feature = "nightly"))]
     // json_upaths_smoke();

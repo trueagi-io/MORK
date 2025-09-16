@@ -969,7 +969,8 @@ impl Space {
         if pat_args.len() <= 1 { return 0 }
 
         let mut rz = btm.read_zipper();
-        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+        // SWAP!!!
+        let mut prz = ProductZipperG::new(rz, (0..(pat_args.len() - 2)).map(|i| {
             btm.read_zipper()
         }));
         prz.reserve_buffers(1 << 32, 32);
@@ -1243,21 +1244,21 @@ impl Space {
     //     }
     // }
 
-    pub fn metta_calculus(&mut self, mut steps: usize) -> usize {
-        // MC CMD "TEXEC THREAD0"
+    pub fn metta_calculus(&mut self, steps: usize) -> usize {
         let mut done = 0;
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+        let mut path = Vec::with_capacity(4096);
 
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
             if rz.to_next_val() {
                 // cannot be here `rz` conflicts potentially with zippers(rz.path())
-                let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
+                path.clear();
+                path.extend_from_slice(rz.origin_path());
                 drop(rz);
-                self.btm.remove(&x[..]);
-                // println!("expr {:?}", Expr{ ptr: x.as_mut_ptr() });
-                self.interpret(Expr{ ptr: x.as_mut_ptr() });
+                self.btm.remove(&path[..]);
+                self.interpret(Expr{ ptr: path.as_mut_ptr() });
                 done < steps
             } else {
                 false

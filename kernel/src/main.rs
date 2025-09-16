@@ -212,7 +212,7 @@ fn basic() {
 
 }
 
-fn process_calculus_bench(steps: usize, x: usize, y: usize) {
+fn bench_process_calculus(steps: usize, x: usize, y: usize) {
     let mut s = Space::new();
 
     // note 'idle' MM2-like statement that can be activated by moving it to the exec space
@@ -252,9 +252,9 @@ fn process_calculus_bench(steps: usize, x: usize, y: usize) {
 
     println!("{x}+{y} ({} steps) in {} µs result: {res}", steps, elapsed.as_micros());
     assert_eq!(res, format!("{}\n", peano(x+y)));
-    println!("unifications {}, instructions {}", unsafe { unifications }, unsafe { transitions });
+    println!("unifications {}, transitions {}", unsafe { unifications }, unsafe { transitions });
     // (badbad)
-    // 200+200 (1000 steps) in 42716559 µs
+    // 200+200 (1000 steps) in 42274298 µs
 }
 
 fn process_calculus_reverse() {
@@ -1511,15 +1511,47 @@ fn main() {
     // lens_aunt();
     // lens_composition();
 
-    // bench_transitive_no_unify(50000, 1000000);
-    // bench_clique_no_unify(200, 3600, 5);
-    // bench_finite_domain(10_000);
-    // process_calculus_bench(1000, 200, 200);
+    bench_transitive_no_unify(50000, 1000000);
+    bench_clique_no_unify(200, 3600, 5);
+    bench_finite_domain(10_000);
+    bench_process_calculus(1000, 200, 200);
 
     // #[cfg(all(feature = "nightly"))]
     // json_upaths_smoke();
     // #[cfg(all(feature = "nightly"))]
     // json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
+    /*
+DESIRED!!!
+elapsed 624 steps 32 size 265723
+elapsed 1574 steps 46 size 803777
+elapsed 1 steps 46 size 63
+elapsed 1 steps 46 size 63
+constructed 50000 nodes 1000000 edges
+trans elapsed 18342529 µs
+detect trans elapsed 12773343 µs
+trans 19917429 detected trans 8716
+constructed 200 nodes 3600 edges
+executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x1 $x2)) (, (3-clique $x0 $x1 $x2)))
+found 7824 3-cliques (expected 7770) in 48841 µs
+executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x1 $x2) (edge $x1 $x3) (edge $x2 $x3)) (, (4-clique $x0 $x1 $x2 $x3)))
+found 2320 4-cliques (expected 2260) in 1189748 µs
+executing query (exec 0 (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3) (edge $x0 $x4) (edge $x1 $x2) (edge $x1 $x3) (edge $x1 $x4) (edge $x2 $x3) (edge $x2 $x4) (edge $x3 $x4)) (, (5-clique $x0 $x1 $x2 $x3 $x4)))
+found 102 5-cliques (expected 94) in 26444056 µs
+42840
+0
+1
+2
+3
+4
+5
+6
+7
+ (10000 inputs) in 87128 µs
+200+200 (1000 steps) in 45372051 µs result: (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S Z))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+
+unifications 20964581, transitions 1129014058
+
+     */
     return;
 
     let mut s = Space::new();

@@ -159,8 +159,8 @@ impl CommandDefinition for ClearCmd {
         let mut writer = ctx.0.space.new_writer_async(prefix, &()).await?;
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
-        wz.remove_branches();
-        wz.remove_val();
+        wz.remove_branches(true);
+        wz.remove_val(true);
         Ok("ACK. Cleared".into())
     }
 }
@@ -1106,7 +1106,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
         let status_loc_expr = ctx.0.space.sexpr_to_expr(&status_loc_sexpr).unwrap();
 
         let mut suspend_wz = ctx.0.space.write_zipper(&mut suspend_writer);
-        suspend_wz.remove_branches();
+        suspend_wz.remove_branches(true);
 
 
         let exec_prefix_sexpr = format!("(exec ({} $) $ $)", exec_loc_sexpr);
@@ -1124,7 +1124,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
         };
 
         let mut exec_wz = ctx.0.space.write_zipper(&mut exec_loc_writer);
-        let Some(pats_templates) = exec_wz.take_map() else {
+        let Some(pats_templates) = exec_wz.take_map(true) else {
             return Err(CommandError::external(StatusCode::GONE, format!("The thread has already been exhausted, suspend location has been cleared : {}", suspend_prefix_sexpr)));
         };
 

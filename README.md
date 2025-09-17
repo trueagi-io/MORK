@@ -3,171 +3,117 @@
 
 **A blazing fast hypergraph processing kernel for Hyperon**
 
-MORK seeks to retrofit Hyperon with a state-of-the-art graph database and a specialized zipper-based multi-threaded virtual machine to provide speedy MeTTa evaluation across the full range of Space sizes and topologies.
+MORK is a foundational substrate to enable symbolic AI at scale. It provides a state-of-the-art graph database and multi-threaded execution kernel for [MeTTa](https://metta-lang.dev/).
 
-By rearchitecting certain Hyperon bottlenecks, MORK has the potential to accelerate important use cases by thousands to millions of times.  That kind of speedup represents a qualitative jump in capabilities.  It's the difference between running a training step vs. finishing the training in the same amount of time.  It's the difference between a thousand input samples vs. millions, or a crocodile's brain vs. a human's.  Deep learning has advanced due in part to the software platforms that exposed the full capabilities of underlying hardware, and we hope Hyperon + MORK can help do that for symbolic AI.
+Built on [pathmap](https://github.com/Adam-Vandervorst/PathMap), MORK encodes s-expressions and native data types as trie paths, allowing very efficient space-wide operations through `pathmap`'s path algebra.
 
-## Building
-Get Rust https://rustup.rs/
+Execution in MORK uses the [MM2 (Minimal MeTTa 2)](docs/mm2.md) language / conventions.
 
-`cargo build --release` on [https://github.com/Adam-Vandervorst/PathMap](https://github.com/Adam-Vandervorst/PathMap)
+MORK runs in an http server, and can can be called directly or via a Python client API.
 
-`cd server ; cargo build --release` on [https://github.com/trueagi-io/MORK/tree/server](https://github.com/trueagi-io/MORK/tree/server/server) 
+### Please reach out
 
-in /python
+We're want to hear how you want to use MORK so we can prioritize ongoing work.  If you have questions, suggestions, or ideas, Or if you want to dive deep into the asymptotics of graph transformations and unification please contact us.
 
-`python client.py` runs a smoke test
-`python aunt-kg.py` does some real work and creates a MeTTa file in the same folder
+## Building and running MORK
 
-## Roadmap
+These instructions pertain to the `server` branch, at [https://github.com/trueagi-io/MORK/tree/server](https://github.com/trueagi-io/MORK/tree/server/server)
 
-### Deliverable 1 - Graph database with efficient queries
+1. Install the Rust tool chain by following the instructions at [https://rustup.rs/]
 
-Deliverable 1 is a set of data structures for a fast, scalable and memory-efficient graph database that runs on a single machine.
+2. Build the MORK server by running: `cargo build --release --bin mork-server`
 
-- Expression queries\
-Support for querying by any structured key type, e.g. expression structure, etc. (See [Triemaps that match](https://arxiv.org/abs/2302.08775))
+3. Start the MORK server by running: `./target/release/mork-server &`
 
-- Efficient space-wide operations\
-Full [relational algebra](https://en.wikipedia.org/wiki/Relational_algebra#Joins_and_join-like_operators) support. I.e. union, intersection, and set subtraction ops across entire spaces, performed using lazy or constant-time operations.
+4. Run a smoke test from Python: `python python/client.py`  
+    NOTE: running the server and the client in separate terminals will produce more legible output.
 
-- Matching and unification\
-Support for bidirectional pattern matching and unification of S-expressions with spaces by translating slow declarative "shape matching" queries into native queries
+## Using MORK through the Python client
 
-- Billions of atoms\
-A high end workstation should be able to load, query, and transform a space with over a billion atoms without running out of memory or hanging for hours
+The Python client calls the MORK server.  The `ManagedMORK` object establishes a connection to the MORK server.  You may provide a `url` or a `binary_path`, depending on whether you want to connect to a running server or start the server as a child process.
 
-- JSON interop\
-Load data from json and querying using (a subset of) [JSONPath](https://datatracker.ietf.org/doc/rfc9535/) 
+```python
+# Starts a MORK server, and clears the server's space
+with ManagedMORK.connect("../target/release/mork-server").and_terminate() as top_space:
+    top_space.clear().block()
+```
 
-#### Tasks:
+The python client uses MORK space objects on which to perform the operations.  These may refer to the server's entire space or a sub-space (aka a lens) within the space.  The `work_at` method allows a scope to be entered, creating an object to perform operations within the sub-space.
 
-- [x] Definition of Expr type structures to represent S-expressions efficiently in memory with high cache locality and searchability
+```python
+    # Create a scope subspace object to work within "aunt-kg"
+    with top_space.work_at("aunt-kg") as inputs:
+```
 
-- [ ] Derivation of a triemap over a range of algebraic data structures, (excluding dependent typing).  See [Multiplate](https://wiki.haskell.org/Multiplate)
+For a basic real-world example, run `aunt-kg.py` in the `python` directory.  It will create an output file called `simple_all.metta`.
 
-- [x] Fast and memory-efficient S-expression triemap to support MeTTa atoms
+### Loading data into MORK
 
-- [ ] Union, intersection, and subtract ops for S-expression triemap (and other derived triemap types) implemented with algorithms that have optimal scaling properties (based on current SOTA)
+There are two types of commands for loading data into MORK, `import` and `upload`.
 
-- [x] Fast primitive triemap implementing the space-wide ops (union, intersection, and subtract), based on ([Ring of Sets](https://en.wikipedia.org/wiki/Ring_of_sets))
+`import` should be used for large data sets, when the data exists in a file that is either local to the server (`file` URL) or fetched from a remote `http/s` host.
 
-- [x] Automatic translation of slow declarative "shape matching" queries into more classical database queries, to support bidirectional pattern matching and unification
+`upload` allows small amounts of S-Expression data to be added to the space. It is useful to load data created within the client code.
 
-- [ ] Streaming JSON parser (completed), and JSONPath query engine
+The example code below fetches the MeTTa S-Expression file and loads the entire thing into the root of the MORK space
 
-- [ ] ~~Take first place (or at least crack the top 3) in the [One Billion Row Challenge](https://github.com/gunnarmorling/1brc)~~ The datastructure is not the bottleneck in this situation.
+```python
+# Start the server and load the entire contents of the fetched file into the root of the server's space
+with ManagedMORK.connect(binary_path="../target/release/mork-server").and_terminate() as server:
+    server.sexpr_import("$x", "$x", f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta")\
+        .block()
+```
 
-### Deliverable 2 - Multi-threaded zipper machine
+Many methods (including `import` and `export`) take a `($pattern, $template)` pair in their args.  The `$pattern` specifies the subset of the source data to load and/or match, and the `$template` specifies the location within the destination to put the resultant data.  In the case of `import`, the `$pattern` allows the loading of a subset of the data, and the `$template` allows a subspace to be targeted within the MORK space.  There are also convenience methods ending in `'_'` that elide the `$pattern` and `$template` arguments, and load the entirety of the source data into the entire destination namespace / scope.
 
-Deliverable 2 is a model of computation and a multi-threaded virtual machine to run it, utilizing the data structures from deliverable 1.
+Data can be imported from the following formats using the respective methods:
+* `JSON`: TBD
+* `CSV`: `csv_import`
+* `MeTTa` S-Expressions: `sexpr_import`, `upload`
+* `.paths` (MORK-specific representation): `paths_import`
 
-- "Zipper Abstract Machine"\
-Inspired by Prolog's [Warren Abstract Machine](https://en.wikipedia.org/wiki/Warren_Abstract_Machine), exposes spaces as native computational primitives and [Zippers](https://www.st.cs.uni-saarland.de/edu/seminare/2005/advanced-fp/docs/huet-zipper.pdf) as cursors to encapsulate runtime state
+### Exporting data from MORK
 
-- Logical inference at scale\
-Decompose inference steps for parallel execution and an efficient fast-path for light-weight high-frequency inference
+Similar to loading, there are two equivalent types of commands for retrieving data, `export` and `download`.
 
-- Basic inference control\
-Expands upon MeTTa's support for nondeterminism with machine-level operations for prioritization and pruning of exploration and evaluation
+`export` can output a file in one of the supported formats (listed above), and is useful when running MORK on a local server.
 
-- Near-linear scaling with cores\
-Fearless concurrency based on isolation guarantees to allow scaling without hitting scaling walls caused by central bottlenecks
+`download` is designed to send small amounts of data directly to the python client.
 
-#### Tasks:
+```python
+# Start the server, upload some data to the server, and fetch a subset of it back from the server
+with ManagedMORK.connect("../target/release/mork-server").and_terminate() as server:
+    server.clear().block()
+    server.upload_("(foo 1)\n(foo 2)\n(bar 3)\n").block()
+    print(server.download("(foo $x)", "$x").data)
+```
 
-- [x] Define (mathematically) the model of computation and the specification of the ZAM behavior
+### Transform to work within a MORK space
 
-- [ ] Implement the ZAM in Rust leveraging an existing framework
+In MORK, `transform` is the mechanism to match data in a space (aka unify with one or more patterns).  `transform` constructs new expresions in the space from the matched data and a set of templates.  All queries are just special cases of `transform`.
 
-- [ ] Benchmark and optimize towards maximizing serial-inference-operations-per-second
-
-- [ ] Benchmark and optimize towards parallel decomposed operation throughput
-
-- [ ] Saturate the compute on a 128 core x86 test machine, with each incremental core delivering concomitant incremental performance for a use-case / workload with enough concurrency
-
-### Deliverable 3 - MeTTa language support
-
-Deliverable 3 implements a fully-functional interpreter of the high-level MeTTa language on top of the ZAM from deliverable 2, with support for native grounded operations and primitives.
-
-- ZAM based interpreter for logical inference\
-Interprets code to perform the full range of tasks and use cases that MeTTa can currently execute, although some adaptation of the MeTTa code may be required
-
-- Enable complex programs\
-Supports enough functionality to enabling long-lived and general-purpose codebases that live along-side or within massive datasets
-
-- Grounded Interfaces\
-Provides API hooks to extend MeTTa functionality with native operations, while taking care to preserve the performance characteristics of the triemap primitives as much as is possible using bidirectional transformation endpoints
-
-- Integrated Inference Control\
-Augments space-wide operations with sampling and enriching strategies using the inference control mechanisms built on the ZAM.
-
-#### Tasks:
-
-- [ ] Map each operation in minimal MeTTa into ZAM operations
-
-- [ ] Define API entry points to express grounded operations, and permit them to be inverted into queries
-
-- [ ] Implement fallback paths to materialize transformed spaces when grounded operations cannot be inverted, and develop graceful strategies to prevent these fallbacks from compromising the usability of the system overall
-
-### Deliverable 4 - Adapt hyperon clients to use MORK
-
-Deliverable 4 ports and adapts the MORK kernel into the  hyperon-experimental project, exposing a rich set of features and interface bindings for end-users.
-
-- Python integration\
-Update hyperon-experimental’s Python bindings to allow the MeTTa interpreter to be embedded inside Python, and allow the use of Python to define native grounded objects
-
-- C API\
-Run MeTTa from C/C++, and use C/C++ to implement native grounded objects
-
-- WASM API\
-Integrate a bridge to allow grounded objects to be implemented using WASM. 
-
-- Complete MeTTa stdlib support\
-Arithmetic and string operations, etc.
-
-- Modules\
-Isolated and composable units of functionality
-
-- Package management\
-Load packages implemented with any combination of MeTTa, Python, or WASM from disk, git, or a central repository
-
-## General desiderata
-
-- Software deliverables built to target [WebAssembly](https://webassembly.org/) as well as native (Linux + Mac) x (x86-64 + AArch64) platform targets
-
-- NoCopy binary formats where possible, to allow fast loading of large files using mmap, and sharing across virtual-machine boundaries without a serialize-deserialize translation cost
-
-## Possible future directions for MORK, beyond the 4 deliverables
-
-Currently we don't have these items as specific deliverables, but these are directions in which we may opt to continue the work.
-
-- Native compilation of MeTTa to machine code
-
-- Support for specialized many-core architectures and/or accelerators
-
-- Distribution across multiple machines on a network
-
-## Additional reference
-
-- [MeTTa](https://metta-lang.dev/)\
-Official resources for the MeTTa language
-
-- [Atomspace](https://github.com/opencog/atomspace)\
-An existing hypergraph processing system that served as a progenitor Hyperon and MeTTa
-
-- [Hyperon Experimental](https://github.com/trueagi-io/hyperon-experimental)\
-The most feature-complete implementation of the MeTTa language
-
-- [Triemaps that match](https://arxiv.org/abs/2302.08775)\
-A paper from Simon Peyton Jones describing one of the foundational patterns MORK will use
-
-- [CZ2](https://github.com/Adam-Vandervorst/CZ2)\
-Some experiments in Scala demonstrating the scaling characteristics of the triemap structures
-
-- [Interacting Trie-Maps](https://github.com/F1R3FLY-io/itm/)\
-An implementation of triemap interactions in Scala, serving as a proof-of-concept for ZAM and concurrency model
-
-- [Triemap derivation for Rust](https://github.com/mkovaxx/triemap-rs)\
-A crate exposing a macro to derive a triemap over a Rust enum or struct type
+```python
+#The `transform` in the code below matches two expressions in the subspace that take the form:
+#   (src (Individuals $i (Id $id)))
+#   (src (Individuals $i (Fullname $name)))
+# where the same individual $i has both an associated `Id` and `Fullname`. Then it materializes two new
+# expressions to create bidirectional associations between `$name` and `$id`, for each matched individual 
+with ManagedMORK.connect("../target/release/mork-server").and_terminate() as server:
+    server.upload_("(src (Individuals bob (Id 1)))").block()
+    server.upload_("(src (Individuals bob (Fullname \"Bob Roberts\")))").block()
+    server.upload_("(src (Individuals sam (Id 2)))").block()
+    server.upload_("(src (Individuals sam (Fullname \"Sam Samuel\")))").block()
+    server.transform((
+            "(src (Individuals $i (Id $id)))",
+            "(src (Individuals $i (Fullname $name)))"
+        ),(
+            "(simple (hasName $id $name))",
+            "(simple (hasId $name $id))"
+        )).block()
+    print(server.download("(simple $x)", "$x").data)
+```
+
+### Working with MM2
+
+TODO.  This needs to be a separate section / document
 

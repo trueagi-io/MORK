@@ -970,7 +970,7 @@ impl Space {
 
         let mut rz = btm.read_zipper();
         // SWAP!!!
-        let mut prz = ProductZipperG::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
             btm.read_zipper()
         }));
         prz.reserve_buffers(1 << 32, 32);

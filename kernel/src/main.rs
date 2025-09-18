@@ -882,7 +882,7 @@ fn cm0() {
     (2 != 1) (2 != 0) (2 != 3) (2 != 4)
     (3 != 1) (3 != 2) (3 != 0) (3 != 4)
     (4 != 1) (4 != 2) (4 != 0) (4 != 3)
-    
+
     ((step JZ $ts)
       (, (state $ts (IC $i)) (program $i (JZ $r $j)) (state $ts (REG $r $v)) (if $v (S $i) $j $ni) (state $ts (REG $k $kv)))
       (, (state (S $ts) (IC $ni)) (state (S $ts) (REG $k $kv))))
@@ -890,7 +890,7 @@ fn cm0() {
     ((step INC $ts)
       (, (state $ts (IC $i)) (program $i (INC $r)) (state $ts (REG $r $v)) ($r != $o) (state $ts (REG $o $ov)))
       (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r (S $v))) (state (S $ts) (REG $o $ov))))
-    
+
     ((step DEC $ts)
       (, (state $ts (IC $i)) (program $i (DEC $r)) (state $ts (REG $r (S $v))) ($r != $o) (state $ts (REG $o $ov)))
       (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r $v)) (state (S $ts) (REG $o $ov))))  
@@ -1622,17 +1622,17 @@ fn mm1_forward() {
         let t1 = Instant::now();
         let n = s.metta_calculus(1);
         println!("executing step {} took {} ms (unifications {}, writes {}, transitions {})", ticks, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
-        
+
         if n == 1 { continue } // comment out if you want the analysis at every step
 
         println!("space size {}", s.btm.val_count());
         let total_t = t0.elapsed();
-        
+
         let mut tmut = Vec::new();
         // trying to get: (ev (: (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) ⟨|-⟩))
         s.dump_sexpr(
             expr!(s, "[2] ev [3] : [3] ⟨=⟩ $ $ ⟨|-⟩"),  // Pattern
-            expr!(s, "[2] ev [3] : [3] ⟨=⟩ _1 _2 ⟨|-⟩"),  // Template: full reconstruction  
+            expr!(s, "[2] ev [3] : [3] ⟨=⟩ _1 _2 ⟨|-⟩"),  // Template: full reconstruction
             &mut tmut
         );
 
@@ -1719,8 +1719,7 @@ use serde::{Serialize, Deserialize};
 use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-enum Mode { Bench, Test, Run, Convert }
-
+enum Format { MeTTa, JSON, CSV, UPaths, Paths, ACT }
 
 #[derive(Debug, CLAParser)] // requires `derive` feature
 #[command(name = "mork")]
@@ -1734,9 +1733,7 @@ struct Cli {
 enum Commands {
     #[command(arg_required_else_help = true)]
     Bench {
-        #[arg(
-            default_missing_value = "default"
-        )]
+        #[arg(default_missing_value = "default")]
         only: String,
     },
     Test {
@@ -1752,6 +1749,14 @@ enum Commands {
     },
     #[command(arg_required_else_help = true)]
     Convert {
+        #[arg(default_missing_value = "metta")]
+        input_format: String,
+        #[arg(default_missing_value = "metta")]
+        output_format: String,
+        #[arg(long, short='i', default_value_t = 1)]
+        instrumentation: usize,
+        input_path: String,
+        output_path: Option<String>
     }
 }
 
@@ -1831,11 +1836,70 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { .. } => {
+        Commands::Convert { input_format, output_format, instrumentation, input_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
-            #[cfg(all(feature = "nightly"))]
-            json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
+
+            let input_path_extension = input_path.rfind(".").map(|i| &input_path[i+1..]);
+            if input_path_extension.unwrap_or("") != input_format.as_str() { println!("input format {} does not coincide with the extension {:?}", input_format, input_path_extension); }
+            let some_output_path = output_path.unwrap_or_else(|| format!("{}.{}", &input_path[..input_path.len()-input_path_extension.unwrap_or("").len()], output_format));
+            let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
+            if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
+            
+            match (input_format.as_str(), output_format.as_str()) {
+                ("metta", "metta" | "act" | "paths") => {
+                    let mut s = Space::new();
+                    let f = std::fs::File::open(&input_path).unwrap();
+                    let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+                    s.load_all_sexpr(&*mmapf);
+                    println!("done loading in memory");
+                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
+                    
+                    match output_format.as_str() {
+                        "metta" => {
+                            let f = std::fs::File::create(&some_output_path).unwrap();
+                            let mut w = std::io::BufWriter::new(f);
+                            s.dump_all_sexpr(&mut w).unwrap();
+                        }
+                        "act" => {
+                            s.backup_tree(some_output_path);
+                        }
+                        "paths" => {
+                            s.backup_paths(some_output_path);
+                        }
+                        _ => { unreachable!() }
+                    }
+                }
+                ("paths", "metta" | "act" | "paths") => {
+                    let mut s = Space::new();
+                    s.restore_paths(&input_path);
+                    println!("done loading in memory");
+                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
+
+                    match output_format.as_str() {
+                        "metta" => {
+                            let f = std::fs::File::create(&some_output_path).unwrap();
+                            let mut w = std::io::BufWriter::new(f);
+                            s.dump_all_sexpr(&mut w).unwrap();
+                        }
+                        "act" => {
+                            s.backup_tree(some_output_path);
+                        }
+                        "paths" => {
+                            s.backup_paths(some_output_path);
+                        }
+                        _ => { unreachable!() }
+                    }
+                }
+                #[cfg(all(feature = "nightly"))]
+                (Format::JSON, Format::UPaths) => {
+                    #[cfg(all(feature = "nightly"))]
+                    // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
+                    json_upaths(input_path, output_path);
+                    
+                }
+                (_, _) => { panic!("unsupported conversion") }
+            }
         }
     }
     return;

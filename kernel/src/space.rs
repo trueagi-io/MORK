@@ -926,17 +926,6 @@ impl Space {
         Ok(())
     }
 
-    pub fn backup<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
-        pathmap::serialization::write_trie("neo4j triples", self.btm.read_zipper(),
-                                           |v, b| pathmap::serialization::ValueSlice::Read(&[]),
-                                           path.as_ref()).map(|_| ())
-    }
-
-    pub fn restore(&mut self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
-        self.btm = pathmap::serialization::deserialize_file(path, |_| ())?;
-        Ok(())
-    }
-
     pub fn backup_tree<OutDirPath : AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<(), std::io::Error> {
         pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
             self.btm.read_zipper(), |_v| 0, path).map(|_tree| ())

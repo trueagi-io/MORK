@@ -1530,6 +1530,188 @@ fn linear_alternating(steps: usize) {
     // println!("result: {res}");
 }
 
+fn mm1_forward() {
+    // Program: universe, typed constructors, axioms (curried), tiny pipeline, and final assembly.
+    const P: &str = r#"
+(kb (: ⟨+⟩ (-> ⟨term⟩ (-> ⟨term⟩ ⟨term⟩))))
+(kb (: ⟨=⟩ (-> ⟨term⟩ (-> ⟨term⟩ ⟨wff⟩))))
+(kb (: ⟨t⟩ ⟨term⟩))
+(kb (: ⟨0⟩ ⟨term⟩))
+
+(kb (: ⟨tpl⟩ (-> (: $x ⟨term⟩) (-> (: $y ⟨term⟩)
+                      (: (⟨+⟩ $x $y) ⟨term⟩)))))
+(kb (: ⟨weq⟩ (-> (: $x ⟨term⟩) (-> (: $y ⟨term⟩)
+                      (: (⟨=⟩ $x $y) ⟨wff⟩)))))
+(kb (: ⟨wim⟩ (-> (: $P ⟨wff⟩) (-> (: $Q ⟨wff⟩)
+                      (: (⟨->⟩ $P $Q) ⟨wff⟩)))))
+
+(kb (: ⟨a2-curry⟩ (-> (: $a ⟨term⟩)
+                  (: (⟨=⟩ (⟨+⟩ $a ⟨0⟩) $a) ⟨|-⟩))))
+(kb (: ⟨a1-curry⟩ (-> (: $a ⟨term⟩) (-> (: $b ⟨term⟩) (-> (: $c ⟨term⟩)
+                  (: (⟨->⟩ (⟨=⟩ $a $b) (⟨->⟩ (⟨=⟩ $a $c) (⟨=⟩ $b $c))) ⟨|-⟩))))))
+(kb (: ⟨mp-curry⟩ (-> (: $P ⟨wff⟩) (-> (: $Q ⟨wff⟩)
+                  (-> (: $P ⟨|-⟩) (-> (: (⟨->⟩ $P $Q) ⟨|-⟩) (: $Q ⟨|-⟩)))))))
+
+(kb (: ⟨a2⟩ (-> (: $a ⟨term⟩) (: (⟨=⟩ (⟨+⟩ $a ⟨0⟩) $a) ⟨|-⟩))))
+(kb (: ⟨a1⟩ (-> (: $a ⟨term⟩) (: $b ⟨term⟩) (: $c ⟨term⟩) (: (⟨->⟩ (⟨=⟩ $a $b) (⟨->⟩ (⟨=⟩ $a $c) (⟨=⟩ $b $c))) ⟨|-⟩))))
+(kb (: ⟨mp⟩ (-> (: $P ⟨wff⟩) (: $Q ⟨wff⟩) (: $P ⟨|-⟩) (: (⟨->⟩ $P $Q) ⟨|-⟩) (: $Q ⟨|-⟩))))
+
+(exec (0 lift) (, (kb (: $t $T))) (, (ev (: $t $T))))
+
+(exec (1 tpl-apply)
+  (, (ev (: $x ⟨term⟩))
+     (ev (: $y ⟨term⟩)))
+  (, (ev (: (⟨+⟩ $x $y) ⟨term⟩))))
+
+(exec (1 weq-apply)
+  (, (ev (: $a ⟨term⟩))
+     (ev (: $b ⟨term⟩)))
+  (, (ev (: (⟨=⟩ $a $b) ⟨wff⟩))))
+
+(exec (1 wim-apply)
+  (, (ev (: $P ⟨wff⟩))
+     (ev (: $Q ⟨wff⟩)))
+  (, (ev (: (⟨->⟩ $P $Q) ⟨wff⟩))))
+
+(exec (1 a2-instantiate-t)
+  (, (ev (: $a ⟨term⟩)))
+  (, (ev (: (⟨=⟩ (⟨+⟩ $a ⟨0⟩) $a) ⟨|-⟩))))
+
+(exec (1 a1-instantiate-PtoQ)
+  (, (ev (: $a ⟨term⟩))
+     (ev (: $b ⟨term⟩))
+     (ev (: $c ⟨term⟩)))
+  (, (ev (: (⟨->⟩ (⟨=⟩ $a $b)
+               (⟨->⟩ (⟨=⟩ $a $c)
+                       (⟨=⟩ $b $c))) ⟨|-⟩))))
+
+(exec (2 derive-P-to-Q-direct3)
+  (, (ev (: $P ⟨wff⟩))
+     (ev (: $P ⟨|-⟩))
+     (ev (: (⟨->⟩ $P $IMP) ⟨|-⟩))
+     (ev (: $IMP ⟨wff⟩)))
+  (, (ev (: $IMP ⟨|-⟩))))
+
+(exec (3 assemble-final-proof-direct)
+  (, (ev (: $P ⟨wff⟩))
+     (ev (: $P ⟨|-⟩))
+     (ev (: (⟨->⟩ $P $Q) ⟨|-⟩))
+     (ev (: $Q ⟨wff⟩)))
+  (, (ev (: $Q ⟨|-⟩))))
+"#;
+
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    s.load_all_sexpr(P.as_bytes()).unwrap();
+
+    // Targets (kept identical to mm1())
+    let want_ev_term_tplus0    = "(ev (: (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨term⟩))";
+    let want_ev_wff_p          = "(ev (: (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) ⟨wff⟩))";
+    let want_ev_wff_q          = "(ev (: (⟨=⟩ ⟨t⟩ ⟨t⟩) ⟨wff⟩))";
+    let want_ev_proof_p        = "(ev (: (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) ⟨|-⟩))";
+    let want_ev_proof_ptoq     = "(ev (: (⟨->⟩ (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) (⟨=⟩ ⟨t⟩ ⟨t⟩)) ⟨|-⟩))";
+    let want_ev_proof_ptoptoq  = "(ev (: (⟨->⟩ (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) (⟨->⟩ (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) (⟨=⟩ ⟨t⟩ ⟨t⟩))) ⟨|-⟩))";
+    let want_final_evidence    = "(ev (: (⟨=⟩ ⟨t⟩ ⟨t⟩) ⟨|-⟩)";
+
+    println!("=== MM1 (forward): Proving ⊢ (t = t) ===");
+
+    let mut ticks = 0usize;
+    loop {
+        ticks += 1;
+        let t1 = Instant::now();
+        let n = s.metta_calculus(1);
+        println!("executing step {} took {} ms (unifications {}, writes {}, transitions {})", ticks, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+        
+        if n == 1 { continue } // comment out if you want the analysis at every step
+
+        println!("space size {}", s.btm.val_count());
+        let total_t = t0.elapsed();
+        
+        let mut tmut = Vec::new();
+        // trying to get: (ev (: (⟨=⟩ (⟨+⟩ ⟨t⟩ ⟨0⟩) ⟨t⟩) ⟨|-⟩))
+        s.dump_sexpr(
+            expr!(s, "[2] ev [3] : [3] ⟨=⟩ $ $ ⟨|-⟩"),  // Pattern
+            expr!(s, "[2] ev [3] : [3] ⟨=⟩ _1 _2 ⟨|-⟩"),  // Template: full reconstruction  
+            &mut tmut
+        );
+
+        let result = String::from_utf8(tmut).unwrap();
+        println!("Query result (tick {}): {}", ticks, result);
+
+        for line in result.lines() {
+            let trimmed = line.trim();
+            if trimmed == want_ev_proof_p {
+                println!("✅ EXACT MATCH found at tick {}: {}", ticks, trimmed);
+                break;
+            }
+        }
+
+        let mut proof_ptoq_check = Vec::new();
+        s.dump_sexpr(
+            expr!(s, "[2] ev [3] : [3] ⟨->⟩ [3] ⟨=⟩ [3] ⟨+⟩ ⟨t⟩ ⟨0⟩ ⟨t⟩ [3] ⟨=⟩ ⟨t⟩ ⟨t⟩ ⟨|-⟩"),  // Pattern
+            expr!(s, "[2] ev [3] : [3] ⟨->⟩ [3] ⟨=⟩ [3] ⟨+⟩ ⟨t⟩ ⟨0⟩ ⟨t⟩ [3] ⟨=⟩ ⟨t⟩ ⟨t⟩ ⟨|-⟩"),  // Template: return same expression
+            &mut proof_ptoq_check
+        );
+
+        if !proof_ptoq_check.is_empty() {
+            let result = String::from_utf8(proof_ptoq_check).unwrap();
+            println!("🎯 Found P→Q proof: {}", result.trim());
+        } else {
+            println!("P→Q proof not found yet");
+        }
+
+        let mut buf = Vec::new();
+        s.dump_all_sexpr(&mut buf).unwrap();
+        let dump = String::from_utf8_lossy(&buf);
+
+        let line_has = |needle: &str| dump.lines().any(|l| l.trim_start().starts_with(needle));
+
+        let have_tplus0_term  = line_has(want_ev_term_tplus0);
+        let have_wff_p_ev     = line_has(want_ev_wff_p);
+        let have_wff_q_ev     = line_has(want_ev_wff_q);
+        let have_proof_p_ev   = line_has(want_ev_proof_p);
+        let have_ptoq_ev      = line_has(want_ev_proof_ptoq);
+        let have_ptoptoq_ev   = line_has(want_ev_proof_ptoptoq);
+        let have_final        = line_has(want_final_evidence);
+
+        if have_final {
+            println!("\n== mm1 (forward): ✅ SUCCESS in {:?} after {} tick(s) ==", total_t, ticks);
+            println!("  (+ t 0) : term ............. {}", if have_tplus0_term { "✓" } else { "—" });
+            println!("  wff_P (ev) ................. {}", if have_wff_p_ev { "✓" } else { "—" });
+            println!("  wff_Q (ev) ................. {}", if have_wff_q_ev { "✓" } else { "—" });
+            println!("  proof_P (a2@t, ev) ......... {}", if have_proof_p_ev { "✓" } else { "—" });
+            println!("  proof_PtoQ (a1, ev) ........ {}", if have_ptoq_ev { "✓" } else { "—" });
+            println!("  proof_PtoPtoQ (a1, ev) ..... {}", if have_ptoptoq_ev { "✓" } else { "—" });
+
+            println!("\n--- Final evidence confirmation ---");
+            println!("✅ Successfully derived ⊢ (t = t)");
+
+            println!("\n--- Full Final State Dump ---");
+            print!("{dump}");
+            break;
+        }
+
+        if n == 0 || ticks >= 128 {
+            println!("\n== mm1 (forward): — FAILURE in {:?} after {} tick(s) ==", t0.elapsed(), ticks);
+            println!("  (+ t 0) : term ............. {}", if have_tplus0_term { "✓" } else { "—" });
+            println!("  wff_P (ev) ................. {}", if have_wff_p_ev { "✓" } else { "—" });
+            println!("  wff_Q (ev) ................. {}", if have_wff_q_ev { "✓" } else { "—" });
+            println!("  proof_P (a2@t, ev) ......... {}", if have_proof_p_ev { "✓" } else { "—" });
+            println!("  proof_PtoQ (a1, ev) ........ {}", if have_ptoq_ev { "✓" } else { "—" });
+            println!("  proof_PtoPtoQ (a1, ev) ..... {}", if have_ptoptoq_ev { "✓" } else { "—" });
+
+            if !have_final {
+                println!("\n❌ Failed to derive ⊢ (t = t)");
+            }
+
+            println!("\n--- Full Final State Dump ---");
+            print!("{dump}");
+            break;
+        }
+    }
+}
+
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -1562,8 +1744,10 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     Run {
         input_path: String,
-        #[arg(long)]
+        #[arg(long, default_value_t = 1000000000000000)]
         steps: usize,
+        #[arg(long, default_value_t = 1)]
+        instrumentation: usize,
         output_path: Option<String>,
     },
     #[command(arg_required_else_help = true)]
@@ -1577,12 +1761,15 @@ fn main() {
 
     // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
     // stv_roman();
+    // mm1_forward();
     // return;
 
     let args = Cli::parse();
 
     match args.command {
         Commands::Bench { only } => {
+            #[cfg(debug_assertions)]
+            println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: HashSet<&str> = only.split(",").collect();
             if selected.remove("all") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
             if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
@@ -1600,6 +1787,8 @@ fn main() {
             }
         }
         Commands::Test { .. } => {
+            #[cfg(not(debug_assertions))]
+            println!("WARNING running in release or -O3, if unintentional, build without --release and with the alternative .cargo rustflags");
             lookup();
             positive();
             negative();
@@ -1615,17 +1804,22 @@ fn main() {
             process_calculus_reverse();
             logic_query();
 
+            bc0();
             cm0();
         }
-        Commands::Run { input_path, steps, output_path } => {
+        Commands::Run { input_path, steps, instrumentation, output_path } => {
+            #[cfg(debug_assertions)]
+            println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
             let f = std::fs::File::open(&input_path).unwrap();
             let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
             s.load_all_sexpr(&*mmapf);
+            if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
             let mut performed = s.metta_calculus(steps);
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+            if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
             if output_path.is_none() {
                 let mut v = vec![];
                 s.dump_all_sexpr(&mut v).unwrap();
@@ -1638,6 +1832,8 @@ fn main() {
             }
         }
         Commands::Convert { .. } => {
+            #[cfg(debug_assertions)]
+            println!("WARNING running in debug, if unintentional, build with --release");
             #[cfg(all(feature = "nightly"))]
             json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
         }

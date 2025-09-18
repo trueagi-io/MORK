@@ -1244,8 +1244,7 @@ impl Space {
     //     }
     // }
 
-    pub fn metta_calculus(&mut self, mut steps: usize) -> usize {
-        // MC CMD "TEXEC THREAD0"
+    pub fn metta_calculus(&mut self, steps: usize) -> usize {
         let mut done = 0;
         let prefix_e = expr!(self, "[4] exec $ $ $");
         let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };

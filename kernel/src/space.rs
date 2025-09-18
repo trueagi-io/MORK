@@ -24,6 +24,7 @@ use log::*;
 
 pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
+pub static mut writes: usize = 0;
 
 pub struct Space {
     pub btm: BytesTrieMap<()>,
@@ -996,7 +997,7 @@ impl Space {
                         trace!(target: "query_multi", "at {:?}",
                             Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
                     }
-
+                    unsafe { unifications += 1; }
                     // if e.variables() != 0 {
                     if true {
                         let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
@@ -1100,7 +1101,7 @@ impl Space {
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
-            unsafe { unifications += 1; }
+            unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
                     for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {

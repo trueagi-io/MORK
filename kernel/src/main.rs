@@ -7,7 +7,7 @@ use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving}
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, prefix, sexpr};
 use mork::prefix::Prefix;
-use mork::space::{transitions, unifications, Space};
+use mork::space::{transitions, unifications, writes, Space};
 use mork_bytestring::{item_byte, Tag};
 /*fn main() {
     let mut s = Space::new();
@@ -1531,317 +1531,116 @@ fn linear_alternating(steps: usize) {
 }
 
 
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use serde::{Serialize, Deserialize};
+use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+enum Mode { Bench, Test, Run, Convert }
+
+
+#[derive(Debug, CLAParser)] // requires `derive` feature
+#[command(name = "mork")]
+#[command(about = "MORK CLI", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    #[command(arg_required_else_help = true)]
+    Bench {
+        #[arg(
+            default_missing_value = "default"
+        )]
+        only: String,
+    },
+    Test {
+    },
+    #[command(arg_required_else_help = true)]
+    Run {
+        input_path: String,
+        #[arg(long)]
+        steps: usize,
+        output_path: Option<String>,
+    },
+    #[command(arg_required_else_help = true)]
+    Convert {
+    }
+}
+
+
 fn main() {
     env_logger::init();
 
     // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
-    stv_roman();
+    // stv_roman();
+    // return;
 
-    // lookup();
-    // positive();
-    // negative();
-    // bipolar();
-    // positive_equal();
-    // negative_equal();
-    // bipolar_equal();
-    //
-    // two_positive_equal();
-    // two_positive_equal_crossed();
-    // two_bipolar_equal_crossed();
-    //
-    // process_calculus_reverse();
-    // logic_query();
-    // bc0();
-    // bc1();
-    // bc2();
-    // bc3();
-    //
-    // cm0();
-    // bc0();
-    // bc1();
+    let args = Cli::parse();
 
-    // lens_aunt();
-    // lens_composition();
+    match args.command {
+        Commands::Bench { only } => {
+            let mut selected: HashSet<&str> = only.split(",").collect();
+            if selected.remove("all") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
+            if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
 
-    // bench_transitive_no_unify(50000, 1000000);
-    // bench_clique_no_unify(200, 3600, 5);
-    // bench_finite_domain(10_000);
-    // process_calculus_bench(1000, 200, 200);
+            for b in selected {
+                match b {
+                    "transitive" => { bench_transitive_no_unify(50000, 1000000); }
+                    "clique" => { bench_clique_no_unify(200, 3600, 5); }
+                    "finite_domain" => { bench_finite_domain(10_000); }
+                    "process_calculus" => { process_calculus_bench(1000, 200, 200); }
+                    "exponential" => { exponential(32); }
+                    "exponential_fringe" => { exponential_fringe(15); }
+                    s => { println!("bench not known: {s}") }
+                }
+            }
+        }
+        Commands::Test { .. } => {
+            lookup();
+            positive();
+            negative();
+            bipolar();
+            positive_equal();
+            negative_equal();
+            bipolar_equal();
 
-    // exponential(32);
-    // exponential_fringe(15);
-    // linear_fringe_alternating(15);
-    // linear_alternating(15);
+            two_positive_equal();
+            two_positive_equal_crossed();
+            two_bipolar_equal_crossed();
 
-    // #[cfg(all(feature = "nightly"))]
-    // json_upaths_smoke();
-    // #[cfg(all(feature = "nightly"))]
-    // json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
+            process_calculus_reverse();
+            logic_query();
+
+            cm0();
+        }
+        Commands::Run { input_path, steps, output_path } => {
+            let mut s = Space::new();
+            let f = std::fs::File::open(&input_path).unwrap();
+            let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+            s.load_all_sexpr(&*mmapf);
+            println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
+            let t0 = Instant::now();
+            let mut performed = s.metta_calculus(steps);
+            println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+            if output_path.is_none() {
+                let mut v = vec![];
+                s.dump_all_sexpr(&mut v).unwrap();
+                let res = String::from_utf8(v).unwrap();
+                println!("result:\n{res}");
+            } else {
+                let f = std::fs::File::create(&output_path.unwrap()).unwrap();
+                let mut w = std::io::BufWriter::new(f);
+                s.dump_all_sexpr(&mut w).unwrap();
+            }
+        }
+        Commands::Convert { .. } => {
+            #[cfg(all(feature = "nightly"))]
+            json_upaths("/mnt/data/enwiki-20231220-pages-articles-links/cqls.json", "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths");
+        }
+    }
     return;
-
-    let mut s = Space::new();
-    const space: &str = r#"
-(exec P0 (, (sudoku p2 input (row ($r $x1 $x2 $x3 $x4 $x5 $x6 $x7 $x8 $x9)))) 
-         (, (cell 1 $r $x1) (cell 2 $r $x2) (cell 3 $r $x3)  (cell 4 $r $x4) (cell 5 $r $x5) (cell 6 $r $x6)  (cell 7 $r $x7) (cell 8 $r $x8) (cell 9 $r $x9)  ))
-
-(exec P1 (, (cell $c $r _))
-         (, (cell $c $r 1) (cell $c $r 2) (cell $c $r 3)  (cell $c $r 4) (cell $c $r 5) (cell $c $r 6)  (cell $c $r 7) (cell $c $r 8) (cell $c $r 9)  ))
-
-(exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
-         (, (Deduction remaining (cell $ca $r $x) (cell $cb $r $y))))
-
-"#;
-    //
-    // (exec P2 (, (cell $ca $r $va) (cell $cb $r $vb))
-    // (, (Deduction remaining (cell $ca $r X) (cell $cb $r Y))))
-
-    // (exec P3 (, (cell $c $ra $va) (cell $c $rb $vb))
-    // (, (Deduction remaining (cell $c $ra X) (cell $c $rb Y))))
-    // 
-    // 
-    // (exec P4 (, (cell $c $ra $va) (cell $c $rb $vb))
-    // (, (Deduction remaining (cell $c $ra $x) (cell $c $rb $y))))
-    // (block 0 1 1) (block 0 1 2) (block 0 1 3)
-    // (block 0 2 1) (block 0 2 2) (block 0 2 3)
-    // (block 0 3 1) (block 0 3 2) (block 0 3 3)
-
-    const sudoku_p2: &str = r#"
-1 2 3 4 5 6 7 8 9
-_ 5 _ _ _ _ 9 _ _
-_ _ _ 8 3 1 2 5 _
-2 _ 7 _ _ _ 6 1 3
-9 _ 6 _ _ 7 _ 3 _
-1 2 8 _ _ _ 7 _ _
-_ _ _ 2 _ 4 _ 9 6
-8 1 _ 7 6 _ _ 2 9
-7 3 4 _ 2 8 _ _ 1
-_ _ _ 4 1 _ _ _ _"#;
-    
-    s.load_csv(sudoku_p2.as_bytes(), expr!(s, "$"), expr!(s, "[4] sudoku p2 input [2] row _1"), b' ').unwrap();
-    
-    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-    s.metta_calculus(100);
-    
-    // println!("size {:?}", s.btm.val_count());
-    
-    let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
-    
-    println!("{}", String::from_utf8(v).unwrap());
-    
-    return;
-    /*let mut s = Space::new();
-    const space: &str = r#"
-(= (add (S $x) $y) (S (add $x $y)))
-(= (add Z $y) $y)
-(= (mul (S (S $x)) $y) (add $y (mul (S $x) $y)))
-(= (mul (S Z) $y) $y)
-(= (mul Z $y) Z)
-
-(PC (Cat (Point3D 39 9504 34980)))
-(PC (Cat (Point3D 39 9504 34980)))
-(PC (Cat (Point3D 39 9480 34980)))
-(PC (Cat (Point3D 39 4830 34980)))
-(PC (Cat (Point3D 39 9504 34980)))
-(PC (Cat (Point3D 39 3230 34923)))
-(PC (Cat (Point3D 27 3410 34900)))
-(PC (Cat (Point3D 27 3410 34964)))
-(PC (Cat (Point3D 23 3459 34932)))
-
-"#;
-
-    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
-
-
-    let [(t1, _), (t2, _)] = &s.token_bfs(&[], expr!(s, "$"))[..] else { panic!() };
-    println!("{:?}", s.token_bfs(&t1[..], expr!(s, "$")));
-    println!("{:?}", s.token_bfs(t2, expr!(s, "$")));
-
-    // let mut v = vec![];
-    // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-    //
-    // println!("{}", String::from_utf8(v).unwrap());
-    return;*/
-    /*
-
-    let mut s = Space::new();
-    const facts: &str = "0,1\n1,2\n2,3\n3,4\n4,5\n5,0\n5,6\n6,7\n7,8\n8,9\n9,10\n10,7";
-    const expected_same_clique: &str = "...";
-    const expected_reachable: &str = "...";
-
-
-    s.load_csv(facts.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] edge _1 _2")).unwrap();
-
-    // (reachable $x $y) :- (edge $x $y)
-    // (reachable $x $y) :- (edge $x $z), (reachable $z $y)
-    // (same_clique $x $y) :- (reachable $x $y), (reachable $y $x)
-    s.datalog(&[
-        expr!(s, "[3] -: [2] , [3] edge $ $ [3] reachable _1 _2"),
-        expr!(s, "[3] -: [3] , [3] edge $ $ [3] reachable _2 $ [3] reachable _1 _3"),
-        expr!(s, "[3] -: [3] , [3] reachable $ $ [3] reachable _2 _1 [3] same_clique _1 _2"),
-    ]);
-
-    let mut v = vec![];
-    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v).unwrap();
-
-    println!("{}", String::from_utf8(v).unwrap());
-    return;
-     */
-    /*
-        const csv_contents: &str = r#"1,2
-10,20
-10,30"#;
-
-    const sexpr_contents: &str = r#"(useful (Foo 1))
-(useless ((- o -) (- o -)))"#;
-
-    let mut s = Space::new();
-    // s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[2] mycsv [3] my precious _2")).unwrap();
-    s.load_csv(csv_contents.as_bytes(), expr!(s, "[2] 10 $"), expr!(s, "[2] data [2] mycsv [3] my precious _1")).unwrap();
-
-    s.load_sexpr(sexpr_contents.as_bytes(), expr!(s, "[2] useful $"), expr!(s, "[2] data [2] mysexpr _1")).unwrap();
-
-    let mut v = vec![];
-    s.dump_sexpr(expr!(s, "[2] data [2] mycsv $"), expr!(s, "_1"), &mut v).unwrap();
-
-    println!("{}", String::from_utf8(v).unwrap());
-    return;
-    */
-    // println!("{}", mork_bytestring::serialize(&[3, 3, 200, 84, 80, 55, 51, 45, 65, 83, 49, 204, 103, 101, 110, 101, 95, 110, 97, 109, 101, 95, 111, 102, 200, 0, 0, 0, 0, 4, 129, 29, 29, 4, 195, 83, 80, 79, 200, 0, 0, 0, 0, 4, 129, 29, 29, 200]));
-    //
-    return;
-    // let mut s = Space::new();
-
-    // let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.tree").unwrap();
-    // 
-    // let iter_tree_start = Instant::now();
-    // let mut rz = tree.read_zipper();
-    // let mut npaths = 0usize; 
-    // let mut nbytes = 0; 
-    // while rz.to_next_val() {
-    //     nbytes += rz.path().len();
-    //     npaths += 1;
-    //     if npaths % 10_000_000 == 0 {
-    //         println!("npaths {}", npaths);
-    //     }
-    // }
-    // println!("iterating tree backup {} {} took {}", npaths, nbytes, iter_tree_start.elapsed().as_secs());
-    
-    // let restore_paths_start = Instant::now();
-    // let restored = s.restore_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap();
-    // println!("restored paths {:?} {}", restored, restore_paths_start.elapsed().as_secs());
-    
-    // let everythingf = std::fs::File::open("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.jsonl").unwrap();
-    // let everythingfs = unsafe { memmap2::Mmap::map(&everythingf).unwrap() };
-    // let load_compressed = Instant::now();
-    // println!("done {:?} {}", s.load_jsonl(everythingfs.as_ref()).unwrap(), load_compressed.elapsed().as_secs());
-    // // done (326728210, 6798095370) 1934s
-    // 
-    // let backup_paths_start = Instant::now();
-    // println!("{:?}", s.backup_paths("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.paths.gz").unwrap());
-    // println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
-    // // SerializationStats { bytes_out: 42_741_214_528, bytes_in: 355_357_500_042, path_count: 6798095370 }
-    // //                                                           328_165_118_562
-    // // paths backup took 4619s
-    // 
-    // let backup_tree_start = Instant::now();
-    // println!("{:?}", s.backup_tree("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/whole_flybase.tree").unwrap());
-    // println!("tree backup took {}", backup_tree_start.elapsed().as_secs());
-    // // tree backup took 3033
-    // 
-    // let backup_dag_start = Instant::now();
-    // println!("{:?}", s.backup("/run/media/adam/43323a1c-ad7e-4d9a-b3c0-cf84e69ec61a/").unwrap());
-    // println!("dag backup took {}", backup_dag_start.elapsed().as_secs());
-
-
-    // let restore_symbols_start = Instant::now();
-    // println!("restored symbols {:?}", s.restore_symbols("/dev/shm/combined.symbols.zip").unwrap());
-    // println!("symbols backup took {}", restore_symbols_start.elapsed().as_secs());
-    // println!("{:?}", s.sm.get_sym(b"SPO"));
-    // println!("{:?}", s.sm.get_sym(b"IL9R-207"));
-    // let bucket_map::serialization::Tables { to_symbol, to_bytes } = s.sm.reveal_tables();
-    // println!("to_symbol.len() = {}; to_bytes.len() = {}", to_symbol.len(), to_bytes.len());
-    // println!("to_symbol.first().unwrap().val_count() = {:?}; to_bytes.first().unwrap().val_count() = {:?}", to_symbol.last().unwrap().val_count(), to_bytes.last().unwrap().val_count());
-
-    // for to_symbol_part in to_symbol {
-    //     print!("{},", to_symbol_part.val_count());
-    // }
-
-    // for to_byte_part in to_bytes {
-    //     print!("{},", to_byte_part.val_count());
-    // }
-
-    // let mut to_symbol_rz = to_symbol.last().unwrap().read_zipper();
-    // while let Some(v) = to_symbol_rz.to_next_val() {
-    //     println!("{:?} {:?}", std::str::from_utf8(to_symbol_rz.path()).unwrap_or(format!("{:?}", to_symbol_rz.path()).as_str()), v)
-    // }
-
-    // let restore_paths_start = Instant::now();
-    // println!("restored paths {:?}", s.restore_paths("/dev/shm/combined_ni.paths.gz").unwrap());
-    // println!("paths restore took {}", restore_paths_start.elapsed().as_secs());
-    // s.statistics();
-
-    // let load_labels_start = Instant::now();
-    // println!("{:?}", s.load_neo4j_node_labels("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
-    // println!("loading labels took {}", load_labels_start.elapsed().as_secs());
-    // s.statistics();
-
-    // let load_start = Instant::now();
-    // println!("{:?}", s.load_neo4j_triples("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
-    // println!("loading took {}", load_start.elapsed().as_secs());
-    // s.statistics();
-    // let mut rz = s.btm.read_zipper_at_path(&[item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(3)), b'S', b'P', b'O']);
-    // println!("SPO's {}", rz.val_count());
-    // rz.to_next_val();
-    // println!("{}", mork_bytestring::serialize(rz.origin_path().unwrap()));
-    //
-    // let property_load_start = Instant::now();
-    // println!("{:?}", s.load_neo4j_node_properties("bolt://localhost:7687", "neo4j", "morkwork").unwrap());
-    // println!("property loading took {}", property_load_start.elapsed().as_secs());
-    // s.statistics();
-
-
-    // work(&mut s);
-
-    // s.statistics();
-    // s.done();
-    // let restore_start = Instant::now();
-    // s.restore("/dev/shm/");
-    // println!("restore took {}", restore_start.elapsed().as_secs());
-    // s.statistics();
-
-
-
-
-    // let backup_paths_start = Instant::now();
-    // println!("{:?}", s.backup_paths("/dev/shm/combined_ni.paths.gz").unwrap());
-    // println!("paths backup took {}", backup_paths_start.elapsed().as_secs());
-    //
-    // let backup_symbols_start = Instant::now();
-    // println!("{:?}", s.backup_symbols("/dev/shm/combined.symbols.zip").unwrap());
-    // println!("symbols backup took {}", backup_symbols_start.elapsed().as_secs());
-
-    // let backup_start = Instant::now();
-    // s.backup("/dev/shm/combined.remydag");
-    // println!("backup took {}", backup_start.elapsed().as_secs());
 }
-
-/*
-restored paths DeserializationStats { bytes_in: 4061021063, bytes_out: 34621879507, path_count: 978700221 }
-paths restore took 135
-val count 978700221
-add gene name index took 8637 ms
-val count 979015756
-all_related_to_gene_start 193 µs
-res0 count 142
-add exon chr index took 32 s
-val count 1054962128
-add ops index took 91 s
-val count 1386253656
-transitive_chr1 7691 ms
-res1 count 40172978
-q0 33295 µs
-res2 count 151956
-
- */

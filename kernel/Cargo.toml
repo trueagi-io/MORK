@@ -24,6 +24,8 @@ freeze = { workspace = true }
 neo4rs = { version = "0.9.0-rc.6", optional = true }
 tokio = { version = "1.44.0", optional = true }
 rand = "0.9.1"
+clap = { version = "4.5.47", features = ["derive"] }
+serde = { version = "1.0.225", features = ["derive"] }
 
 [features]
 default = []

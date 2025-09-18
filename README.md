@@ -17,16 +17,16 @@ We're want to hear how you want to use MORK so we can prioritize ongoing work.  
 
 ## Building and running MORK
 
-These instructions pertain to the `server` branch, at [https://github.com/trueagi-io/MORK/tree/server](https://github.com/trueagi-io/MORK/tree/server/server)
+These instructions pertain to the `server` branch of the `git` repo [here](https://github.com/trueagi-io/MORK/tree/server)(https://github.com/trueagi-io/MORK/tree/server/server).
 
-1. Install the Rust tool chain by following the instructions at [https://rustup.rs/]
+1. Install the Rust tool chain by following the instructions at <https://rustup.rs/>
 
 2. Build the MORK server by running: `cargo build --release --bin mork-server`
 
 3. Start the MORK server by running: `./target/release/mork-server &`
 
 4. Run a smoke test from Python: `python python/client.py`  
-    NOTE: running the server and the client in separate terminals will produce more legible output.
+    NOTE: running the server and the client in separate terminals will produce more legible output.  If the server is launched from within python, the server's output is captured.
 
 ## Using MORK through the Python client
 
@@ -41,8 +41,8 @@ with ManagedMORK.connect("../target/release/mork-server").and_terminate() as top
 The python client uses MORK space objects on which to perform the operations.  These may refer to the server's entire space or a sub-space (aka a lens) within the space.  The `work_at` method allows a scope to be entered, creating an object to perform operations within the sub-space.
 
 ```python
-    # Create a scope subspace object to work within "aunt-kg"
-    with top_space.work_at("aunt-kg") as inputs:
+# Create a scope subspace object to work within "aunt-kg"
+with top_space.work_at("aunt-kg") as inputs:
 ```
 
 For a basic real-world example, run `aunt-kg.py` in the `python` directory.  It will create an output file called `simple_all.metta`.
@@ -113,7 +113,7 @@ with ManagedMORK.connect("../target/release/mork-server").and_terminate() as ser
     print(server.download("(simple $x)", "$x").data)
 ```
 
-### Working with MM2
+### Execution in MORK with MM2
 
 TODO.  This needs to be a separate section / document
 

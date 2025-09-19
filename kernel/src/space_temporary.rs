@@ -46,7 +46,7 @@ pub struct LoadNeo4JNodePropertiesError(String);
 pub struct LoadNeo4JNodeLabelsError(String);
 
 pub trait GetPathmap<'trie> {
-    fn get_pathmap(&self) -> Option<&ReadZipperUntracked<'trie, 'trie, ()>>;
+    fn get_pathmap(&self) -> Option<&ReadZipperTracked<'trie, 'trie, ()>>;
 }
 
 pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> + GetPathmap<'s> {}

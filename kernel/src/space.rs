@@ -84,18 +84,12 @@ impl<'space> PermissionArb<'space, DefaultSpace> for DefaultPermissionHead<'spac
                 return Ok(DefaultSpaceReader(MultiZipper::ACTMmap(rz)));
             }
         }
-        self.0.map.read_zipper_at_path(path).map_err(|e| {
+        let pm = self.0.map.read_zipper_at_path(path).map_err(|e| {
             DefaultPermissionErr {
                 message: format!("Conflict trying to acquire read zipper at {path:?}, {e}"),
                 path: path.to_vec()
             }
         })?;
-        // TODO: there's some irregularity with MultiZipper:
-        // forking ReadZipperTracked returns ReadZipperUnracked,
-        // so the easiest thing to do is to use ReadZipperUnracked everywhere.
-        // Perhaps it's not a good solution
-        let pm = unsafe { self.0.map.read_zipper_at_path_unchecked(path) };
-        // let pm = pm.fork_read_zipper();
         let reader = DefaultSpaceReader(MultiZipper::PathMap(pm));
         Ok(reader)
     }

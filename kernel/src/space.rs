@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use pathmap::arena_compact::ACTMmap;
 use core::assert_eq;
 use core::result::Result::{Err, Ok};
 use std::io::{BufRead, Write};
@@ -15,6 +17,7 @@ use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use log::*;
 
+use crate::multi_zipper::MultiZipper;
 pub use crate::space_temporary::{
     PathCount,
     NodeCount,
@@ -31,6 +34,7 @@ use crate::SpaceWriterZipper;
 pub struct DefaultSpace {
     /// The [PathMap] containing everything in the space
     pub map: Arc<ZipperHeadOwned<()>>,
+    pub act: Option<ACTMmap>,
     /// Guards access to create new permissions, so we can ensure high level operations
     /// that involve exchanging permissions are atomic
     permission_guard: Mutex<()>,
@@ -43,6 +47,7 @@ impl DefaultSpace {
     pub fn new() -> Self {
         Self {
             map: Arc::new(PathMap::new().into_zipper_head([])),
+            act: None,
             permission_guard: Mutex::new(()),
             sm: SharedMapping::new(),
         }
@@ -50,7 +55,8 @@ impl DefaultSpace {
 }
 
 /// Read Permission object in a [DefaultSpace]
-pub struct DefaultSpaceReader<'space>(ReadZipperTracked<'space, 'static, ()>);
+// pub struct DefaultSpaceReader<'space>(ReadZipperTracked<'space, 'static, ()>);
+pub struct DefaultSpaceReader<'space>(MultiZipper<'space>);
 
 /// Write Permission object in a [DefaultSpace]
 pub struct DefaultSpaceWriter<'space> {
@@ -61,14 +67,36 @@ pub struct DefaultSpaceWriter<'space> {
 /// PermissionHead object for [DefaultSpace]
 pub struct DefaultPermissionHead<'space>(&'space DefaultSpace);
 
+// let space = DefaultSpace::new();
+// eprintln!("{:x?}", prefix!(space, "[2] ACT $").slice);
+/// Prefix for ACT sub-space.
+const ACT_PREFIX: &[u8] = b"\x02\xc3ACT";
+
 impl<'space> PermissionArb<'space, DefaultSpace> for DefaultPermissionHead<'space> {
     fn new_reader(&self, path: &[u8], _auth: &()) -> Result<DefaultSpaceReader<'space>, DefaultPermissionErr> {
-        let reader = DefaultSpaceReader(self.0.map.read_zipper_at_path(path).map_err(|e| {
+        if path.starts_with(ACT_PREFIX) {
+            if let Some(act) = &self.0.act {
+                let rest = &path[ACT_PREFIX.len()..];
+                let rz = act.read_zipper_at_path(rest);
+                let rz = PrefixZipper::new(path.to_owned(), rz)
+                    .with_origin(path)
+                    .expect("origin must exist");
+                return Ok(DefaultSpaceReader(MultiZipper::ACTMmap(rz)));
+            }
+        }
+        self.0.map.read_zipper_at_path(path).map_err(|e| {
             DefaultPermissionErr {
                 message: format!("Conflict trying to acquire read zipper at {path:?}, {e}"),
                 path: path.to_vec()
             }
-        })?);
+        })?;
+        // TODO: there's some irregularity with MultiZipper:
+        // forking ReadZipperTracked returns ReadZipperUnracked,
+        // so the easiest thing to do is to use ReadZipperUnracked everywhere.
+        // Perhaps it's not a good solution
+        let pm = unsafe { self.0.map.read_zipper_at_path_unchecked(path) };
+        // let pm = pm.fork_read_zipper();
+        let reader = DefaultSpaceReader(MultiZipper::PathMap(pm));
         Ok(reader)
     }
 
@@ -732,7 +760,7 @@ macro_rules! sexpr {
 #[macro_export]
 macro_rules! prefix {
     ($space:ident, $s:literal) => {{
-        let mut src = parse!($s);
+        let mut src = mork_bytestring::parse!($s);
         let q = Expr{ ptr: src.as_mut_ptr() };
         let mut pdp = $crate::space::ParDataParser::new(&$space.sm);
         let mut buf = [0u8; 2048];
@@ -1534,6 +1562,21 @@ impl DefaultSpace {
         );
         if error { Err(s.to_string()) } else { Ok(c) }
     }
+
+    pub fn dump_subtrie_to_act<P>(&self, root: &[u8], path: P) -> std::io::Result<ACTMmap>
+        where P: AsRef<std::path::Path>
+    {
+        let mut reader = self.new_reader(root, &()).unwrap();
+        let zipper = self.read_zipper(&mut reader);
+        ACTMmap::dump_from_zipper(zipper, |()| 0, path)
+    }
+    pub fn load_act<P>(&mut self, path: P) -> std::io::Result<()>
+        where P: AsRef<std::path::Path>
+    {
+        let act = ACTMmap::open_mmap(path)?;
+        self.act = Some(act);
+        Ok(())
+    }
 }
 
 pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
@@ -1547,14 +1590,14 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
     max_write   : usize
 ) -> usize
     where
-    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
+    RZ : ZipperMoving + ZipperAbsolutePath + ZipperValues<()>
 {
     // let max_write   : usize = 10;
     let mut buffer = [0u8; 4096];
     let mut i = 0usize;
     // panic!("sizeof {}", std::mem::size_of::<IoWriteError>());
 
-    query_multi_impl(&[pattern], &[pattern_rz],|refs_bindings, _loc| {
+    query_multi_impl(&[pattern], vec![pattern_rz],|refs_bindings, _loc| {
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         match refs_bindings {
@@ -1695,19 +1738,19 @@ impl DefaultSpace {
                 self.read_zipper(reader)
         }).collect::<Vec<_>>();
 
-        query_multi_impl(patterns, &rzs, effect)
+        query_multi_impl(patterns, rzs, effect)
     }
 }
 
 pub(crate) fn query_multi_impl<'s, E, RZ, F>
 (
     patterns    : &[E],
-    pattern_rzs : &[RZ],
+    mut pattern_rzs : Vec<RZ>,
     mut effect  : F,
 ) -> usize
 where
     E: ExprTrait,
-    RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    RZ: ZipperMoving + ZipperAbsolutePath + ZipperValues<()>,
     F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
@@ -1723,7 +1766,10 @@ where
         }
 
         let [pat_0, pat_rest @ ..] = patterns else { return 0; };
-        let [rz0, rz_rest @ ..] = pattern_rzs else { return 0; };
+        if pattern_rzs.len() < 1 { return 0; }
+        let rz0 = pattern_rzs.remove(0);
+        let rz_rest = pattern_rzs;
+        // let [rz0, rz_rest @ ..] = pattern_rzs else { return 0; };
 
         let first_pattern_prefix = make_prefix(&pat_0.borrow());
         if !rz0.path_exists() { return 0; }
@@ -1739,26 +1785,31 @@ where
         virtual_path.extend_from_slice(first_pattern_prefix);
 
         //Make a temp map for the first pattern
-        let mut first_temp_map = PathMap::new();
-        first_temp_map.write_zipper_at_path(&virtual_path[..]).graft(rz0);
-        let first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
+        // let mut first_temp_map = PathMap::new();
+        // first_temp_map.write_zipper_at_path().graft(&rz0);
+        // let first_rz = first_temp_map.read_zipper_at_path(&[virtual_path[0]]);
+        let first_rz = PrefixZipper::new(&virtual_path[..], rz0)
+            .with_origin(&virtual_path[..1])
+            .expect("can't set origin");
 
         //Make temp maps for the rest of the patterns
         let mut tmp_maps = vec![];
-        for (rz, pat) in rz_rest.iter().zip(pat_rest) {
-            let mut temp_map = PathMap::new();
+        for (rz, pat) in rz_rest.into_iter().zip(pat_rest) {
+            // let mut temp_map = PathMap::new();
             let prefix = make_prefix(&pat.borrow());
             if !rz.path_exists() {
                 trace!("for p={:?} prefix {} not in map", pat.borrow(), serialize(prefix));
                 return 0
             }
-            temp_map.write_zipper_at_path(prefix).graft(rz);
+            // temp_map.write_zipper_at_path(prefix).graft(rz);
+            let temp_map = PrefixZipper::new(prefix, rz);
             tmp_maps.push(temp_map);
         }
-        let mut prz = ProductZipper::new(first_rz, patterns[1..].iter().enumerate().map(|(i, _p)| {
+        let mut prz = ProductZipperG::<_, _, ()>::new(first_rz, patterns[1..].iter().enumerate().zip(tmp_maps).map(|((i, _p), rz)| {
             // let prefix = unsafe { p.prefix().unwrap_or_else(|x| p.span()).as_ref().unwrap() };
             // tmp_maps[i].read_zipper_at_path(prefix)
-            tmp_maps[i].read_zipper()
+            // tmp_maps[i].read_zipper()
+            rz
         }));
         prz.reserve_buffers(4096, 512);
 
@@ -1860,22 +1911,22 @@ impl DefaultSpace {
 
 pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
     patterns            : &[E],
-    pattern_rzs         : &[RZ],
+    pattern_rzs         : Vec<RZ>,
     templates           : &[E],
     template_prefixes   : &[(usize, usize)],
     template_wzs        : &mut [WZ],
 ) -> (usize, bool)
     where
     E: ExprTrait,
-    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    RZ : ZipperMoving + ZipperAbsolutePath + ZipperValues<()>,
     WZ : ZipperMoving + ZipperWriting<()>
 {
         let mut buffer = Vec::with_capacity(1 << 32);
 
         let mut any_new = false;
-        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
+        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, _loc| {
 
-            let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
+            let Err((ref bindings, oi, ni, _assignments)) = refs_bindings else { todo!() };
             #[cfg(debug_assertions)]
             bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 

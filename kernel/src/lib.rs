@@ -2,6 +2,7 @@ pub mod space;
 mod json_parser;
 pub mod prefix;
 mod space_temporary;
+mod multi_zipper;
 pub use space_temporary::*;
 
 pub use mork_bytestring::{ExprTrait, Expr, OwnedExpr};
@@ -111,14 +112,14 @@ mod tests {
 (last_name Smith)
 (is_alive true)
 (age 27)
-(address (street_address 21 2nd Street))
-(address (city New York))
+(address (street_address "21 2nd Street"))
+(address (city "New York"))
 (address (state NY))
 (address (postal_code 10021-3100))
 (phone_numbers (0 (type home)))
-(phone_numbers (0 (number 212 555-1234)))
+(phone_numbers (0 (number "212 555-1234")))
 (phone_numbers (1 (type office)))
-(phone_numbers (1 (number 646 555-4567)))
+(phone_numbers (1 (number "646 555-4567")))
 (children (0 Catherine))
 (children (1 Thomas))
 (children (2 Trevor))
@@ -172,6 +173,30 @@ mod tests {
     }
 
     #[test]
+    fn query_act_simple() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::var("CARGO_MANIFEST_DIR")?;
+        let path = std::path::Path::new(&path).join("../../data/test_simple_sexprs0.act");
+        {
+            let mut s = DefaultSpace::new();
+            assert_eq!(16, s.load_sexpr_simple( SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
+            s.dump_subtrie_to_act(b"", &path)?;
+        }
+        let mut s = DefaultSpace::new();
+        s.load_act(&path)?;
+        let mut i = 0;
+        s.query(expr!(s, "[2] ACT [2] children [2] $ $"), |e| {
+            match i {
+                0 => { assert_eq!(sexpr!(s, e), "((ACT (children (0 Catherine))))") }
+                1 => { assert_eq!(sexpr!(s, e), "((ACT (children (1 Thomas))))") }
+                2 => { assert_eq!(sexpr!(s, e), "((ACT (children (2 Trevor))))") }
+                _ => { assert!(false) }
+            }
+            i += 1;
+        });
+        Ok(())
+    }
+
+    #[test]
     fn transform_simple() {
         let mut s = DefaultSpace::new();
         assert_eq!(16, s.load_sexpr_simple(SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
@@ -192,7 +217,9 @@ mod tests {
     #[test]
     fn transform_multi() {
         let mut s = DefaultSpace::new();
-        let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
+        let file_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/simpsons.metta");
+        let mut file = File::open(file_path).unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb).unwrap();
         s.load_sexpr_simple( fileb.as_slice(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
@@ -246,7 +273,9 @@ mod tests {
     #[test]
     fn subsumption_big() {
         let mut s = DefaultSpace::new();
-        let mut file = std::fs::File::open("/home/adam/Projects/MORK/benchmarks/logic-query/resources/big.metta")
+        let file_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../data/big.metta");
+        let mut file = File::open(file_path)
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();

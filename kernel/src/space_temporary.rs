@@ -9,6 +9,7 @@ use mork_frontend::{bytestring_parser::{ParseContext, Parser, ParserErrorType}};
 use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{PathMap, morphisms::Catamorphism, zipper::*};
 
+use crate::multi_zipper::MultiZipper;
 use crate::space::{
     ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
 };
@@ -44,8 +45,12 @@ pub struct LoadNeo4JNodePropertiesError(String);
 #[derive(Debug)]
 pub struct LoadNeo4JNodeLabelsError(String);
 
-pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
-impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperReadOnlySubtries<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> {}
+pub trait GetPathmap<'trie> {
+    fn get_pathmap(&self) -> Option<&ReadZipperUntracked<'trie, 'trie, ()>>;
+}
+
+pub trait SpaceReaderZipper<'s> : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> + GetPathmap<'s> {}
+impl<'s, T> SpaceReaderZipper<'s> for T where T : ZipperMoving + ZipperReadOnlyConditionalValues<'s, ()> + ZipperReadOnlyConditionalIteration<'s, ()> + ZipperIteration + Catamorphism<()> + ZipperAbsolutePath + ZipperPathBuffer + ZipperForking<()> + GetPathmap<'s> {}
 
 pub trait SpaceWriterZipper : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
 impl<T> SpaceWriterZipper for T where T : ZipperMoving + ZipperWriting<()> + ZipperForking<()> + ZipperAbsolutePath {}
@@ -310,9 +315,11 @@ pub trait Space: Sized {
 
                 let mut reader = perm_head.new_reader(path, auth)?;
                 let rz = self.read_zipper(&mut reader);
-
+                let rz_head = rz.get_pathmap()
+                    .expect("trying to graft with ACTree");
+                    // .ok_or_else(|| ExecError::OtherFmtErr("".to_string()))?;
                 let mut wz = read_map.write_zipper_at_path(path);
-                wz.graft(&rz);
+                wz.graft(rz_head);
             }
 
             //Acquire writers at each slot, knowing we any conflicts are with external clients
@@ -347,7 +354,7 @@ pub trait Space: Sized {
 
         let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
-        let result = transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
+        let result = transform_multi_multi_impl(patterns, pattern_rzs, templates, template_prefixes, &mut template_wzs);
 
         for wz in template_wzs {
             self.cleanup_write_zipper(wz);

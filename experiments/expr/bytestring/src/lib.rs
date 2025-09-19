@@ -159,20 +159,49 @@ macro_rules! traverse {
 #[macro_export]
 macro_rules! traverseh {
     ($t1:ty, $t2:ty, $t3:ty, $x:expr, $v0:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
-        struct AnonTraversal{ v: $t3 }
-        impl $crate::Traversal<$t1, $t2> for AnonTraversal {
-            #[inline(always)] fn new_var(&mut self, offset: usize) -> $t2 { ($new_var)(&mut self.v, offset) }
-            #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> $t2 { ($var_ref)(&mut self.v, offset, i) }
-            #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> $t2 { ($symbol)(&mut self.v, offset, s) }
-            #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> $t1 { ($zero)(&mut self.v, offset, a) }
-            #[inline(always)] fn add(&mut self, offset: usize, acc: $t1, sub: $t2) -> $t1 { ($add)(&mut self.v, offset, acc, sub) }
-            #[inline(always)] fn finalize(&mut self, offset: usize, acc: $t1) -> $t2 { ($finalize)(&mut self.v, offset, acc) }
-        }
+    let mut h: $t3 = $v0;
+    struct State<X> { iter: u8, payload: X }
+    let mut stack: SmallVec<[State<$t1>; 8]> = SmallVec::new();
+    // let mut stack = vec![];
+    let mut j: usize = 0;
+    let value = 'putting: loop {
+        let mut value = match unsafe { byte_item(*$x.ptr.byte_add(j)) } {
+            Tag::NewVar => { j += 1; ($new_var)(&mut h, j - 1) }
+            Tag::VarRef(r) => { j += 1; ($var_ref)(&mut h, j - 1, r) }
+            Tag::SymbolSize(s) => {
+                let slice = unsafe { &*slice_from_raw_parts($x.ptr.byte_add(j + 1), s as usize) };
+                let v = ($symbol)(&mut h, j, slice);
+                j += s as usize + 1;
+                v
+            }
+            Tag::Arity(a) => {
+                let acc = ($zero)(&mut h, j, a);
+                j += 1;
+                stack.push(State{ iter: a, payload: acc });
+                continue 'putting;
+            }
+        };
 
-        let mut traversal = AnonTraversal{ v: $v0 };
-        let result = $crate::execute_loop(&mut traversal, $x, 0).1;
-        (traversal.v, result)
-    }};
+        'popping: loop {
+            match stack.last_mut() {
+                None => { break 'putting value }
+                Some(&mut State{ iter: ref mut k, payload: ref mut acc }) => {
+                    unsafe {
+                        std::ptr::write(k, std::ptr::read(k).wrapping_sub(1));
+                        std::ptr::write(acc, ($add)(&mut h, j, std::ptr::read(acc), value));
+                        if std::ptr::read(k) != 0 { continue 'putting }
+                    }
+                }
+            }
+
+            value = match stack.pop() {
+                Some(State{ iter: _, payload: acc }) => ($finalize)(&mut h, j, acc),
+                None => break 'popping
+            }
+        }
+    };
+    (h, value)
+    }}
 }
 
 impl Expr {
@@ -2437,38 +2466,30 @@ impl ExprEnv {
 
     pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
-            let start_len = dest.len();
-            match byte_item(*self.subsexpr().ptr) {
-                Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
-                Tag::Arity(k) => {
-                    local!(vec : &'static mut Vec<ExprEnv>);
-                    local!(vec = std::mem::transmute(dest));
-                    local!(env : ExprEnv);
-                    local!(env = ExprEnv{
-                        n: self.n,
-                        v: self.v,
-                        offset: self.offset,
-                        base: self.base,
-                    });
+        match byte_item(*self.subsexpr().ptr) {
+            Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
+            Tag::Arity(k) => {
+                let mut env = ExprEnv{
+                    n: self.n,
+                    v: self.v,
+                    offset: self.offset,
+                    base: self.base,
+                };
 
-                    traverseh!((bool, u32), u32, (u8, bool), self.subsexpr(), (self.v, true),
-                        |(c, t): &mut (u8, bool), o| { *c += 1; o as u32 },
-                        |(c, t): &mut (u8, bool), o, r| o as u32,
-                        |_, o, _| o as u32,
-                        |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
-                        |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
-                            let mut ne = local!(clone env);
-                            ne.offset += y;
-                            local!(&mut vec).push(ne);
-                            local!(&mut env).v = *c
-                        }; x},
-                        |_, _, x: (bool, u32)| x.1);
-
-                    // if PRINT_DEBUG { println!("args {:?} into {:?}", self.subsexpr(), local!(&vec).iter().map(|x| x.subsexpr()).collect::<Vec<_>>()); }
-                    // println!("args {:?} into {:?}", self.subsexpr(), local!(&vec)[start_len..].iter().map(|x| x.subsexpr()).collect::<Vec<_>>());
-                    std::hint::black_box(&vec);
-                }
+                traverseh!((bool, u32), u32, (u8, bool), self.subsexpr(), (self.v, true),
+                    |(c, t): &mut (u8, bool), o| { *c += 1; o as u32 },
+                    |(c, t): &mut (u8, bool), o, r| o as u32,
+                    |_, o, _| o as u32,
+                    |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
+                    |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
+                        let mut ne = env.clone();
+                        ne.offset += y;
+                        dest.push(ne);
+                        env.v = *c
+                    }; x},
+                    |_, _, x: (bool, u32)| x.1);
             }
+        }
         }
     }
 }

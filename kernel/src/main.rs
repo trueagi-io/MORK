@@ -1780,6 +1780,7 @@ fn main() {
             if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
 
             for b in selected {
+                println!("=== benchmarking {} ===", b);
                 match b {
                     "transitive" => { bench_transitive_no_unify(50000, 1000000); }
                     "clique" => { bench_clique_no_unify(200, 3600, 5); }

@@ -1060,21 +1060,22 @@ impl Space {
 
         out
     }
-    pub fn transform_multi_multi_(&mut self, pat_expr: Expr, templates: &[Expr], add: Expr) -> (usize, bool) {
+    pub fn transform_multi_multi_(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
+        let mut tpl_args = Vec::with_capacity(64);
+        ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
+        let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| e.span()).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
-        let mut template_wzs: Vec<_> = vec![];
-        // let mut write_copy = self.btm.clone();
+        let mut template_wzs: Vec<_> = Vec::with_capacity(64);
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
                 template_wzs.push(self.write_zipper_at_unchecked(x));
-                // template_wzs.push(write_copy.write_zipper_at_path(x));
             }
         });
         for i in 0..subsumption.len() {
@@ -1093,7 +1094,7 @@ impl Space {
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
-                    for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                    for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
                         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
@@ -1109,7 +1110,7 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    for (i, (prefix, template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                    for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
                         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
@@ -1118,9 +1119,7 @@ impl Space {
                         let res = mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(*template), bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
                         ass.clear();
                         astack.clear();
-                        // println!("res {:?}", res);
 
-                        // loc.transformed(template,)
                         trace!(target: "transform", "U {i} out {:?}", oz.root);
                         wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
                         any_new |= wz.set_val(()).is_none();
@@ -1132,28 +1131,14 @@ impl Space {
         (touched, any_new)
     }
 
-
-    // pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {
-    //     self.transform_multi_multi(patterns, &[template])
-    // }
-
-    // pub fn transform(&mut self, pattern: Expr, template: Expr) -> (usize, bool) {
-    //     self.transform_multi_multi(&[pattern], &[template])
-    // }
-
-    // pub fn query<F : FnMut(&[ExprEnv], Expr) -> ()>(&mut self, pattern: Expr, mut effect: F) {
-    //     Self::query_multi(&self.btm, &[pattern], |refs, e| { effect(refs.unwrap(), e); Ok::<(), ()>(()) } ).unwrap();
-    // }
-
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) {
         let mut rtz = ExprZipper::new(rt);
         info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
         let mut rz = self.btm.read_zipper();
-        while rz.to_next_val() {
-            trace!(target: "interpret", "on space {:?}", serialize(unsafe { rz.path() }));
-        }
+        #[cfg(debug_assertions)]
+        while rz.to_next_val() { trace!(target: "interpret", "on space {:?}", serialize(unsafe { rz.path() })); }
         drop(rz);
         assert_eq!(rtz.item(), Ok(Tag::Arity(4)));
         assert!(rtz.next());
@@ -1164,74 +1149,11 @@ impl Space {
         assert!(rtz.next_child());
         let pat_expr = rtz.subexpr();
         assert!(rtz.next_child());
-        let mut dstz = ExprZipper::new(rtz.subexpr());
-        let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-        let mut dsts = Vec::with_capacity(m as usize - 1);
-        dstz.next();
-        assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-        for j in 0..m as usize - 1 {
-            dstz.next_child();
-            // println!("dst {j} {:?}", unsafe { serialize(dstz.subexpr().span().as_ref().unwrap()) });
-            // println!("dst {j} {:?}", dstz.subexpr());
-            dsts.push(dstz.subexpr());
-        }
+        let tpl_expr = rtz.subexpr();
 
-        let res = self.transform_multi_multi_(pat_expr, &dsts[..], rt);
+        let res = self.transform_multi_multi_(pat_expr, tpl_expr, rt);
         trace!(target: "interpret", "(run, changed) = {:?}", res);
     }
-
-    // pub fn interpret_datalog(&mut self, rt: Expr) -> bool {
-    //     let mut rtz = ExprZipper::new(rt);
-    //     assert_eq!(rtz.item(), Ok(Tag::Arity(3)));
-    //     assert!(rtz.next());
-    //     assert_eq!(unsafe { rtz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, "-:").span().as_ref().unwrap() });
-    //     assert!(rtz.next_child());
-    //     let mut dstz = ExprZipper::new(rtz.subexpr());
-    //     let Ok(Tag::Arity(m)) = dstz.item() else { panic!() };
-    //     let mut dsts = Vec::with_capacity(m as usize - 1);
-    //     dstz.next();
-    //     assert_eq!(unsafe { dstz.subexpr().span().as_ref().unwrap() }, unsafe { expr!(self, ",").span().as_ref().unwrap() });
-    //     for j in 0..m as usize - 1 {
-    //         dstz.next_child();
-    //         dsts.push(dstz.subexpr());
-    //     }
-    //     assert!(rtz.next_child());
-    //     let mut res = rtz.subexpr();
-    //
-    //     self.transform_multi(&dsts[..], res).1
-    // }
-
-    // pub fn datalog(&mut self, statements: &[Expr]) {
-    //     let mut changed = true;
-    //     while changed {
-    //         changed = false;
-    //         for statement in statements {
-    //             changed |= self.interpret_datalog(*statement);
-    //         }
-    //     }
-    // }
-
-    // pub fn datalog(&mut self, statements: &[Expr]) {
-    //     let last_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 0];
-    //     let current_wrapped = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), 1];
-    //
-    //     for statement in statements {
-    //         let patterns = f(statement);
-    //         let last_wrapped_patterns = patterns;
-    //         let template = g(statement);
-    //         let current_wrapped_template = template;
-    //         self.transform_multi(last_wrapped_patterns, current_wrapped_template);
-    //
-    //     }
-    //
-    //     loop {
-    //         match self.btm.write_zipper_at_path(&current_wrapped[..]).join_into(&mut self.btm.write_zipper_at_path(&last_wrapped[..])) {
-    //             AlgebraicStatus::Element => {}
-    //             AlgebraicStatus::Identity => { break }
-    //             AlgebraicStatus::None => { panic!("zero") }
-    //         }
-    //     }
-    // }
 
     pub fn metta_calculus(&mut self, steps: usize) -> usize {
         let mut done = 0;
@@ -1255,29 +1177,6 @@ impl Space {
 
         done
     }
-
-    // pub fn prefix_forks(&self, e: Expr) -> (Vec<u8>, Vec<Expr>) {
-    //     let Ok(prefix) = e.prefix() else {
-    //         return (vec![], vec![e])
-    //     };
-    //
-    //     let mut rz = self.btm.read_zipper_at_path(unsafe { prefix.as_ref().unwrap() });
-    //     rz.descend_to([0; 4096]);
-    //     rz.reset();
-    //
-    //     if rz.path_exists() {
-    //         let mut buf = vec![];
-    //         let mut es = vec![];
-    //
-    //         rz.descend_until();
-    //
-    //         // rz.child_mask()
-    //
-    //         (buf, es)
-    //     } else {
-    //         (vec![], vec![])
-    //     }
-    // }
     
     pub fn token_bfs(&self, token: &[u8], pattern: Expr) -> Vec<(Vec<u8>, Expr)> {
 

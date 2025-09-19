@@ -73,7 +73,7 @@ pub async fn get_url_status(url : &str) -> Result<String, reqwest::Error> {
 async fn aaa_start_stop_test() -> Result<(), Error> {
 
     //Start the server
-    let mut server_proc = std::process::Command::new(env!("CARGO_BIN_EXE_mork_server")).spawn().unwrap();
+    let mut server_proc = std::process::Command::new(env!("CARGO_BIN_EXE_mork-server")).spawn().unwrap();
     // println!("start_stop_test: Server start initiated");
 
     //Give the server time to start, and give the other tests a chance to start using the server

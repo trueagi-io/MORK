@@ -312,8 +312,8 @@ impl StatusMap {
         let mut user_map = self.0.user_status.write().unwrap();
         let mut zipper = user_map.write_zipper();
         zipper.descend_to(path);
-        zipper.remove_branches();
-        zipper.remove_val();
+        zipper.remove_branches(true);
+        zipper.remove_val(true);
         Ok(())
     }
 }

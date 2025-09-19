@@ -832,7 +832,7 @@ impl DefaultSpace {
 ///
 /// (exec (<thread_id> <priority>) (, <src1> <src2> <srcn)
 ///                                (, <dst1> <dst2> <dstm>))
-pub(crate) fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
+pub fn interpret_impl<S: Space>(space: &S, rt: Expr, auth: &S::Auth) -> Result<(), ExecError<S>> {
     info!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
 
     let (srcs, dsts) = destructure_exec_expr(space, rt)?.collect_inner();
@@ -1715,18 +1715,18 @@ impl DefaultSpace {
         // Ok(())
     }
 
-    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::path_serialization::SerializationStats, std::io::Error> {
+    pub fn backup_paths<OutDirPath: AsRef<std::path::Path>>(&self, path: OutDirPath) -> Result<pathmap::paths_serialization::SerializationStats, std::io::Error> {
         let mut file = File::create(path).unwrap();
         let mut reader = self.new_reader(&[], &()).unwrap();
         let rz = self.read_zipper(&mut reader);
-        pathmap::path_serialization::serialize_paths_(rz, &mut file)
+        pathmap::paths_serialization::serialize_paths(rz, &mut file)
     }
 
-    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::path_serialization::DeserializationStats, std::io::Error> {
+    pub fn restore_paths<OutDirPath : AsRef<std::path::Path>>(&mut self, path: OutDirPath) -> Result<pathmap::paths_serialization::DeserializationStats, std::io::Error> {
         let mut file = File::open(path).unwrap();
         let mut writer = self.new_writer(&[], &()).unwrap();
         let wz = self.write_zipper(&mut writer);
-        pathmap::path_serialization::deserialize_paths(wz, &mut file, |_, _| ())
+        pathmap::paths_serialization::deserialize_paths(wz, &mut file, ())
     }
 
     pub fn query_multi<F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(&self, patterns: &[Expr], effect: F) -> usize {

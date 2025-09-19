@@ -27,7 +27,7 @@ petri_dish = f"""
 
 
 def _main():
-    with ManagedMORK.connect("../target/release/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/release/mork-server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("petri") as dish:
             dish.upload_(petri_dish)
         server.upload_(interpreter)

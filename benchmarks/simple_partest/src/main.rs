@@ -274,7 +274,7 @@ impl<'map, 'head> TestParams<'map, 'head> for AllocLinkedList {
 
 impl<'map, 'head> TestParams<'map, 'head> for PathMapReadZipperGet {
     type HeadT = ZipperHead<'map, 'map, usize>;
-    type InZipperT = ReadZipperUntracked<'head, 'static, usize>;
+    type InZipperT = ReadZipperTracked<'head, 'static, usize>;
     fn init(element_cnt: usize, real_thread_cnt: usize) -> Self {
         let elements_per_thread = element_cnt / real_thread_cnt;
         let mut map = PathMap::<usize>::new();

@@ -29,6 +29,6 @@ def _main():
 
 if __name__ == '__main__':
     # Be sure to fire up the two MORK server instances
-    # MORK_SERVER_PORT=8001 target/release/mork_server
-    # MORK_SERVER_PORT=8002 target/release/mork_server
+    # MORK_SERVER_PORT=8001 target/release/mork-server
+    # MORK_SERVER_PORT=8002 target/release/mork-server
     _main()

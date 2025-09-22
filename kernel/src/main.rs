@@ -3710,7 +3710,7 @@ enum Commands {
     },
     #[command(arg_required_else_help = true)]
     Run {
-        input_path: String,
+        input_paths: Vec<String>,
         #[arg(long, default_value_t = 1000000000000000)]
         steps: usize,
         #[arg(long, default_value_t = 1)]
@@ -3828,15 +3828,17 @@ fn main() {
             parse_csv();
             parse_json();
         }
-        Commands::Run { input_path, steps, instrumentation, output_path } => {
+        Commands::Run { input_paths, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
-            let f = std::fs::File::open(&input_path).unwrap();
-            let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-            s.add_all_sexpr(&*mmapf);
+            for input_path in &input_paths {
+                let f = std::fs::File::open(input_path).unwrap();
+                let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+                s.load_all_sexpr(&*mmapf);
+            }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
-            println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
+            println!("loaded {:?} ; running and outputing to {:?}", &input_paths, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
             let mut performed = s.metta_calculus(steps);
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });

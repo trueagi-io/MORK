@@ -1148,13 +1148,14 @@ impl Space {
             fn new(e: Expr) -> Self { AddSink { e, changed: false } }
             fn request(&self) -> impl Iterator<Item=&'static [u8]> {
                 let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
-                println!("requesting {}", serialize(p));
+                // println!("+ requesting {}", serialize(p));
                 std::iter::once(p)
             }
             fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
                 let mut wz = it.next().unwrap();
-                println!("sinking {}", serialize(&path[3..]));
-                wz.move_to_path(&path[3..]);
+                // println!("+ at '{}' sinking RAW '{}'", serialize(wz.root_prefix_path()), serialize(path));
+                // println!("+ sinking {}", serialize(path));
+                wz.move_to_path(&path[3+wz.root_prefix_path().len()..]);
                 self.changed |= wz.set_val(()).is_none();
             }
             fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
@@ -1168,13 +1169,19 @@ impl Space {
             fn new(e: Expr) -> Self { RemoveSink { e, remove: pathmap::PathMap::new() } }
             fn request(&self) -> impl Iterator<Item=&'static [u8]> {
                 let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
+                // println!("- requesting {}", serialize(p));
                 std::iter::once(p)
             }
             fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-                self.remove.insert(&path[3..], ());
+                let mut wz = it.next().unwrap();
+                // println!("+ at '{}' sinking RAW '{}'", serialize(wz.root_prefix_path()), serialize(path));
+                // println!("- sinking {}", serialize(&path[3..]));
+                self.remove.insert(&path[3+wz.root_prefix_path().len()..], ());
             }
             fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
                 let mut wz = it.next().unwrap();
+                wz.reset();
+                // println!("subtracting {}", serialize(wz.root_prefix_path()));
                 match wz.subtract_into(&self.remove.read_zipper(), true) {
                     AlgebraicStatus::Element => { true }
                     AlgebraicStatus::Identity => { false }
@@ -1261,7 +1268,7 @@ impl Space {
                         template.substitute(&refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }).collect::<Vec<_>>()[..], &mut oz);
 
                         trace!(target: "transform", "S {i} out {:?}", oz.root);
-                        sinks[i].sink(std::iter::once(wz), &buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
                     }
                     true
                 }
@@ -1280,7 +1287,7 @@ impl Space {
                         astack.clear();
 
                         trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        sinks[i].sink(std::iter::once(wz), &buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
                     }
                     true
                 }

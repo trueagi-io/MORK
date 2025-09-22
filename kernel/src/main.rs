@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
@@ -535,6 +535,56 @@ fn two_bipolar_equal_crossed() {
     println!("result: {res}");
     assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
 }
+
+fn sink_two_bipolar_equal_crossed() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $x $y) (Else $x $y)) (O (+ (MATCHED $x $y))))
+
+(Something (foo $x) (foo $x))
+(Else ($x bar) ($x bar))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+}
+
+fn sink_two_positive_equal_crossed() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (, (Something $x $y) (Else $x $y)) (O (+ MATCHED) (- (Something $x $y))))
+
+(Something (foo bar) (bar baz))
+(Else (foo bar) (bar baz))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("MATCHED\n"));
+    assert!(!res.contains("(Something (foo bar) (bar baz))\n"));
+}
+
 
 fn logic_query() {
     let mut s = Space::new();
@@ -1733,7 +1783,7 @@ struct Cli {
 enum Commands {
     #[command(arg_required_else_help = true)]
     Bench {
-        #[arg(default_missing_value = "default")]
+        #[arg(default_value = "default")]
         only: String,
     },
     Test {
@@ -1767,6 +1817,8 @@ fn main() {
     // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
     // stv_roman();
     // mm1_forward();
+    // sink_two_bipolar_equal_crossed();
+    // sink_two_positive_equal_crossed();
     // return;
 
     let args = Cli::parse();
@@ -1775,7 +1827,7 @@ fn main() {
         Commands::Bench { only } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
-            let mut selected: HashSet<&str> = only.split(",").collect();
+            let mut selected: BTreeSet<&str> = only.split(",").collect();
             if selected.remove("all") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
             if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
 

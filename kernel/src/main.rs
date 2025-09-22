@@ -3716,6 +3716,10 @@ enum Commands {
         #[arg(long, default_value_t = 1)]
         instrumentation: usize,
         output_path: Option<String>,
+        #[arg(long)]
+        query_pattern: Option<String>,
+        #[arg(long)]
+        query_template: Option<String>,
     },
     #[command(arg_required_else_help = true)]
     Convert {
@@ -3828,7 +3832,7 @@ fn main() {
             parse_csv();
             parse_json();
         }
-        Commands::Run { input_paths, steps, instrumentation, output_path } => {
+        Commands::Run { input_paths, steps, instrumentation, output_path, query_pattern, query_template } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
@@ -3843,15 +3847,25 @@ fn main() {
             let mut performed = s.metta_calculus(steps);
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
+            let query_pattern_expr = query_pattern.as_ref().map(|p| expr!(s, p));
+            let query_template_expr = query_template.unwrap_or("_1".to_string());
             if output_path.is_none() {
                 let mut v = vec![];
-                s.dump_all_sexpr(&mut v).unwrap();
+                if let Some(pat) = query_pattern_expr {
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut v).unwrap();
+                } else {
+                    s.dump_all_sexpr(&mut v).unwrap();
+                }
                 let res = String::from_utf8(v).unwrap();
                 println!("result:\n{res}");
             } else {
                 let f = std::fs::File::create(&output_path.unwrap()).unwrap();
                 let mut w = std::io::BufWriter::new(f);
-                s.dump_all_sexpr(&mut w).unwrap();
+                if let Some(pat) = query_pattern_expr {
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut w).unwrap();
+                } else {
+                    s.dump_all_sexpr(&mut w).unwrap();
+                }
             }
         }
         Commands::Convert { input_format, output_format, instrumentation, input_path, output_path } => {

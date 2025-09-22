@@ -2478,9 +2478,9 @@ enum Commands {
         instrumentation: usize,
         #[arg(long, short = 'o')]
         output_path: Option<String>,
-        #[arg(long)]
+        #[arg(long, short = 'p')]
         query_pattern: Option<String>,
-        #[arg(long)]
+        #[arg(long, short = 't')]
         query_template: Option<String>,
     },
     #[command(arg_required_else_help = true)]

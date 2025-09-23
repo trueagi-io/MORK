@@ -852,6 +852,7 @@ impl Space {
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
+            // println!("{}", serialize(rz.path()));
             Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
@@ -1102,7 +1103,7 @@ impl Space {
                         template.substitute(&refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }).collect::<Vec<_>>()[..], &mut oz);
 
                         trace!(target: "transform", "S {i} out {:?}", oz.root);
-                        wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
                         any_new |= wz.set_val(()).is_none();
                     }
                     true
@@ -1122,7 +1123,7 @@ impl Space {
                         astack.clear();
 
                         trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        wz.move_to_path(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]);
+                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
                         any_new |= wz.set_val(()).is_none();
                     }
                     true

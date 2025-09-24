@@ -246,7 +246,7 @@ fn main() -> Result<(),&'static str> {
         drop_symbol_head_2(&mut sister_query_out_zipper);
         sister_query_out_zipper.meet(&female_zipper);
         if sister_query_out_zipper.descend_to(person_rzipper.path()) {
-            sister_query_out_zipper.remove_val();
+            sister_query_out_zipper.remove_val(true);
         }
     }
     drop(sister_query_out_zipper);

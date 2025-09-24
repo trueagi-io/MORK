@@ -19,6 +19,9 @@ def variables(pats):
     for pat in pats:
         yield from vs.search(pat).groups()
 
+# One session per process
+requests_session = requests.Session()
+
 class MORK:
     """
     Wrapper for the MORK server-based API.  Used to manage the server connection, or throught the `work_at`
@@ -43,7 +46,7 @@ class MORK:
             """
             self.server = server
             try:
-                self.response = request(self.method, server.base + self.subdir, **self.kwargs)
+                self.response = requests_session.request(self.method, server.base + self.subdir, **self.kwargs)
             except (RequestException, ConnectionError) as e:
                 self.error = e
                 raise e
@@ -59,7 +62,7 @@ class MORK:
                 raise RuntimeError(f"Must dispatch a request before it can be polled")
 
             # status_loc == subdir  or  status_loc == unique_id
-            status_response = request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
+            status_response = requests_session.request("get", self.server.base + f"/status/{quote(self.status_loc)}", **self.kwargs)
             # print("poll status: ", status_response.text)
             if status_response and status_response.status_code == 200:
                 status_info = json.loads(status_response.text)
@@ -668,12 +671,13 @@ class ManagedMORK(MORK):
                 print("normal termination")
             else:
                 print(exc_type, exc_val, "caused terminate")
-            self.process.terminate()
-
+            #Shut down the server if we started it
+            if self.process is not None:
+                self.process.terminate()
 
 def _main():
     # smoke test
-    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/debug/mork-server").and_log_stdout().and_log_stderr().and_terminate() as server:
         with server.work_at("main").and_clear() as ins:
             print("entered")
             ins.upload_("(foo 1)\n(foo 2)\n")
@@ -690,18 +694,19 @@ def _main():
 
 def _main_mm2():
     # smoke test
-    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/debug/mork-server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.upload_("(data (foo 1))\n(data (foo 2))\n(_exec 0 (, (data (foo $x))) (, (data (bar $x))))")
         server.transform(("(_exec $priority $p $t)",), ("(exec (test $priority) $p $t)",)).listen()
         server.exec(thread_id="test").listen()
-        print("data", server.download_().data)
+        print("data:\n", server.download_().data)
 
+        print("history:\n")
         for i, item in enumerate(server.history):
             print(i, str(item))
 
 def test_sse_status():
     # smoke test
-    with ManagedMORK.connect("../target/debug/mork_server").and_log_stdout().and_log_stderr().and_terminate() as server:
+    with ManagedMORK.connect("../target/debug/mork-server").and_log_stdout().and_log_stderr().and_terminate() as server:
         server.sexpr_import_(f"https://raw.githubusercontent.com/Adam-Vandervorst/metta-examples/refs/heads/main/aunt-kg/simpsons.metta").listen()
     print("done listening")
 

@@ -1,0 +1,25 @@
+{
+  "Head": {
+    "Source": {
+      "Name": [
+        "RootsMagic",
+        "RootsMagic"
+      ],
+      "Version": "7.6.1.0",
+      "Corporation": {
+        "Value": "RootsMagic, Inc.",
+        "Address": "PO Box 495Springville, UT 84663USA",
+        "Phone": "1-800-ROOTSMAGIC",
+        "Web": "www.RootsMagic.com"
+      }
+    },
+    "Destination": "RootsMagic",
+    "Date": {
+      "Original": "1 OCT 2019",
+      "HasYear": true,
+      "HasMonth": true,
+      "HasDay": true,
+      "Value": "2019-09-30T22:00:00.000Z"
+    }
+  }
+}

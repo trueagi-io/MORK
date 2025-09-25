@@ -2590,7 +2590,7 @@ fn main() {
             if output_path.is_none() {
                 let mut v = vec![];
                 if let Some(pat) = query_pattern_expr {
-                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut v).unwrap();
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut v);
                 } else {
                     s.dump_all_sexpr(&mut v).unwrap();
                 }
@@ -2600,7 +2600,7 @@ fn main() {
                 let f = std::fs::File::create(&output_path.unwrap()).unwrap();
                 let mut w = std::io::BufWriter::new(f);
                 if let Some(pat) = query_pattern_expr {
-                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut w).unwrap();
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut w);
                 } else {
                     s.dump_all_sexpr(&mut w).unwrap();
                 }

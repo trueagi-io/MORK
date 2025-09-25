@@ -1,0 +1,74 @@
+fn cc0() {
+    let mut s = Space::new();
+
+    const KB_EXPRS: &str = r#"
+    (add (: a_b (Implication (Or A B) (And C D))))
+
+    ((tmpl impl) 
+      (, (add (: $prf (Implication $a $b))))
+      (, (kb (: $prf (-> $a $b))) (add $a) (add (: prf $b)) ))
+
+    ((tmpl And) 
+      (, (add (: $prf (And $a $b))))
+      (, (kb (: $prf (-> (And $a $b) $a)))
+         (kb (: $prf (-> (And $a $b) $b)))))
+
+    (exec zealous
+            (, ((tmpl $x) $p0 $t0)
+               (exec zealous $p1 $t1) )
+            (, (exec $x $p0 $t0)
+               (exec zealous $p1 $t1) ))
+    "#;
+
+    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(7);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    //assert!(res.contains("(kb (: (@ (@ MP cd) (@ (@ MP bc) (@ (@ MP ab) a))) D))\n"));
+}
+
+
+
+
+(-> (: $dogprf (Dog $d) $p) (: (chaseprf $dopgrf) (And (Cat $c) (Chase $d $c)) $p)
+
+(: dog (Dog d) 1.0)
+(: cat (Cat c) 1.0)
+(: rock (Rock r) 1.0)
+
+(: $prf (Chase d c) $tv)
+
+(Chase d $c) (Cat $c)
+(Chase $d c) (Dog $d)
+
+
+(Dog blacky)
+
+(Implication (Dog $d) (, (Cat $c) (Chase $d $c)))
+
+(, (Cat $c) (Chase blacky $c))
+
+#(And (Cat $c) (Chase blacky $c))
+#=>
+#(Chase blacky $c)
+
+(Implication (And (Chase $_ $x) (Dog $x)) (Scared $x))
+
+(And (, (Cat $c) (Chase blacky $c)) (Dog $c))
+
+-----------------------
+
+(Dog blacky)
+
+((Cat $c) (, (Cat $c) (Chase blacky $c)))
+((Chase blacky $c) (, (Cat $c) (Chase blacky $c)))
+
+
+?(Cat $x)

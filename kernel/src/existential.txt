@@ -1,0 +1,12 @@
+I have a logic system and i want to change the way i deal with existentials.
+up till now if we hade a rule like (Implication (Dog $d) (And (Cat $c) (Chase $d $c)))
+where the $c variable is unbound in the conclusion we just generate a new object/token for it.
+That works but requires us to later proof that that object is the same as some other object.
+Instead i realized if we just leave the unbound variable as is It can just be unified with that
+other object simplifying the process significantly. But this only works if we keep track of all
+Properties of $c. So if we are trying to proof who (Chase $who me) ["who is chasing me"] that
+could unify with the result of the above impliction lets just assum a dog blacky so
+(And (Cat $c) (Chase blacky $c)) we project out the Chase and could get (Chase blacky me)
+after unification. Thats what the would happen right now if we just leave the variables
+unbound but this could be wrong. To make it right after that unification we would need to
+proof (Cat me) aswell. (as the $c appears both in (Cat $c) and (Chase _ $c)).

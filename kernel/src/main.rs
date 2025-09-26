@@ -585,6 +585,29 @@ fn sink_two_positive_equal_crossed() {
     assert!(!res.contains("(Something (foo bar) (bar baz))\n"));
 }
 
+fn sink_add_remove() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+A
+(exec a (, A) (O (- A) (+ B)))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(!res.contains("A\n"));
+    assert!(res.contains("B\n"));
+}
+
 fn sink_odd_even_sort() {
     let mut s = Space::new();
     const SPACE_EXPRS: &str = r#"
@@ -1992,7 +2015,6 @@ fn main() {
     // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
     // stv_roman();
     // mm1_forward();
-    // sink_odd_even_sort();
     // mm2_bc();
     // return;
 
@@ -2043,6 +2065,7 @@ fn main() {
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();
             sink_odd_even_sort();
+            sink_add_remove();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]

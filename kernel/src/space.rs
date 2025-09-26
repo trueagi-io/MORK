@@ -1149,17 +1149,19 @@ impl Space {
             fn new(e: Expr) -> Self { AddSink { e, changed: false } }
             fn request(&self) -> impl Iterator<Item=&'static [u8]> {
                 let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
-                // println!("+ requesting {}", serialize(p));
+                trace!(target: "sink", "+ requesting {}", serialize(p));
                 std::iter::once(p)
             }
             fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
                 let mut wz = it.next().unwrap();
-                // println!("+ at '{}' sinking RAW '{}'", serialize(wz.root_prefix_path()), serialize(path));
-                // println!("+ sinking {}", serialize(path));
-                wz.move_to_path(&path[3+wz.root_prefix_path().len()..]);
+                let mpath = &path[3+wz.root_prefix_path().len()..];
+                trace!(target: "sink", "+ at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+                trace!(target: "sink", "+ sinking '{}'", serialize(mpath));
+                wz.move_to_path(mpath);
                 self.changed |= wz.set_val(()).is_none();
             }
             fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
+                trace!(target: "sink", "+ finalizing");
                 self.changed
             }
         }
@@ -1169,20 +1171,31 @@ impl Space {
         impl Sink for RemoveSink {
             fn new(e: Expr) -> Self { RemoveSink { e, remove: pathmap::PathMap::new() } }
             fn request(&self) -> impl Iterator<Item=&'static [u8]> {
-                let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
-                // println!("- requesting {}", serialize(p));
+                // !! we're never grabbing the full expression path, because then we don't have the ability to remove the root value
+                let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[3..];
+                trace!(target: "sink", "- requesting {}", serialize(p));
                 std::iter::once(p)
             }
             fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
                 let mut wz = it.next().unwrap();
-                // println!("+ at '{}' sinking RAW '{}'", serialize(wz.root_prefix_path()), serialize(path));
-                // println!("- sinking {}", serialize(&path[3..]));
-                self.remove.insert(&path[3+wz.root_prefix_path().len()..], ());
+                let mpath = &path[3+wz.root_prefix_path().len()..];
+                trace!(target: "sink", "- at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+                trace!(target: "sink", "- sinking '{}'", serialize(mpath));
+                self.remove.insert(mpath, ());
+                println!("{}", self.remove.val_count());
             }
             fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
                 let mut wz = it.next().unwrap();
                 wz.reset();
-                // println!("subtracting {}", serialize(wz.root_prefix_path()));
+                trace!(target: "sink", "+ finalizing by grafting {} at '{}'", self.remove.val_count(), serialize(wz.origin_path()));
+                // match self.remove.remove(&[]) {
+                //     None => {}
+                //     Some(s) => { 
+                //         println!("has root");
+                //         wz.remove_val(true);
+                //         println!("val not removed");
+                //     }
+                // }
                 match wz.subtract_into(&self.remove.read_zipper(), true) {
                     AlgebraicStatus::Element => { true }
                     AlgebraicStatus::Identity => { false }

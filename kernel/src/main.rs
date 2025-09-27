@@ -667,10 +667,12 @@ fn sink_head() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
-    s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
+    assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
 }
 
 fn logic_query() {
@@ -982,7 +984,7 @@ fn bc3() {
     // assert!(res.contains("(@ (@ . (@ uncurry ab_c)) (@ (@ curry sym) b))\n"));
 }
 
-fn cm0() {
+fn bench_cm0(to_copy: usize) {
     let mut s = Space::new();
     
     // Follow along https://en.wikipedia.org/wiki/Counter_machine#Program
@@ -993,8 +995,6 @@ fn cm0() {
     s.load_csv(REGS_CSV.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] state 0 [3] REG _1 _2"), b',').unwrap();
     JZ,2,5\nDEC,2,2INC,3,3\nINC,1,4\nJZ,0,0\nJZ,1,9\nDEC,1,7\nINC,2,8\nJZ,0,5\nH,0,0
      */
-    let TO_COPY = 50;
-
     let SPACE_MACHINE = format!(r#"
     (program Z (JZ 2 (S (S (S (S (S Z))))) ))
     (program (S Z) (DEC 2))
@@ -1038,7 +1038,7 @@ fn cm0() {
                ((step $k $ts) $p0 $t0))
             (, (exec ($k $ts) $p0 $t0)
                (exec (clocked (S $ts)) $p1 $t1)))
-    "#, peano(TO_COPY));
+    "#, peano(to_copy));
 
     s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
 
@@ -1056,7 +1056,7 @@ fn cm0() {
     let res = String::from_utf8(v).unwrap();
     
     // println!("{res}");
-    assert!(res.contains(format!("({} {})", last_ts, peano(TO_COPY)).as_str()));
+    assert!(res.contains(format!("({} {})", last_ts, peano(to_copy)).as_str()));
 }
 
 /*fn match_case() {
@@ -2168,8 +2168,9 @@ fn main() {
     // mm1_forward();
     // mm2_bc();
     // sink_add_remove();
-    sink_head();
+    // sink_head();
     // mm2_bc_v3();
+    bench_cm0(50);
     return;
 
     let args = Cli::parse();
@@ -2185,6 +2186,7 @@ fn main() {
             for b in selected {
                 println!("=== benchmarking {} ===", b);
                 match b {
+                    "counter_machine" => { bench_cm0(50); }
                     "transitive" => { bench_transitive_no_unify(50000, 1000000); }
                     "clique" => { bench_clique_no_unify(200, 3600, 5); }
                     "finite_domain" => { bench_finite_domain(10_000); }
@@ -2214,12 +2216,12 @@ fn main() {
             logic_query();
 
             bc0();
-            cm0();
-
+            
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();
             sink_odd_even_sort();
             sink_add_remove();
+            sink_head();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]

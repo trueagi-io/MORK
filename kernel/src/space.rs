@@ -1071,11 +1071,13 @@ impl Space {
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
+        // let mut zh = self.btm.zipper_head(); // UNCOMMENT THIS
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_wzs: Vec<_> = Vec::with_capacity(64);
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
+                // template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) }); // UNCOMMENT THIS
                 template_wzs.push(self.write_zipper_at_unchecked(x));
             }
         });
@@ -1315,12 +1317,13 @@ impl Space {
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
+        let mut zh = self.btm.zipper_head();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_wzs: Vec<_> = Vec::with_capacity(64);
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
-                template_wzs.push(self.write_zipper_at_unchecked(x));
+                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
             }
         });
         for i in 0..subsumption.len() {

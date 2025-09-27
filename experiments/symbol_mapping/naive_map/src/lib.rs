@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::BytesTrieMap;
 
 type Symbol = i64;
 

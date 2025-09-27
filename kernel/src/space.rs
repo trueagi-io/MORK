@@ -15,7 +15,7 @@ use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use crate::json_parser::Transcriber;
@@ -79,6 +79,18 @@ const VARS: [u64; 4] = {
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
     loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
+    macro_rules! vs {
+        () => {{
+            let m = loc.child_mask().and(&ByteMask(VARS));
+            let mut it = m.iter();
+
+            while let Some(b) = it.next() {
+                if !loc.descend_to_byte(b) { unreachable_unchecked() };
+                coreferential_transition(loc, stack, references, f);
+                if !loc.ascend_byte() { unreachable_unchecked() };
+            }
+        }};
+    }
     unsafe {
     trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
     trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
@@ -87,19 +99,6 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
         None => { f(loc) }
         Some(e) => {
             let e_byte = *e.base.ptr.add(e.offset as usize);
-
-            macro_rules! vs {
-                () => {{
-                    let m = loc.child_mask().and(&ByteMask(VARS));
-                    let mut it = m.iter();
-
-                    while let Some(b) = it.next() {
-                        if !loc.descend_to_byte(b) { unreachable_unchecked() };
-                        coreferential_transition(loc, stack, references, f);
-                        if !loc.ascend_byte() { unreachable_unchecked() };
-                    }
-                }};
-            }
 
             match byte_item(e_byte) {
                 Tag::NewVar => {
@@ -852,7 +851,7 @@ impl Space {
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
-            // println!("{}", serialize(rz.path()));
+            println!("{}", serialize(rz.path()));
             Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
@@ -1166,10 +1165,10 @@ impl Space {
             }
         }
 
-        struct RemoveSink { e: Expr, remove: pathmap::PathMap<()> };
+        struct RemoveSink { e: Expr, remove: PathMap<()> };
         // perhaps more performant to graft, remove*, and graft back?
         impl Sink for RemoveSink {
-            fn new(e: Expr) -> Self { RemoveSink { e, remove: pathmap::PathMap::new() } }
+            fn new(e: Expr) -> Self { RemoveSink { e, remove: PathMap::new() } }
             fn request(&self) -> impl Iterator<Item=&'static [u8]> {
                 // !! we're never grabbing the full expression path, because then we don't have the ability to remove the root value
                 let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[3..];
@@ -1182,12 +1181,11 @@ impl Space {
                 trace!(target: "sink", "- at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
                 trace!(target: "sink", "- sinking '{}'", serialize(mpath));
                 self.remove.insert(mpath, ());
-                println!("{}", self.remove.val_count());
             }
             fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
                 let mut wz = it.next().unwrap();
                 wz.reset();
-                trace!(target: "sink", "+ finalizing by grafting {} at '{}'", self.remove.val_count(), serialize(wz.origin_path()));
+                trace!(target: "sink", "- finalizing by subtracting {} at '{}'", self.remove.val_count(), serialize(wz.origin_path()));
                 // match self.remove.remove(&[]) {
                 //     None => {}
                 //     Some(s) => { 
@@ -1204,7 +1202,67 @@ impl Space {
             }
         }
 
-        enum ASink { AddSink(AddSink), RemoveSink(RemoveSink) }
+        struct HeadSink { e: Expr, head: PathMap<()>, skip: usize, count: usize, max: usize, top: Vec<u8> };
+        impl Sink for HeadSink {
+            fn new(e: Expr) -> Self {
+                let mut ez = ExprZipper::new(e); ez.next(); ez.next();
+                let max_s = ez.item().err().expect("cnt can not be an expression or variable");
+                let max: usize = str::from_utf8(max_s).expect("string encoded numbers for now").parse().expect("a number");
+                assert_ne!(max, 0);
+                HeadSink { e, head: PathMap::new(), skip: 1 + 1+4 + 1+max_s.len(), count: 0, max, top: vec![] }
+            }
+            fn request(&self) -> impl Iterator<Item=&'static [u8]> {
+                let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[self.skip..];
+                trace!(target: "sink", "head requesting {}", serialize(p));
+                std::iter::once(p)
+            }
+            fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+                let mut wz = it.next().unwrap();
+                let mpath = &path[self.skip+wz.root_prefix_path().len()..];
+                trace!(target: "sink", "head at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+                if self.count == self.max {
+                    if &self.top[..] <= mpath {
+                        trace!(target: "sink", "head at max capacity ignoring '{}'", serialize(mpath));
+                        // doesn't displace any path
+                    } else {
+                        trace!(target: "sink", "head at max capacity replacing '{}' with '{}'", serialize(&self.top[..]), serialize(mpath));
+                        assert!(self.head.insert(mpath, ()).is_none());
+                        self.head.remove(&self.top[..]);
+                        let mut rz = self.head.read_zipper();
+                        rz.descend_last_path();
+                        self.top.clear();
+                        self.top.extend_from_slice(rz.path()); // yikes, throwing away our needless allocation
+                    }
+                } else {
+                    if &self.top[..] <= mpath {
+                        if self.head.insert(mpath, ()).is_none() {
+                            trace!(target: "sink", "head adding new top at '{}'", serialize(mpath));
+                            self.top.clear();
+                            self.top.extend_from_slice(mpath);
+                            self.count += 1;
+                        }
+                    } else {
+                        if self.head.insert(mpath, ()).is_none() {
+                            trace!(target: "sink", "head adding '{}'", serialize(mpath));
+                            self.count += 1;
+                        }
+                    }
+                }
+            }
+            fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+                let mut wz = it.next().unwrap();
+                wz.reset();
+                trace!(target: "sink", "head finalizing by joining {} at '{}'", self.count, serialize(wz.origin_path()));
+
+                match wz.join_into(&self.head.read_zipper()) {
+                    AlgebraicStatus::Element => { true }
+                    AlgebraicStatus::Identity => { false }
+                    AlgebraicStatus::None => { true } // GOAT maybe not?
+                }
+            }
+        }
+
+        enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink) }
 
         impl Sink for ASink {
             fn new(e: Expr) -> Self {
@@ -1212,6 +1270,9 @@ impl Space {
                     ASink::RemoveSink(RemoveSink::new(e))
                 } else if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(1)) && *e.ptr.offset(2) == b'+' } {
                     ASink::AddSink(AddSink::new(e))
+                } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+                    *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
+                    ASink::HeadSink(HeadSink::new(e))
                 } else {
                     unreachable!()
                 }
@@ -1222,6 +1283,7 @@ impl Space {
                     match self {
                         ASink::AddSink(s) => { for i in s.request().into_iter() { yield i } }
                         ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
+                        ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
                     }
                 }
             }
@@ -1229,6 +1291,7 @@ impl Space {
                 match self {
                     ASink::AddSink(s) => { s.sink(it, path) }
                     ASink::RemoveSink(s) => { s.sink(it, path) }
+                    ASink::HeadSink(s) => { s.sink(it, path) }
                 }
             }
 
@@ -1236,6 +1299,7 @@ impl Space {
                 match self {
                     ASink::AddSink(s) => { s.finalize(it) }
                     ASink::RemoveSink(s) => { s.finalize(it) }
+                    ASink::HeadSink(s) => { s.finalize(it) }
                 }
             }
         }
@@ -1341,8 +1405,8 @@ impl Space {
             self.transform_multi_multi_(pat_expr, tpl_expr, rt)
         } else if r == unsafe { expr!(self, "O").span().as_ref().unwrap() } {
             self.transform_multi_multi_o(pat_expr, tpl_expr, rt)
-        } else { panic!("not , or O") };
-        
+        } else { panic!("not , or O in {:?}", rt) };
+
         trace!(target: "interpret", "(run, changed) = {:?}", res);
     }
 

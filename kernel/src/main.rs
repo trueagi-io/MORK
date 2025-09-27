@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashSet};
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::BytesTrieMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, prefix, sexpr};
@@ -648,6 +648,29 @@ fn sink_odd_even_sort() {
 
     println!("result:\n{res}");
     assert_eq!(res, "A\nB\nC\nD\nE\n");
+}
+
+fn sink_head() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3) 
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (head 7 (cux $z $y $x))))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
 }
 
 fn logic_query() {
@@ -1960,6 +1983,134 @@ fn mm2_bc() {
     }
 }
 
+fn mm2_bc_v3() {
+    // MM2 Backward Chainer: Proving t = t via reflexivity
+    // Strategy: Use a1 and a2 axioms with two MP steps
+    const P: &str = r#"
+  ;; Type signatures for constructors
+  (kb (: (+) (-> (term) (term) (term))))  ;; Addition operator
+  (kb (: (=) (-> (term) (term) (wff))))   ;; Equality predicate
+  (kb (: (t) (term)))                      ;; Constant t
+  (kb (: (0) (term)))                      ;; Constant 0
+  (kb (: tt (: (t) (term))))               ;; Named proof that t is a term
+
+  ;; Type constructors (used to build wffs and terms)
+  (kb (: (tpl) (-> (: $x (term)) (: $y (term)) (: ((+) $x $y) (term)))))
+  (kb (: (weq) (-> (: $x (term)) (: $y (term)) (: ((=) $x $y) (wff)))))
+  (kb (: (wim) (-> (: $P (wff)) (: $Q (wff)) (: ((->) $P $Q) (wff)))))
+
+  ;; Axioms
+  (kb (: (a2) (-> (: $a (term)) (: ((=) ((+) $a (0)) $a) (|-)))))  ;; a + 0 = a
+  (kb (: (a1) (-> (: $t (term)) (: $r (term)) (: $s (term))
+                  (: ((->) ((=) $t $r) ((->) ((=) $t $s) ((=) $r $s))) (|-)))))  ;; Transitivity
+
+  ;; Modus Ponens inference rule
+  (kb (: (mp) (-> (: $P (wff)) (: $Q (wff)) (: $P (|-)) (: ((->) $P $Q) (|-)) (: $Q (|-)))))
+
+  ;; Priority 00: Initial lifting from KB to evidence
+  (exec (0000 lift-kb-to-ev)
+    (, (kb (: $t $T)))
+    (, (ev (: $t $T))))
+
+  ;; Priority 04b: Special MP for contracting P→(P→Q) with P to get P→Q
+  ; thread 'main' (1910560) panicked at kernel/src/space.rs:146:124:
+  ; index out of bounds: the len is 0 but the index is 0
+  ((step (0400 mp-contraction))
+    (, (goal (: ((->) $P $Q) (|-)))
+      (ev (: $P (|-)))
+      (ev (: ((->) $P ((->) $P $Q)) (|-))))
+    (, (goal (: $P (wff)))
+      (goal (: $Q (wff)))
+      (exec (04000 complete-mp-contraction)
+        (, (ev (: $P (wff)))
+            (ev (: $Q (wff)))
+            (ev (: $P (|-)))
+            (ev (: ((->) $P ((->) $P $Q)) (|-))))
+        (, (ev (: ((->) $P $Q) (|-)))
+            (debug mp-contraction completed ((->) $P $Q))))
+      (debug mp-contraction trying to prove ((->) $P $Q))))
+
+  ;; same error
+  ; ((step (0400 mp-contraction))
+    ; (, (goal (: ((->) $P $Q) (|-)))
+      ; (ev (: $P (|-)))
+      ; (ev (: ((->) $P ((->) $P $Q)) (|-))))
+    ; (, (goal (: $P (wff)))
+      ; (goal (: $Q (wff)))
+      ; (exec (04000 complete-mp-contraction)
+        ; (, (ev (: $P (wff)))
+            ; (ev (: $Q (wff)))
+            ; (ev (: $P (|-)))
+            ; (ev (: ((->) $P ((->) $P $Q)) (|-))))
+        ; (, (ev (: ((->) $P $Q) (|-)))))))
+
+  ;; Priority 05: Backward chain MP (most specific case)
+  ((step (0501 backchain-mp))
+    (, (ev (: $name (-> (: $a $Ta) (: $b $Tb) (: $c $Tc) (: $d $Td) (: $result $Tr))))
+       (goal (: $result $Tr)))
+    (, (goal (: $a $Ta))
+       (goal (: $b $Tb))
+       (goal (: $c $Tc))
+       (goal (: $d $Td))
+       (exec (05010 complete-mp)
+         (, (ev (: $a $Ta))
+            (ev (: $b $Tb))
+            (ev (: $c $Tc))
+            (ev (: $d $Td))
+            (ev (: $name (-> (: $a $Ta) (: $b $Tb) (: $c $Tc) (: $d $Td) (: $result $Tr)))))
+         (, (ev (: $result $Tr))
+            (debug completed-mp ($name args) -> (: $result $Tr))))
+       (debug backchain-mp (: $result $Tr) needs four args)))
+
+;; Remove the old 0501 rule and potentially 0600 if this works better
+
+
+
+  ;; Main backward chaining executor
+  (exec bc
+      (, ((step $x) $premises0 $conclusions0)
+         (exec bc $premises1 $conclusions1))
+      (, (exec $x $premises0 $conclusions0)
+         (exec bc $premises1 $conclusions1)))
+
+  ;; Goal: Prove t = t
+  (goal (: ((=) (t) (t)) (|-)))
+    "#;
+
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    s.load_all_sexpr(P.as_bytes()).unwrap();
+
+    println!("=== MM2 (bc v3): Proving ⊢ (t = t) ===");
+
+    let mut ticks = 0usize;
+    let multiplier = 5;
+    loop {
+        ticks += multiplier;
+        let t1 = Instant::now();
+        let n = s.metta_calculus(multiplier);
+        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {})",
+                 ticks, n, t1.elapsed().as_millis(),
+                 unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+
+        println!("space size {}", s.btm.val_count());
+
+        let mut buf = Vec::new();
+        s.dump_all_sexpr(&mut buf).unwrap();
+        let dump = String::from_utf8_lossy(&buf);
+
+        // if n == 0 || ticks >= 50 {
+        //     println!("\n== mm2 (bc v3): — ran for {:?} and {} tick(s) ==", t0.elapsed(), ticks);
+        //     add_mm2_demo0_query_diagnostics(&mut s, ticks);
+        //     add_mm2_demo0_diagnostics(&mut s, ticks);
+        //     println!("\n--- Full Final State Dump ---");
+        //     print!("{dump}");
+        //     break;
+        // }
+    }
+}
+
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -2016,7 +2167,10 @@ fn main() {
     // stv_roman();
     // mm1_forward();
     // mm2_bc();
-    // return;
+    // sink_add_remove();
+    sink_head();
+    // mm2_bc_v3();
+    return;
 
     let args = Cli::parse();
 

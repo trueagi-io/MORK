@@ -31,4 +31,4 @@ serde = { version = "1.0.225", features = ["derive"] }
 default = []
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
-nightly = ["pathmap/nightly"]
+nightly = ["pathmap/nightly", "pathmap/all_dense_nodes"]

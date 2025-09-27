@@ -1,5 +1,5 @@
 use std::{io::{Read, Write}, path::Path};
-use pathmap::{morphisms::Catamorphism, trie_map::BytesTrieMap};
+use pathmap::{morphisms::Catamorphism, BytesTrieMap};
 use zip::ZipArchive;
 use crate::{bounded_pearson_hash, SharedMapping, SharedMappingHandle, Slab, Symbol, ThinBytes, MAX_WRITER_THREADS, SYMBOL_THREAD_PERMIT_BYTE_POS, SYM_LEN};
 

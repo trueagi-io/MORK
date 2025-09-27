@@ -20,7 +20,7 @@
 extern crate alloc;
 
 use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr, AtomicU64}};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::BytesTrieMap;
 
 mod handle;
 use handle::*;

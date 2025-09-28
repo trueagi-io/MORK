@@ -6,6 +6,7 @@
 pub mod space;
 mod json_parser;
 pub mod prefix;
+mod sinks;
 
 #[cfg(test)]
 mod tests {

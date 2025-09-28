@@ -32,4 +32,4 @@ gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for
 
 [workspace.dependencies.pathmap]
 path = "../PathMap"
-features = ["jemalloc", "arena_compact"]
+features = ["jemalloc", "arena_compact", "all_dense_nodes"]

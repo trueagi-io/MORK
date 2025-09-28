@@ -200,7 +200,7 @@ macro_rules! traverseh {
             }
         }
     };
-    (h, value)
+    (h, value, j)
     }}
 }
 
@@ -440,6 +440,30 @@ impl Expr {
         self.substitute_de_bruijn(&vars[..], oz)
     }
 
+    pub fn substitute_de_bruijn_ivc(self, substitutions: &[Expr], oz: &mut ExprZipper, var_count: &mut usize, additions: &mut [u8]) -> *const [u8] {
+        let mut ez = ExprZipper::new(self);
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    let nvars = substitutions[*var_count].shift(additions[*var_count], oz);
+                    *var_count += 1;
+                    // ideally this is something like `_mm512_mask_add_epi8(additions, ~0 << var_count, _mm512_set1_epi8(nvars), additions)`
+                    // TODO reference parent and get count that way, future additions don't need to happen yet
+                    for j in *var_count..additions.len() { additions[j] += nvars; }
+                }
+                Tag::VarRef(r) => {
+                    substitutions[r as usize].bind(additions[r as usize], oz);
+                }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                return ez.finish_span()
+            }
+        }
+    }
+    
     pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut additions = vec![0u8; substitutions.len()];
@@ -1593,22 +1617,23 @@ impl ExprEnv {
                 let mut env = ExprEnv{
                     n: self.n,
                     v: self.v,
-                    offset: self.offset,
+                    offset: self.offset + 1,
                     base: self.base,
                 };
+                for sk in 0..k {
+                    let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
+                        |c: &mut u8, o| { *c += 1; },
+                        |_, o, r| {},
+                        |_, o, _| {},
+                        |_, o, _| {},
+                        |_, o, x, y| {},
+                        |_, _, _| {});
 
-                traverseh!((bool, u32), u32, (u8, bool), self.subsexpr(), (self.v, true),
-                    |(c, t): &mut (u8, bool), o| { *c += 1; o as u32 },
-                    |(c, t): &mut (u8, bool), o, r| o as u32,
-                    |_, o, _| o as u32,
-                    |(c, t): &mut (u8, bool), o, _| { let old = *t; *t = false; (old, o as u32) },
-                    |(c, _): &mut (u8, bool), o, x: (bool, u32), y| {if x.0 {
-                        let mut ne = env.clone();
-                        ne.offset += y;
-                        dest.push(ne);
-                        env.v = *c
-                    }; x},
-                    |_, _, x: (bool, u32)| x.1);
+                    let ne = env.clone();
+                    dest.push(ne);
+                    env.offset += se_offset as u32;
+                    env.v += se_c;
+                }
             }
         }
         }
@@ -1733,6 +1758,109 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
             }
         }
     }
+}
+
+
+#[inline(never)]
+pub fn apply_e(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bindings: &BTreeMap<ExprVar, ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
+    let depth = stack.len();
+    if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
+    if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, e); }
+    traverseh!((), (), (), e, (),
+        |_, o| { 
+        match bindings.get(&(n, original_intros)) {
+            None => {
+                if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
+                // println!("original {original_intros} new {new_intros}");
+                if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
+                    // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
+                    oz.write_var_ref(pos as u8);
+                } else {
+                    oz.write_new_var();
+                    new_intros += 1;
+                    assignments.push((n, original_intros));
+                }
+                oz.loc += 1;
+                original_intros += 1;
+
+            }
+            Some(rhs) => {
+                if PRINT_DEBUG { println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros)); }
+                // println!("stack={stack:?}");
+                if let Some(introduced) = cycled.get(&(n, original_intros)) {
+                    if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
+                    oz.write_var_ref(*introduced);
+                    // println!("nv cycled contains {:?}", (n, original_intros));
+                    oz.loc += 1;
+                } else if stack.contains(&(n, original_intros)) {
+                    cycled.insert((n, original_intros), new_intros);
+                    // println!("nv cycled insert {:?}", (n, original_intros));
+                    oz.write_new_var();
+                    oz.loc += 1;
+                    new_intros += 1;
+                } else {
+                    stack.push((n, original_intros));
+                    let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
+                    new_intros = nvars_;
+                    stack.pop();
+                }
+                original_intros += 1;
+            }
+        }
+        },
+        |_, o, i| {
+        match bindings.get(&(n, i)) {
+            None => {
+                if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
+                if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
+                    // println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
+                    oz.write_var_ref(pos as u8);
+                } else {
+                    oz.write_new_var();
+                    new_intros += 1;
+                    assignments.push((n, i)); // this can't be right in general
+                }
+                oz.loc += 1;
+            }
+            Some(rhs) => {
+                if PRINT_DEBUG { println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i)); }
+                // println!("stack={stack:?}");
+                if let Some(introduced) = cycled.get(&(n, i)) {
+                    // println!("vr cycled contains {:?}", (n, i));
+                    if PRINT_DEBUG { println!("{}cycled _{} for {:?} (ref) rhs={}", "  ".repeat(depth), *introduced+1, (n, i), rhs.show()); }
+                    oz.write_var_ref(*introduced);
+                    oz.loc += 1;
+                } else if stack.contains(&(n, i)) {
+                    // println!("vr cycled insert {:?}", (n, i));
+                    cycled.insert((n, i), new_intros);
+                    oz.write_new_var();
+                    oz.loc += 1;
+                    new_intros += 1;
+                } else {
+                    stack.push((n, i));
+                    let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
+                    new_intros = nvars_;
+                    stack.pop();
+                }
+                // oz.write_var_ref(i);
+                // oz.loc += 1;
+            }
+        }
+        },
+        |_, o, s| {
+            if PRINT_DEBUG { println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(s) }); }
+            oz.write_symbol(s);
+            oz.loc += 1 + s.len();
+        },
+        |_, o, a| { 
+            if PRINT_DEBUG { println!("{}@ [{}]", "  ".repeat(depth), a); }
+            oz.write_arity(a);
+            oz.loc += 1;
+        },
+        |_, o, _, _| {},
+        |_, _, _| {}
+    );
+    (original_intros, new_intros)
 }
 
 #[inline(never)]

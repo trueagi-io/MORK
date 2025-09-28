@@ -654,7 +654,7 @@ fn sink_head() {
     let mut s = Space::new();
 
     const SPACE_EXPRS: &str = r#"
-(foo 1) (foo 2) (foo 3) 
+(foo 1) (foo 2) (foo 3)
 (bar x) (bar y)
 (baz P) (baz Q) (baz R)
 (exec 0 (, (foo $x) (bar $y) (baz $z)) (O (head 7 (cux $z $y $x))))
@@ -673,6 +673,60 @@ fn sink_head() {
 
     println!("result: {res}");
     assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
+}
+
+fn sink_wasm_add() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(wasm add
+    (if (i32.and (i32.and
+            (i32.eq (i32.load8_u 0 (i32.const 0)) (i32.const 0x02))
+            (i32.eq (i32.load8_u 0 (i32.const 1)) (i32.const 0xc4)))
+            (i32.eq (i32.load8_u 0 (i32.const 6)) (i32.const 0xc4)))
+      (then
+        (i32.store 1 (i32.const 0) (i32.const 0xc4))
+        (i32.store 1 (i32.const 1) (call 0 (i32.add
+            (call 0 (i32.load 0 (i32.const 2)))
+            (call 0 (i32.load 0 (i32.const 7))))))
+      )
+      (else unreachable)
+    )
+)
+
+(exec 0 (, (wasm add $f)) (,
+  (exec 1 (, (xs $i $x) (ys $i $y))
+          (O (wasm $f ($x $y))))
+))
+    "#; // (zs $i $z) $z
+    let nargs = 1_000_000;
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    let mut args = vec![];
+    let options = ["x", "y"];
+    for (k, a) in options.iter().enumerate() {
+        for i in 0i32..nargs {
+            let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), a.as_bytes()[0], b's'];
+            let is = i.to_string();
+            e.push(item_byte(Tag::SymbolSize(is.len() as _)));
+            e.extend_from_slice(is.as_bytes());
+            e.push(item_byte(Tag::SymbolSize(4)));
+            e.extend_from_slice(((options.len() as i32)*i + (k as i32)).to_be_bytes().as_slice());
+            s.btm.insert(&e[..], ());
+        }
+    }
+    s.load_all_sexpr(&args[..]).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+
+    // println!("result: {res}");
+    // assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
 }
 
 fn logic_query() {
@@ -2116,6 +2170,7 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use serde::{Serialize, Deserialize};
 use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
+use clap::builder::TypedValueParser;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 enum Format { MeTTa, JSON, CSV, UPaths, Paths, ACT }
@@ -2168,10 +2223,9 @@ fn main() {
     // mm1_forward();
     // mm2_bc();
     // sink_add_remove();
-    // sink_head();
-    // mm2_bc_v3();
-    bench_cm0(50);
-    return;
+    // sink_wasm_add();
+    // bench_cm0(50);
+    // return;
 
     let args = Cli::parse();
 
@@ -2180,8 +2234,8 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("all") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
-            if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
+            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
+            if selected.remove("default") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus"]) }
 
             for b in selected {
                 println!("=== benchmarking {} ===", b);
@@ -2216,7 +2270,7 @@ fn main() {
             logic_query();
 
             bc0();
-            
+
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();
             sink_odd_even_sort();

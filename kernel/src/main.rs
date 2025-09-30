@@ -9,6 +9,7 @@ use mork::{expr, prefix, sexpr};
 use mork::prefix::Prefix;
 use mork::space::{transitions, unifications, writes, Space};
 use mork_bytestring::{item_byte, Tag};
+
 /*fn main() {
     let mut s = Space::new();
     let t0 = Instant::now();
@@ -1988,12 +1989,17 @@ enum Commands {
     },
     #[command(arg_required_else_help = true)]
     Run {
-        input_path: String,
+        input_paths: Vec<String>,
         #[arg(long, default_value_t = 1000000000000000)]
         steps: usize,
         #[arg(long, default_value_t = 1)]
         instrumentation: usize,
+        #[arg(long, short = 'o')]
         output_path: Option<String>,
+        #[arg(long, short = 'p')]
+        query_pattern: Option<String>,
+        #[arg(long, short = 't')]
+        query_template: Option<String>,
     },
     #[command(arg_required_else_help = true)]
     Convert {
@@ -2067,28 +2073,40 @@ fn main() {
             sink_odd_even_sort();
             sink_add_remove();
         }
-        Commands::Run { input_path, steps, instrumentation, output_path } => {
+        Commands::Run { input_paths, steps, instrumentation, output_path, query_pattern, query_template } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
-            let f = std::fs::File::open(&input_path).unwrap();
-            let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-            s.load_all_sexpr(&*mmapf);
+            for input_path in &input_paths {
+                let f = std::fs::File::open(input_path).unwrap();
+                let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+                s.load_all_sexpr(&*mmapf);
+            }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
-            println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
+            println!("loaded {:?} ; running and outputing to {:?}", &input_paths, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
             let mut performed = s.metta_calculus(steps);
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
+            let query_pattern_expr = query_pattern.as_ref().map(|p| expr!(s, p));
+            let query_template_expr = query_template.unwrap_or("_1".to_string());
             if output_path.is_none() {
                 let mut v = vec![];
-                s.dump_all_sexpr(&mut v).unwrap();
+                if let Some(pat) = query_pattern_expr {
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut v);
+                } else {
+                    s.dump_all_sexpr(&mut v).unwrap();
+                }
                 let res = String::from_utf8(v).unwrap();
                 println!("result:\n{res}");
             } else {
                 let f = std::fs::File::create(&output_path.unwrap()).unwrap();
                 let mut w = std::io::BufWriter::new(f);
-                s.dump_all_sexpr(&mut w).unwrap();
+                if let Some(pat) = query_pattern_expr {
+                    s.dump_sexpr(pat, expr!(s, &query_template_expr), &mut w);
+                } else {
+                    s.dump_all_sexpr(&mut w).unwrap();
+                }
             }
         }
         Commands::Convert { input_format, output_format, instrumentation, input_path, output_path } => {

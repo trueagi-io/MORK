@@ -608,6 +608,32 @@ A
     assert!(res.contains("B\n"));
 }
 
+fn sink_add_remove_var() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo a)
+(exec 0
+  (, (foo $x))
+  (O (- (foo $x))
+     (+ (bar $x))))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(!res.contains("(foo a)\n"));
+    assert!(res.contains("(bar a)\n"));
+}
+
 fn sink_odd_even_sort() {
     let mut s = Space::new();
     const SPACE_EXPRS: &str = r#"
@@ -2275,6 +2301,7 @@ fn main() {
             sink_two_positive_equal_crossed();
             sink_odd_even_sort();
             sink_add_remove();
+            sink_add_remove_var();
             sink_head();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {

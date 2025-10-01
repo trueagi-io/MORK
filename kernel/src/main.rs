@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashSet};
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
-use pathmap::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, prefix, sexpr};
@@ -2224,8 +2224,8 @@ fn main() {
     // mm2_bc();
     // sink_add_remove();
     // sink_wasm_add();
-    // bench_cm0(50);
-    // return;
+    bench_cm0(50);
+    return;
 
     let args = Cli::parse();
 

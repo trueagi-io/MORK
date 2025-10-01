@@ -20,7 +20,7 @@
 extern crate alloc;
 
 use core::{marker::PhantomData, mem::MaybeUninit, sync::atomic::{self, AtomicPtr, AtomicU64}};
-use pathmap::BytesTrieMap;
+use pathmap::PathMap;
 
 mod handle;
 use handle::*;
@@ -76,9 +76,9 @@ pub struct SharedMapping {
   pub(crate) count             : AtomicU64,
   pub(crate) flags             : AtomicU64,
   pub(crate) permissions       : AlignArray<ThreadPermission>,
-  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<BytesTrieMap<Symbol>>>,
+  pub(crate) to_symbol         : AlignArray<std::sync::RwLock<PathMap<Symbol>>>,
   /// the path is a Symbol as __big endian bytes__.
-  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<BytesTrieMap<ThinBytes>>>,
+  pub(crate) to_bytes          : AlignArray<std::sync::RwLock<PathMap<ThinBytes>>>,
 }
 
 impl SharedMapping {
@@ -102,8 +102,8 @@ impl SharedMapping {
       let mut i = 0;
       while i <= MAX_WRITER_THREAD_INDEX {
         (&raw mut (*inner).permissions[i]).write(AlignCache(ThreadPermission::init(i as u8)));
-        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
-        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(BytesTrieMap::new())));
+        (&raw mut (*inner).to_symbol[i]).write(AlignCache(std::sync::RwLock::new(PathMap::new())));
+        (&raw mut (*inner).to_bytes[i]).write(AlignCache(std::sync::RwLock::new(PathMap::new())));
 
         i+=1;
       }

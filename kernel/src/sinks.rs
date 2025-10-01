@@ -16,7 +16,6 @@ use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
-use pathmap::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use crate::json_parser::Transcriber;
@@ -257,6 +256,52 @@ impl Sink for WASMSink {
         self.changed
     }
 }
+
+// ($k $x) (f $x $y)
+// (count (count of $k is $i) $i ($x $y))   unify
+// (count (count of r2 is $i) $i (P Q))
+// (count (count of r2 is 3) 3 ($x $y))
+pub struct CountSink { e: Expr, unique: PathMap<()> }
+impl Sink for CountSink {
+    fn new(e: Expr) -> Self {
+        CountSink { e, unique: PathMap::new() }
+    }
+    fn request(&self) -> impl Iterator<Item=&'static [u8]> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[7..];
+        trace!(target: "sink", "count requesting {}", serialize(p));
+        std::iter::once(p)
+    }
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let mut wz = it.next().unwrap();
+        let mpath = &path[7+wz.root_prefix_path().len()..];
+        let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+        trace!(target: "sink", "count at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "count registering in ctx {:?}", ctx);
+        self.unique.insert(mpath, ());
+    }
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+        let mut wz = it.next().unwrap();
+        wz.reset();
+        trace!(target: "sink", "count finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
+
+        // static v: u8 = item_byte(Tag::NewVar);
+        // static v: &'static [u8] = &[item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b',', item_byte(Tag::NewVar)];
+        // crate::space::Space::query_multi(self.unique, Expr{ ptr: v.as_ptr().cast_mut() }, |_, ctx_e, ctx_loc| {
+        //     let ctx_loc: ReadZipperUntracked<()> = unimplemented!();
+        //     ctx_loc.val_count();
+        //     let vcount: Expr = unimplemented!();
+        //     let to_write = vcount.transformed(v_e, ctx_e);
+        // });
+
+        match wz.join_into(&self.unique.read_zipper()) {
+            AlgebraicStatus::Element => { true }
+            AlgebraicStatus::Identity => { false }
+            AlgebraicStatus::None => { true } // GOAT maybe not?
+        }
+    }
+}
+
+
 
 pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), WASMSink(WASMSink) }
 

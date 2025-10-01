@@ -1,5 +1,5 @@
 use std::{io::{Read, Write}, path::Path};
-use pathmap::{morphisms::Catamorphism, BytesTrieMap};
+use pathmap::{morphisms::Catamorphism, PathMap};
 use zip::ZipArchive;
 use crate::{bounded_pearson_hash, SharedMapping, SharedMappingHandle, Slab, Symbol, ThinBytes, MAX_WRITER_THREADS, SYMBOL_THREAD_PERMIT_BYTE_POS, SYM_LEN};
 
@@ -74,8 +74,8 @@ impl SharedMapping {
 
     macro_rules! HEX {() => { (b'0'..=b'9'|b'A'..=b'F') };}
         
-    let mut to_symbol = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<Symbol>::new());
-    let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|BytesTrieMap::<ThinBytes>::new());
+    let mut to_symbol = [(); MAX_WRITER_THREADS].map(|()|PathMap::<Symbol>::new());
+    let mut to_bytes  = [(); MAX_WRITER_THREADS].map(|()|PathMap::<ThinBytes>::new());
 
     let file = std::fs::File::open(in_path.as_ref())?;
     let mut zip_archive = ZipArchive::new(file).map_err(|_|std::io::Error::other("failed to read zip archive"))?;
@@ -218,8 +218,8 @@ impl SharedMapping {
 /// this is only for debugging
 #[doc(hidden)]
 pub struct Tables<'a> {
-  pub to_symbol : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<Symbol>>>,
-  pub to_bytes  : Vec<std::sync::RwLockReadGuard<'a, BytesTrieMap<ThinBytes>>>
+  pub to_symbol : Vec<std::sync::RwLockReadGuard<'a, PathMap<Symbol>>>,
+  pub to_bytes  : Vec<std::sync::RwLockReadGuard<'a, PathMap<ThinBytes>>>
 }
 
 

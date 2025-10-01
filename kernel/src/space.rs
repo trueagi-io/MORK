@@ -15,7 +15,6 @@ use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
-use pathmap::BytesTrieMap;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use crate::json_parser::Transcriber;
@@ -28,7 +27,7 @@ pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
 pub struct Space {
-    pub btm: BytesTrieMap<()>,
+    pub btm: PathMap<()>,
     pub sm: SharedMappingHandle
 }
 
@@ -359,7 +358,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: BytesTrieMap::new(), sm: SharedMapping::new() }
+        Self { btm: PathMap::new(), sm: SharedMapping::new() }
     }
 
     /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving acces directly to the field
@@ -373,11 +372,11 @@ impl Space {
     }
 
     fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
-        unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
+        unsafe { (&self.btm as *const PathMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
     }
 
     fn write_zipper_at_unchecked<'a, 'b>(&'a self, path: &'b [u8]) -> WriteZipperUntracked<'a, 'b, ()> {
-        unsafe { (&self.btm as *const BytesTrieMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
+        unsafe { (&self.btm as *const PathMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
     }
 
     /*
@@ -951,7 +950,7 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &BytesTrieMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let mut pat_args = vec![];
@@ -1072,14 +1071,13 @@ impl Space {
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
-        // let mut zh = self.btm.zipper_head(); // UNCOMMENT THIS
+        let mut zh = self.btm.zipper_head();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_wzs: Vec<_> = Vec::with_capacity(64);
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
-                // template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) }); // UNCOMMENT THIS
-                template_wzs.push(self.write_zipper_at_unchecked(x));
+                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1148,6 +1146,9 @@ impl Space {
                 }
             }
         });
+        for wz in template_wzs {
+            zh.cleanup_write_zipper(wz);
+        }
         (touched, any_new)
     }
 

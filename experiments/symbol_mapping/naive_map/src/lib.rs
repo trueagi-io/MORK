@@ -1,12 +1,12 @@
 use std::sync::Arc;
-use pathmap::BytesTrieMap;
+use pathmap::PathMap;
 
 type Symbol = i64;
 
 pub struct SharedMapping {
   next_sym   : core::sync::atomic::AtomicI64,
-  to_symbols : std::sync::RwLock<BytesTrieMap<Symbol>>,
-  to_bytes   : std::sync::RwLock<BytesTrieMap<Vec<u8>>>
+  to_symbols : std::sync::RwLock<PathMap<Symbol>>,
+  to_bytes   : std::sync::RwLock<PathMap<Vec<u8>>>
 }
 
 
@@ -14,8 +14,8 @@ impl SharedMapping {
   pub fn new()-> SharedMappingHandle {
     SharedMappingHandle(Arc::new(SharedMapping{
       next_sym : core::sync::atomic::AtomicI64::new(1),
-      to_symbols: std::sync::RwLock::new(BytesTrieMap::new()), 
-      to_bytes: std::sync::RwLock::new(BytesTrieMap::new()) }))
+      to_symbols: std::sync::RwLock::new(PathMap::new()), 
+      to_bytes: std::sync::RwLock::new(PathMap::new()) }))
   }
 
   pub fn get_bytes(&self, sym : Symbol) -> Option<&[u8]> {

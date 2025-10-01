@@ -9,6 +9,7 @@ use mork::{expr, prefix, sexpr};
 use mork::prefix::Prefix;
 use mork::space::{transitions, unifications, writes, Space};
 use mork_bytestring::{item_byte, Tag};
+use itertools::Itertools;
 /*fn main() {
     let mut s = Space::new();
     let t0 = Instant::now();
@@ -654,13 +655,6 @@ fn sink_odd_even_sort() {
              (, (exec ($k $kp) $p0 $t0)))
     "#;
 
-    // let mut SUCCS: String = (0..5).map(|x| format!("(succ {x} {})\n", x+1)).collect();
-    // s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
-    // let mut PARITY: String = (0..5).map(|x| format!("(parity {x} {})\n", if x % 2 == 0 { "even" } else { "odd" })).collect();
-    // s.load_all_sexpr(PARITY.as_bytes()).unwrap();
-    // let mut ORDER: String = (b'A'..=b'E').flat_map(|x| (b'A'..x).map(move |y| format!("(lt {} {})\n", y as char, x as char))).collect();
-    // s.load_all_sexpr(ORDER.as_bytes()).unwrap();
-
     s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
@@ -754,6 +748,43 @@ fn sink_wasm_add() {
     // println!("result: {res}");
     // assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
 }
+
+fn bench_sink_odd_even_sort(elements: usize) {
+    let mut s = Space::new();
+    const SPACE_EXPRS: &str = r#"
+((phase $p)  (, (parity $i $p) (succ $i $si) (A $i $e) (A $si $se) (lt $se $e))
+             (O (- (A $i $e)) (- (A $si $se)) (+ (A $i $se)) (+ (A $si $e))))
+(phase 0 odd) (phase 1 even)
+(exec repeat (, (A $k $_) (phase $kp $phase) ((phase $phase) $p0 $t0))
+             (, (exec ($k $kp) $p0 $t0)))
+    "#;
+    let mut arr: Vec<_> = (0..elements).map(|i| { let mut hs = std::hash::DefaultHasher::new(); i.hash(&mut hs); base64::engine::general_purpose::STANDARD_NO_PAD.encode((hs.finish() as u32).to_be_bytes()) }).collect();
+    let mut ARRAY: String = (0..elements).map(|x| format!("(A {x} {})\n", arr[x])).collect();
+    // println!("array {ARRAY}");
+    s.load_all_sexpr(ARRAY.as_bytes()).unwrap();
+    let mut SUCCS: String = (0..elements).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+    let mut PARITY: String = (0..elements).map(|x| format!("(parity {x} {})\n", if x % 2 == 0 { "even" } else { "odd" })).collect();
+    s.load_all_sexpr(PARITY.as_bytes()).unwrap();
+    arr.sort();
+    let arr_ptr = &arr;
+    let mut ORDER: String = (0..elements).flat_map(|x| (0..x).map(move |y| format!("(lt {} {})\n", arr_ptr[y], arr_ptr[x]))).collect();
+    s.load_all_sexpr(ORDER.as_bytes()).unwrap();
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] A $ $"), expr!(s, "_2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    // println!("result:\n{res}");
+    assert_eq!(res[..res.len()-1], arr.iter().map(|i| i.to_string()).join("\n"));
+}
+
 
 fn logic_query() {
     let mut s = Space::new();
@@ -2194,6 +2225,9 @@ fn mm2_bc_v3() {
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::hash::{Hash, Hasher};
+use std::ops::Add;
+use base64::Engine;
 use serde::{Serialize, Deserialize};
 use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
 use clap::builder::TypedValueParser;
@@ -2251,7 +2285,8 @@ fn main() {
     // sink_add_remove();
     // sink_wasm_add();
     // bench_cm0(50);
-    // return;
+    bench_sink_odd_even_sort(2000);
+    return;
 
     let args = Cli::parse();
 
@@ -2260,8 +2295,9 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
+            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort"]) }
             if selected.remove("default") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus"]) }
+            if selected.remove("sinks") { selected.extend(&["odd_even_sort"]) }
 
             for b in selected {
                 println!("=== benchmarking {} ===", b);
@@ -2273,6 +2309,7 @@ fn main() {
                     "process_calculus" => { process_calculus_bench(1000, 200, 200); }
                     "exponential" => { exponential(32); }
                     "exponential_fringe" => { exponential_fringe(15); }
+                    "odd_even_sort" => { bench_sink_odd_even_sort(2000); }
                     s => { println!("bench not known: {s}") }
                 }
             }

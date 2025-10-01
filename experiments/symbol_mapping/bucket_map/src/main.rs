@@ -6,7 +6,7 @@ use bucket_map::*;
 use rayon::prelude::*;
 use mork_bytestring::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 // use pathmap::zipper::WriteZipper;
 // use bstr::ByteSlice;
 // use naive_map;
@@ -32,8 +32,8 @@ impl IdentityDataParser {
     }
 }
 
-fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map(slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = Context::new(slice);
     let mut parser = IdentityDataParser::new();
     let mut i = 0;
@@ -92,16 +92,16 @@ Involuntary context switches: 4513
 /*
 struct SequentialDataParser {
     count: u64,
-    symbols: BytesTrieMap<u64>,
-    strings: BytesTrieMap<&'static [u8]>,
+    symbols: PathMap<u64>,
+    strings: PathMap<&'static [u8]>,
 }
 
 impl SequentialDataParser {
     fn new() -> Self {
         Self {
             count: 3,
-            symbols: BytesTrieMap::new(),
-            strings: BytesTrieMap::new(),
+            symbols: PathMap::new(),
+            strings: PathMap::new(),
         }
     }
 
@@ -125,8 +125,8 @@ impl Parser for SequentialDataParser {
 }
 
 
-fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map(slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = Context::new(slice);
     let mut parser = SequentialDataParser::new();
     let mut i = 0;
@@ -182,7 +182,7 @@ Involuntary context switches: 10089
 */
 /*** no interning, multi-threaded ***/
 /*
-struct PromiseSafe(BytesTrieMap<()>);
+struct PromiseSafe(PathMap<()>);
 
 unsafe impl Send for PromiseSafe {}
 
@@ -203,8 +203,8 @@ impl IdentityDataParser {
     }
 }
 
-fn make_map(slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map(slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = Context::new(slice);
     let mut parser = IdentityDataParser::new();
     let mut i = 0;
@@ -262,7 +262,7 @@ fn main() {
     println!("par took {} millis", tpar.elapsed().as_millis());
     println!("fold");
     let tfold = Instant::now();
-    let m: BytesTrieMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(BytesTrieMap::new()), |a, b| {
+    let m: PathMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(PathMap::new()), |a, b| {
         PromiseSafe(a.0.join(&b.0))
     }).0;
     println!("fold took {} millis", tfold.elapsed().as_millis());
@@ -292,7 +292,7 @@ Involuntary context switches: 13194
 */
 /*** bucket-map interning, multi-threaded ***/
 
-struct PromiseSafe(BytesTrieMap<()>);
+struct PromiseSafe(PathMap<()>);
 
 unsafe impl Send for PromiseSafe {}
 
@@ -317,8 +317,8 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map<'a>(handle: &'a SharedMappingHandle, slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = Context::new(slice);
     let mut parser = ParDataParser::new(handle);
     #[allow(unused_variables)]
@@ -377,7 +377,7 @@ fn main() {
     println!("par took {} millis", tpar.elapsed().as_millis());
     println!("fold");
     let tfold = Instant::now();
-    let m: BytesTrieMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(BytesTrieMap::new()), |a, b| {
+    let m: PathMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(PathMap::new()), |a, b| {
         PromiseSafe(a.0.join(&b.0))
     }).0;
     println!("fold took {} millis", tfold.elapsed().as_millis());
@@ -407,7 +407,7 @@ Involuntary context switches: 854191
  */
 /*** naive-map interning, multi-threaded ***/
 /*
-struct PromiseSafe(BytesTrieMap<()>);
+struct PromiseSafe(PathMap<()>);
 
 unsafe impl Send for PromiseSafe {}
 
@@ -432,8 +432,8 @@ impl <'a> ParDataParser<'a> {
     }
 }
 
-fn make_map<'a>(handle: &'a naive_map::SharedMappingHandle, slice: &[u8]) -> BytesTrieMap<()> {
-    let mut btm: BytesTrieMap<()> = BytesTrieMap::new();
+fn make_map<'a>(handle: &'a naive_map::SharedMappingHandle, slice: &[u8]) -> PathMap<()> {
+    let mut btm: PathMap<()> = PathMap::new();
     let mut it = Context::new(slice);
     let mut parser = ParDataParser::new(handle);
     let mut i = 0;
@@ -492,7 +492,7 @@ fn main() {
     println!("par took {} millis", tpar.elapsed().as_millis());
     println!("fold");
     let tfold = Instant::now();
-    let m: BytesTrieMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(BytesTrieMap::new()), |a, b| {
+    let m: PathMap<()> = parts.into_par_iter().reduce(|| PromiseSafe(PathMap::new()), |a, b| {
         PromiseSafe(a.0.join(&b.0))
     }).0;
     println!("fold took {} millis", tfold.elapsed().as_millis());

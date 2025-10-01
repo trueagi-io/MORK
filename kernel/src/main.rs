@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashSet};
 // use std::future::Future;
 // use std::task::Poll;
 use std::time::Instant;
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use mork_frontend::bytestring_parser::Parser;
 use mork::{expr, prefix, sexpr};
@@ -650,6 +650,85 @@ fn sink_odd_even_sort() {
     assert_eq!(res, "A\nB\nC\nD\nE\n");
 }
 
+fn sink_head() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (head 7 (cux $z $y $x))))
+    "#;
+
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
+}
+
+fn sink_wasm_add() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(wasm add
+    (if (i32.and (i32.and
+            (i32.eq (i32.load8_u 0 (i32.const 0)) (i32.const 0x02))
+            (i32.eq (i32.load8_u 0 (i32.const 1)) (i32.const 0xc4)))
+            (i32.eq (i32.load8_u 0 (i32.const 6)) (i32.const 0xc4)))
+      (then
+        (i32.store 1 (i32.const 0) (i32.const 0xc4))
+        (i32.store 1 (i32.const 1) (call 0 (i32.add
+            (call 0 (i32.load 0 (i32.const 2)))
+            (call 0 (i32.load 0 (i32.const 7))))))
+      )
+      (else unreachable)
+    )
+)
+
+(exec 0 (, (wasm add $f)) (,
+  (exec 1 (, (xs $i $x) (ys $i $y))
+          (O (wasm $f ($x $y))))
+))
+    "#; // (zs $i $z) $z
+    let nargs = 1_000_000;
+    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    let mut args = vec![];
+    let options = ["x", "y"];
+    for (k, a) in options.iter().enumerate() {
+        for i in 0i32..nargs {
+            let mut e = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), a.as_bytes()[0], b's'];
+            let is = i.to_string();
+            e.push(item_byte(Tag::SymbolSize(is.len() as _)));
+            e.extend_from_slice(is.as_bytes());
+            e.push(item_byte(Tag::SymbolSize(4)));
+            e.extend_from_slice(((options.len() as i32)*i + (k as i32)).to_be_bytes().as_slice());
+            s.btm.insert(&e[..], ());
+        }
+    }
+    s.load_all_sexpr(&args[..]).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+
+    // println!("result: {res}");
+    // assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
+}
+
 fn logic_query() {
     let mut s = Space::new();
 
@@ -959,7 +1038,7 @@ fn bc3() {
     // assert!(res.contains("(@ (@ . (@ uncurry ab_c)) (@ (@ curry sym) b))\n"));
 }
 
-fn cm0() {
+fn bench_cm0(to_copy: usize) {
     let mut s = Space::new();
     
     // Follow along https://en.wikipedia.org/wiki/Counter_machine#Program
@@ -970,8 +1049,6 @@ fn cm0() {
     s.load_csv(REGS_CSV.as_bytes(), expr!(s, "[2] $ $"), expr!(s, "[3] state 0 [3] REG _1 _2"), b',').unwrap();
     JZ,2,5\nDEC,2,2INC,3,3\nINC,1,4\nJZ,0,0\nJZ,1,9\nDEC,1,7\nINC,2,8\nJZ,0,5\nH,0,0
      */
-    let TO_COPY = 50;
-
     let SPACE_MACHINE = format!(r#"
     (program Z (JZ 2 (S (S (S (S (S Z))))) ))
     (program (S Z) (DEC 2))
@@ -1015,7 +1092,7 @@ fn cm0() {
                ((step $k $ts) $p0 $t0))
             (, (exec ($k $ts) $p0 $t0)
                (exec (clocked (S $ts)) $p1 $t1)))
-    "#, peano(TO_COPY));
+    "#, peano(to_copy));
 
     s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
 
@@ -1033,7 +1110,7 @@ fn cm0() {
     let res = String::from_utf8(v).unwrap();
     
     // println!("{res}");
-    assert!(res.contains(format!("({} {})", last_ts, peano(TO_COPY)).as_str()));
+    assert!(res.contains(format!("({} {})", last_ts, peano(to_copy)).as_str()));
 }
 
 /*fn match_case() {
@@ -1960,11 +2037,140 @@ fn mm2_bc() {
     }
 }
 
+fn mm2_bc_v3() {
+    // MM2 Backward Chainer: Proving t = t via reflexivity
+    // Strategy: Use a1 and a2 axioms with two MP steps
+    const P: &str = r#"
+  ;; Type signatures for constructors
+  (kb (: (+) (-> (term) (term) (term))))  ;; Addition operator
+  (kb (: (=) (-> (term) (term) (wff))))   ;; Equality predicate
+  (kb (: (t) (term)))                      ;; Constant t
+  (kb (: (0) (term)))                      ;; Constant 0
+  (kb (: tt (: (t) (term))))               ;; Named proof that t is a term
+
+  ;; Type constructors (used to build wffs and terms)
+  (kb (: (tpl) (-> (: $x (term)) (: $y (term)) (: ((+) $x $y) (term)))))
+  (kb (: (weq) (-> (: $x (term)) (: $y (term)) (: ((=) $x $y) (wff)))))
+  (kb (: (wim) (-> (: $P (wff)) (: $Q (wff)) (: ((->) $P $Q) (wff)))))
+
+  ;; Axioms
+  (kb (: (a2) (-> (: $a (term)) (: ((=) ((+) $a (0)) $a) (|-)))))  ;; a + 0 = a
+  (kb (: (a1) (-> (: $t (term)) (: $r (term)) (: $s (term))
+                  (: ((->) ((=) $t $r) ((->) ((=) $t $s) ((=) $r $s))) (|-)))))  ;; Transitivity
+
+  ;; Modus Ponens inference rule
+  (kb (: (mp) (-> (: $P (wff)) (: $Q (wff)) (: $P (|-)) (: ((->) $P $Q) (|-)) (: $Q (|-)))))
+
+  ;; Priority 00: Initial lifting from KB to evidence
+  (exec (0000 lift-kb-to-ev)
+    (, (kb (: $t $T)))
+    (, (ev (: $t $T))))
+
+  ;; Priority 04b: Special MP for contracting P→(P→Q) with P to get P→Q
+  ; thread 'main' (1910560) panicked at kernel/src/space.rs:146:124:
+  ; index out of bounds: the len is 0 but the index is 0
+  ((step (0400 mp-contraction))
+    (, (goal (: ((->) $P $Q) (|-)))
+      (ev (: $P (|-)))
+      (ev (: ((->) $P ((->) $P $Q)) (|-))))
+    (, (goal (: $P (wff)))
+      (goal (: $Q (wff)))
+      (exec (04000 complete-mp-contraction)
+        (, (ev (: $P (wff)))
+            (ev (: $Q (wff)))
+            (ev (: $P (|-)))
+            (ev (: ((->) $P ((->) $P $Q)) (|-))))
+        (, (ev (: ((->) $P $Q) (|-)))
+            (debug mp-contraction completed ((->) $P $Q))))
+      (debug mp-contraction trying to prove ((->) $P $Q))))
+
+  ;; same error
+  ; ((step (0400 mp-contraction))
+    ; (, (goal (: ((->) $P $Q) (|-)))
+      ; (ev (: $P (|-)))
+      ; (ev (: ((->) $P ((->) $P $Q)) (|-))))
+    ; (, (goal (: $P (wff)))
+      ; (goal (: $Q (wff)))
+      ; (exec (04000 complete-mp-contraction)
+        ; (, (ev (: $P (wff)))
+            ; (ev (: $Q (wff)))
+            ; (ev (: $P (|-)))
+            ; (ev (: ((->) $P ((->) $P $Q)) (|-))))
+        ; (, (ev (: ((->) $P $Q) (|-)))))))
+
+  ;; Priority 05: Backward chain MP (most specific case)
+  ((step (0501 backchain-mp))
+    (, (ev (: $name (-> (: $a $Ta) (: $b $Tb) (: $c $Tc) (: $d $Td) (: $result $Tr))))
+       (goal (: $result $Tr)))
+    (, (goal (: $a $Ta))
+       (goal (: $b $Tb))
+       (goal (: $c $Tc))
+       (goal (: $d $Td))
+       (exec (05010 complete-mp)
+         (, (ev (: $a $Ta))
+            (ev (: $b $Tb))
+            (ev (: $c $Tc))
+            (ev (: $d $Td))
+            (ev (: $name (-> (: $a $Ta) (: $b $Tb) (: $c $Tc) (: $d $Td) (: $result $Tr)))))
+         (, (ev (: $result $Tr))
+            (debug completed-mp ($name args) -> (: $result $Tr))))
+       (debug backchain-mp (: $result $Tr) needs four args)))
+
+;; Remove the old 0501 rule and potentially 0600 if this works better
+
+
+
+  ;; Main backward chaining executor
+  (exec bc
+      (, ((step $x) $premises0 $conclusions0)
+         (exec bc $premises1 $conclusions1))
+      (, (exec $x $premises0 $conclusions0)
+         (exec bc $premises1 $conclusions1)))
+
+  ;; Goal: Prove t = t
+  (goal (: ((=) (t) (t)) (|-)))
+    "#;
+
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    s.load_all_sexpr(P.as_bytes()).unwrap();
+
+    println!("=== MM2 (bc v3): Proving ⊢ (t = t) ===");
+
+    let mut ticks = 0usize;
+    let multiplier = 5;
+    loop {
+        ticks += multiplier;
+        let t1 = Instant::now();
+        let n = s.metta_calculus(multiplier);
+        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {})",
+                 ticks, n, t1.elapsed().as_millis(),
+                 unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+
+        println!("space size {}", s.btm.val_count());
+
+        let mut buf = Vec::new();
+        s.dump_all_sexpr(&mut buf).unwrap();
+        let dump = String::from_utf8_lossy(&buf);
+
+        // if n == 0 || ticks >= 50 {
+        //     println!("\n== mm2 (bc v3): — ran for {:?} and {} tick(s) ==", t0.elapsed(), ticks);
+        //     add_mm2_demo0_query_diagnostics(&mut s, ticks);
+        //     add_mm2_demo0_diagnostics(&mut s, ticks);
+        //     println!("\n--- Full Final State Dump ---");
+        //     print!("{dump}");
+        //     break;
+        // }
+    }
+}
+
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use serde::{Serialize, Deserialize};
 use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
+use clap::builder::TypedValueParser;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 enum Format { MeTTa, JSON, CSV, UPaths, Paths, ACT }
@@ -2016,6 +2222,9 @@ fn main() {
     // stv_roman();
     // mm1_forward();
     // mm2_bc();
+    // sink_add_remove();
+    // sink_wasm_add();
+    // bench_cm0(50);
     // return;
 
     let args = Cli::parse();
@@ -2025,12 +2234,13 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("all") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
-            if selected.remove("default") { selected.extend(&["transitive", "clique", "finite_domain", "process_calculus"]) }
+            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
+            if selected.remove("default") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus"]) }
 
             for b in selected {
                 println!("=== benchmarking {} ===", b);
                 match b {
+                    "counter_machine" => { bench_cm0(50); }
                     "transitive" => { bench_transitive_no_unify(50000, 1000000); }
                     "clique" => { bench_clique_no_unify(200, 3600, 5); }
                     "finite_domain" => { bench_finite_domain(10_000); }
@@ -2060,12 +2270,12 @@ fn main() {
             logic_query();
 
             bc0();
-            cm0();
 
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();
             sink_odd_even_sort();
             sink_add_remove();
+            sink_head();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]

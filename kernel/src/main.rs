@@ -2224,8 +2224,8 @@ fn main() {
     // mm2_bc();
     // sink_add_remove();
     // sink_wasm_add();
-    bench_cm0(50);
-    return;
+    // bench_cm0(50);
+    // return;
 
     let args = Cli::parse();
 

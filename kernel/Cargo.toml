@@ -32,4 +32,4 @@ wasmtime = { version = "37.0.1", features = ["winch"] }
 default = []
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
-nightly = ["pathmap/nightly", "pathmap/all_dense_nodes"]
+nightly = ["pathmap/nightly"]

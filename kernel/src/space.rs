@@ -371,14 +371,6 @@ impl Space {
         println!("val count {}", self.btm.val_count());
     }
 
-    fn write_zipper_unchecked<'a>(&'a self) -> WriteZipperUntracked<'a, 'a, ()> {
-        unsafe { (&self.btm as *const PathMap<()>).cast_mut().as_mut().unwrap().write_zipper() }
-    }
-
-    fn write_zipper_at_unchecked<'a, 'b>(&'a self, path: &'b [u8]) -> WriteZipperUntracked<'a, 'b, ()> {
-        unsafe { (&self.btm as *const PathMap<()>).cast_mut().as_mut().unwrap().write_zipper_at_path(path) }
-    }
-
     /*
         pub fn load_csv<R : Read>(&mut self, prefix: Prefix, mut r: R, sm: &mut SymbolMapping, separator: u8) -> Result<usize, String> {
         let mut i = 0;
@@ -423,7 +415,7 @@ impl Space {
 
     pub fn load_csv(&mut self, r: &[u8], pattern: Expr, template: Expr, seperator: u8) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+        let mut wz = self.btm.write_zipper_at_path(constant_template_prefix);
         let mut buf = [0u8; 2048];
 
         let mut i = 0usize;
@@ -468,7 +460,7 @@ impl Space {
     }
 
     pub fn load_json(&mut self, r: &[u8]) -> Result<usize, String> {
-        let mut wz = self.write_zipper_unchecked();
+        let mut wz = self.btm.write_zipper();
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
         let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         p.parse(&mut st).unwrap();
@@ -550,7 +542,7 @@ impl Space {
     }
 
     pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
-        let mut wz = self.write_zipper_unchecked();
+        let mut wz = self.btm.write_zipper();
         let mut lines = 0usize;
         let mut count = 0usize;
         let mut pdp = ParDataParser::new(&self.sm);
@@ -574,7 +566,7 @@ impl Space {
     }
 
     pub fn load_jsonl_par(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
-        let mut wz = self.write_zipper_unchecked();
+        let mut wz = self.btm.write_zipper();
         let mut lines = 0usize;
         let mut count = 0usize;
         let mut pdp = ParDataParser::new(&self.sm);
@@ -599,7 +591,7 @@ impl Space {
 
     pub fn load_json_(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+        let mut wz = self.btm.write_zipper_at_path(constant_template_prefix);
 
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
         let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
@@ -814,7 +806,7 @@ impl Space {
 
     pub fn load_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
-        let mut wz = self.write_zipper_at_unchecked(constant_template_prefix);
+        let mut wz = self.btm.write_zipper_at_path(constant_template_prefix);
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut stack = Vec::with_capacity(1 << 32);
@@ -1165,14 +1157,13 @@ impl Space {
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
-        // let mut zh = self.btm.zipper_head();
+        let mut zh = self.btm.zipper_head();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_wzs: Vec<_> = Vec::with_capacity(64);
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
-                // template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
-                template_wzs.push(self.write_zipper_at_unchecked(x));
+                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1243,6 +1234,9 @@ impl Space {
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = &mut template_wzs[subsumption[i]];
             any_new |= s.finalize(std::iter::once(wz));
+        }
+        for wz in template_wzs {
+            zh.cleanup_write_zipper(wz);
         }
 
         (touched, any_new)

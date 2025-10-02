@@ -208,7 +208,7 @@ macro_rules! wasm_ctx { () => { r#"
     {:?}
   )
 )
-"#; } }
+"# } }
 
 
 impl Sink for WASMSink {

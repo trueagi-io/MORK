@@ -31,7 +31,7 @@ itertools = "0.14.0"
 base64 = "0.22.1"
 
 [features]
-default = []
+default = ["nightly"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 nightly = ["pathmap/nightly"]

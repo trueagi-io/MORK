@@ -285,6 +285,63 @@ impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, '
     #[inline(always)] fn end(&mut self) -> () {}
 }
 
+pub struct ASpaceTranscriber<'a, 'c> { count: usize, wz: &'c mut Vec<u8>, pdp: ParDataParser<'a> }
+impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
+    #[inline(always)] fn write<S : AsRef<[u8]>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
+        gen move {
+            let token = self.pdp.tokenizer(s.as_ref());
+            self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
+            self.wz.extend_from_slice(token);
+            yield unsafe { std::mem::transmute(&self.wz[..]) };
+            self.wz.truncate(self.wz.len() - (token.len() + 1));
+        }
+    }
+    fn destruct(self) -> (usize, &'c mut Vec<u8>, ParDataParser<'a>) {
+        (self.count, self.wz, self.pdp)
+    }
+}
+impl <'a, 'c> crate::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
+    #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+        if first { self.wz.push(item_byte(Tag::Arity(2))); }
+        let token = self.pdp.tokenizer(i.to_string().as_bytes());
+        self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
+        self.wz.extend_from_slice(token);
+    }
+    #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+        self.wz.truncate(self.wz.len() - (self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1));
+        if last { self.wz.truncate(self.wz.len() - 1); }
+    }
+    #[inline(always)] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
+    #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+        if first { self.wz.push(item_byte(Tag::Arity(2))); }
+        let token = self.pdp.tokenizer(k.as_bytes());
+        self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
+        self.wz.extend_from_slice(token);
+    }
+    #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+        let token = self.pdp.tokenizer(k.as_bytes());
+        self.wz.truncate(self.wz.len() - (token.len() + 1));
+        if last { self.wz.truncate(self.wz.len() - 1); }
+    }
+    #[inline(always)] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
+    #[inline(always)] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
+    #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
+        let mut buf = [0u8; 64];
+        let mut cur = std::io::Cursor::new(&mut buf[..]);
+        if negative { write!(cur, "-").unwrap(); }
+        write!(cur, "{}", mantissa).unwrap();
+        if exponent != 0 { write!(cur, "e{}", exponent).unwrap(); }
+        let len = cur.position() as usize;
+        self.count += 1;
+        self.write(unsafe { std::mem::transmute::<_, &'static [u8]>(&cur.into_inner()[..len]) })
+    }
+    #[inline(always)] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
+    #[inline(always)] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
+    #[inline(always)] fn write_null(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("null") }
+    #[inline(always)] fn begin(&mut self) -> () {}
+    #[inline(always)] fn end(&mut self) -> () {}
+}
+
 #[macro_export]
 macro_rules! prefix {
     ($space:ident, $s:literal) => {{
@@ -469,60 +526,6 @@ impl Space {
 
     #[cfg(all(feature = "nightly"))]
     pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<usize, String> {
-        pub struct ASpaceTranscriber<'a, 'c> { count: usize, wz: &'c mut Vec<u8>, pdp: ParDataParser<'a> }
-        impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
-            #[inline(always)] fn write<S : AsRef<[u8]>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
-                gen move {
-                let token = self.pdp.tokenizer(s.as_ref());
-                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
-                self.wz.extend_from_slice(token);
-                yield unsafe { std::mem::transmute(&self.wz[..]) };
-                self.wz.truncate(self.wz.len() - (token.len() + 1));
-                }
-            }
-        }
-        impl <'a, 'c> crate::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
-            #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
-                if first { self.wz.push(item_byte(Tag::Arity(2))); }
-                let token = self.pdp.tokenizer(i.to_string().as_bytes());
-                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
-                self.wz.extend_from_slice(token);
-            }
-            #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
-                self.wz.truncate(self.wz.len() - (self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1));
-                if last { self.wz.truncate(self.wz.len() - 1); }
-            }
-            #[inline(always)] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
-            #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
-                if first { self.wz.push(item_byte(Tag::Arity(2))); }
-                let token = self.pdp.tokenizer(k.as_bytes());
-                self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
-                self.wz.extend_from_slice(token);
-            }
-            #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
-                let token = self.pdp.tokenizer(k.as_bytes());
-                self.wz.truncate(self.wz.len() - (token.len() + 1));
-                if last { self.wz.truncate(self.wz.len() - 1); }
-            }
-            #[inline(always)] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
-            #[inline(always)] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
-            #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
-                let mut buf = [0u8; 64];
-                let mut cur = std::io::Cursor::new(&mut buf[..]);
-                if negative { write!(cur, "-").unwrap(); }
-                write!(cur, "{}", mantissa).unwrap();
-                if exponent != 0 { write!(cur, "e{}", exponent).unwrap(); }
-                let len = cur.position() as usize;
-                self.count += 1;
-                self.write(unsafe { std::mem::transmute::<_, &'static [u8]>(&cur.into_inner()[..len]) })
-            }
-            #[inline(always)] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
-            #[inline(always)] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
-            #[inline(always)] fn write_null(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("null") }
-            #[inline(always)] fn begin(&mut self) -> () {}
-            #[inline(always)] fn end(&mut self) -> () {}
-        }
-
         let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
 
         let mut wz = Vec::with_capacity(4096);
@@ -541,31 +544,44 @@ impl Space {
         Ok(st.count)
     }
 
-    pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
-        let mut wz = self.btm.write_zipper();
+    #[cfg(all(feature = "nightly"))]
+    pub fn jsonl_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<(usize, usize), String> {
         let mut lines = 0usize;
         let mut count = 0usize;
-        let mut pdp = ParDataParser::new(&self.sm);
-        let spo_symbol = pdp.tokenizer("JSONL".as_bytes());
-        let mut path = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(spo_symbol.len() as u8))];
-        path.extend_from_slice(spo_symbol);
-        wz.descend_to(&path[..]);
+        let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
+        let mut mpdp = Some(ParDataParser::new(&self.sm));
+        let mut wz = Vec::with_capacity(4096);
+        let jsonl_symbol = mpdp.as_mut().unwrap().tokenizer("JSONL".as_bytes());
+        wz.push(item_byte(Tag::Arity(3)));
+        wz.push(item_byte(Tag::SymbolSize(jsonl_symbol.len() as u8)));
+        wz.extend_from_slice(jsonl_symbol);
+        wz.push(item_byte(Tag::SymbolSize(8)));
+
         for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
-            wz.descend_to(lines.to_be_bytes());
-            let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
+            wz.extend_from_slice(lines.to_be_bytes().as_slice());
+            let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: mpdp.take().unwrap() };
+
             let mut p = crate::json_parser::Parser::new(line);
-            p.parse(&mut st).unwrap();
-            count += st.count;
-            lines += 1;
-            wz.ascend(8);
-            if lines > 0 && lines % 1000_000 == 0 {
-                println!("parsed {} JSON lines ({} paths)", lines, count);
+            let mut coro = p.parse_stream(&mut st);
+            while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
+                println!("jsonl {}", serialize(n));
+                Pin::new(&mut sink).resume(Some(n));
             }
+            drop(coro);
+            let (line_count, _, pdp) = st.destruct();
+            wz.truncate(wz.len() - 8);
+            lines += 1;
+            count += line_count;
+            mpdp.insert(pdp);
+        }
+        match Pin::new(&mut sink).resume(None) {
+            CoroutineState::Yielded(_) => { panic!() }
+            CoroutineState::Complete(summary) => { println!("{:?}", summary) }
         }
         Ok((lines, count))
     }
 
-    pub fn load_jsonl_par(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
+    pub fn load_jsonl(&mut self, r: &[u8]) -> Result<(usize, usize), String> {
         let mut wz = self.btm.write_zipper();
         let mut lines = 0usize;
         let mut count = 0usize;
@@ -852,7 +868,7 @@ impl Space {
                     unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                 }
                 #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+                unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
             }, |i, intro| { Expr::VARNAMES[i as usize] });
             // w.write(serialize(rz.path()).as_bytes());
             w.write(&[b'\n']).map_err(|x| x.to_string())?;

@@ -1553,6 +1553,22 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     // written 15969490 in 17441 ms
 }
 
+#[cfg(all(feature = "nightly"))]
+fn jsonl_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(jsonl_path: IPath, upaths_path: OPath) {
+    println!("mmapping JSONL file {:?}", jsonl_path.as_ref().as_os_str());
+    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
+    let json_file = std::fs::File::open(jsonl_path).unwrap();
+    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
+    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
+    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    let (lines, written) = s.jsonl_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
+    println!("written {written} ({lines} lines) in {} ms", t0.elapsed().as_millis());
+    // (zephy)
+}
+
 /// Based on Anneline's instantiation of PDDL domains
 fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
     let mut s = Space::new();
@@ -2285,8 +2301,8 @@ fn main() {
     // sink_add_remove();
     // sink_wasm_add();
     // bench_cm0(50);
-    bench_sink_odd_even_sort(2000);
-    return;
+    // bench_sink_odd_even_sort(2000);
+    // return;
 
     let args = Cli::parse();
 
@@ -2421,11 +2437,14 @@ fn main() {
                     }
                 }
                 #[cfg(all(feature = "nightly"))]
-                (Format::JSON, Format::UPaths) => {
+                ("json", "upaths") => {
                     #[cfg(all(feature = "nightly"))]
                     // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
-                    json_upaths(input_path, output_path);
-                    
+                    json_upaths(input_path, some_output_path);
+                }
+                ("jsonl", "upaths") => {
+                    #[cfg(all(feature = "nightly"))]
+                    jsonl_upaths(input_path, some_output_path);
                 }
                 (_, _) => { panic!("unsupported conversion") }
             }

@@ -81,7 +81,7 @@ impl<'space> PermissionArb<'space, DefaultSpace> for DefaultPermissionHead<'spac
                 let rz = PrefixZipper::new(path.to_owned(), rz)
                     .with_origin(path)
                     .expect("origin must exist");
-                return Ok(DefaultSpaceReader(MultiZipper::ACTMmap(rz)));
+                return Ok(DefaultSpaceReader(MultiZipper::ACTMmapPrefix(rz)));
             }
         }
         let pm = self.0.map.read_zipper_at_path(path).map_err(|e| {

@@ -1,6 +1,5 @@
 use std::io::Read;
 use std::time::Instant;
-use pathmap::trie_map::BytesTrieMap;
 use pathmap::zipper::{ZipperCreation, ZipperMoving};
 // // use std::future::Future;
 // // use std::task::Poll;

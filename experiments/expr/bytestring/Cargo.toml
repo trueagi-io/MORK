@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 smallvec = "1.13.2"
 freeze = { workspace = true }
-pathmap = { workspace = true }
+pathmap = { workspace = true, default_features = false, features = [] }
 gxhash = { workspace = true }

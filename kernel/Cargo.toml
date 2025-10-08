@@ -10,7 +10,7 @@ edition = "2024"
 [dependencies]
 log = { workspace=true }
 env_logger = { workspace=true }
-pathmap = { workspace = true, features = [] }
+pathmap = { workspace = true, features = ["graft_root_vals", "slim_ptrs", "paths_serialization", "jemalloc", "arena_compact"] }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace=true }
 bucket_map = { workspace = true }

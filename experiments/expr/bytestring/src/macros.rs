@@ -1,3 +1,6 @@
+use ::core::convert::TryFrom;
+use crate::{Expr, Tag, byte_item, item_byte};
+
 /// A macro to destructure a mork-bytestring expression into its components.
 ///
 /// The pattern can include:
@@ -23,6 +26,7 @@
 macro_rules! destruct {
     ($expr:expr, ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
         {
+            use ::core::convert::TryFrom;
             use $crate::{Tag, Expr, byte_item, parse};
             let rv = 'ret: loop {
                 unsafe {
@@ -63,6 +67,9 @@ macro_rules! destruct {
     };
     (@vars, $pattern:literal $( $rest:tt )*) => {
         $crate::destruct!(@vars, $( $rest )*)
+    };
+    (@vars, { $var:ident : $ty:ty } $( $rest:tt )*) => {
+        ($var, $crate::destruct!(@vars, $( $rest )*))
     };
     (@vars, $var:ident $( $rest:tt )*) => {
         ($var, $crate::destruct!(@vars, $( $rest )*))
@@ -116,10 +123,47 @@ macro_rules! destruct {
         $offset += expr_size;
         $crate::destruct!(@chomp, $label, $expr, $offset, $( $rest )*);
     };
+    (@chomp, $label:lifetime, $expr:expr, $offset:ident, { $var:ident : $ty:ty } $( $rest:tt )* ) => {
+        let rv = byte_item(*$expr.ptr.add($offset));
+        if matches!(rv, Tag::NewVar | Tag::VarRef(_)) {
+            break $label Err(format!("{rv:?} did not match expected variable $$"));
+        }
+        let expr = Expr { ptr: $expr.ptr.add($offset) };
+        let $var = match <$ty as TryFrom::<Expr>>::try_from(expr) {
+            Ok(value) => value,
+            Err(e) => break $label Err(e),
+        };
+        let expr_size = expr.span().len();
+        $offset += expr_size;
+        $crate::destruct!(@chomp, $label, $expr, $offset, $( $rest )*);
+    };
     // 4) If it sees nothing, the destructuring is complete.
     (@chomp, $label:lifetime, $expr:expr, $offset:ident, ) => {
 
     };
+}
+
+impl TryFrom<Expr> for i32 {
+    type Error = String;
+    fn try_from(value: Expr) -> Result<Self, Self::Error> {
+        let span = unsafe { &*value.span() };
+        let tag = byte_item(span[0]);
+        if tag != Tag::SymbolSize(4) {
+            return Err(format!("expected symbol of size 4, got: {tag:?}"));
+        }
+        let array: [u8; 4] = span[1..5].try_into()
+            .expect("span is too short");
+        Ok(i32::from_le_bytes(array).swap_bytes())
+    }
+}
+
+impl SerializableExpr for i32 {
+    fn size(&self) -> usize { core::mem::size_of::<Self>() + 1 }
+    fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
+        let size = core::mem::size_of::<Self>();
+        buf.write_all(&[item_byte(Tag::SymbolSize(size as u8))])?;
+        buf.write_all(&self.swap_bytes().to_le_bytes())
+    }
 }
 
 /// A trait for types that can be serialized into a mork-bytestring expression.
@@ -147,6 +191,18 @@ impl SerializableExpr for &[u8] {
     fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
         use crate::{Tag, item_byte};
         let bytes = self;
+        buf.write_all(&[item_byte(Tag::SymbolSize(bytes.len() as u8))])?;
+        buf.write_all(bytes)?;
+        Ok(())
+    }
+}
+impl<const N: usize> SerializableExpr for &[u8; N] {
+    fn size(&self) -> usize {
+        self.len() + 1
+    }
+    fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
+        use crate::{Tag, item_byte};
+        let bytes = &self[..];
         buf.write_all(&[item_byte(Tag::SymbolSize(bytes.len() as u8))])?;
         buf.write_all(bytes)?;
         Ok(())
@@ -240,13 +296,14 @@ macro_rules! construct_impl {
         $crate::construct_impl!(@write, $label, $cursor, $($rest)*);
     };
     (@write, $label:lifetime, $cursor:ident, $literal:literal $($rest:tt)* ) => {
-        let bytes: &[u8] = $literal.as_ref();
-        let pattern_len: u8 = if bytes.len() > 63 {
-            break $label Err(format!("pattern length {} exceeds 63", bytes.len()));
+        let value = $literal;
+        let size = SerializableExpr::size(&$literal);
+        let pattern_len: u8 = if size > 63 {
+            break $label Err(format!("pattern length {} exceeds 63", size));
         } else {
-            bytes.len().try_into().unwrap()
+            size.try_into().unwrap()
         };
-        if let Err(e) = SerializableExpr::serialize(&bytes, &mut $cursor) {
+        if let Err(e) = SerializableExpr::serialize(&value, &mut $cursor) {
             break $label Err(e.to_string());
         }
         $crate::construct_impl!(@write, $label, $cursor, $($rest)*);
@@ -275,6 +332,24 @@ mod tests {
                 eprintln!("variables out_1={out_1:?} out_2={out_2:?}");
                 assert_eq!(format!("{out_1:?}"), "42");
                 assert_eq!(format!("{out_2:?}"), "69");
+            },
+            err => { panic!("failed {err:?}") }
+        );
+    }
+
+    #[test]
+    fn test_parse_typed() {
+        let a = 42_i32;
+        let buf = construct!( "a" a 69_i32 )
+            .expect("construct failed");
+        eprintln!("constructed: {buf:?}");
+        let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
+        destruct!(
+            expr, ("a" {out_1:i32} {out_2:i32}),
+            {
+                eprintln!("variables out_1={out_1:?} out_2={out_2:?}");
+                assert_eq!(out_1, 42);
+                assert_eq!(out_2, 69);
             },
             err => { panic!("failed {err:?}") }
         );

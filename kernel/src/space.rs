@@ -68,22 +68,28 @@ const VARS: [u64; 4] = {
 // future Adam: don't fall for the temptation of keeping references of data->pattern, you tried it twice already: it's not worth the complexity, it's incompatible due to the PZ de-Bruijn level non-well-foundedness, it doesn't occur in most queries, and the performance is not worth it
 // others: this code has haphephobia, contact Adam when you run into problems
 // optimization opportunities:
-// - use u16 x u16 compressed byte mask to reduce stack size
+// - use u16 x u16 compressed byte mask to reduce stack size, or to_next_sibling?
 // - decrease the size of ExprEnv; it's too rich for this function
-// - symbol size can use more optimized descend at depth k implementation (PZ)
 // - this function gets massive (many thousands of instructions) but can do with less checked functions
 // - ascends may be avoided by using RZ refs instead of re-ascending in some cases
 // - the adiabatic crate may be used to get rid of the recursion (though currently the recursion is significantly faster)
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
+// - use descend_to and re-evaluated the added sub-path to do much better on long paths
 fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
     loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
     macro_rules! vs {
-        () => {{
+        ($e:expr, $nv:expr) => {{
             let m = loc.child_mask().and(&ByteMask(VARS));
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
+                // technically requires us to replace references to this NewVar on the stack with e
+                // if !$nv && item_byte(Tag::NewVar) == b {
+                //     if $e.n == 0 {
+                //         references.push(u32::MAX);
+                //     }
+                // }
                 if !loc.descend_to_byte(b) { unreachable_unchecked() };
                 coreferential_transition(loc, stack, references, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
@@ -92,6 +98,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
     }
     unsafe {
     trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
+    // trace!(target: "coref trans", "loc {} ({:?})    len {}    ops {:?} ({:?})", serialize(loc.path()), loc.path(), loc.path().len(), loc.child_mask(), loc.child_mask().iter().map(byte_item).collect::<Vec<_>>());
     trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
     unsafe { transitions += 1 };
     match stack.pop() {
@@ -101,12 +108,13 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
 
             match byte_item(e_byte) {
                 Tag::NewVar => {
-                    if e.n == 0 { references.push(loc.path().len() as u32); }
-                    else {
+                    if e.n == 0 {
+                        references.push(loc.path().len() as u32);
+                    } else {
                         trace!(target: "coref trans", "not putting {} {}", e.n, e.show());
+                        // trace!(target: "coref trans", "not putting against {:?}", loc.child_mask());
                     }
-
-                    vs!();
+                    vs!(e, true);
 
                     let m = loc.child_mask().and(&ByteMask(SIZES));
                     let mut it = m.iter();
@@ -137,10 +145,12 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     if e.n == 0 { references.pop(); }
                 }
                 Tag::VarRef(i) => {
-                    // wrong addition v and n?
+                    // let addition = if e.n == 0 && references[i as usize] != u32::MAX {
                     let addition = if e.n == 0 {
                         trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
+                        // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
+                        // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
                         ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
@@ -148,12 +158,12 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
                     };
                     stack.push(addition);
-                    vs!();
+                    vs!(e, false);
                     coreferential_transition(loc, stack, references, f);
                     stack.pop();
                 }
                 Tag::SymbolSize(size) => {
-                    vs!();
+                    vs!(e, false);
                     if loc.descend_to_byte(e_byte) {
                         if loc.descend_to(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
                             coreferential_transition(loc, stack, references, f);
@@ -164,7 +174,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
 
                 }
                 Tag::Arity(arity) => {
-                    vs!();
+                    vs!(e, false);
                     if loc.descend_to_byte(e_byte) {
                         let stackl = stack.len();
                         e.args(&mut stack);
@@ -359,6 +369,13 @@ macro_rules! sexpr {
 impl Space {
     pub fn new() -> Self {
         Self { btm: PathMap::new(), sm: SharedMapping::new() }
+    }
+
+    pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
+        let mut it = Context::new(r);
+        let mut parser = ParDataParser::new(&self.sm);
+        let mut ez = ExprZipper::new(Expr{ ptr: buf });
+        parser.sexpr(&mut it, &mut ez).map(|_| (Expr{ ptr: buf }, ez.loc))
     }
 
     /// Remy :I want to really discourage the use of this method, it needs to be exposed if we want to use the debugging macros `expr` and `sexpr` without giving acces directly to the field
@@ -782,7 +799,9 @@ impl Space {
         Ok((nodes, labels))
     }
 
-    pub fn load_all_sexpr(&mut self, r: &[u8]) -> Result<usize, String> {
+    pub fn add_all_sexpr(&mut self, r: &[u8]) -> Result<usize, String> { self.load_all_sexpr_impl(r, true) }
+    pub fn remove_all_sexpr(&mut self, r: &[u8]) -> Result<usize, String> { self.load_all_sexpr_impl(r, false) }
+    pub fn load_all_sexpr_impl(&mut self, r: &[u8], add: bool) -> Result<usize, String> {
         let mut stack = Vec::with_capacity(1 << 32);
         unsafe { stack.set_len(1 << 32); }
         let mut it = Context::new(r);
@@ -793,7 +812,8 @@ impl Space {
             match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
                     let data = &stack[..ez.loc];
-                    self.btm.insert(data, ());
+                    if add { self.btm.insert(data, ()); }
+                    else { self.btm.remove(data); }
                 }
                 Err(ParserError::InputFinished) => { break }
                 Err(other) => { panic!("{:?}", other) }
@@ -804,7 +824,9 @@ impl Space {
         Ok(i)
     }
 
-    pub fn load_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> {
+    pub fn add_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> { self.load_sexpr_impl(r, pattern, template, true) }
+    pub fn remove_sexpr(&mut self, r: &[u8], pattern: Expr, template: Expr) -> Result<usize, String> { self.load_sexpr_impl(r, pattern, template, false) }
+    pub fn load_sexpr_impl(&mut self, r: &[u8], pattern: Expr, template: Expr, add: bool) -> Result<usize, String> {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
         let mut wz = self.btm.write_zipper_at_path(constant_template_prefix);
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
@@ -825,8 +847,9 @@ impl Space {
                         Err(e) => { continue }
                     }
                     let new_data = &buffer[..oz.loc];
-                    wz.descend_to(&new_data[constant_template_prefix.len()..]);
-                    wz.set_value(());
+                    wz.move_to_path(&new_data[constant_template_prefix.len()..]);
+                    if add { wz.set_val(()); }
+                    else { wz.remove_val(true); }
                     wz.reset();
                 }
                 Err(ParserError::InputFinished) => { break }
@@ -842,7 +865,7 @@ impl Space {
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
-            println!("{}", serialize(rz.path()));
+            // println!("{}", serialize(rz.path()));
             Expr{ ptr: rz.path().as_ptr().cast_mut() }.serialize2(w, |s| {
                 #[cfg(feature="interning")]
                 {
@@ -942,6 +965,80 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
+    #[cfg(feature="no_search")]
+    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        let pat_newvars = pat_expr.newvars();
+        trace!(target: "query_multi_ref", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
+        let mut pat_args = vec![];
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+
+        if pat_args.len() <= 1 { return 0 }
+
+        let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
+            btm.read_zipper()
+        }));
+        prz.reserve_buffers(1 << 32, 32);
+        
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+        let mut candidate = 0;
+
+        
+        while prz.to_next_val() {
+            if prz.focus_factor() != prz.factor_count() - 1 { continue };
+            let e = Expr { ptr: prz.origin_path().as_ptr().cast_mut() };
+            trace!(target: "query_multi_ref", "pi {:?}", prz.path_indices());
+            trace!(target: "query_multi_ref", "at {:?}", e);
+            for &other_i in prz.path_indices() {
+                trace!(target: "query_multi_ref", "at {:?}",
+                    Expr { ptr: unsafe { prz.origin_path().as_ptr().cast_mut().add(other_i) } });
+            }
+            unsafe { unifications += 1; }
+            // if e.variables() != 0 {
+
+            let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
+
+            for (&pa, &other_i) in pat_args[2..].iter().zip(prz.path_indices()) {
+                let fe = ExprEnv::new((pairs.len() + 1) as u8,
+                                      Expr { ptr: unsafe { prz.origin_path().as_ptr().cast_mut().add(other_i) } });
+                pairs.push((pa, fe))
+            }
+
+            // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
+
+            let bindings = unify(pairs);
+
+            match bindings {
+                Ok(bs) => {
+                    // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
+                    let (oi, ni) = {
+                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        trace.clear();
+                        assignments.clear();
+                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                        r
+                    };
+                    // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
+
+                    unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
+                    if !effect(Err((bs, oi, ni, &assignments[..])), e) {
+                        break
+                    }
+                }
+                Err(failed) => {
+                    trace!(target: "query_multi_ref", "U failed {:?}", failed)
+                }
+            }
+
+        }
+       
+        candidate
+    }
+
+    #[cfg(not(feature="no_search"))]
     pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
@@ -950,8 +1047,7 @@ impl Space {
 
         if pat_args.len() <= 1 { return 0 }
 
-        let mut rz = btm.read_zipper();
-        let mut prz = ProductZipper::new(rz, (0..(pat_args.len() - 2)).map(|i| {
+        let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
             btm.read_zipper()
         }));
         prz.reserve_buffers(1 << 32, 32);

@@ -150,8 +150,10 @@ impl Sink for HeadSink {
     }
 }
 
+#[cfg(feature = "wasm")]
 pub struct WASMSink { e: Expr, skip: usize, changed: bool, module: wasmtime::Module, store: wasmtime::Store<()>, instance: wasmtime::Instance }
 
+#[cfg(feature = "wasm")]
 static ENGINE_LINKER: LazyLock<(wasmtime::Engine, wasmtime::Linker<()>)> = LazyLock::new(|| {
     let mut config = wasmtime::Config::new();
     config.wasm_multi_memory(true);
@@ -192,6 +194,7 @@ static ENGINE_LINKER: LazyLock<(wasmtime::Engine, wasmtime::Linker<()>)> = LazyL
     (engine, linker)
 });
 
+#[cfg(feature = "wasm")]
 static mut LINKER: Option<wasmtime::Linker<()>> = None;
 macro_rules! wasm_ctx { () => { r#"
 (module
@@ -208,9 +211,10 @@ macro_rules! wasm_ctx { () => { r#"
     {:?}
   )
 )
-"#; } }
+"# } }
 
 
+#[cfg(feature = "wasm")]
 impl Sink for WASMSink {
     fn new(e: Expr) -> Self {
         let mut ez = ExprZipper::new(e); ez.next(); ez.next();
@@ -303,7 +307,10 @@ impl Sink for CountSink {
 
 
 
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), WASMSink(WASMSink) }
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink),
+    #[cfg(feature = "wasm")]
+    WASMSink(WASMSink) 
+}
 
 impl Sink for ASink {
     fn new(e: Expr) -> Self {
@@ -316,7 +323,10 @@ impl Sink for ASink {
             ASink::HeadSink(HeadSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'w' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b's' && *e.ptr.offset(5) == b'm' } {
-            ASink::WASMSink(WASMSink::new(e))
+            #[cfg(feature = "wasm")]
+            return ASink::WASMSink(WASMSink::new(e));
+            #[cfg(not(feature = "wasm"))]
+            panic!("MORK was not built with the wasm feature, yet trying to call {:?}", e);
         } else {
             unreachable!()
         }
@@ -328,6 +338,7 @@ impl Sink for ASink {
                 ASink::AddSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "wasm")]
                 ASink::WASMSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
@@ -337,6 +348,7 @@ impl Sink for ASink {
             ASink::AddSink(s) => { s.sink(it, path) }
             ASink::RemoveSink(s) => { s.sink(it, path) }
             ASink::HeadSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "wasm")]
             ASink::WASMSink(s) => { s.sink(it, path) }
         }
     }
@@ -346,6 +358,7 @@ impl Sink for ASink {
             ASink::AddSink(s) => { s.finalize(it) }
             ASink::RemoveSink(s) => { s.finalize(it) }
             ASink::HeadSink(s) => { s.finalize(it) }
+            #[cfg(feature = "wasm")]
             ASink::WASMSink(s) => { s.finalize(it) }
         }
     }

@@ -142,6 +142,9 @@ Currently we don't have these items as specific deliverables, but these are dire
 
 ## Additional reference
 
+- [PathMap](https://github.com/Adam-Vandervorst/PathMap)
+Important infrastructure MORK is dependent and/or built on
+
 - [MeTTa](https://metta-lang.dev/)\
 Official resources for the MeTTa language
 

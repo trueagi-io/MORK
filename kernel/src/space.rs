@@ -85,6 +85,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
 
             while let Some(b) = it.next() {
                 loc.descend_to_byte(b);
+                debug_assert!(loc.path_exists());
                 coreferential_transition(loc, stack, references, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
             }
@@ -113,6 +114,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     while let Some(b) = it.next() {
                         let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
                         loc.descend_to_byte(b);
+                        debug_assert!(loc.path_exists());
                         if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
                         loop {
                             coreferential_transition(loc, stack, references, f);   
@@ -126,6 +128,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     while let Some(b) = it.next() {
                         let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
                         loc.descend_to_byte(b);
+                        debug_assert!(loc.path_exists());
                         static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
                         for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }

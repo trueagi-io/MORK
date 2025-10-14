@@ -12,6 +12,14 @@ use std::hash::{Hash, Hasher};
 use std::ops::Add;
 // use std::future::Future;
 // use std::task::Poll;
+use std::time::{Duration, Instant};
+use pathmap::PathMap;
+use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
+use mork_frontend::bytestring_parser::Parser;
+use mork::{expr, prefix, sexpr};
+use mork::prefix::Prefix;
+use mork::space::{transitions, unifications, writes, Space};
+use mork_bytestring::{item_byte, Tag};
 use itertools::Itertools;
 use base64::Engine;
 use serde::{Serialize, Deserialize};
@@ -2482,6 +2490,8 @@ enum Commands {
         query_pattern: Option<String>,
         #[arg(long, short = 't')]
         query_template: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        timeout: u64,
     },
     #[command(arg_required_else_help = true)]
     Convert {
@@ -2570,7 +2580,7 @@ fn main() {
             parse_csv();
             parse_json();
         }
-        Commands::Run { input_paths, steps, instrumentation, output_path, query_pattern, query_template } => {
+        Commands::Run { input_paths, steps, instrumentation, output_path, query_pattern, query_template, timeout } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
@@ -2581,8 +2591,21 @@ fn main() {
             }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_paths, output_path.as_ref().or(Some(&"stdout".to_string())));
+            let timeout_duration = if timeout > 0 { Some(Duration::from_secs(timeout)) } else { None };
             let t0 = Instant::now();
-            let mut performed = s.metta_calculus(steps);
+            let mut performed = 0;
+            while performed < steps {
+                if let Some(td) = timeout_duration {
+                    if t0.elapsed() >= td {
+                        break;
+                    }
+                }
+                let p = s.metta_calculus(1);
+                performed += p;
+                if p == 0 {
+                    break;
+                }
+            }
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
             let query_pattern_expr = query_pattern.as_ref().map(|p| expr!(s, p));

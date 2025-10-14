@@ -896,11 +896,15 @@ impl Space {
 
             match refs_bindings {
                 Ok(refs) => {
-                    // todo
-                    // template.substitute(&refs.iter().map(|ee| ee.subsexpr()).collect::<Vec<_>>()[..], &mut oz);
+                    assert!(false)
                 }
-                Err((ref bindings, ti, ni, _)) => {
-                    mork_bytestring::apply(0, ni as u8, ti as u8, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                Err(ref bindings) => {
+                    let (oi, ni) = {
+                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                        let r = apply(0, 0, 0, &mut ExprZipper::new(pattern), &bindings, &mut ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() }), &mut cycled, &mut vec![], &mut vec![]);
+                        r
+                    };
+                    mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
                 }
             }
 
@@ -965,10 +969,9 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
-    #[cfg(feature="no_search")]
-    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
-        trace!(target: "query_multi_ref", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
+        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let mut pat_args = vec![];
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
@@ -978,7 +981,13 @@ impl Space {
             btm.read_zipper()
         }));
         prz.reserve_buffers(1 << 32, 32);
-        
+
+        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+    }
+
+    #[cfg(feature="no_search")]
+    #[inline(always)]
+    pub fn query_multi_raw<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(mut prz: &mut ProductZipper<()>, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
@@ -998,9 +1007,9 @@ impl Space {
             unsafe { unifications += 1; }
             // if e.variables() != 0 {
 
-            let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
+            let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
 
-            for (&pa, &other_i) in pat_args[2..].iter().zip(prz.path_indices()) {
+            for (&pa, &other_i) in sources[1..].iter().zip(prz.path_indices()) {
                 let fe = ExprEnv::new((pairs.len() + 1) as u8,
                                       Expr { ptr: unsafe { prz.origin_path().as_ptr().cast_mut().add(other_i) } });
                 pairs.push((pa, fe))
@@ -1039,25 +1048,10 @@ impl Space {
     }
 
     #[cfg(not(feature="no_search"))]
-    pub fn query_multi<F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
-        let pat_newvars = pat_expr.newvars();
-        trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
-        let mut pat_args = vec![];
-        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+    #[inline(always)]
+    pub fn query_multi_raw<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut ProductZipper<()>, sources: &[ExprEnv], mut effect: F) -> usize {
+        let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
-        if pat_args.len() <= 1 { return 0 }
-
-        let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
-            btm.read_zipper()
-        }));
-        prz.reserve_buffers(1 << 32, 32);
-
-        let mut stack = pat_args[1..].iter().rev().cloned().collect::<Vec<_>>();
-
-        let mut scratch = Vec::with_capacity(1 << 32);
-
-        let mut assignments: Vec<(u8, u8)> = vec![];
-        let mut trace: Vec<(u8, u8)> = vec![];
         let mut references: Vec<u32> = vec![];
         let mut candidate = 0;
         thread_local! {
@@ -1077,9 +1071,9 @@ impl Space {
                     unsafe { unifications += 1; }
                     // if e.variables() != 0 {
                     if true {
-                        let mut pairs = vec![(pat_args[1], ExprEnv::new(1, e))];
+                        let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
 
-                        for (&pa, &other_i) in pat_args[2..].iter().zip(loc.path_indices()) {
+                        for (&pa, &other_i) in sources[1..].iter().zip(loc.path_indices()) {
                             let fe = ExprEnv::new((pairs.len() + 1) as u8,
                                                   Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
                             pairs.push((pa, fe))
@@ -1091,19 +1085,8 @@ impl Space {
 
                         match bindings {
                             Ok(bs) => {
-                                // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
-                                let (oi, ni) = {
-                                    let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                                    let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
-                                    trace.clear();
-                                    assignments.clear();
-                                    // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
-                                    r
-                                };
-                                // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
-
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                                if !effect(Err((bs, oi, ni, &assignments[..])), e) {
+                                if !effect(Err(bs), e) {
                                     unsafe { longjmp(a, 1) }
                                 }
                             }
@@ -1182,6 +1165,11 @@ impl Space {
         // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
         // for l in psubs.iter_mut() { *l -= pvs as u8; }
 
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         let mut ass = Vec::with_capacity(64);
@@ -1212,9 +1200,18 @@ impl Space {
                     // }
                     true
                 }
-                Err((ref bindings, mut oi, mut ni, mut assignments)) => {
+                Err((ref bindings)) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+
+                    let (oi, ni) = {
+                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        trace.clear();
+                        assignments.clear();
+                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                        r
+                    };
 
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
@@ -1276,6 +1273,11 @@ impl Space {
         // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
         // for l in psubs.iter_mut() { *l -= pvs as u8; }
 
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+        
         let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         let mut ass = Vec::with_capacity(64);
@@ -1305,10 +1307,19 @@ impl Space {
                     // }
                     true
                 }
-                Err((ref bindings, mut oi, mut ni, mut assignments)) => {
+                Err(ref bindings) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
+                    let (oi, ni) = {
+                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        trace.clear();
+                        assignments.clear();
+                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                        r
+                    };
+                
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
                         oz.reset();

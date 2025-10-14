@@ -29,9 +29,10 @@ serde = { version = "1.0.225", features = ["derive"] }
 wasmtime = { version = "37.0.1", features = ["winch"], optional = true }
 
 [features]
-default = []
+default = ["grounding"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 nightly = ["pathmap/nightly"]
 wasm = ["dep:wasmtime"]
 no_search = []
+grounding = []

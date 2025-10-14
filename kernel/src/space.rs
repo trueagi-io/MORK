@@ -84,7 +84,8 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
-                if !loc.descend_to_byte(b) { unreachable_unchecked() };
+                loc.descend_to_byte(b);
+                debug_assert!(loc.path_exists());
                 coreferential_transition(loc, stack, references, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
             }
@@ -112,7 +113,8 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
                         let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
-                        if !loc.descend_to_byte(b) { unreachable_unchecked() }
+                        loc.descend_to_byte(b);
+                        debug_assert!(loc.path_exists());
                         if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
                         loop {
                             coreferential_transition(loc, stack, references, f);   
@@ -125,7 +127,8 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
                         let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
-                        if !loc.descend_to_byte(b) { unreachable_unchecked() };
+                        loc.descend_to_byte(b);
+                        debug_assert!(loc.path_exists());
                         static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
                         for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
@@ -154,25 +157,23 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                 }
                 Tag::SymbolSize(size) => {
                     vs!();
-                    if loc.descend_to_byte(e_byte) {
-                        if loc.descend_to(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
+                    if loc.descend_to_existing_byte(e_byte) {
+                        if loc.descend_to_check(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
                             coreferential_transition(loc, stack, references, f);
                         }
-                        loc.ascend(size as usize);
+                        loc.ascend((size as usize) + 1); // The expression length + the e_byte
                     }
-                    loc.ascend_byte();
-
                 }
                 Tag::Arity(arity) => {
                     vs!();
-                    if loc.descend_to_byte(e_byte) {
+                    if loc.descend_to_existing_byte(e_byte) {
                         let stackl = stack.len();
                         e.args(&mut stack);
                         stack[stackl..].reverse();
                         coreferential_transition(loc, stack, references, f);
                         stack.truncate(stack.len() - arity as usize);
+                        loc.ascend_byte();
                     }
-                    loc.ascend_byte();
                 }
             }
 

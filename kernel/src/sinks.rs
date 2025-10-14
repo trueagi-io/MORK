@@ -150,8 +150,10 @@ impl Sink for HeadSink {
     }
 }
 
+#[cfg(feature = "wasm")]
 pub struct WASMSink { e: Expr, skip: usize, changed: bool, module: wasmtime::Module, store: wasmtime::Store<()>, instance: wasmtime::Instance }
 
+#[cfg(feature = "wasm")]
 static ENGINE_LINKER: LazyLock<(wasmtime::Engine, wasmtime::Linker<()>)> = LazyLock::new(|| {
     let mut config = wasmtime::Config::new();
     config.wasm_multi_memory(true);
@@ -192,6 +194,7 @@ static ENGINE_LINKER: LazyLock<(wasmtime::Engine, wasmtime::Linker<()>)> = LazyL
     (engine, linker)
 });
 
+#[cfg(feature = "wasm")]
 static mut LINKER: Option<wasmtime::Linker<()>> = None;
 macro_rules! wasm_ctx { () => { r#"
 (module
@@ -211,6 +214,7 @@ macro_rules! wasm_ctx { () => { r#"
 "# } }
 
 
+#[cfg(feature = "wasm")]
 impl Sink for WASMSink {
     fn new(e: Expr) -> Self {
         let mut ez = ExprZipper::new(e); ez.next(); ez.next();
@@ -243,7 +247,7 @@ impl Sink for WASMSink {
                 let ospan = unsafe { Expr{ ptr: omem.as_ptr().cast_mut() }.span().as_ref().unwrap() };
                 trace!(target: "sink", "wasm output '{}'", serialize(ospan));
                 wz.move_to_path(ospan);
-                self.changed |= wz.set_val(()).is_none();                
+                self.changed |= wz.set_val(()).is_none();
             }
             Err(e) => {
                 trace!(target: "sink", "wasm error {:?}", e);
@@ -276,7 +280,7 @@ impl Sink for CountSink {
         let mpath = &path[7+wz.root_prefix_path().len()..];
         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
         trace!(target: "sink", "count at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
-        trace!(target: "sink", "count registering in ctx {:?}", ctx);
+        trace!(target: "sink", "count registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
     fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
@@ -284,26 +288,96 @@ impl Sink for CountSink {
         wz.reset();
         trace!(target: "sink", "count finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
 
-        // static v: u8 = item_byte(Tag::NewVar);
-        // static v: &'static [u8] = &[item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b',', item_byte(Tag::NewVar)];
-        // crate::space::Space::query_multi(self.unique, Expr{ ptr: v.as_ptr().cast_mut() }, |_, ctx_e, ctx_loc| {
-        //     let ctx_loc: ReadZipperUntracked<()> = unimplemented!();
-        //     ctx_loc.val_count();
-        //     let vcount: Expr = unimplemented!();
-        //     let to_write = vcount.transformed(v_e, ctx_e);
-        // });
+        let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
+        let mut rooted_input = PathMap::new();
+        rooted_input.write_zipper_at_path(wz.root_prefix_path()).graft_map(_to_swap);
 
-        match wz.join_into(&self.unique.read_zipper()) {
-            AlgebraicStatus::Element => { true }
-            AlgebraicStatus::Identity => { false }
-            AlgebraicStatus::None => { true } // GOAT maybe not?
-        }
+        static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+        let mut prz = ProductZipper::new::<_, ReadZipperUntracked<()>, [_; 0]>(rooted_input.into_read_zipper(&[]), []);
+        let prz_ptr = (&prz) as *const ProductZipper<()>;
+        let mut changed = false;
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+            let cnt = prz.val_count();
+            trace!(target: "sink", "'{}' and under {}", serialize(prz.path()), cnt);
+            let clen = prz.path().len();
+            let cnt_str = cnt.to_string();
+            if prz.descend_to_existing_byte(item_byte(Tag::SymbolSize(cnt_str.len() as _))) {
+                if prz.descend_to_existing(cnt_str.as_bytes()) == cnt_str.len() {
+                    let fixed = &prz.path()[..prz.path().len()-(1+cnt_str.len())];
+                    trace!(target: "sink", "fixed guard {}", serialize(fixed));
+                    wz.move_to_path(fixed);
+                    wz.set_val(());
+                    changed |= true;
+                }
+            } 
+            if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
+                let ignored = &prz.path()[..prz.path().len()-1];
+                trace!(target: "sink", "ignored guard {}", serialize(ignored));
+                wz.move_to_path(ignored);
+                wz.set_val(());
+                changed |= true;
+            } 
+            if prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+                    let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
+                    cntv.extend_from_slice(cnt_str.as_bytes());
+                    let varref = &prz.path()[..prz.path().len()-1];
+                    let ie = Expr { ptr: (&varref[0] as *const u8).cast_mut() };
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                    trace!(target: "sink", "ref guard '{}' var {:?} with '{}'", serialize(varref), k, serialize(&cntv[..]));
+                    let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: cntv.as_mut_ptr() }, &mut oz);
+                    unsafe { buffer.set_len(oz.loc) }
+                    trace!(target: "sink", "ref guard subs '{:?}'", serialize(&buffer[..oz.loc]));
+                    wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                    wz.set_val(());
+                    changed |= true
+                }
+            }
+            true
+        });
+        changed
+    }
+}
+
+mod pure {
+    fn add_i32(i: &[u8], o: &mut [u8]) -> bool {
+        false
+    }
+}
+
+// (pure (result $x) $x (ascii_to_i32 2))
+pub struct PureSink { e: Expr }
+impl Sink for PureSink {
+    fn new(e: Expr) -> Self {
+        PureSink { e }
+    }
+    fn request(&self) -> impl Iterator<Item=&'static [u8]> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[6..];
+        trace!(target: "sink", "count requesting {}", serialize(p));
+        std::iter::once(p)
+    }
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        // let mut wz = it.next().unwrap();
+        // let mpath = &path[7+wz.root_prefix_path().len()..];
+        // let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+        // trace!(target: "sink", "count at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        // trace!(target: "sink", "count registering in ctx {:?}", ctx);
+        // self.unique.insert(mpath, ());
+        // wz.move_to_path(opath)
+    }
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+        true
     }
 }
 
 
-
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), WASMSink(WASMSink) }
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink),
+    #[cfg(feature = "wasm")]
+    WASMSink(WASMSink),
+    #[cfg(feature = "grounding")]
+    PureSink(PureSink)
+}
 
 impl Sink for ASink {
     fn new(e: Expr) -> Self {
@@ -314,9 +388,21 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
             ASink::HeadSink(HeadSink::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
+            *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'o' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(5) == b'n' && *e.ptr.offset(6) == b't' } {
+            ASink::CountSink(CountSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'w' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b's' && *e.ptr.offset(5) == b'm' } {
-            ASink::WASMSink(WASMSink::new(e))
+            #[cfg(feature = "wasm")]
+            return ASink::WASMSink(WASMSink::new(e));
+            #[cfg(not(feature = "wasm"))]
+            panic!("MORK was not built with the wasm feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+            *e.ptr.offset(2) == b'p' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'r' && *e.ptr.offset(5) == b'e' } {
+            #[cfg(feature = "grounding")]
+            return ASink::PureSink(PureSink::new(e));
+            #[cfg(not(feature = "grounding"))]
+            panic!("MORK was not built with the grounding feature, yet trying to call {:?}", e);
         } else {
             unreachable!()
         }
@@ -328,7 +414,11 @@ impl Sink for ASink {
                 ASink::AddSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::CountSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "wasm")]
                 ASink::WASMSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "grounding")]
+                ASink::PureSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -337,7 +427,11 @@ impl Sink for ASink {
             ASink::AddSink(s) => { s.sink(it, path) }
             ASink::RemoveSink(s) => { s.sink(it, path) }
             ASink::HeadSink(s) => { s.sink(it, path) }
+            ASink::CountSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "wasm")]
             ASink::WASMSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "grounding")]
+            ASink::PureSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -346,7 +440,11 @@ impl Sink for ASink {
             ASink::AddSink(s) => { s.finalize(it) }
             ASink::RemoveSink(s) => { s.finalize(it) }
             ASink::HeadSink(s) => { s.finalize(it) }
+            ASink::CountSink(s) => { s.finalize(it) }
+            #[cfg(feature = "wasm")]
             ASink::WASMSink(s) => { s.finalize(it) }
+            #[cfg(feature = "grounding")]
+            ASink::PureSink(s) => { s.finalize(it) }
         }
     }
 }

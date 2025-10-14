@@ -1,9 +1,10 @@
 
 [build]
 #rustflags = "-C opt-level=3 -C target-cpu=native -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Awarnings"
+# "--emit", "asm", 
 
 # "opt-level=3" removes debug asserts
-rustflags = ["--emit", "asm", "-C", "target-cpu=native", "-Awarnings"]
+rustflags = ["-C", "target-cpu=native", "-Awarnings"]
 
 # this allows tests to reference files datasets from the workspace root instead of being forced to work backwards
 [env]

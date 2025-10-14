@@ -201,7 +201,7 @@ fn basic() {
     // (exec P1 (, (Straight $x $y) (Straight $y $z)) (, (Transitive $x $z)))
     //
 
-    s.load_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(space.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     s.metta_calculus(100);
 
@@ -239,7 +239,7 @@ fn process_calculus_bench(steps: usize, x: usize, y: usize) {
 (petri (! (add result) ({} {})))
     "#, peano(steps), peano(x), peano(y));
 
-    s.load_sexpr(space_exprs.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(space_exprs.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let t0 = Instant::now();
     let mcalc_steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
@@ -284,7 +284,7 @@ fn process_calculus_reverse() {
 (petri (! (add result) ( (S (S Z)) (S (S Z)) )))
     "#;
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
 
@@ -305,7 +305,7 @@ fn lookup() {
 (Something (very specific))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -328,7 +328,7 @@ fn positive() {
 (Something (very specific))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -351,7 +351,7 @@ fn positive_equal() {
 (Something (very specific) (very specific))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -376,7 +376,7 @@ fn negative() {
 
     "#;
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
@@ -401,7 +401,7 @@ fn negative_equal() {
 
     "#;
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
@@ -426,7 +426,7 @@ fn bipolar() {
 
     "#;
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
@@ -451,7 +451,7 @@ fn bipolar_equal() {
 
     "#;
 
-    s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
@@ -475,7 +475,7 @@ fn two_positive_equal() {
 (Else (bar baz) (bar baz))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -499,7 +499,7 @@ fn two_positive_equal_crossed() {
 (Else (foo bar) (bar baz))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -523,7 +523,7 @@ fn two_bipolar_equal_crossed() {
 (Else ($x bar) ($x bar))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -537,6 +537,55 @@ fn two_bipolar_equal_crossed() {
     assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
 }
 
+fn func_type_unification() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(a (: $a A))
+(b (: f (-> A)))
+(exec 0 (, (a (: ($f) A))
+           (b (: $f (-> A))) ) (, (c OK)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(c OK)\n"));
+}
+
+fn top_level_match() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+($f)
+f
+(exec 0 (, ($f) $f) (, OK))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    s.btm.iter().for_each(|(p, k)| println!("{p:?}"));
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("OK\n"));
+}
+
 fn sink_two_bipolar_equal_crossed() {
     let mut s = Space::new();
 
@@ -547,7 +596,7 @@ fn sink_two_bipolar_equal_crossed() {
 (Else ($x bar) ($x bar))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -571,7 +620,7 @@ fn sink_two_positive_equal_crossed() {
 (Else (foo bar) (bar baz))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -594,7 +643,7 @@ A
 (exec a (, A) (O (- A) (+ B)))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -620,7 +669,7 @@ fn sink_add_remove_var() {
      (+ (bar $x))))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -655,7 +704,14 @@ fn sink_odd_even_sort() {
              (, (exec ($k $kp) $p0 $t0)))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    // let mut SUCCS: String = (0..5).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+    // s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
+    // let mut PARITY: String = (0..5).map(|x| format!("(parity {x} {})\n", if x % 2 == 0 { "even" } else { "odd" })).collect();
+    // s.add_all_sexpr(PARITY.as_bytes()).unwrap();
+    // let mut ORDER: String = (b'A'..=b'E').flat_map(|x| (b'A'..x).map(move |y| format!("(lt {} {})\n", y as char, x as char))).collect();
+    // s.add_all_sexpr(ORDER.as_bytes()).unwrap();
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -680,7 +736,7 @@ fn sink_head() {
 (exec 0 (, (foo $x) (bar $y) (baz $z)) (O (head 7 (cux $z $y $x))))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -693,6 +749,82 @@ fn sink_head() {
 
     println!("result: {res}");
     assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
+}
+
+fn sink_count_literal() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all eighteen) 18 (cux $z $y $x))))
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all sixteen) 16 (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "eighteen\n")
+}
+
+fn sink_count_constant() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all stupid) $k (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "stupid\n")
+}
+
+fn sink_count() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all $k) $k (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "18\n")
 }
 
 fn sink_wasm_add() {
@@ -720,7 +852,7 @@ fn sink_wasm_add() {
 ))
     "#; // (zs $i $z) $z
     let nargs = 1_000_000;
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
     let mut args = vec![];
     let options = ["x", "y"];
     for (k, a) in options.iter().enumerate() {
@@ -734,7 +866,7 @@ fn sink_wasm_add() {
             s.btm.insert(&e[..], ());
         }
     }
-    s.load_all_sexpr(&args[..]).unwrap();
+    s.add_all_sexpr(&args[..]).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1);
@@ -761,16 +893,16 @@ fn bench_sink_odd_even_sort(elements: usize) {
     let mut arr: Vec<_> = (0..elements).map(|i| { let mut hs = std::hash::DefaultHasher::new(); i.hash(&mut hs); base64::engine::general_purpose::STANDARD_NO_PAD.encode((hs.finish() as u32).to_be_bytes()) }).collect();
     let mut ARRAY: String = (0..elements).map(|x| format!("(A {x} {})\n", arr[x])).collect();
     // println!("array {ARRAY}");
-    s.load_all_sexpr(ARRAY.as_bytes()).unwrap();
+    s.add_all_sexpr(ARRAY.as_bytes()).unwrap();
     let mut SUCCS: String = (0..elements).map(|x| format!("(succ {x} {})\n", x+1)).collect();
-    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+    s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
     let mut PARITY: String = (0..elements).map(|x| format!("(parity {x} {})\n", if x % 2 == 0 { "even" } else { "odd" })).collect();
-    s.load_all_sexpr(PARITY.as_bytes()).unwrap();
+    s.add_all_sexpr(PARITY.as_bytes()).unwrap();
     arr.sort();
     let arr_ptr = &arr;
     let mut ORDER: String = (0..elements).flat_map(|x| (0..x).map(move |y| format!("(lt {} {})\n", arr_ptr[y], arr_ptr[x]))).collect();
-    s.load_all_sexpr(ORDER.as_bytes()).unwrap();
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(ORDER.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -815,8 +947,8 @@ fn logic_query() {
 (= (L $x $x $x) (* (K $x (\ $x 1)) $x))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_sexpr(AXIOM_EXPRS.as_bytes(),expr!(s, "$"), expr!(s, "[2] axiom _1")).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_sexpr(AXIOM_EXPRS.as_bytes(),expr!(s, "$"), expr!(s, "[2] axiom _1")).unwrap();
 
     let steps = s.metta_calculus(1000000000000000);
 
@@ -859,8 +991,8 @@ fn bc0() {
     (goal (: $proof C))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(50);
@@ -907,8 +1039,8 @@ fn bc1() {
     (goal (: $proof C))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(100);
@@ -984,8 +1116,8 @@ fn bc2() {
     (goal (: $proof 𝜒))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(30);
@@ -1061,8 +1193,8 @@ fn bc3() {
     // P3:  (exec $p (, pat ) (, (subtract pat) (subtract temp)) (, temp x)
     //
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(KB_EXPRS.as_bytes()).unwrap();
 
 
     // let mut t0 = Instant::now();
@@ -1151,7 +1283,7 @@ fn bench_cm0(to_copy: usize) {
                (exec (clocked (S $ts)) $p1 $t1)))
     "#, peano(to_copy));
 
-    s.load_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_MACHINE.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -1191,7 +1323,7 @@ fn bench_cm0(to_copy: usize) {
 (Apply (foo $x))
     "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -1242,7 +1374,7 @@ fn lens_aunt() {
     (Jim != Pam) (Jim != Liz) (Jim != Pat) (Jim != Ann) (Jim != Tom) (Jim != Bob) (Jim == Jim)
     "#;
 
-    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1);
@@ -1271,7 +1403,7 @@ fn lens_composition() {
     (compose ns aunt)
     "#;
 
-    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1);
@@ -1298,7 +1430,7 @@ fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
         edges.push_str(format!("(edge {i} {j})\n").as_str());
     }
 
-    s.load_all_sexpr(edges.as_bytes()).unwrap();
+    s.add_all_sexpr(edges.as_bytes()).unwrap();
     println!("constructed {} nodes {} edges", nnodes, nedges);
 
     let t0 = Instant::now();
@@ -1381,14 +1513,14 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
         else { edges.insert(format!("(edge {j} {i})\n")); }
     }
 
-    s.load_all_sexpr(edges.into_iter().collect::<String>().as_bytes()).unwrap();
+    s.add_all_sexpr(edges.into_iter().collect::<String>().as_bytes()).unwrap();
     println!("constructed {} nodes {} edges", nnodes, nedges);
 
     for k in 3..(max_clique+1) {
         let query = clique_query(k);
         println!("executing query {}", query);
         let t0 = Instant::now();
-        s.load_sexpr(query.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+        s.add_sexpr(query.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
         s.metta_calculus(1);
         let nkcliques: usize = s.btm.read_zipper_at_path([item_byte(Tag::Arity((k+1) as _))]).val_count();
         println!("found {} {k}-cliques (expected {}) in {} µs", nkcliques, expected_num_kclique_gne(nnodes as _, nedges as _, k as _).round(), t0.elapsed().as_micros());
@@ -1451,7 +1583,7 @@ fn bench_finite_domain(terms: usize) {
 
     let ops = [sq, sqrt, add, sub, mul, div, join, meet, adds, muls].concat();
 
-    s.load_sexpr(ops.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+    s.add_sexpr(ops.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
 
     let mut args = String::new(); // e.g. (args ䷽ ䷣ ䷜ ䷣)
     for i in 0..10_000 {
@@ -1461,9 +1593,9 @@ fn bench_finite_domain(terms: usize) {
         let y1 = rng.random_range(0..DS);
         args.push_str(format!("(args {} {} {} {})", SYM[x0], SYM[x1], SYM[y0], SYM[y1]).as_str())
     }
-    s.load_sexpr(args.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+    s.add_sexpr(args.as_bytes(), expr!(s, "$"), expr!(s, "_1"));
 
-    s.load_sexpr(r"(exec 0 (, (args $x0 $y0 $x1 $y1) ($x0 /\ $x1 = $xl) ($x0 \/ $x1 = $xh) ($y0 /\ $y1 = $yl) ($y0 \/ $y1 = $yh) ($xh - $xl = $dx) ($yh - $yl = $dy) (² $dx = $dx2) (² $dy = $dy2) ($dx2 + $dy2 = $d2) (√ $d2 = $d)) (, (res $d)))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr(r"(exec 0 (, (args $x0 $y0 $x1 $y1) ($x0 /\ $x1 = $xl) ($x0 \/ $x1 = $xh) ($y0 /\ $y1 = $yl) ($y0 \/ $y1 = $yh) ($xh - $xl = $dx) ($yh - $yl = $dy) (² $dx = $dx2) (² $dy = $dy2) ($dx2 + $dy2 = $d2) (√ $d2 = $d)) (, (res $d)))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
     let t0 = Instant::now();
     s.metta_calculus(1);
     let t1 = Instant::now();
@@ -1578,7 +1710,7 @@ fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
         let name = file_name.to_str().unwrap();
         let metta_file = std::fs::File::open(de.path()).unwrap();
         let metta_mmap = unsafe { memmap2::Mmap::map(&metta_file).unwrap() };
-        s.load_sexpr(&*metta_mmap, expr!(s, "$"), expr!(s, format!("[3] U {} _1", &name[..name.len()-6]).as_str())).unwrap();
+        s.add_sexpr(&*metta_mmap, expr!(s, "$"), expr!(s, format!("[3] U {} _1", &name[..name.len()-6]).as_str())).unwrap();
     }
 
     let SPACE = r#"
@@ -1605,7 +1737,7 @@ fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
                         (U $d (value (at $obj $room) F $t)))
                      (, ((C 2) $d ($s $obj $room $gripper $t))))
     "#;
-    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE.as_bytes()).unwrap();
 
     s.metta_calculus(3);
 
@@ -1632,11 +1764,11 @@ fn stv_roman() {
 
     (goal (CPU mp-formula ((STV 0.5 0.5) (STV 0.5 0.5)) $res))
     "#;
-    s.load_all_sexpr(SPACE.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE.as_bytes()).unwrap();
     // let mut math_expr_buf = vec![];
     // std::fs::File::open("/home/adam/Downloads/math_relations.metta").unwrap().read_to_end(&mut math_expr_buf).unwrap();
-    // s.load_sexpr(&math_expr_buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
-    s.load_sexpr("(fun (mul (0.5 0.5) 0.2))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+    // s.add_sexpr(&math_expr_buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
+    s.add_sexpr("(fun (mul (0.5 0.5) 0.2))".as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
     s.metta_calculus(1);
 
@@ -1669,7 +1801,7 @@ fn exponential(max_steps: usize) {
          (exec metta $p1 $t1) ))
 "#;
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(max_steps);
@@ -1701,8 +1833,8 @@ fn exponential_fringe(steps: usize) {
 
     let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -1740,8 +1872,8 @@ fn linear_fringe_alternating(steps: usize) {
 
     let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -1780,8 +1912,8 @@ fn linear_alternating(steps: usize) {
 
     let mut SUCCS: String = (0..steps).map(|x| format!("(succ {x} {})\n", x+1)).collect();
 
-    s.load_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    s.load_all_sexpr(SUCCS.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
@@ -1867,7 +1999,7 @@ fn mm1_forward() {
 
     let mut s = Space::new();
     let t0 = Instant::now();
-    s.load_all_sexpr(P.as_bytes()).unwrap();
+    s.add_all_sexpr(P.as_bytes()).unwrap();
 
     // Targets (kept identical to mm1())
     let want_ev_term_tplus0    = "(ev (: ((+) (t) (0)) (term)))";
@@ -2033,7 +2165,7 @@ fn mm2_bc() {
 
     let mut s = Space::new();
     let t0 = Instant::now();
-    s.load_all_sexpr(P.as_bytes()).unwrap();
+    s.add_all_sexpr(P.as_bytes()).unwrap();
 
     // Targets (kept identical to mm1())
     let want_ev_term_tplus0    = "(ev (: ((+) (t) (0)) (term)))";
@@ -2207,7 +2339,7 @@ fn mm2_bc_v3() {
 
     let mut s = Space::new();
     let t0 = Instant::now();
-    s.load_all_sexpr(P.as_bytes()).unwrap();
+    s.add_all_sexpr(P.as_bytes()).unwrap();
 
     println!("=== MM2 (bc v3): Proving ⊢ (t = t) ===");
 
@@ -2301,7 +2433,6 @@ fn main() {
     // sink_add_remove();
     // sink_wasm_add();
     // bench_cm0(50);
-    // bench_sink_odd_even_sort(2000);
     // return;
 
     let args = Cli::parse();
@@ -2344,6 +2475,8 @@ fn main() {
             two_positive_equal();
             two_positive_equal_crossed();
             two_bipolar_equal_crossed();
+            // func_type_unification(); // failing!
+            top_level_match();
 
             process_calculus_reverse();
             logic_query();
@@ -2356,6 +2489,9 @@ fn main() {
             sink_add_remove();
             sink_add_remove_var();
             sink_head();
+            sink_count_literal();
+            sink_count_constant();
+            sink_count();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]
@@ -2363,7 +2499,7 @@ fn main() {
             let mut s = Space::new();
             let f = std::fs::File::open(&input_path).unwrap();
             let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-            s.load_all_sexpr(&*mmapf);
+            s.add_all_sexpr(&*mmapf);
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
@@ -2396,7 +2532,7 @@ fn main() {
                     let mut s = Space::new();
                     let f = std::fs::File::open(&input_path).unwrap();
                     let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                    s.load_all_sexpr(&*mmapf);
+                    s.add_all_sexpr(&*mmapf);
                     println!("done loading in memory");
                     if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
                     

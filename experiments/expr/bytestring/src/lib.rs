@@ -10,6 +10,8 @@ use std::hash::Hasher;
 use gxhash::{HashSet, HashSetExt, HashMap, HashMapExt};
 use smallvec::SmallVec;
 
+pub mod macros;
+
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
     parent: u32,
@@ -1302,8 +1304,8 @@ const fn digit_value(b: u8) -> u8 {
 #[macro_export]
 macro_rules! parse {
     ($s:literal) => {{
-        const N: usize = mork_bytestring::compute_length($s);
-        const ARR: [u8; N] = mork_bytestring::parse::<N>($s);
+        const N: usize = $crate::compute_length($s);
+        const ARR: [u8; N] = $crate::parse::<N>($s);
         ARR
     }};
 }

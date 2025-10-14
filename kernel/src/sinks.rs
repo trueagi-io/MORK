@@ -299,27 +299,41 @@ impl Sink for CountSink {
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
             let cnt = prz.val_count();
-            println!("'{}' and under {}", serialize(prz.path()), cnt);
+            trace!(target: "sink", "'{}' and under {}", serialize(prz.path()), cnt);
             let clen = prz.path().len();
             let cnt_str = cnt.to_string();
             if prz.descend_to_existing_byte(item_byte(Tag::SymbolSize(cnt_str.len() as _))) {
                 if prz.descend_to_existing(cnt_str.as_bytes()) == cnt_str.len() {
                     let fixed = &prz.path()[..prz.path().len()-(1+cnt_str.len())];
-                    println!("fixed guard {}", serialize(fixed));
+                    trace!(target: "sink", "fixed guard {}", serialize(fixed));
                     wz.move_to_path(fixed);
                     wz.set_val(());
                     changed |= true;
                 }
-            } else if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
+            } 
+            if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
-                println!("ignored guard {}", serialize(ignored));
+                trace!(target: "sink", "ignored guard {}", serialize(ignored));
                 wz.move_to_path(ignored);
                 wz.set_val(());
                 changed |= true;
-            } else if prz.descend_first_byte() {
-                let varref = &prz.path()[..prz.path().len()-1];
-                println!("ref guard {} {:?}", serialize(varref), byte_item(prz.path()[prz.path().len()-1]));
-            } else { unreachable!(); }
+            } 
+            if prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+                    let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
+                    cntv.extend_from_slice(cnt_str.as_bytes());
+                    let varref = &prz.path()[..prz.path().len()-1];
+                    let ie = Expr { ptr: (&varref[0] as *const u8).cast_mut() };
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                    trace!(target: "sink", "ref guard '{}' var {:?} with '{}'", serialize(varref), k, serialize(&cntv[..]));
+                    let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: cntv.as_mut_ptr() }, &mut oz);
+                    unsafe { buffer.set_len(oz.loc) }
+                    trace!(target: "sink", "ref guard subs '{:?}'", serialize(&buffer[..oz.loc]));
+                    wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                    wz.set_val(());
+                    changed |= true
+                }
+            }
             true
         });
         changed
@@ -336,7 +350,6 @@ mod pure {
 pub struct PureSink { e: Expr }
 impl Sink for PureSink {
     fn new(e: Expr) -> Self {
-
         PureSink { e }
     }
     fn request(&self) -> impl Iterator<Item=&'static [u8]> {

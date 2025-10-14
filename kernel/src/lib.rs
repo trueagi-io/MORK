@@ -33,7 +33,7 @@ mod tests {
     fn prefix_parse_sexpr() {
         let input = "((nested and) (singleton))\n(foo bar)\n(1 \"test\" 2)\n";
         let mut s = Space::new();
-        assert_eq!(s.load_sexpr(input.as_bytes(), expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
+        assert_eq!(s.add_sexpr(input.as_bytes(), expr!(s, "$"), expr!(s, "[2] my [2] prefix _1")).unwrap(), 3);
         let mut res = Vec::<u8>::new();
         s.dump_sexpr(expr!(s, "[2] my [2] prefix $"), expr!(s, "_1"), &mut res).unwrap();
 
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn query_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr( SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.add_sexpr( SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         let mut i = 0;
         s.query(expr!(s, "[2] children [2] $ $"), |_, e| {
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn transform_simple() {
         let mut s = Space::new();
-        assert_eq!(16, s.load_sexpr(SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
+        assert_eq!(16, s.add_sexpr(SEXPRS0.as_bytes(), expr!(s, "$"), expr!(s, "_1"),).unwrap());
 
         s.transform(expr!(s, "[2] children [2] $ $"), expr!(s, "[2] child_results _2"));
         let mut i = 0;
@@ -161,7 +161,7 @@ mod tests {
         let mut s = Space::new();
         let mut file = File::open("/home/adam/Projects/MORK/benchmarks/aunt-kg/resources/simpsons.metta").unwrap();
         let mut fileb = vec![]; file.read_to_end(&mut fileb);
-        s.load_sexpr(fileb.as_slice(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(fileb.as_slice(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi(&[expr!(s, "[3] Individuals $ [2] Id $"),
                                    expr!(s, "[3] Individuals _1 [2] Fullname $")],
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn subsumption() {
         let mut s = Space::new();
-        s.load_sexpr(LOGICSEXPR0.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(LOGICSEXPR0.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // s.transform(expr!(s, "[2] axiom [3] = _2 _1"), expr!(s, "[2] flip [3] = $ $"));
         s.transform(expr!(s, "[2] axiom [3] = $ $"), expr!(s, "[2] flip [3] = _2 _1"));
@@ -214,7 +214,7 @@ mod tests {
           .expect("Should have been able to read the file");
         let mut buf = vec![];
         file.read_to_end(&mut buf).unwrap();
-        s.load_sexpr(&buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(&buf[..], expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         // expr!(s, "[2] flip [3] \"=\" _2 _1")
         // s.transform(expr!(s, "[2] assert [3] forall $ $"), expr!(s, "axiom _2"));
@@ -263,7 +263,7 @@ mod tests {
         ( "\n(val a b)"
         );
 
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.transform_multi_multi(&[expr!(s, "[3] val $ $")], &[expr!(s, "_1"), expr!(s, "_2")]);
 
@@ -312,7 +312,7 @@ mod tests {
         , "\n(! (add result) ((S Z) (S Z)))"
         );
 
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.metta_calculus(100);
 
@@ -345,7 +345,7 @@ mod tests {
         , "\n(exec (swap_0 \"01\") (, (val $x $y)) (, (pair $x $y)) )" // swap vals
         );
 
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.metta_calculus(100);
 
@@ -387,7 +387,7 @@ mod tests {
         , "\n)"
         );
 
-        s.load_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+        s.add_sexpr(SPACE_EXPRS.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
 
         s.metta_calculus(100);
 

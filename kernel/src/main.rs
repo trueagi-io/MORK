@@ -9,6 +9,7 @@ use mork::{expr, prefix, sexpr};
 use mork::prefix::Prefix;
 use mork::space::{transitions, unifications, writes, Space};
 use mork_bytestring::{item_byte, Tag};
+use itertools::Itertools;
 /*fn main() {
     let mut s = Space::new();
     let t0 = Instant::now();
@@ -794,11 +795,36 @@ fn sink_count_constant() {
 
     let mut v = vec![];
     s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
-    s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
     assert_eq!(res, "stupid\n")
+}
+
+fn sink_count() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all $k) $k (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "18\n")
 }
 
 fn sink_wasm_add() {
@@ -854,6 +880,43 @@ fn sink_wasm_add() {
     // println!("result: {res}");
     // assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
 }
+
+fn bench_sink_odd_even_sort(elements: usize) {
+    let mut s = Space::new();
+    const SPACE_EXPRS: &str = r#"
+((phase $p)  (, (parity $i $p) (succ $i $si) (A $i $e) (A $si $se) (lt $se $e))
+             (O (- (A $i $e)) (- (A $si $se)) (+ (A $i $se)) (+ (A $si $e))))
+(phase 0 odd) (phase 1 even)
+(exec repeat (, (A $k $_) (phase $kp $phase) ((phase $phase) $p0 $t0))
+             (, (exec ($k $kp) $p0 $t0)))
+    "#;
+    let mut arr: Vec<_> = (0..elements).map(|i| { let mut hs = std::hash::DefaultHasher::new(); i.hash(&mut hs); base64::engine::general_purpose::STANDARD_NO_PAD.encode((hs.finish() as u32).to_be_bytes()) }).collect();
+    let mut ARRAY: String = (0..elements).map(|x| format!("(A {x} {})\n", arr[x])).collect();
+    // println!("array {ARRAY}");
+    s.add_all_sexpr(ARRAY.as_bytes()).unwrap();
+    let mut SUCCS: String = (0..elements).map(|x| format!("(succ {x} {})\n", x+1)).collect();
+    s.add_all_sexpr(SUCCS.as_bytes()).unwrap();
+    let mut PARITY: String = (0..elements).map(|x| format!("(parity {x} {})\n", if x % 2 == 0 { "even" } else { "odd" })).collect();
+    s.add_all_sexpr(PARITY.as_bytes()).unwrap();
+    arr.sort();
+    let arr_ptr = &arr;
+    let mut ORDER: String = (0..elements).flat_map(|x| (0..x).map(move |y| format!("(lt {} {})\n", arr_ptr[y], arr_ptr[x]))).collect();
+    s.add_all_sexpr(ORDER.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] A $ $"), expr!(s, "_2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    // println!("result:\n{res}");
+    assert_eq!(res[..res.len()-1], arr.iter().map(|i| i.to_string()).join("\n"));
+}
+
 
 fn logic_query() {
     let mut s = Space::new();
@@ -1622,6 +1685,22 @@ fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(js
     // written 15969490 in 17441 ms
 }
 
+#[cfg(all(feature = "nightly"))]
+fn jsonl_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(jsonl_path: IPath, upaths_path: OPath) {
+    println!("mmapping JSONL file {:?}", jsonl_path.as_ref().as_os_str());
+    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
+    let json_file = std::fs::File::open(jsonl_path).unwrap();
+    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
+    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
+    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
+
+    let mut s = Space::new();
+    let t0 = Instant::now();
+    let (lines, written) = s.jsonl_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
+    println!("written {written} ({lines} lines) in {} ms", t0.elapsed().as_millis());
+    // (zephy)
+}
+
 /// Based on Anneline's instantiation of PDDL domains
 fn pddl_ts<IPath: AsRef<std::path::Path>>(ts_path: IPath) {
     let mut s = Space::new();
@@ -2294,6 +2373,9 @@ fn mm2_bc_v3() {
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::hash::{Hash, Hasher};
+use std::ops::Add;
+use base64::Engine;
 use serde::{Serialize, Deserialize};
 use clap::{Args, Parser as CLAParser, Subcommand, ValueEnum};
 use clap::builder::TypedValueParser;
@@ -2351,9 +2433,7 @@ fn main() {
     // sink_add_remove();
     // sink_wasm_add();
     // bench_cm0(50);
-    sink_count_literal();
-    sink_count_constant();
-    return;
+    // return;
 
     let args = Cli::parse();
 
@@ -2362,8 +2442,9 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe"]) }
+            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort"]) }
             if selected.remove("default") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus"]) }
+            if selected.remove("sinks") { selected.extend(&["odd_even_sort"]) }
 
             for b in selected {
                 println!("=== benchmarking {} ===", b);
@@ -2375,6 +2456,7 @@ fn main() {
                     "process_calculus" => { process_calculus_bench(1000, 200, 200); }
                     "exponential" => { exponential(32); }
                     "exponential_fringe" => { exponential_fringe(15); }
+                    "odd_even_sort" => { bench_sink_odd_even_sort(2000); }
                     s => { println!("bench not known: {s}") }
                 }
             }
@@ -2407,6 +2489,9 @@ fn main() {
             sink_add_remove();
             sink_add_remove_var();
             sink_head();
+            sink_count_literal();
+            sink_count_constant();
+            sink_count();
         }
         Commands::Run { input_path, steps, instrumentation, output_path } => {
             #[cfg(debug_assertions)]
@@ -2492,7 +2577,10 @@ fn main() {
                     #[cfg(all(feature = "nightly"))]
                     // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
                     json_upaths(input_path, some_output_path);
-                    
+                }
+                ("jsonl", "upaths") => {
+                    #[cfg(all(feature = "nightly"))]
+                    jsonl_upaths(input_path, some_output_path);
                 }
                 (_, _) => { panic!("unsupported conversion") }
             }

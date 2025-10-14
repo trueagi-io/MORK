@@ -27,9 +27,11 @@ rand = "0.9.1"
 clap = { version = "4.5.47", features = ["derive"] }
 serde = { version = "1.0.225", features = ["derive"] }
 wasmtime = { version = "37.0.1", features = ["winch"], optional = true }
+itertools = "0.14.0"
+base64 = "0.22.1"
 
 [features]
-default = ["grounding"]
+default = ["grounding", "nightly"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 nightly = ["pathmap/nightly"]

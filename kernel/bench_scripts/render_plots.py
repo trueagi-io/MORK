@@ -102,8 +102,11 @@ def main():
         args.columns = list(df.columns)
         print(f"No columns specified. Using all columns: {args.columns}")
     
-    # Create the plot
-    fig, ax = plt.subplots(figsize=(12, 7))
+    # Create the plot with height adjusted for number of datasets
+    # Use minimal height per dataset for compact visualization
+    height_per_dataset = 0.4  # inches per dataset row (compact)
+    fig_height = max(3, len(args.columns) * height_per_dataset + 2.5)  # extra space for legend below
+    fig, ax = plt.subplots(figsize=(12, fig_height))
     
     # Generate distinct colors if not provided
     if args.colors:
@@ -125,8 +128,8 @@ def main():
         base_color = colors[i] if colors else None
         label = labels[i] if labels else None
         try:
-            # Pass y_position for this dataset
-            plot_distribution(args.csv_file, col, label=label, base_color=base_color, ax=ax, y_position=i+1)
+            # Pass y_position for this dataset (simple integer positions)
+            plot_distribution(args.csv_file, col, label=label, base_color=base_color, ax=ax, y_position=i)
         except ValueError as e:
             print(f"Warning: Skipping column '{col}': {e}")
             continue
@@ -135,19 +138,21 @@ def main():
     ax.set_xlabel(args.xlabel, fontsize=12)
     ax.set_ylabel('Dataset', fontsize=12)
     ax.set_title(args.title or 'Distribution Comparison', fontsize=14)
-    ax.legend(loc='best', fontsize=10)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), fontsize=10, ncol=3, borderaxespad=0)
     ax.grid(True, alpha=0.3, axis='x')
     
-    # Set y-axis to show dataset labels or simple numbering
-    ax.set_ylim(0.5, len(args.columns) + 0.5)
-    ax.set_yticks(range(1, len(args.columns) + 1))
-    ax.set_yticklabels([labels[i] if labels[i] else args.columns[i] for i in range(len(args.columns))])
+    # Set y-axis - simple integer positions
+    num_datasets = len(args.columns)
+    ax.set_ylim(-0.5, num_datasets - 0.5)
+    ax.set_yticks(range(num_datasets))
+    ax.set_yticklabels([labels[i] if labels[i] else args.columns[i] for i in range(num_datasets)])
     
     # Save or show
     if args.output:
         plt.savefig(args.output, dpi=300, bbox_inches='tight')
         print(f"Plot saved to {args.output}")
     else:
+        plt.tight_layout()
         plt.show()
 
 if __name__ == "__main__":

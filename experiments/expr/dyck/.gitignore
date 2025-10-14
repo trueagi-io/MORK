@@ -1,5 +1,0 @@
-target/
-.vscode/
-target/.rustc_info.json
-/tmp
-/target

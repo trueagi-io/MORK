@@ -1,0 +1,18 @@
+[package]
+name = "mork-interning"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+pathmap = {workspace = true}
+mork-frontend = {workspace = true}
+mork-expr = {workspace = true}
+zip = {version = "2.2.3", default-features = false}
+memchr = "2.7.4"
+glob = "0.3.1"
+memmap2 = "0.9.5"
+rayon = "1.10.0"
+bstr = "1.10.0"
+
+[features]
+debug_api = [] # Export internal API entry points for debugging

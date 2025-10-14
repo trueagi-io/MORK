@@ -1,30 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
-    "benchmarks/aunt-kg/",
-    "benchmarks/fizzbuzz/",
-    "benchmarks/logic-query/",
-    "benchmarks/oeis/",
-    "benchmarks/simple_partest/",
-    "benchmarks/parmap/",
-    "experiments/expr/bytestring/",
-    "experiments/expr/dyck/", "experiments/symbol_mapping/bucket_map", "experiments/symbol_mapping/bucket_map_dependant_tests", "experiments/symbol_mapping/naive_map",
+    "interning/",
+    "expr/",
     "frontend/",
     "kernel/"
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 log = { version = "0.4.27" }
 env_logger = "0.11.8"
 
 # Internal to MORK
-mork-bytestring = {path = "./experiments/expr/bytestring"}
+mork-interning = {features = ["debug_api"], path = "./interning"}
+mork-expr = {path = "./expr"}
 mork-frontend = {path = "./frontend"}
 mork = {path = "./kernel"}
-bucket_map = {features = ["debug_api"], path = "./experiments/symbol_mapping/bucket_map"}
 
 # External to MORK
 freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } #Fixes build on MacOS

@@ -1,6 +1,7 @@
-pub mod rosetta_parser;
-pub mod he_parser;
-pub mod cz2_parser;
-pub mod cz3_parser;
+#![feature(gen_blocks)]
+#![feature(coroutine_trait)]
+#![feature(coroutines)]
+#![feature(stmt_expr_attributes)]
+
 pub mod bytestring_parser;
-pub mod immutable_string;
+pub mod json_parser;

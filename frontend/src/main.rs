@@ -182,7 +182,7 @@ use pathmap::zipper::ZipperWriting;
 //     println!("took {} ms", t0.elapsed().as_millis()); // 42 seconds
 // }
 
-use mork_bytestring::{Expr, ExprZipper};
+use mork_expr::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use pathmap::trie_map::BytesTrieMap;
 

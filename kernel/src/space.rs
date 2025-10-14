@@ -12,13 +12,12 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
+use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
+use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
-use crate::json_parser::Transcriber;
-use crate::prefix::Prefix;
+use mork_frontend::json_parser::Transcriber;
 use log::*;
 use pathmap::PathMap;
 
@@ -256,7 +255,7 @@ impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
         self.wz.ascend(path.len());
     }
 }
-impl <'a, 'b, 'c> crate::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
+impl <'a, 'b, 'c> mork_frontend::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
     #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
         if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
@@ -311,7 +310,7 @@ impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
         (self.count, self.wz, self.pdp)
     }
 }
-impl <'a, 'c> crate::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
+impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
     #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
         if first { self.wz.push(item_byte(Tag::Arity(2))); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
@@ -374,31 +373,31 @@ macro_rules! prefix {
 #[macro_export]
 macro_rules! expr {
     ($space:ident, $s:literal) => {{
-        let mut src = mork_bytestring::parse!($s);
-        let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
+        let mut src = mork_expr::parse!($s);
+        let q = mork_expr::Expr{ ptr: src.as_mut_ptr() };
         let table = $space.sym_table();
         let mut pdp = $crate::space::ParDataParser::new(&table);
         let mut buf = [0u8; 4096];
-        let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
-        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
+        let p = mork_expr::Expr{ ptr: buf.as_mut_ptr() };
+        let used = q.substitute_symbols(&mut mork_expr::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
         unsafe {
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
-            mork_bytestring::Expr{ ptr: b }
+            mork_expr::Expr{ ptr: b }
         }
     }};
     ($space:ident, $s:expr) => {{
-        let mut src = mork_bytestring::parse::<4096>($s);
-        let q = mork_bytestring::Expr{ ptr: src.as_mut_ptr() };
+        let mut src = mork_expr::parse::<4096>($s);
+        let q = mork_expr::Expr{ ptr: src.as_mut_ptr() };
         let table = $space.sym_table();
         let mut pdp = $crate::space::ParDataParser::new(&table);
         let mut buf = [0u8; 4096];
-        let p = mork_bytestring::Expr{ ptr: buf.as_mut_ptr() };
-        let used = q.substitute_symbols(&mut mork_bytestring::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
+        let p = mork_expr::Expr{ ptr: buf.as_mut_ptr() };
+        let used = q.substitute_symbols(&mut mork_expr::ExprZipper::new(p), |x| <_ as mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x));
         unsafe {
             let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()).unwrap());
             std::ptr::copy_nonoverlapping(p.ptr, b, used.len());
-            mork_bytestring::Expr{ ptr: b }
+            mork_expr::Expr{ ptr: b }
         }
     }};
 
@@ -408,7 +407,7 @@ macro_rules! expr {
 macro_rules! sexpr {
     ($space:ident, $e:expr) => {{
         let mut v = vec![];
-        let e: mork_bytestring::Expr = $e;
+        let e: mork_expr::Expr = $e;
         e.serialize(&mut v, |s| {
             #[cfg(feature="interning")]
             {
@@ -420,7 +419,7 @@ macro_rules! sexpr {
             #[cfg(not(feature="interning"))]
             unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap_or(format!("{:?}", s).as_str())) }
         });
-        String::from_utf8(v).unwrap_or_else(|_| unsafe { e.span().as_ref()}.map(mork_bytestring::serialize).unwrap_or("<null>".to_string()))
+        String::from_utf8(v).unwrap_or_else(|_| unsafe { e.span().as_ref()}.map(mork_expr::serialize).unwrap_or("<null>".to_string()))
     }};
 }
 
@@ -537,7 +536,7 @@ impl Space {
     pub fn load_json(&mut self, r: &[u8]) -> Result<usize, String> {
         let mut wz = self.btm.write_zipper();
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         p.parse(&mut st).unwrap();
         Ok(st.count)
     }
@@ -549,7 +548,7 @@ impl Space {
         let mut wz = Vec::with_capacity(4096);
         let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
 
-        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         let mut coro = p.parse_stream(&mut st);
         while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
             Pin::new(&mut sink).resume(Some(n));
@@ -579,7 +578,7 @@ impl Space {
             wz.extend_from_slice(lines.to_be_bytes().as_slice());
             let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: mpdp.take().unwrap() };
 
-            let mut p = crate::json_parser::Parser::new(line);
+            let mut p = mork_frontend::json_parser::Parser::new(line);
             let mut coro = p.parse_stream(&mut st);
             while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
                 println!("jsonl {}", serialize(n));
@@ -611,7 +610,7 @@ impl Space {
         for line in unsafe { std::str::from_utf8_unchecked(r).lines() } {
             wz.descend_to(lines.to_be_bytes());
             let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-            let mut p = crate::json_parser::Parser::new(line);
+            let mut p = mork_frontend::json_parser::Parser::new(line);
             p.parse(&mut st).unwrap();
             count += st.count;
             lines += 1;
@@ -628,7 +627,7 @@ impl Space {
         let mut wz = self.btm.write_zipper_at_path(constant_template_prefix);
 
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-        let mut p = crate::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         p.parse(&mut st).unwrap();
         Ok(st.count)
     }
@@ -921,7 +920,7 @@ impl Space {
                         let r = apply(0, 0, 0, &mut ExprZipper::new(pattern), &bindings, &mut ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() }), &mut cycled, &mut vec![], &mut vec![]);
                         r
                     };
-                    mork_bytestring::apply(0, oi, ni, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                    mork_expr::apply(0, oi, ni, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
                 }
             }
 
@@ -1236,7 +1235,7 @@ impl Space {
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_bytestring::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
                         ass.clear();
                         astack.clear();
 
@@ -1343,7 +1342,7 @@ impl Space {
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_bytestring::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
                         ass.clear();
                         astack.clear();
 

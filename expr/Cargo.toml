@@ -1,0 +1,10 @@
+[package]
+name = "mork-expr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+smallvec = "1.13.2"
+freeze = { workspace = true }
+pathmap = { workspace = true }
+gxhash = { workspace = true }

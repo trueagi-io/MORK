@@ -13,13 +13,12 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_bytestring::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
+use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
+use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
-use crate::json_parser::Transcriber;
-use crate::prefix::Prefix;
+use mork_frontend::json_parser::Transcriber;
 use log::*;
 use pathmap::PathMap;
 

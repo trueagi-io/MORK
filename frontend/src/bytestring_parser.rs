@@ -1,4 +1,4 @@
-use mork_bytestring::{ExprZipper, Tag, item_byte, byte_item};
+use mork_expr::{ExprZipper, Tag, item_byte, byte_item};
 
 #[allow(non_snake_case)]
 fn isWhitespace(c: u8) -> bool {

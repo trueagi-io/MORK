@@ -1,5 +1,5 @@
 
-# MeTTa Optimal Reduction Kernel [WIP]
+# MeTTa Optimal Reduction Kernel
 
 **A blazing fast hypergraph processing kernel for Hyperon**
 

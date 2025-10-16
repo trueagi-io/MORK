@@ -5,21 +5,13 @@ use mork_expr::{item_byte, Tag};
 use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use std::collections::{BTreeSet, HashSet};
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::ops::Add;
 // use std::future::Future;
 // use std::task::Poll;
-use std::time::{Duration, Instant};
-use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
-use mork_frontend::bytestring_parser::Parser;
-use mork::{expr, prefix, sexpr};
-use mork::prefix::Prefix;
-use mork::space::{transitions, unifications, writes, Space};
-use mork_bytestring::{item_byte, Tag};
 use itertools::Itertools;
 use base64::Engine;
 use serde::{Serialize, Deserialize};
@@ -2587,7 +2579,7 @@ fn main() {
             for input_path in &input_paths {
                 let f = std::fs::File::open(input_path).unwrap();
                 let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                s.load_all_sexpr(&*mmapf);
+                s.add_all_sexpr(&*mmapf);
             }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_paths, output_path.as_ref().or(Some(&"stdout".to_string())));
@@ -2600,11 +2592,8 @@ fn main() {
                         break;
                     }
                 }
-                let p = s.metta_calculus(1);
-                performed += p;
-                if p == 0 {
-                    break;
-                }
+                s.metta_calculus(0);
+                performed += 1;
             }
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }

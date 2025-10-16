@@ -3,8 +3,14 @@ name = "mork-expr"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+#default = ["gxhash"]
+default = []
+gxhash = ["dep:gxhash"]
+
+
 [dependencies]
 smallvec = "1.13.2"
-freeze = { workspace = true }
-pathmap = { workspace = true }
-gxhash = { workspace = true }
+gxhash = {  optional = true, version="3.4.1", git="https://github.com/luketpeterson/gxhash/" }
+xxhash-rust = { version = "0.8.15", features = ["xxh64", "xxh3", "const_xxh3"] } # Replacement for gxhash running under miri
+fast-slice-utils = { version = "0.1" }

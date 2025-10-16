@@ -6,7 +6,7 @@ use crate::{Expr, Tag, byte_item, item_byte};
 /// The pattern can include:
 /// - Symbols, represented as string/byte literals, e.g. `"eq?"` or `b"eq?"`.
 /// - Variables, represented as identifiers, e.g. `out_1`, `out_2`.
-///   These will be bound to `mork_expr::Expr` instances.
+///   These will be bound to `mork_bytestring::Expr` instances.
 /// - Nested expressions, represented as parenthesized patterns, e.g. `("+" out_1 out_2)`.
 ///
 /// Macro arguments:
@@ -28,6 +28,7 @@ macro_rules! destruct {
         {
             use ::core::convert::TryFrom;
             use $crate::{Tag, Expr, byte_item, parse};
+            use $crate::macros::{DeserializableExpr};
             let rv = 'ret: loop {
                 unsafe {
                     let mut offset = 0;
@@ -124,17 +125,13 @@ macro_rules! destruct {
         $crate::destruct!(@chomp, $label, $expr, $offset, $( $rest )*);
     };
     (@chomp, $label:lifetime, $expr:expr, $offset:ident, { $var:ident : $ty:ty } $( $rest:tt )* ) => {
-        let rv = byte_item(*$expr.ptr.add($offset));
-        if matches!(rv, Tag::NewVar | Tag::VarRef(_)) {
-            break $label Err(format!("{rv:?} did not match expected variable $$"));
-        }
+        // let rv = byte_item(*$expr.ptr.add($offset));
+        // if matches!(rv, Tag::NewVar | Tag::VarRef(_)) {
+        //     break $label Err(format!("{rv:?} did not match expected variable $$"));
+        // }
         let expr = Expr { ptr: $expr.ptr.add($offset) };
-        let $var = match <$ty as TryFrom::<Expr>>::try_from(expr) {
-            Ok(value) => value,
-            Err(e) => break $label Err(e),
-        };
-        let expr_size = expr.span().len();
-        $offset += expr_size;
+        let $var = <$ty as DeserializableExpr>::deserialize_unchecked(expr);
+        $offset += <$ty as DeserializableExpr>::advanced(expr);
         $crate::destruct!(@chomp, $label, $expr, $offset, $( $rest )*);
     };
     // 4) If it sees nothing, the destructuring is complete.
@@ -145,15 +142,13 @@ macro_rules! destruct {
 
 impl TryFrom<Expr> for i32 {
     type Error = String;
+    #[inline(always)]
     fn try_from(value: Expr) -> Result<Self, Self::Error> {
-        let span = unsafe { &*value.span() };
-        let tag = byte_item(span[0]);
+        let tag = unsafe { byte_item(*value.ptr) };
         if tag != Tag::SymbolSize(4) {
             return Err(format!("expected symbol of size 4, got: {tag:?}"));
         }
-        let array: [u8; 4] = span[1..5].try_into()
-            .expect("span is too short");
-        Ok(i32::from_le_bytes(array).swap_bytes())
+        Ok(unsafe { std::ptr::read_unaligned(value.ptr.add(1) as *const i32) }.swap_bytes())
     }
 }
 
@@ -164,6 +159,27 @@ impl SerializableExpr for i32 {
         buf.write_all(&[item_byte(Tag::SymbolSize(size as u8))])?;
         buf.write_all(&self.swap_bytes().to_le_bytes())
     }
+}
+
+impl DeserializableExpr for i32 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        4
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(4)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i32) }.swap_bytes()
+    }
+}
+
+pub trait DeserializableExpr {
+    fn advanced(e: Expr) -> usize;
+    fn check(e: Expr) -> bool;
+    fn deserialize_unchecked(e: Expr) -> Self;
 }
 
 /// A trait for types that can be serialized into a mork-bytestring expression.
@@ -225,7 +241,7 @@ impl SerializableExpr for &str {
 /// A macro to construct a mork-bytestring expression from a pattern.
 /// The pattern can include:
 /// - Symbols, represented as string/byte literals, e.g. `"eq?"` or `b"eq?"`.
-/// - Variables, containing existing `mork_expr::Expr`, `&str` or `&[u8]`.
+/// - Variables, containing existing `mork_bytestring::Expr`, `&str` or `&[u8]`.
 /// - Nested expressions, represented as parenthesized patterns, e.g. `("+" "2" "2")`.
 ///
 /// Returns `Result<Vec<u8>, String>`, where the error string indicates any issues encountered.

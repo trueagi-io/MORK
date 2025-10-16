@@ -7,10 +7,59 @@ use std::{
 };
 use std::collections::BTreeMap;
 use std::hash::Hasher;
-use gxhash::{HashSet, HashSetExt, HashMap, HashMapExt};
 use smallvec::SmallVec;
 
 pub mod macros;
+
+#[cfg(gxhash)]
+use gxhash;
+
+#[cfg(not(gxhash))]
+mod gxhash {
+    // fallback
+    // pub use xxhash_rust::xxh64::{Xxh64 as GxHasher};
+    /// Just a simple XOR hasher so miri doesn't explode on all the tests that use GxHash
+    #[derive(Clone, Default)]
+    pub struct GxHasher { state_lo: u64, state_hi: u64, }
+    impl GxHasher {
+        pub fn with_seed(seed: i64) -> Self {
+            //Reinterpret the bits without any kind of rounding, truncation, extension, etc.
+            let seed = u64::from_ne_bytes(seed.to_ne_bytes());
+            Self { state_lo: seed ^ 0xA5A5A5A5_A5A5A5A5, state_hi: !seed ^ 0x5A5A5A5A_5A5A5A5A, }
+        }
+        pub fn finish_u128(&self) -> u128 {
+            ((self.state_hi as u128) << 64) | self.state_lo as u128
+        }
+    }
+    impl core::hash::Hasher for GxHasher {
+        fn write(&mut self, buf: &[u8]) {
+            for &c in buf {
+                self.write_u8(c);
+            }
+        }
+        fn write_u8(&mut self, i: u8) {
+            self.state_lo = self.state_lo.wrapping_add(i as u64);
+            self.state_hi ^= (i as u64).rotate_left(11);
+            self.state_lo = self.state_lo.rotate_left(3);
+        }
+        fn write_u128(&mut self, i: u128) {
+            let low = i as u64;
+            let high = (i >> 64) as u64;
+            self.state_lo = self.state_lo.wrapping_add(low);
+            self.state_hi ^= high.rotate_left(17);
+            self.state_lo ^= high.rotate_left(9);
+        }
+        fn finish(&self) -> u64 {
+            self.finish_u128() as u64
+        }
+    }
+
+    pub use std::collections::{HashMap, HashSet};
+    pub fn gxhash128(data: &[u8], _seed: i64) -> u128 { xxhash_rust::const_xxh3::xxh3_128(data) }
+    pub trait HashMapExt{}
+    pub trait HashSetExt{}
+}
+
 
 #[derive(Copy, Clone, Debug)]
 pub struct Breadcrumb {
@@ -45,6 +94,7 @@ pub enum Tag {
 // - stay shared as long as possible
 // - bring shared information to the front (bulk)
 
+#[inline(always)]
 pub const fn item_byte(b: Tag) -> u8 {
     match b {
         Tag::NewVar => { 0b1100_0000 | 0 }
@@ -54,6 +104,7 @@ pub const fn item_byte(b: Tag) -> u8 {
     }
 }
 
+#[inline(always)]
 pub fn byte_item(b: u8) -> Tag {
     if b == 0b1100_0000 { return Tag::NewVar; }
     else if (b & 0b1100_0000) == 0b1100_0000 { return Tag::SymbolSize(b & 0b0011_1111) }
@@ -207,6 +258,13 @@ macro_rules! traverseh {
 }
 
 impl Expr {
+    pub fn symbol(self) -> Option<*const [u8]> {
+        unsafe {
+        if let Tag::SymbolSize(n) = byte_item(*self.ptr) { Some(slice_from_raw_parts(self.ptr.offset(1), n as usize)) }
+        else { None }
+        }
+    }
+
     pub fn span(self) -> *const [u8] {
         if self.ptr.is_null() { slice_from_raw_parts(null(), 0) }
         else {
@@ -1600,7 +1658,7 @@ impl ExprEnv {
             let rprefix = rhs.prefix().unwrap_or_else(|x| slice_from_raw_parts(x as *const _, x.len() + 1)).as_ref().unwrap();
             // performance
             // if lhs.constant_difference(rhs).is_none() {
-            let count = pathmap::utils::find_prefix_overlap(lprefix, rprefix);
+            let count = fast_slice_utils::find_prefix_overlap(lprefix, rprefix);
             if count != 0 && (count == lprefix.len() || count == rprefix.len()) {
                 true
             } else {
@@ -1869,7 +1927,7 @@ pub fn apply_e(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bind
 pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
     let mut iterations = 0;
-    let mut encountered: HashSet<(ExprEnv, ExprEnv)> = HashSet::new();
+    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
 
     macro_rules! step {
         (occurs $x:expr, $e:expr) => {{

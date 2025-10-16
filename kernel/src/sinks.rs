@@ -25,8 +25,8 @@ use pathmap::PathMap;
 pub trait Sink {
     fn new(e: Expr) -> Self;
     fn request(&self) ->  impl Iterator<Item=&'static [u8]>;
-    fn sink<'w, 'a, 'k, It : Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w;
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w ;
+    fn sink<'w, 'a, 'k, It : Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w;
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w ;
 }
 
 pub struct AddSink { e: Expr, changed: bool }
@@ -38,7 +38,7 @@ impl Sink for AddSink {
         trace!(target: "sink", "+ requesting {}", serialize(p));
         std::iter::once(p)
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let mut wz = it.next().unwrap();
         let mpath = &path[3+wz.root_prefix_path().len()..];
         trace!(target: "sink", "+ at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
@@ -46,7 +46,7 @@ impl Sink for AddSink {
         wz.move_to_path(mpath);
         self.changed |= wz.set_val(()).is_none();
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
         trace!(target: "sink", "+ finalizing");
         self.changed
     }
@@ -62,14 +62,14 @@ impl Sink for RemoveSink {
         trace!(target: "sink", "- requesting {}", serialize(p));
         std::iter::once(p)
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let mut wz = it.next().unwrap();
         let mpath = &path[3+wz.root_prefix_path().len()..];
         trace!(target: "sink", "- at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
         trace!(target: "sink", "- sinking '{}'", serialize(mpath));
         self.remove.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
         let mut wz = it.next().unwrap();
         wz.reset();
         trace!(target: "sink", "- finalizing by subtracting {} at '{}'", self.remove.val_count(), serialize(wz.origin_path()));
@@ -103,7 +103,7 @@ impl Sink for HeadSink {
         trace!(target: "sink", "head requesting {}", serialize(p));
         std::iter::once(p)
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let mut wz = it.next().unwrap();
         let mpath = &path[self.skip+wz.root_prefix_path().len()..];
         trace!(target: "sink", "head at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
@@ -136,7 +136,7 @@ impl Sink for HeadSink {
             }
         }
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
         let mut wz = it.next().unwrap();
         wz.reset();
         trace!(target: "sink", "head finalizing by joining {} at '{}'", self.count, serialize(wz.origin_path()));
@@ -274,7 +274,7 @@ impl Sink for CountSink {
         trace!(target: "sink", "count requesting {}", serialize(p));
         std::iter::once(p)
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let mut wz = it.next().unwrap();
         let mpath = &path[7+wz.root_prefix_path().len()..];
         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
@@ -282,7 +282,7 @@ impl Sink for CountSink {
         trace!(target: "sink", "count registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
         let mut wz = it.next().unwrap();
         wz.reset();
         trace!(target: "sink", "count finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -356,7 +356,7 @@ impl Sink for PureSink {
         trace!(target: "sink", "count requesting {}", serialize(p));
         std::iter::once(p)
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         // let mut wz = it.next().unwrap();
         // let mpath = &path[7+wz.root_prefix_path().len()..];
         // let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
@@ -365,7 +365,7 @@ impl Sink for PureSink {
         // self.unique.insert(mpath, ());
         // wz.move_to_path(opath)
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
         true
     }
 }
@@ -421,7 +421,7 @@ impl Sink for ASink {
             }
         }
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
+    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
         match self {
             ASink::AddSink(s) => { s.sink(it, path) }
             ASink::RemoveSink(s) => { s.sink(it, path) }
@@ -434,7 +434,7 @@ impl Sink for ASink {
         }
     }
 
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a: 'w, 'k: 'w {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperTracked<'a, 'k, ()>>>(&mut self, it: It) -> bool where 'a: 'w, 'k: 'w {
         match self {
             ASink::AddSink(s) => { s.finalize(it) }
             ASink::RemoveSink(s) => { s.finalize(it) }

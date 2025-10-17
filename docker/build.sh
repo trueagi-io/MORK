@@ -19,7 +19,7 @@ set -e
 # Configuration
 IMAGE_NAME="${MORK_IMAGE_NAME:-mork}"
 IMAGE_TAG="${MORK_IMAGE_TAG:-latest}"
-DOCKERFILE="./target/docker/Dockerfile"
+DOCKERFILE="./docker/Dockerfile"
 PATHMAP_BRANCH="${PATHMAP_BRANCH:-master}"
 
 # Colors for output
@@ -190,7 +190,7 @@ log_info "Starting Docker build..."
 log_info "This may take several minutes (building from local source)..."
 
 # Build from MORK root directory (need local files in context)
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 if docker buildx build \
     --platform "$PLATFORMS" \

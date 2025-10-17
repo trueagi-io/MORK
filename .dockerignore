@@ -1,0 +1,37 @@
+# Build artifacts - exclude to reduce context size
+target/
+!target/docker/Dockerfile
+!target/docker/build.sh
+!target/docker/README.md
+
+# Git files
+.git
+.gitignore
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (README at root is kept)
+docs/
+
+# Cache and temporary files
+.cache
+tmp/
+*.tmp
+
+# Claude and user-specific files
+.claude
+.channels_cache_v2.json
+.users_cache.json
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local

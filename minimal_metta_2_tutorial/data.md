@@ -4,11 +4,11 @@ with a `.mm2` file format, it is a human readable sub-set of a `.metta` file.
 The subset comes from a low level detail with the encoding of S-expression to
 the internal representation.
 
-Lets look at some valid `.mm2` code that is part of that subset.
+Let's look at some valid `.mm2` code that is part of that subset.
 
-<!-- data::EX_01 -->
 ```
-; A comment, everything after this til the next newline is ignored by the parser.
+; A comment, everything after this till the next newline is ignored by the parser.
+; comments must be outside of an S-expression
 
 true
 2
@@ -435,10 +435,10 @@ candidate sets of values are quickly filtered.
 One might wonder why `.mm2` files are a subset of `.metta` files.
 This comes back to the tag byte encoding.
 
-If the tag is a single byte they we know from the outset that there can only be 256 variants at most.
+If the tag is a single byte, then we know from the outset that there can only be 256 variants at most.
 Once again what follows is based on the current implementation, but it helps to understand by enumerating.
 
-There are values that the internals need to know a number in order to parse what follows.
+There are tags that the internals need extract out a number from, in order to parse what follows.
 - `0b_00_.._.._..` Arity ((where the remaining bits are the arity , `0..=63`))
 - `0b_01_.._.._..` (reserved for future use)
 - `0b_10_.._.._..` VarRef (where the remaining bits are a De Bruijn level , `0..=63`)
@@ -450,7 +450,7 @@ The variants have a primary discriminant, we need at least a nibble (two bits). 
 
 In practice this should be very expressive. But it is still technically a subset.
 
-Lets look at some limiting cases
+Let's look at some limiting cases
 ```
 ; ; the following is too big
 ; the arity required is 64, but only up to 63 is supported
@@ -478,9 +478,9 @@ Lets look at some limiting cases
 )
 ```
 
-Variables have different limitation
+Variables have different limitation:
 ```
-; but this wont work either, it requires 65 variables, but the limit is 64.
+; This wont work, it requires 65 variables, but the limit is 64.
 ; ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
 ;   ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
 ;   ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
@@ -491,7 +491,7 @@ Variables have different limitation
 ; )
 ```
 There is no way to store a singular expression with more than 64 free variables. in practice this is still very expressive, 
-(when was the last time you wrote an expression/function with more than 64 variables?).
+(when was the last time you wrote an expression/function with more than 64 distinct variables?).
 
 
 
@@ -505,7 +505,7 @@ There is no limitation of disjoint expressions having a total of more than 64 va
     ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
   )
 )
-; note this is disjoint
+; Note this is disjoint.
 (e2
   ( 
     ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
@@ -582,4 +582,12 @@ it's basically a Peano number for 99, it only takes 100 bytes, surprising small 
 It should be obvious that this is not the kind of data-structure you want to write, or program against, but it does show that although there are
 hard structural limitations on the arity of a tuple, there are none on the depth of a tree.
 
+## `.mm2` being a subset is __intentional__
 
+It should be noted that the limitations on the `.mm2` format is __intentional__. The system could have had a larger tag size (say two bytes), but it does not.
+
+https://github.com/trueagi-io/MORK/wiki#there-are-three-assumptions-to-avoid-abuse
+
+The system is trying to help you to write fast code.
+
+But have no fear, we still expect you make non-optimal code! Prove us otherwise!

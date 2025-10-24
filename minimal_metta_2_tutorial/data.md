@@ -439,8 +439,8 @@ Lets look at our earlier set of S-expressions as in the internal expr representa
 You should be able to see the trie. (to compress as symbol with quotes is unescaped, but the bytes following a symbol with tag striped is prefixed with 'b')
 ```
 [  [2]   -> [  $     ->   &0
-            |  <3>   ->   b"abc" -> [  [3]   d e f
-                                    |  <3>   b"def"
+            |  <3>   ->   b"abc" -> [  [3]  -> d e f
+                                    |  <3>  -> b"def"
                                     ]
             ]
 |  [3]   ->  a "\n" b

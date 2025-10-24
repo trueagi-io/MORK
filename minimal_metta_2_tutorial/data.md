@@ -303,10 +303,10 @@ appl |> e
 appli |> cation
 ```
 
-Past this point the value must be application, or outside our small set.
+Past this point the value must be "application", or outside our small set.
 If we accept this, then we have a match.
 
-Let's revisit when we put in the second 'p'. This time lets keep only the suffix
+Let's revisit when we put in the second 'p'.
 
 We can see that "app" is our index into the set of words, but it is not necessarily a complete word yet, just a prefix.
 The suffix holds a set of suffixes af a search tree.
@@ -409,6 +409,23 @@ focus      : Some(&0)
 path       : "application"
 history    : [ .. , string(&8, 6)]
 
+
+
+
+
++---------------------------------+------------+-----------------+------------------------------+
+|  stimulus                       |  focus     |  path           |  history                     |
++---------------------------------+------------+-----------------+------------------------------+
+:  init                           :  Some(&1)  :  ""             :  []                          :
+:  'a'       -> descend('a')      :  Some(&2)  :  "a"            :  [radix(&1)]                 :
+:  'p'       -> descend('p')      :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]           :
+:  'l'       -> fail('l')         :  None      :  "apl"          :  [ .. , fail(Some(&4), 'l')] :
+:  backspace -> ascend(1)         :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]           :
+:  'p'       -> descend('p')      :  Some(&5)  :  "app"          :  [ .. , string(&4, 1)]       :
+:  'l'       -> descend('l')      :  Some(&7)  : "appl"          :  [ .. , radix(&5)]           :
+:  'i'       -> descend('i')      :  Some(&8)  : "appli"         :  [ .. , radix(&7)]           :
+: enter      -> descend_to_val()  :  Some(&0)  :  "application"  :  [ .. , string(&8, 6)]       :
++---------------------------------+------------+-----------------+------------------------------+
 
 final state of: 
     path    : "application"

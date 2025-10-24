@@ -60,12 +60,12 @@ Untagged raw bytes
 
 
 Here is a more compact form for the tags
-`Tag(Arity(_))      => [_]`
-`Tag(SymbolSize(_)) => <_>`
-`Tag(NewVar)        => $`
-`Tag(VarRef(_))     => &_`
+- `Tag(Arity(_))      => [_]`
+- `Tag(SymbolSize(_)) => <_>`
+- `Tag(NewVar)        => $`
+- `Tag(VarRef(_))     => &_`
 And a more "transparent" representation of the bytes, that shows the unicode scalar value and hex
-`Byte(b'a') => {'a'x61}`
+- `Byte(b'a') => {'a'x61}`
 
 You should now start to see some of the S-expressions that we had (they have been added for side by side comparison).
 ```

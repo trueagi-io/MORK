@@ -427,7 +427,7 @@ The zipper allows reasoning about sets where prefixes are a filter of the set of
 
 Lets look at our earlier set of S-expressions as in the internal expr representation
 ```
-; (  $x $x)
+; ($x $x)
 ; (abc (d e f))
 ; (abc def) 
 ; (a "\n" b)
@@ -470,18 +470,19 @@ This comes back to the tag byte encoding.
 If the tag is a single byte they we know from the outset that there can only be 256 variants at most.
 Once again what follows is based on the current implementation, but it helps to understand by enumerating.
 
-Then there are values that the internals need to know a number in order to parse what follows.
+TShere are values that the internals need to know a number in order to parse what follows.
 - `0b_00_.._.._..` Arity ((where the remaining bits are the arity , `0..=63`))
 - `0b_01_.._.._..` (reserved for future use)
 - `0b_10_.._.._..` VarRef (where the remaining bits are a De Bruijn level , `0..=63`)
 - `0b_11_.._.._..` Symbol or NewVar  
   - `0b_11_00_00_00` New Variable
   -  otherwise Symbol (where the remaining bits are a _non-zero_ length, `1..=63`)
+
 The variants have a primary discriminant, we need at least a nibble (two bits). This means the "magic number" is <= 64, where Symbols of length zero cannot exist.
 
-In practice this should be very expressive. but it is still technically a subset.
+In practice this should be very expressive. But it is still technically a subset.
 
-lets look at some limiting cases
+Lets look at some limiting cases
 ```
 ; ; the following is too big
 ; the arity required is 64, but only up to 63 is supported
@@ -550,6 +551,53 @@ Of course it means something quite different.
 We will see with pattern matching and unification that there can be approximately 64*64 (4096) free variables live in a single computation step,
 But this still bounds the output expressions with no more than 64 free variables.
 
+If this keeps you up at night, have solace that the following is not a problem:
+```
+(
+  ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
+    ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
+    ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
+    ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
+    ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
+    ($x50 $x51 $x52 $x53 $x54 $x55 $x56 $x57 $x58 $x59)
+    ($x60 $x61 $x62 $x63 ____ ____ ____ ____ ____ ____)
+  )
+  ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
+    ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
+    ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
+    ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
+    ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
+    ($x50 $x51 $x52 $x53 $x54 $x55 $x56 $x57 $x58 $x59)
+    ($x60 $x61 $x62 $x63 ____ ____ ____ ____ ____ ____)
+  )
+  ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
+    ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
+    ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
+    ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
+    ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
+    ($x50 $x51 $x52 $x53 $x54 $x55 $x56 $x57 $x58 $x59)
+    ($x60 $x61 $x62 $x63 ____ ____ ____ ____ ____ ____)
+  )
+  ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
+    ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
+    ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
+    ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
+    ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
+    ($x50 $x51 $x52 $x53 $x54 $x55 $x56 $x57 $x58 $x59)
+    ($x60 $x61 $x62 $x63 ____ ____ ____ ____ ____ ____)
+  )
+  ( ($x00 $x01 $x02 $x03 $x04 $x05 $x06 $x07 $x08 $x09)
+    ($x10 $x11 $x12 $x13 $x14 $x15 $x16 $x17 $x18 $x19)
+    ($x20 $x21 $x22 $x23 $x24 $x25 $x26 $x27 $x28 $x29)
+    ($x30 $x31 $x32 $x33 $x34 $x35 $x36 $x37 $x38 $x39)
+    ($x40 $x41 $x42 $x43 $x44 $x45 $x46 $x47 $x48 $x49)
+    ($x50 $x51 $x52 $x53 $x54 $x55 $x56 $x57 $x58 $x59)
+    ($x60 $x61 $x62 $x63 ____ ____ ____ ____ ____ ____)
+  )
+)
+; I tried with many more with no issue, but it takes a lot of space on the page...
+```
+The issue is in the number of free variables, you can have as many variable references as you like
 
 
 One last case is of a deeply nested structure

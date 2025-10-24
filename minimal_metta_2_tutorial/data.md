@@ -110,7 +110,7 @@ There are :
 - Data structure is described in polish notation, by an arity byte. 
 
 Lets break this down, starting with polish notation.
-lets look at this example (the hex will be removed for clarity).
+Lets look at this example (the hex will be removed for clarity).
 ```
 ; (abc (d e f))
   [2] <3> {'a'} {'b'} {'c'} 
@@ -131,7 +131,6 @@ Don't stare too long, just try to see the overall pattern.
 ```
 DO
 
-i_ptr  :                                                         v
 code   : [2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} <1> {'e'} <1> {'f'}
 stack  : ['f']
 
@@ -173,11 +172,12 @@ DONE
 
 Normally the purpose of Polish notation is to obviate parenthesis, made popular by its reverse version in HP calculators and the Forth programming language, often the backbone of simple virtual machines.
 
-But you might have noticed, We can't be building expressions back to front, we have untagged bytes!
+But you might have noticed, we can't be building expressions back to front, we have untagged bytes!
 MORK actually uses the dual property; __assuming the expression is well constructed__, we will know how much left there is to traverse.
 In other words, context is at the "prefix" of an expression.
 
 As untagged bytes cannot be used for understanding structure (and cannot be bound to variables) we will skip the untagged bytes steps.
+We will also dispose of the braces.
 
 Let's visualize this:
 ```
@@ -187,23 +187,23 @@ bytes   : [2] ...
 prefix  : [2]
 partial : (_ _)
 
-bytes   : [2] <3> {'a'} {'b'} {'c'} ...
+bytes   : [2] <3> 'a' 'b' 'c' ...
 prefix  : [2] abc
 partial : (abc _)
 
-bytes   : [2] <3> {'a'} {'b'} {'c'} [3] ...
+bytes   : [2] <3> 'a' 'b' 'c' [3] ...
 prefix  : [2] abc [3]
 partial : (abc (_ _ _))
 
-bytes   : [2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} ...
+bytes   : [2] <3> 'a' 'b' 'c' [3] <1> 'd' ...
 prefix  : [2] abc [3] d
 partial : (abc (d _ _))
 
-bytes   : [2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} <1> {'e'} ...
+bytes   : [2] <3> 'a' 'b' 'c' [3] <1> 'd' <1> 'e' ...
 prefix  : [2] abc [3] d e
 partial : (abc (d e _))
 
-bytes   : [2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} <1> {'e'} <1> {'f'}
+bytes   : [2] <3> 'a' 'b' 'c' [3] <1> 'd' <1> 'e' <1> 'f'
 prefix  : [2] abc [3] d e f
 partial : (abc (d e f))
 
@@ -214,14 +214,14 @@ One might wonder, is it possible to represent these "prefix" values with S-expre
 
 The answer is yes!
 
-In the general case is a little tedious, but at least it is straight forward and mechanical.
+In the general case is a little tedious, but at least it is straightforward and mechanical.
 
 If one wants to represent this prefix `(abc (d _ _))` replace the `_` with free variables 
 (Make sure they are distinct! Otherwise, it isn't a prefix, it's a constraint; more on unification later.)
 - `(abc (d $x $y))`
 
 The internal representation will be like so:
-- `[2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} $ $`
+- `[2] <3> 'a' 'b' 'c' [3] <1> 'd' $ $`
 or more concisely:
 - `[2] abc [2] d $ $`
 
@@ -270,7 +270,7 @@ ap |> p
    |> plication
 ```
 
-write another character (that is not a in the set)
+write another character 'l' (that is not a in the set)
 ```
 apl |?
    
@@ -356,9 +356,9 @@ To make the following explanation simpler, we give these abstract trees "memory 
 &12 : "a" -> &0
 ```
 
-Now if we think about what we did earlier we had to remember where we were when we did a backspace, otherwise we would
+Now if we think about what we did earlier, we had to remember where we were when we did a backspace, otherwise we would
 need to reindex the entire space from the beginning.
-This is why I made the addresses above. they will help us in describing the history of our indexing, it will be represented as a stack (push back).
+This is why I made the addresses above. They will help us in describing the history of our indexing, it will be represented as a stack (push back).
 
 Let's do a trace.
 ```
@@ -421,8 +421,7 @@ The state with associated stimuli we have described above is a "zipper".
 If you take everything you have seen so far with the byte representation of S-expressions, try to see that plainly as byte strings into
 a radix trie, where one byte represents a radix separation.
 
-This is not a user facing part of MORK, but it gives context as to why a program can be
-fast or slow in MORK.
+This is not a user facing part of MORK, but it gives context as to why a program can be fast or slow in MORK.
 The zipper allows reasoning about sets where prefixes are a filter of the set of all expressions, and 
 "suffixes" as sets to complete an expression, by only having a handle to the "root of a suffix tree".
 
@@ -438,16 +437,16 @@ Lets look at our earlier set of S-expressions as in the internal expr representa
 ; "abc def"
 
   [2] $ &0
-  [2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} <1> {'e'} <1> {'f'}
-  [2] <3> {'a'} {'b'} {'c'} <3> {'d'} {'e'} {'f'}
-  [3] <1> {'a'} <3> {'"'} {'\n'} {'"'} <1> {'b'}
+  [2] <3> 'a' 'b' 'c' [3] <1> 'd' <1> 'e' <1> 'f'
+  [2] <3> 'a' 'b' 'c' <3> 'd' 'e' 'f'
+  [3] <1> 'a' <3> '"' '\n' '"' <1> 'b'
   $
-  <1> {'2'}
-  <4> {'t'} {'r'} {'u'} {'e'}
-  <9> {'"'} {'a'} {'b'} {'c'} {' '} {'d'} {'e'} {'f'} {'"'}
+  <1> '2'
+  <4> 't' 'r' 'u' 'e'
+  <9> '"' 'a' 'b' 'c' ' ' 'd' 'e' 'f' '"'
 ```
 
-You should be able to see the trie. (to compress as symbol with quotes is unescaped, but the bytes following a symbol with tag striped is prefixed with 'b')
+You should be able to see the trie. (to compress, a symbol with quotes is unescaped, but the bytes following a symbol with tag striped is prefixed with 'b')
 ```
 [  [2]   -> [  $     ->   &0
             |  <3>   ->   b"abc" -> [  [3]  ->  d e f
@@ -469,7 +468,7 @@ One might wonder why `.mm2` files are a subset of `.metta` files.
 This comes back to the tag byte encoding.
 
 If the tag is a single byte they we know from the outset that there can only be 256 variants at most.
-Once again what follows is based on the current implementation, but it help understand by enumerating.
+Once again what follows is based on the current implementation, but it helps to understand by enumerating.
 
 Then there are values that the internals need to know a number in order to parse what follows.
 - `0b_00_.._.._..` Arity ((where the remaining bits are the arity , `0..=63`))
@@ -478,7 +477,7 @@ Then there are values that the internals need to know a number in order to parse
 - `0b_11_.._.._..` Symbol or NewVar  
   - `0b_11_00_00_00` New Variable
   -  otherwise Symbol (where the remaining bits are a _non-zero_ length, `1..=63`)
-The variants have a primary discriminant, we need at least a nibble (two bits). This means the "magic number" is <= 64, where a Symbols of length zero cannot exist.
+The variants have a primary discriminant, we need at least a nibble (two bits). This means the "magic number" is <= 64, where Symbols of length zero cannot exist.
 
 In practice this should be very expressive. but it is still technically a subset.
 
@@ -522,12 +521,12 @@ Variables have different limitation
 ;   ($x60 $x61 $x62 $x63 $x64 ____ ____ ____ ____ ____)
 ; )
 ```
-There is no why to store a singular expression with more than 64 free variables. in practice this is still very expressive, 
+There is no way to store a singular expression with more than 64 free variables. in practice this is still very expressive, 
 (when was the last time you wrote an expression/function with more than 64 variables?).
 
 
 
-The limit is on the number of free variables in an _storable expression_, but not necessarily for a _computation_, or the space of all expressions.
+The limit is on the number of free variables in an _storable expression_, but not necessarily for a _computation_, a _transaction_, or the space of all expressions.
 There is no limitation of disjoint expressions having a total of more than 64 variables
 ```
 (e1
@@ -546,7 +545,7 @@ There is no limitation of disjoint expressions having a total of more than 64 va
   )
 )
 ```
-
+Of course it means something quite different.
 
 We will see with pattern matching and unification that there can be approximately 64*64 (4096) free variables live in a single computation step,
 But this still bounds the output expressions with no more than 64 free variables.
@@ -562,9 +561,9 @@ MORK has no issue with this, internally:
 ```
 [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [1] [0]
 ```
-it's basically a Peano number for 99, it only takes 100 bytes, surprising small compared to pointer based implementation (that on a 64 bit system would take almost a kilobyte).
+it's basically a Peano number for 99, it only takes 100 bytes, surprising small compared to a pointer based implementation (that on a 64 bit system would take almost a kilobyte).
 
-It should be obvious that this isn not the kind of data-structure you want to write, or program against, but it does show that although there are
+It should be obvious that this is not the kind of data-structure you want to write, or program against, but it does show that although there are
 hard structural limitations on the arity of a tuple, there are none on the depth of a tree.
 
 

@@ -1,10 +1,15 @@
+<!-- https://github.com/trueagi-io/MORK/wiki/Space-Operations -->
+
 MORK is an extremely flexible system, where that flexibility means that
 other kinds of databases can be emulated trivially.
 
 We will begin with a simple use case for MM2.
 Let us imagine having a triple store.
-Triple stores are an interesting case as they are very simple for
-people understand at a high level, but are notoriously hard as it is inherently dynamic.
+Triple stores are an interesting case as they are very simple for people understand at a high level, 
+but are notoriously hard to implement, well as it is inherently dynamic.
+
+
+
 
 
 

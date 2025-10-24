@@ -364,68 +364,19 @@ Let's do a trace.
 ```
 where root : &1
 
-stimulus   : init
-focus      : Some(&1)
-path       : ""
-history    : []
-
-stimulus   : 'a' -> descend('a')
-focus      : Some(&2)
-path       : "a"
-history    : [radix(&1)]
-
-stimulus   : 'p' -> descend('p')
-focus      : Some(&4)
-path       : "ap"
-history    : [ .. , radix(&2)]
-
-stimulus   : 'l' -> fail('l')
-focus      : None
-path       : "apl"
-history    : [ .. , fail(Some(&4), 'l')]
-
-stimulus   : backspace -> ascend(1)
-focus      : Some(&4)
-path       : "ap"
-history    : [ .. , radix(&2)]
-
-stimulus   : 'p' -> descend('p')
-focus      : Some(&5)
-path       : "app"
-history    : [ .. , string(&4, 1)]
-
-stimulus   : 'l' -> descend('l')
-focus      : Some(&7)
-path       : "appl"
-history    : [ .. , radix(&5)]
-
-stimulus   : 'i' -> descend('i')
-focus      : Some(&8)
-path       : "appli"
-history    : [ .. , radix(&7)]
-
-stimulus   : enter -> descend_to_val()
-focus      : Some(&0)
-path       : "application"
-history    : [ .. , string(&8, 6)]
-
-
-
-
-
-+---------------------------------+------------+-----------------+------------------------------+
-|  stimulus                       |  focus     |  path           |  history                     |
-+---------------------------------+------------+-----------------+------------------------------+
-:  init                           :  Some(&1)  :  ""             :  []                          :
-:  'a'       -> descend('a')      :  Some(&2)  :  "a"            :  [radix(&1)]                 :
-:  'p'       -> descend('p')      :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]           :
-:  'l'       -> fail('l')         :  None      :  "apl"          :  [ .. , fail(Some(&4), 'l')] :
-:  backspace -> ascend(1)         :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]           :
-:  'p'       -> descend('p')      :  Some(&5)  :  "app"          :  [ .. , string(&4, 1)]       :
-:  'l'       -> descend('l')      :  Some(&7)  : "appl"          :  [ .. , radix(&5)]           :
-:  'i'       -> descend('i')      :  Some(&8)  : "appli"         :  [ .. , radix(&7)]           :
-: enter      -> descend_to_val()  :  Some(&0)  :  "application"  :  [ .. , string(&8, 6)]       :
-+---------------------------------+------------+-----------------+------------------------------+
++---------------------------------+------------+-----------------+-------------------------------+
+|  stimulus                       |  focus     |  path           |  history                      |
++---------------------------------+------------+-----------------+-------------------------------+
+:  init                           :  Some(&1)  :  ""             :  []                           :
+:  'a'       -> descend('a')      :  Some(&2)  :  "a"            :  [radix(&1)]                  :
+:  'p'       -> descend('p')      :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]            :
+:  'l'       -> fail('l')         :  None      :  "apl"          :  [ .. , fail(Some(&4), 'l')]  :
+:  backspace -> ascend(1)         :  Some(&4)  :  "ap"           :  [ .. , radix(&2)]            :
+:  'p'       -> descend('p')      :  Some(&5)  :  "app"          :  [ .. , string(&4, 1)]        :
+:  'l'       -> descend('l')      :  Some(&7)  :  "appl"         :  [ .. , radix(&5)]            :
+:  'i'       -> descend('i')      :  Some(&8)  :  "appli"        :  [ .. , radix(&7)]            :
+:  enter     -> descend_to_val()  :  Some(&0)  :  "application"  :  [ .. , string(&8, 6)]        :
++---------------------------------+------------+-----------------+-------------------------------+
 
 final state of: 
     path    : "application"

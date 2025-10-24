@@ -64,6 +64,7 @@ Here is a more compact form for the tags
 - `Tag(SymbolSize(_)) => <_>`
 - `Tag(NewVar)        => $`
 - `Tag(VarRef(_))     => &_`
+
 And a more "transparent" representation of the bytes, that shows the unicode scalar value and hex
 - `Byte(b'a') => {'a'x61}`
 

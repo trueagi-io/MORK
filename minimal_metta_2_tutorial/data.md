@@ -438,7 +438,7 @@ This comes back to the tag byte encoding.
 If the tag is a single byte they we know from the outset that there can only be 256 variants at most.
 Once again what follows is based on the current implementation, but it helps to understand by enumerating.
 
-TShere are values that the internals need to know a number in order to parse what follows.
+There are values that the internals need to know a number in order to parse what follows.
 - `0b_00_.._.._..` Arity ((where the remaining bits are the arity , `0..=63`))
 - `0b_01_.._.._..` (reserved for future use)
 - `0b_10_.._.._..` VarRef (where the remaining bits are a De Bruijn level , `0..=63`)

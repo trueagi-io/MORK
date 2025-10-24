@@ -1116,11 +1116,14 @@ fn unification() {
     }
 }
 
+#[cfg(test)]
 use freeze::{LiquidVecRef, BumpAllocRef};
+#[cfg(test)]
 pub struct AExpr<'a> {
     buf: LiquidVecRef<'a>
 }
 
+#[cfg(test)]
 impl <'a> AExpr<'a> {
     pub fn new(a: &BumpAllocRef, e: impl AsRef<[u8]>) -> AExpr {
         a.top().extend_from_slice(e.as_ref());
@@ -1132,12 +1135,14 @@ impl <'a> AExpr<'a> {
     }
 }
 
+#[cfg(test)]
 impl <'a> Drop for AExpr<'a>  {
     fn drop(&mut self) {
         self.buf.set_len(0)
     }
 }
 
+#[cfg(test)]
 pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
         where Bytes : AsRef<[u8]>, Body : Fn(&mut dyn FnMut(Bytes) -> Expr) -> () {
     let mut allocf = |bs: Bytes| {
@@ -1148,6 +1153,7 @@ pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
     alloc.top().set_len(0)
 }
 
+#[cfg(test)]
 #[test]
 fn transform() {
     let mut buf0 = BumpAllocRef::new();

@@ -5,7 +5,7 @@ members = [
     "expr/",
     "frontend/",
     "kernel/"
-]
+, "minimal_metta_2_tutorial/mm2_tut"]
 
 [workspace.package]
 edition = "2024"

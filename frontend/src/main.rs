@@ -184,7 +184,7 @@ use pathmap::zipper::ZipperWriting;
 
 use mork_expr::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::{PathMap as BytesTrieMap};
 
 struct DataParser {
     count: u64,

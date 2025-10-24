@@ -23,7 +23,7 @@ $x
 
 ## S-Expression Representation
 
-Lets have a peak at the current representation of S-expressions inside MORK. Formatting has been added to make it easier to see at a glace, but it is still representing a byte string.
+Let's have a peak at the current representation of S-expressions inside MORK. Formatting has been added to make it easier to see at a glace, but it is still representing a byte string.
 ```
 [Tag(Arity(2)), Tag(NewVar), 
                 Tag(VarRef(0))
@@ -59,13 +59,13 @@ Untagged raw bytes
 - Byte(_)
 
 
-Here is a more compact form for the tags
+Here is a more compact form for the tags:
 - `Tag(Arity(_))      => [_]`
 - `Tag(SymbolSize(_)) => <_>`
 - `Tag(NewVar)        => $`
 - `Tag(VarRef(_))     => &_`
 
-And a more "transparent" representation of the bytes, that shows the unicode scalar value and hex
+And a more "transparent" representation of the bytes, that shows the unicode scalar value and hex:
 - `Byte(b'a') => {'a'x61}`
 
 You should now start to see some of the S-expressions that we had (they have been added for side by side comparison).
@@ -210,8 +210,10 @@ partial : (abc (d e f))
 DONE
 ```
 
-One might wonder, is it possible to represent these 'prefix' values with S-expressions.
-The answer is yes! 
+One might wonder, is it possible to represent these "prefix" values with S-expressions?
+
+The answer is yes!
+
 In the general case is a little tedious, but at least it is straight forward and mechanical.
 
 If one wants to represent this prefix `(abc (d _ _))` replace the `_` with free variables 
@@ -220,14 +222,16 @@ If one wants to represent this prefix `(abc (d _ _))` replace the `_` with free 
 
 The internal representation will be like so:
 - `[2] <3> {'a'} {'b'} {'c'} [3] <1> {'d'} $ $`
-or more concisely
+or more concisely:
 - `[2] abc [2] d $ $`
 
 So long as the trailing values are free variables this effectively represents a prefix.
 
-For now we will finish by stating that s-expressions have a biased representation in MORK.
+For now we will finish by stating that s-expressions have a _biased_ representation in MORK.
 In general, you want to construct values with a "ground" prefix, and defer variables to the suffix.
-This correlated directly the how well MORK can index your values. But what are we indexing into?
+This correlates directly the how well MORK can index your values.
+
+But what are we indexing into?
 
 ## The Space of expressions as a Pathmap
 The primary backing data structure of MORK is a 256 radix trie. 256 is not a coincidence, it represents 1 byte.
@@ -247,7 +251,7 @@ beta
 ```
 
 ... and I look up in the small set of words by writing some starting characters, the auto-complete may make suggestions
-based on the prefix
+based on the prefix.
 
 'a'
 ```
@@ -257,6 +261,7 @@ a |> bc
   |> pple
   |> pplication
 ```
+
 'p'
 ```
 ap |> p
@@ -264,11 +269,13 @@ ap |> p
    |> ple
    |> plication
 ```
+
 write another character (that is not a in the set)
 ```
 apl |?
    
 ```
+
 oops, backspace
 ```
 ap |> p
@@ -276,6 +283,7 @@ ap |> p
    |> ple
    |> plication
 ```
+
 'p'
 ```
 app |! 
@@ -283,19 +291,22 @@ app |!
     |> le
     |> lication
 ```
+
 'l'
 ```
 appl |> e
      |> ication
 ```
+
 'i'
 ```
 appli |> cation
 ```
-past this point the value must be application, or outside our small set.
-if we accept this, then we have a match.
 
-let's revisit when we put in the second 'p'. This time lets keep only the suffix
+Past this point the value must be application, or outside our small set.
+If we accept this, then we have a match.
+
+Let's revisit when we put in the second 'p'. This time lets keep only the suffix
 
 We can see that "app" is our index into the set of words, but it is not necessarily a complete word yet, just a prefix.
 The suffix holds a set of suffixes af a search tree.
@@ -358,19 +369,19 @@ focus      : Some(&1)
 path       : ""
 history    : []
 
-stimulus   : 'a' -> descend
+stimulus   : 'a' -> descend('a')
 focus      : Some(&2)
 path       : "a"
 history    : [radix(&1)]
 
-stimulus   : 'p' -> descend
+stimulus   : 'p' -> descend('p')
 focus      : Some(&4)
 path       : "ap"
 history    : [ .. , radix(&2)]
 
-stimulus   : 'l' -> fail
+stimulus   : 'l' -> fail('l')
 focus      : None
-path       : "ap"
+path       : "apl"
 history    : [ .. , fail(Some(&4), 'l')]
 
 stimulus   : backspace -> ascend(1)
@@ -378,22 +389,22 @@ focus      : Some(&4)
 path       : "ap"
 history    : [ .. , radix(&2)]
 
-stimulus   : 'p' -> 
+stimulus   : 'p' -> descend('p')
 focus      : Some(&5)
 path       : "app"
 history    : [ .. , string(&4, 1)]
 
-stimulus   : 'l' -> yes
+stimulus   : 'l' -> descend('l')
 focus      : Some(&7)
 path       : "appl"
 history    : [ .. , radix(&5)]
 
-stimulus   : 'i' -> yes
+stimulus   : 'i' -> descend('i')
 focus      : Some(&8)
 path       : "appli"
 history    : [ .. , radix(&7)]
 
-stimulus   : enter -> decend_to_val
+stimulus   : enter -> descend_to_val()
 focus      : Some(&0)
 path       : "application"
 history    : [ .. , string(&8, 6)]
@@ -439,8 +450,8 @@ Lets look at our earlier set of S-expressions as in the internal expr representa
 You should be able to see the trie. (to compress as symbol with quotes is unescaped, but the bytes following a symbol with tag striped is prefixed with 'b')
 ```
 [  [2]   -> [  $     ->   &0
-            |  <3>   ->   b"abc" -> [  [3]  -> d e f
-                                    |  <3>  -> b"def"
+            |  <3>   ->   b"abc" -> [  [3]  ->  d e f
+                                    |  <3>  ->  b"def"
                                     ]
             ]
 |  [3]   ->  a "\n" b

@@ -1,5 +1,5 @@
-In MM2 there are various data-types. Users interact with the internal data types
-with a `.mm2` file format, it is a human readable sub-set of a `.metta` file.
+In MORK there are various data-types. Users interact with the internal data types
+with a `.mm2` file format (in reference to `Minimal MeTTa 2` or `MM2`), it is a human readable sub-set of a `.metta` file.
 
 The subset comes from a low level detail with the encoding of S-expression to
 the internal representation.
@@ -431,7 +431,7 @@ You should be able to see the trie. (to compress, a symbol with quotes is unesca
 Under the assumption that comparison of a byte is fast, and comparing strings of contiguous bytes is fast, 
 candidate sets of values are quickly filtered.
 
-## Constraints on MM2 data types
+## Constraints on MORK data types
 One might wonder why `.mm2` files are a subset of `.metta` files.
 This comes back to the tag byte encoding.
 

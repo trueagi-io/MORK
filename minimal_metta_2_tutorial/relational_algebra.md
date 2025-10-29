@@ -1,13 +1,42 @@
 <!-- https://github.com/trueagi-io/MORK/wiki/Space-Operations -->
 
-MORK is an extremely flexible system, where that flexibility means that
-other kinds of databases can be emulated trivially.
+# Relation algebra with MM2
 
-We will begin with a simple use case for MM2.
-Let us imagine having a triple store.
-Triple stores are an interesting case as they are very simple for people understand at a high level, 
-but are notoriously hard to implement, well as it is inherently dynamic.
+Lets consider this simple dataset
+```
+(monster dragon)
+(monster ogre)
+(monster slime)
+(monster skeleton)
+(monster orc)
+(monster ghost)
+(monster centaur)
 
+(animal horse)
+(animal cat)
+(animal dog)
+(animal mouse)
+(animal human)
+
+((feet 2) human)
+((feet 4) horse)
+((feet 4) cat)
+((feet 4) dog)
+((feet 4) mouse)
+((feet 0) slime)
+((feet 2) ogre)
+((feet 2) skeleton)
+((feet 2) orc)
+((feet 4) centaur)
+```
+
+we'll load it with a prefix
+```
+; pattern
+$x
+; template
+(IN $x)
+```
 
 
 
@@ -15,6 +44,7 @@ but are notoriously hard to implement, well as it is inherently dynamic.
 
 
 Set union
+THIS IS WRONG
 ```
 ; a ∪ b
 (set 
@@ -87,8 +117,6 @@ Projection
 ; Π[atrribute](_)
 (set
     ((projection $attribute) ($out <- $in)
-        ; (E A V)
-        ; (V A E)
         (, ($in  ($attribute $v))
         )
         (, ($out ($attribute $v))

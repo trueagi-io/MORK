@@ -146,7 +146,8 @@ fn raw_representation() {
     }
     println!();
     for each in v {
-        println!("{}", utils::PrettyExpr { expr: &each , chars : true, hex : true});
+        // println!("{}", utils::PrettyExpr { expr: &each , chars : true, hex : true, curlies : true});
+        println!("{}", utils::PrettyExpr { expr: &each , ..Default::default()});
         println!("{:?}", each);
     }
 }

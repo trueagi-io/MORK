@@ -83,9 +83,16 @@ pub(crate) fn debug_expr_repr_slice(mut f : &mut core::fmt::Formatter<'_>, expr 
             write!(f, " ")?
         }
 
+        if options != PrettyExprSym::Sym as u8 {
+        }
         debug_expr_repr(f, each, options)?;
         if !is_raw {
-            write!(f, " ")?
+            if options != PrettyExprSym::Sym as u8 
+            || !matches!(each, ExprRepr::Tag(mork_expr::Tag::SymbolSize(_)))
+            {
+                write!(f, " ")?
+            }
+            
         }
         was_raw = is_raw        
     }
@@ -94,17 +101,6 @@ pub(crate) fn debug_expr_repr_slice(mut f : &mut core::fmt::Formatter<'_>, expr 
 
 pub(crate) fn print_space(s:&Space) {
     print_space_at_prefix(s, &[]);
-
-    // let mut rz = s.btm.read_zipper();
-
-    // while rz.to_next_val() {
-    //     let path = rz.path();
-    //     let p = crate::utils::expr_to_expr_repr(
-    //         mork_expr::Expr { ptr: path.as_ptr() as *mut _ }
-    //     );
-    //     let e = crate::utils::PrettyExpr{expr:&p, ..Default::default()};
-    //     println!("{}",e)
-    // }
 }
 pub(crate) fn print_space_at_prefix(s:&Space, p:&[u8]) {
     let mut rz = s.btm.read_zipper_at_borrowed_path(p);

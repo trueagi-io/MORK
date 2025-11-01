@@ -662,6 +662,61 @@ const BOOLEAN_ALG : &str ="
         }
 
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    const BOOLEAN_ALG_BUGGY : &str ="
+(_ (_ _) _ _)
+(_ (_) _ _)
+
+true
+
+(exec _
+  (,
+     true
+  ) 
+  (,
+     (____ _ (_) (_)) 
+  )
+)
+";
+
+
+
+    #[test]
+    fn test_2_buggy(){
+        let mut s = Space::new();
+        s.add_sexpr(BOOLEAN_ALG_BUGGY.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+            s.metta_calculus(10);
+    }
 }
 pub(crate) mod utils;
 

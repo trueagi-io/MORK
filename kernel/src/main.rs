@@ -667,6 +667,45 @@ fn bench_lr() {
     println!("{res}");
 }
 
+fn pattern_mining() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(destruct () 0 [0])
+
+(destruct ($x) 0 [1])
+(destruct ($x) 1 $x)
+
+(destruct ($x $y) 0 [2])
+(destruct ($x $y) 1 $x)
+(destruct ($x $y) 2 $y)
+
+(destruct ($x $y $z) 0 [3])
+(destruct ($x $y $z) 1 $x)
+(destruct ($x $y $z) 2 $y)
+(destruct ($x $y $z) 3 $z)
+
+(test (foo 1))
+
+(exec 0 (arg $x
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    s.btm.iter().for_each(|(p, k)| println!("{p:?}"));
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("OK\n"));
+}
+
 fn meta_ana() {
     let mut s = Space::new();
 
@@ -971,6 +1010,29 @@ fn bench_tile_puzzle_states() {
     // assert_eq!(res1, res2);
 }
 
+fn source_space() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (I (+ (Something $x $y)) (+ (Else $x $y))) (, (MATCHED $x $y) ))
+
+(Something (foo $x) (foo $x))
+(Else ($x bar) ($x bar))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+}
 
 fn sink_two_bipolar_equal_crossed() {
     let mut s = Space::new();
@@ -1044,10 +1106,122 @@ A
     assert!(res.contains("B\n"));
 }
 
+fn sink_remove_many() {
+    let mut s = Space::new();
+
+    // language="common lisp"
+    const SPACE_EXPRS: &str = r#"
+(row 1 2 3)
+(col 3 4 5)
+(remove (tuple-concat $x $y $z))
+(remove (col $x $y $z))
+(remove (column-index $x))
+(remove (exec $x $y $z $w))
+(exec 0 (, (remove $x) $x) (O (- $x)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+}
+
+fn cross_join_tuple() {
+    let mut s = Space::new();
+
+    // language="common lisp"
+    const SPACE_EXPRS: &str = r#"
+(concat (, $x $y $z) (, $a $b) (, $x $y $z $a $b))
+
+(WIKI (, Name EmpId DeptName) (, Harry 3415 Finance))
+(WIKI (, Name EmpId DeptName) (, Cheat 3489 Marketing))
+
+(OTHER (, X Y) (, 1 2))
+(OTHER (, X Y) (, 10 20))
+
+(exec 0
+    (, (WIKI $h0 $v0) (OTHER $h1 $v1) (concat $h0 $h1 $h) (concat $v0 $v1 $v) )
+    (, (CROSSJOIN $h $v) )
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] CROSSJOIN $ $"), expr!(s, "_2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, r#"(, Cheat 3489 Marketing 1 2)
+(, Cheat 3489 Marketing 10 20)
+(, Harry 3415 Finance 1 2)
+(, Harry 3415 Finance 10 20)
+"#)
+}
+
+
+fn cross_join_dict() {
+    let mut s = Space::new();
+
+    // language="common lisp"
+    const SPACE_EXPRS: &str = r#"
+
+(WIKI header (Name EmpId DeptName))
+(WIKI data 0 Name Harry)
+(WIKI data 0 EmpId 3415)
+(WIKI data 0 DeptName Finance)
+(WIKI data 1 Name Chear)
+(WIKI data 1 EmpId 3489)
+(WIKI data 1 DeptName Marketing)
+
+(OTHER header (X Y))
+(OTHER data 0 X 1)
+(OTHER data 0 Y 2)
+(OTHER data 1 X 10)
+(OTHER data 1 Y 20)
+
+(exec 0
+    (, (WIKI data $i0 $f0 $v0) (OTHER data $i1 $f1 $v1) )
+    (, (CROSSJOIN data ($i0 $i1) $f0 $v0) (CROSSJOIN data ($i0 $i1) $f1 $v1) )
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_sexpr(expr!(s, "[3] CROSSJOIN $ $"), expr!(s, "_2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+//     assert_eq!(res, r#"(, Cheat 3489 Marketing 1 2)
+// (, Cheat 3489 Marketing 10 20)
+// (, Harry 3415 Finance 1 2)
+// (, Harry 3415 Finance 10 20)
+// "#)
+}
+
+
 fn sink_add_remove_var() {
     let mut s = Space::new();
 
-    const SPACE_EXPRS: &str = r#"
+    const SPACE_EXPRS: &str = r#"#
 (foo a)
 (exec 0
   (, (foo $x))
@@ -2875,7 +3049,11 @@ fn main() {
     // sink_add_remove();
     // bench_cm0(50);
     // tile_puzzle();
-    // return;
+    // sink_odd_even_sort();
+    // cross_join();
+    // cross_join_dict();
+    source_space();
+    return;
 
     let args = Cli::parse();
 
@@ -2928,6 +3106,8 @@ fn main() {
             meta_ana_exec();
 
             bc0();
+
+            source_space();
 
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();

@@ -1,4 +1,5 @@
 use ::core::convert::TryFrom;
+use std::ptr::slice_from_raw_parts;
 use crate::{Expr, Tag, byte_item, item_byte};
 
 /// A macro to destructure a mork-bytestring expression into its components.
@@ -173,6 +174,30 @@ impl DeserializableExpr for i32 {
     #[inline(always)]
     fn deserialize_unchecked(e: Expr) -> Self {
         unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i32) }.swap_bytes()
+    }
+}
+
+impl DeserializableExpr for &str {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        unsafe {
+            let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { panic!("wrong symbol for str") };
+            1usize + (arity as usize)
+        }
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe {
+            let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { unreachable!() };
+            str::from_utf8(slice_from_raw_parts(e.ptr.add(1), arity as _).as_ref().unwrap()).is_ok()
+        }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe {
+            let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { unreachable!() };
+            str::from_utf8_unchecked(slice_from_raw_parts(e.ptr.add(1), arity as _).as_ref().unwrap())
+        }
     }
 }
 

@@ -1,7 +1,8 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::hint::unreachable_unchecked;
 use std::mem::MaybeUninit;
@@ -17,18 +18,21 @@ use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
+use pathmap::arena_compact::ArenaCompactTree;
+use pathmap::PathMap;
 use mork_frontend::json_parser::Transcriber;
 use log::*;
-use pathmap::PathMap;
-use crate::sources::{ASource, Source};
 
 pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
+pub static ACT_PATH: &'static str = "/dev/shm/";
+
 pub struct Space {
     pub btm: PathMap<()>,
-    pub sm: SharedMappingHandle
+    pub sm: SharedMappingHandle,
+    pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>
 }
 
 const SIZES: [u64; 4] = {
@@ -426,7 +430,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new() }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new() }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1002,19 +1006,34 @@ impl Space {
         Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
     }
 
-    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut mmaps: &mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>, btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        use crate::sources::{ASource, Resource, ResourceRequest, Source};
+
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi_i", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let mut pat_args = vec![]; // todo use arity tag to prepare vec (or even stackalloc?)
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
         if pat_args.len() <= 1 { return 0 }
+        let mmaps_ptr = mmaps as *mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>;
 
         let mut srcs: Vec<_> = vec![];
         let mut factors: Vec<_> = vec![];
         for e in pat_args[1..].iter() {
             let mut src = ASource::new(e.subsexpr());
-            factors.push(src.source(src.request().map(|prefix| btm.read_zipper_at_path(prefix))));
+            factors.push(src.source(src.request().map(|request| {
+                match request {
+                    ResourceRequest::BTM(prefix) => { Resource::BTM(btm.read_zipper_at_path(prefix)) }
+                    ResourceRequest::ACT(name) => {
+                        let act = unsafe { mmaps_ptr.as_mut().unwrap() }.entry(name).or_insert_with(|| {
+                            trace!(target: "query_multi_i", "open new ACT {}", name);
+                            ArenaCompactTree::open_mmap(format!("{ACT_PATH}{name}.act")).unwrap()
+                        });
+                        trace!(target: "query_multi_i", "taking RZ of {}", name);
+                        Resource::ACT(act.read_zipper())
+                    }
+                }
+            })));
             srcs.push(src);
         }
 
@@ -1321,7 +1340,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(&read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_i(&mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {

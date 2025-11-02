@@ -1,5 +1,5 @@
 use mork::{expr, prefix, sexpr};
-use mork::space::{transitions, unifications, writes, Space};
+use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
 use mork_expr::{item_byte, Tag};
 use pathmap::PathMap;
@@ -1010,7 +1010,7 @@ fn bench_tile_puzzle_states() {
     // assert_eq!(res1, res2);
 }
 
-fn source_space() {
+fn source_space_two_bipolar_equal_crossed() {
     let mut s = Space::new();
 
     const SPACE_EXPRS: &str = r#"
@@ -1031,8 +1031,75 @@ fn source_space() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    // assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+    assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
 }
+
+fn source_act_two_bipolar_equal_crossed() {
+    {
+        let mut act_s = Space::new();
+
+        const SPACE_EXPRS: &str = r#"
+(Something (foo $x) (foo $x))
+(Else ($x bar) ($x bar))
+    "#;
+
+        act_s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+        act_s.backup_tree(format!("{ACT_PATH}two_bipolar_equal_crossed.act")).unwrap();
+    };
+
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (I (ACT two_bipolar_equal_crossed (Something $x $y)) (ACT two_bipolar_equal_crossed (Else $x $y))) (, (MATCHED $x $y) ))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+}
+
+fn source_space_act_two_bipolar_equal_crossed() {
+    {
+        let mut act_s = Space::new();
+
+        const SPACE_EXPRS: &str = r#"
+(Else ($x bar) ($x bar))
+    "#;
+
+        act_s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+        act_s.backup_tree(format!("{ACT_PATH}space_two_bipolar_equal_crossed.act")).unwrap();
+    };
+
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (I (+ (Something $x $y)) (ACT space_two_bipolar_equal_crossed (Else $x $y))) (, (MATCHED $x $y) ))
+(Something (foo $x) (foo $x))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("(MATCHED (foo bar) (foo bar))\n"));
+}
+
 
 fn sink_two_bipolar_equal_crossed() {
     let mut s = Space::new();
@@ -3052,8 +3119,7 @@ fn main() {
     // sink_odd_even_sort();
     // cross_join();
     // cross_join_dict();
-    source_space();
-    return;
+    // return;
 
     let args = Cli::parse();
 
@@ -3107,7 +3173,9 @@ fn main() {
 
             bc0();
 
-            source_space();
+            source_space_two_bipolar_equal_crossed();
+            source_act_two_bipolar_equal_crossed();
+            source_space_act_two_bipolar_equal_crossed();
 
             sink_two_bipolar_equal_crossed();
             sink_two_positive_equal_crossed();

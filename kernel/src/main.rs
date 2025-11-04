@@ -3856,7 +3856,7 @@ fn main() {
                         break;
                     }
                 }
-                let p = s.metta_calculus(1);
+                let p = s.metta_calculus(0);
                 performed += p;
                 if p == 0 {
                     break;

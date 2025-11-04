@@ -1045,7 +1045,7 @@ impl Space {
 
     #[cfg(feature="no_search")]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ProductZipperLike, F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
@@ -1107,7 +1107,7 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ProductZipperLike, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];

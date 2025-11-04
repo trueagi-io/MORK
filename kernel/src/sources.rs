@@ -1,6 +1,7 @@
 use log::trace;
-use pathmap::arena_compact::{ACTMmapZipper, ArenaCompactTree};
-use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperTracked, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
+use pathmap::arena_compact::{ACTMmapZipper};
+use pathmap::PathMap;
+use pathmap::zipper::{PolyZipper, PrefixZipper, ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, DependentProductZipperG, ReadZipperOwned, ZipperSubtries};
 use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
 use mork_expr::macros::SerializableExpr;
 
@@ -33,7 +34,7 @@ impl Source for PosSource {
     }
 
     fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
-        static PREFIX: [u8; 3] = [item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b'+'];
+        static PREFIX: [u8; 5] = [item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(3)), b'B', b'T', b'M'];
         let Resource::BTM(rz) = it.next().unwrap() else { unreachable!() };
         let rz = PrefixZipper::new(&PREFIX[..], rz);
         AFactor::PosSource(rz)
@@ -68,20 +69,86 @@ impl Source for ACTSource {
     }
 }
 
-pub enum ASource { PosSource(PosSource), ACTSource(ACTSource) }
+
+struct CmpSource {
+    e: Expr,
+    cmp: usize
+}
+
+impl CmpSource {
+    fn policy(ctx: (usize, PathMap<()>), p: &[u8], c: usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<()>>) {
+        let (cmp, map) = ctx;
+        if c == 0 {
+            if cmp == 0 {
+                trace!(target: "source", "== enrolling at {}", serialize(p));
+                ((cmp, map), Some(PathMap::single(p, ()).into_read_zipper(&[])))
+            } else if cmp == 1 {
+                let mut cloned = map.clone();
+                let present = cloned.remove(p).is_some();
+                trace!(target: "source", "!= enrolling (present {:?}) at {}", present, serialize(p));
+                ((cmp, map), Some(cloned.into_read_zipper(&[])))
+            } else {
+                unreachable!()
+            }
+        } else {
+            ((cmp, map), None)
+        }
+    }
+}
+
+impl Source for CmpSource {
+    fn new(e: Expr) -> Self {
+        let cmp = if unsafe { *e.ptr.offset(2) == b'=' } {
+            assert!(unsafe { *e.ptr.offset(3) == b'=' });
+            0
+        } else if unsafe { *e.ptr.offset(2) == b'!' } {
+            assert!(unsafe { *e.ptr.offset(3) == b'=' });
+            1
+        } else {
+            panic!("comparator not implemented")
+        };
+        // trace!(target: "source", "cmp {cmp} source");
+        CmpSource { e, cmp }
+    }
+
+    fn request(&self) -> impl Iterator<Item=ResourceRequest> {
+        std::iter::once(ResourceRequest::BTM([].as_slice()))
+    }
+
+    fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        static EQ_PREFIX: [u8; 4] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), b'=', b'='];
+        static NE_PREFIX: [u8; 4] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), b'!', b'='];
+        let Resource::BTM(rz) = it.next().unwrap() else { unreachable!() };
+        let map = rz.make_map().unwrap();
+        let rz = DependentProductZipperG::new_enroll(rz, (self.cmp, map),
+            CmpSource::policy as for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<()>>));
+        let rz = PrefixZipper::new(
+            if self.cmp == 0 { &EQ_PREFIX[..] }
+            else if self.cmp == 1 { &NE_PREFIX[..] }
+            else { unreachable!() }, rz);
+        AFactor::CmpSource(rz)
+    }
+}
+
+
+pub enum ASource { PosSource(PosSource), ACTSource(ACTSource), CmpSource(CmpSource) }
 
 #[derive(PolyZipper)]
-pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin = ()> {
+pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
     PosSource(PrefixZipper<'trie, ReadZipperUntracked<'trie, 'trie, V>>),
     ACTSource(PrefixZipper<'trie, ACTMmapZipper<'trie, V>>),
+    CmpSource(PrefixZipper<'trie, DependentProductZipperG<'trie, ReadZipperUntracked<'trie, 'trie, V>,
+        ReadZipperOwned<V>, V, (usize, PathMap<()>), for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<V>>)>>),
 }
 
 impl Source for ASource {
     fn new(e: Expr) -> Self {
-        if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(1)) && *e.ptr.offset(2) == b'+' } {
+        if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) && *e.ptr.offset(2) == b'B' && *e.ptr.offset(3) == b'T' && *e.ptr.offset(4) == b'M' } {
             ASource::PosSource(PosSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) && *e.ptr.offset(2) == b'A' && *e.ptr.offset(3) == b'C' && *e.ptr.offset(4) == b'T' } {
             ASource::ACTSource(ACTSource::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && (*e.ptr.offset(2) == b'=' || *e.ptr.offset(2) == b'!') && *e.ptr.offset(3) == b'=' } {
+            ASource::CmpSource(CmpSource::new(e))
         } else {
             unreachable!()
         }
@@ -92,6 +159,7 @@ impl Source for ASource {
             match self {
                 ASource::PosSource(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::ACTSource(s) => { for i in s.request().into_iter() { yield i } }
+                ASource::CmpSource(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -100,6 +168,7 @@ impl Source for ASource {
         match self {
             ASource::PosSource(s) => { s.source(it) }
             ASource::ACTSource(s) => { s.source(it) }
+            ASource::CmpSource(s) => { s.source(it) }
         }
     }
 }

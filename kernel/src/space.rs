@@ -1512,6 +1512,117 @@ impl Space {
 
         (touched, any_new)
     }
+
+    pub fn transform_multi_multi_io(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
+        use crate::sinks::*;
+        let mut buffer = Vec::with_capacity(1 << 32);
+        unsafe { buffer.set_len(1 << 32); }
+        let mut tpl_args = Vec::with_capacity(64);
+        ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
+        let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+        let mut sinks: Vec<_> = templates.iter().map(|e| ASink::new(*e)).collect();
+        let mut template_prefixes: Vec<_> = sinks.iter().map(|sink| sink.request().next().unwrap() ).collect();
+        let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
+        let mut placements = subsumption.clone();
+        let mut read_copy = self.btm.clone();
+        let mut zh = self.btm.zipper_head();
+        read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
+        let mut template_wzs: Vec<_> = Vec::with_capacity(64);
+        template_prefixes.iter().enumerate().for_each(|(i, x)| {
+            if subsumption[i] == i {
+                placements[i] = template_wzs.len();
+                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
+            }
+        });
+        for i in 0..subsumption.len() {
+            subsumption[i] = placements[subsumption[i]]
+        }
+        trace!(target: "transform", "templates {:?}", templates);
+        trace!(target: "transform", "prefixes {:?}", template_prefixes);
+        trace!(target: "transform", "subsumption {:?}", subsumption);
+        // let pvs = pat_expr.variables();
+        // let mut pvc = 0;
+        // let mut psubs = vec![0; 64];
+        // static nv: u8 = item_byte(Tag::NewVar);
+        // let mut refs_es = (0..64).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }).collect::<Vec<_>>();
+        // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
+        // for l in psubs.iter_mut() { *l -= pvs as u8; }
+
+        let mut scratch = Vec::with_capacity(1 << 32);
+
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+
+        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+
+        let mut ass = Vec::with_capacity(64);
+        let mut astack = Vec::with_capacity(64);
+
+        let mut any_new = false;
+        let touched = Self::query_multi_i(&mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
+            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+            unsafe { writes += template_prefixes.len(); }
+            match refs_bindings {
+                Ok(refs) => {
+                    // refs_es.clear();
+                    // refs_es.extend(refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }));
+                    // refs_es.extend((0..(64-refs.len())).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }));
+                    // trace!(target: "transform", "S refs out {:?}", refs_es);
+                    // trace!(target: "transform", "S refs pat {:?} {pvs}", pat_expr);
+                    //
+                    // for (i, template) in templates.iter().enumerate() {
+                    //     let wz = &mut template_wzs[subsumption[i]];
+                    //     oz.reset();
+                    //
+                    //     trace!(target: "transform", "S refs tpl {:?}", template);
+                    //     template.substitute_de_bruijn_ivc(&refs_es[..], &mut oz, &mut pvc.clone(), &mut psubs.clone());
+                    //
+                    //     trace!(target: "transform", "S {i} out {:?}", oz.root);
+                    //     sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
+                    // }
+                    true
+                }
+                Err(ref bindings) => {
+                    #[cfg(debug_assertions)]
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+
+                    let (oi, ni) = {
+                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        trace.clear();
+                        assignments.clear();
+                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
+                        r
+                    };
+
+                    for (i, template) in templates.iter().enumerate() {
+                        let wz = &mut template_wzs[subsumption[i]];
+                        oz.reset();
+
+                        trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
+
+                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        ass.clear();
+                        astack.clear();
+
+                        trace!(target: "transform", "U {i} out {:?}", oz.root);
+                        sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
+                    }
+                    true
+                }
+            }
+        });
+
+        for (i, s) in sinks.iter_mut().enumerate() {
+            let wz = &mut template_wzs[subsumption[i]];
+            any_new |= s.finalize(std::iter::once(wz));
+        }
+        for wz in template_wzs {
+            zh.cleanup_write_zipper(wz);
+        }
+
+        (touched, any_new)
+    }
     
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
@@ -1530,7 +1641,7 @@ impl Space {
                 (b',', b',') => { self.transform_multi_multi_(pat_expr, tpl_expr, rt) }
                 (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
                 (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
-                (b'I', b'O') => { todo!() }
+                (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt) }
                 (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
             };
             trace!(target: "interpret", "(run, changed) = {:?}", res);

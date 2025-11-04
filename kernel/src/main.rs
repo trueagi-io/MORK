@@ -271,6 +271,54 @@ fn process_calculus_bench(steps: usize, x: usize, y: usize) {
     // 200+200 (1000 steps) in 42716559 µs
 }
 
+fn process_calculus_source_sink_bench(steps: usize, x: usize, y: usize) {
+    let mut s = Space::new();
+
+    // note 'idle' MM2-like statement that can be activated by moving it to the exec space
+    let space_exprs = format!(r#"
+(exec (IC 0 1 {})
+               (, (exec (IC $x $y (S $c)) $sp $st)
+                  ((exec $x) $p $t))
+               (, (exec (IC $y $x $c) $sp $st)
+                  (exec (R $x) $p $t)))
+
+((exec 0)
+      (I (== (petri (? $channel $payload $body)) $recv)
+         (== (petri (! $channel $payload)) $send) )
+      (O (+ (petri $body)) (- $recv) (- $send) ))
+((exec 1)
+      (I (== (petri (| $lprocess $rprocess)) $par) )
+      (O (+ (petri $lprocess))
+         (+ (petri $rprocess))
+         (- $par)
+         ))
+
+(petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                    (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+(petri (? (add $ret) (Z $y) (! $ret $y)))
+(petri (! (add result) ({} {})))
+    "#, peano(steps), peano(x), peano(y));
+
+    s.add_sexpr(space_exprs.as_bytes(), expr!(s, "$"), expr!(s, "_1")).unwrap();
+
+    let t0 = Instant::now();
+    let mcalc_steps = s.metta_calculus(1000000000000000); // big number to show the MM2 inference control working
+    let elapsed = t0.elapsed();
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // We're only interested in the petri dish (not the state of exec), and specifically everything that was outputted `!` to `result`
+    s.dump_sexpr(expr!(s, "[2] petri [3] ! result $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("{x}+{y} ({} steps) in {} µs result: {res}", steps, elapsed.as_micros());
+    assert_eq!(res, format!("{}\n", peano(x+y)));
+    println!("unifications {}, instructions {}", unsafe { unifications }, unsafe { transitions });
+    // (badbad)
+    // 200+200 (1000 steps) in 42716559 µs
+}
+
+
 fn process_calculus_reverse() {
     let mut s = Space::new();
 
@@ -3259,7 +3307,8 @@ fn main() {
     // sink_odd_even_sort();
     // cross_join();
     // cross_join_dict();
-    // return;
+    process_calculus_source_sink_bench(100, 20, 20);
+    return;
 
     let args = Cli::parse();
 

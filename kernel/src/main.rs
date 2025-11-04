@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use std::collections::{BTreeSet, HashSet};
-use std::time::Instant;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
@@ -3843,7 +3842,7 @@ fn main() {
             for input_path in &input_paths {
                 let f = std::fs::File::open(input_path).unwrap();
                 let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                s.load_all_sexpr(&*mmapf);
+                s.add_all_sexpr(&*mmapf);
             }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_paths, output_path.as_ref().or(Some(&"stdout".to_string())));
@@ -3856,7 +3855,7 @@ fn main() {
                         break;
                     }
                 }
-                let p = s.metta_calculus(0);
+                let p = s.metta_calculus(1);
                 performed += p;
                 if p == 0 {
                     break;

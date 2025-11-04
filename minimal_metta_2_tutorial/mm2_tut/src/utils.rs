@@ -102,7 +102,7 @@ pub(crate) fn debug_expr_repr_slice(mut f : &mut core::fmt::Formatter<'_>, expr 
 pub(crate) fn print_space(s:&Space) {
     print_space_at_prefix(s, &[]);
 }
-pub(crate) fn print_space_at_prefix(s:&Space, p:&[u8]) {
+pub(crate) fn print_space_at_prefix_(s:&Space, p:&[u8]) {
     let mut rz = s.btm.read_zipper_at_borrowed_path(p);
 
     while rz.to_next_val() {
@@ -112,6 +112,33 @@ pub(crate) fn print_space_at_prefix(s:&Space, p:&[u8]) {
         );
         let e = crate::utils::PrettyExpr{expr:&p, ..Default::default()};
         println!("{}",e)
+    }
+}
+
+pub(crate) fn print_space_at_prefix(s:&Space, p:&[u8]) {
+    let mut rz = s.btm.read_zipper_at_borrowed_path(p);
+
+    let mut old_buffer = String::new();
+    let mut buffer = String::new();
+    while rz.to_next_val() {
+        let path = rz.path();
+        let p = crate::utils::expr_to_expr_repr(
+            mork_expr::Expr { ptr: path.as_ptr() as *mut _ }
+        );
+        let e = format!("{}", crate::utils::PrettyExpr{expr:&p, ..Default::default()});
+        buffer.clear();
+        buffer += &e;
+        for (each_new, each_old) in unsafe { buffer.as_bytes_mut() }.iter_mut().zip(old_buffer.as_bytes()) {
+            if *each_new == *each_old {
+                *each_new = b' ';
+            } else {
+                break
+            }
+
+        }
+        println!("{}",buffer);
+        old_buffer = e;
+        
     }
 }
 

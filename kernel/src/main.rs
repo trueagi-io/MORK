@@ -1260,6 +1260,28 @@ fn source_cmp_eq() {
     assert!(res.contains("(REM (RHS ($a bar)))\n"));
 }
 
+fn source_cmp_eq_var_constraint() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(E ($x $x $x))
+(exec 0 (I (== (E ($x $x $x)) $e)) (, (show $e) ))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert!(res.contains("(REM (RHS ($a bar)))\n"));
+}
+
 fn source_cmp_ne() {
     let mut s = Space::new();
 
@@ -3307,8 +3329,8 @@ fn main() {
     // sink_odd_even_sort();
     // cross_join();
     // cross_join_dict();
-    process_calculus_source_sink_bench(100, 20, 20);
-    return;
+    // process_calculus_source_sink_bench(100, 20, 20);
+    // return;
 
     let args = Cli::parse();
 
@@ -3366,6 +3388,7 @@ fn main() {
             source_act_two_bipolar_equal_crossed();
             source_space_act_two_bipolar_equal_crossed();
             source_cmp_eq();
+            source_cmp_eq_var_constraint();
             source_cmp_ne();
 
             sink_two_bipolar_equal_crossed();

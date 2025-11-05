@@ -16,17 +16,20 @@ pub(crate) enum Resource<'trie, 'path> {
 }
 
 pub trait Source {
+    // step 1: parsing the source
     fn new(e: Expr) -> Self;
+    // step 2: request access to resources before running
     fn request(&self) -> impl Iterator<Item=ResourceRequest>;
+    // step 3: create the factor in the product/the (virtual) zipper for the source
     fn source<'trie, 'path, It : Iterator<Item=Resource<'trie, 'path>>>(&self, it: It) -> AFactor<'trie, ()> where 'path : 'trie;
 }
 
-struct PosSource {
+struct BTMSource {
     e: Expr
 }
-impl Source for PosSource {
+impl Source for BTMSource {
     fn new(e: Expr) -> Self {
-        PosSource{ e }
+        BTMSource { e }
     }
 
     fn request(&self) -> impl Iterator<Item=ResourceRequest> {
@@ -34,6 +37,9 @@ impl Source for PosSource {
     }
 
     fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        // (I (BTM <pat1>) (ACT <filename> <pat2>)
+        //    --factor1--  -----factor2---------
+        // prefix: '[2] BTM'
         static PREFIX: [u8; 5] = [item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(3)), b'B', b'T', b'M'];
         let Resource::BTM(rz) = it.next().unwrap() else { unreachable!() };
         let rz = PrefixZipper::new(&PREFIX[..], rz);
@@ -57,6 +63,7 @@ impl Source for ACTSource {
     }
 
     fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        // prefix: '[3] ACT <filename>'
         static CONSTANT_PREFIX: [u8; 5] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(3)), b'A', b'C', b'T'];
         let Resource::ACT(rz) = it.next().unwrap() else { unreachable!() };
         let mut prefix = vec![];
@@ -81,7 +88,11 @@ impl CmpSource {
         if c == 0 {
             if cmp == 0 {
                 trace!(target: "source", "== enrolling at {}", serialize(p));
-                ((cmp, map), Some(PathMap::single(p, ()).into_read_zipper(&[])))
+                // bug: de bruijn levels broken, easy fix: shift the copy of p by introductions(p) 
+                let e = Expr{ ptr: p.as_ptr().cast_mut() };
+                let mut qv = p.to_vec();
+                e.shift(e.newvars() as _, &mut mork_expr::ExprZipper::new(Expr{ ptr: qv.as_mut_ptr() }));
+                ((cmp, map), Some(PathMap::single(&qv[..], ()).into_read_zipper(&[])))
             } else if cmp == 1 {
                 let mut cloned = map.clone();
                 let present = cloned.remove(p).is_some();
@@ -105,6 +116,7 @@ impl Source for CmpSource {
             assert!(unsafe { *e.ptr.offset(3) == b'=' });
             1
         } else {
+            // todo < <= #=
             panic!("comparator not implemented")
         };
         // trace!(target: "source", "cmp {cmp} source");
@@ -131,7 +143,7 @@ impl Source for CmpSource {
 }
 
 
-pub enum ASource { PosSource(PosSource), ACTSource(ACTSource), CmpSource(CmpSource) }
+pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource) }
 
 #[derive(PolyZipper)]
 pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
@@ -144,7 +156,7 @@ pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
 impl Source for ASource {
     fn new(e: Expr) -> Self {
         if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) && *e.ptr.offset(2) == b'B' && *e.ptr.offset(3) == b'T' && *e.ptr.offset(4) == b'M' } {
-            ASource::PosSource(PosSource::new(e))
+            ASource::PosSource(BTMSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) && *e.ptr.offset(2) == b'A' && *e.ptr.offset(3) == b'C' && *e.ptr.offset(4) == b'T' } {
             ASource::ACTSource(ACTSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && (*e.ptr.offset(2) == b'=' || *e.ptr.offset(2) == b'!') && *e.ptr.offset(3) == b'=' } {

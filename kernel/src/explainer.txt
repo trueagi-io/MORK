@@ -1,0 +1,76 @@
+
+Short version: SPACE_EXPRS defines a tiny logic-programming/goal-reduction calculus as data (rules and a
+strategy) that the Space.metta_calculus engine executes. It uses three predicates to represent the      
+state:                                                                                                  
+
+ • kb (: proof proposition) — facts you already know (knowledge base)                                   
+ • goal (: proof proposition) — things you want to prove                                                
+ • ev (: proof proposition) — things you have derived (evidence/proofs)                                 
+
+Notation:                                                                                               
+
+ • Variables start with $ and unify across a rule.                                                      
+ • (: p t) pairs a proof term p with its type/proposition t.                                            
+ • (-> a b) is a function type a → b.                                                                   
+ • (@ f x) is function application, i.e., apply f to x.                                                 
+ • (, a b c …) is just a list/tuple grouping multiple premises/effects.                                 
+ • (step name) identifies a rule; each rule is written as ( (step name) (, Premise1 Premise2 …) (,      
+   Effect1 Effect2 …) )                                                                                 
+
+What each rule does                                                                                     
+
+ 1 step base Premises: goal (: $proof $conclusion) and kb (: $proof $conclusion) Effect:   ev   (:      
+   $proof $conclusion)                                                                                  
+
+Meaning: if your current goal matches a fact in the KB, you can promote it to evidence immediately.     
+
+ 2 step abs Premise: goal (: $proof $conclusion) Effect:  goal (: $lhs (-> $synth $conclusion))         
+
+Meaning: to prove a conclusion, you may instead try to find a function that, when given something       
+($synth), produces the conclusion. This is a backward-chaining/introduction step that sets up searching 
+for a function.                                                                                         
+
+ 3 step rev Premises: ev   (: $lhs (-> $a $r)) and goal (: $k $r) Effect:   goal (: $rhs $a)            
+
+Meaning: if you already have a function of type a → r and your goal is r, reduce the goal to “produce an
+a” (so you can feed it to the function). This is backward-chaining via a known function.                
+
+ 4 step app Premises: ev (: $lhs (-> $a $r)) and ev (: $rhs $a) Effect:   ev (: (@ $lhs $rhs) $r)       
+
+Meaning: if you have a function a → r and an a, you can produce an r, recording the proof term as an    
+application (@ lhs rhs).                                                                                
+
+ 5 exec zealous (the strategy) Premises:                                                                
+    • ((step $x) $p0 $t0)          a step (its name and its prem/effect lists)                          
+    • (exec zealous $p1 $t1)       continue running zealous on the rest Effects:                        
+    • (exec $x $p0 $t0)            schedule execution of that concrete step                             
+    • (exec zealous $p1 $t1)       keep the rest of the agenda                                          
+
+Meaning: a driver that repeatedly picks available steps and runs them, keeping the strategy itself in   
+the queue. It’s a “keep applying steps greedily” scheduler.                                             
+
+How it runs in this program                                                                             
+
+ • load_all_sexpr parses and indexes these rules and the KB/goal facts.                                 
+ • metta_calculus looks for exec … triples (strategy, program-list, todo-list) and applies the above    
+   rules to transform the state, deriving new ev/goal items, until it runs out of steps or hits the     
+   budget (47 here).                                                                                    
+ • The KB you load is:                                                                                  
+    • kb (: a A)                                                                                        
+    • kb (: ab (R A B))                                                                                 
+    • kb (: bc (R B C))                                                                                 
+    • kb (: MP (-> (R $p $q) (-> $p $q))) and the initial goal is goal (: $proof C).                    
+
+From these, the calculus derives a proof of C:                                                          
+
+ • base gives ev (: a A), ev (: ab (R A B)), ev (: bc (R B C)), and ev of MP (polymorphic).             
+ • app specializes and applies MP twice:                                                                
+    • ev (: (@ MP bc) (-> B C))      from MP and bc                                                     
+    • ev (: (@ MP ab) (-> A B))      from MP and ab                                                     
+    • ev (: (@ (@ MP ab) a) B)       apply the second to a                                              
+    • ev (: (@ (@ MP bc) (@ (@ MP ab) a)) C)  apply the first to that B                                 
+ • rev/app/abs guide the backward/forward chaining as needed.                                           
+
+Finally, dump_sexpr searches for ev (: $ C) and prints just the proof term ($). You should see a term   
+like: (@ (@ MP bc) (@ (@ MP ab) a)) which is exactly the composed proof of C from the KB via two uses of
+MP.

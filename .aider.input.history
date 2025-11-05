@@ -1,0 +1,195 @@
+
+# 2024-08-05 09:54:07.407946
++/chat-mode ask
+
+# 2024-08-05 09:54:28.999312
++I would like to understand this codebase.
+
+# 2024-08-05 09:55:05.072542
++/add README.md
+
+# 2024-08-05 09:57:23.283604
++Let's start with Deliverable 1. If i should add more files to the context say so.
+
+# 2024-08-05 09:59:51.108630
++/add experiments/expr/bytestring/src/lib.rs experiments/expr/bytestring/src/main.rs
+
+# 2024-08-05 10:03:41.267616
++/add experiments/expr/dyck/src/lib.rs experiments/expr/dyck/src/main.rs
+
+# 2024-08-05 10:03:50.698226
++/drop
+
+# 2024-08-05 10:03:53.402657
++/add experiments/expr/dyck/src/lib.rs experiments/expr/dyck/src/main.rs
+
+# 2024-08-05 10:08:35.968329
++/drop
+
+# 2024-08-05 10:08:39.454500
++/add benchmarks/aunt-kg/src/main.rs
+
+# 2024-08-05 11:45:09.243720
++/drop
+
+# 2024-08-05 11:45:18.955521
++/add frontend/src/lib.rs
+
+# 2025-08-27 10:39:53.475349
++N
+
+# 2025-08-27 10:40:47.613828
++/add kernel/src/main.rs
+
+# 2025-08-27 10:46:27.575565
++/ask explain how the code in SPACE
+
+# 2025-08-27 10:46:38.449783
++/ask explain how the code in `SPACE_EXPRS` works.
+
+# 2025-08-27 10:58:28.464193
++/add kernel/src/existential.txt
+
+# 2025-08-27 10:58:47.839059
++/architect How can we implement the changes described in existential.txt
+
+# 2025-08-27 11:08:24.011216
++N
+
+# 2025-08-27 11:08:43.120324
++/add kernel/src/explainer.txt
+
+# 2025-08-27 11:08:47.907216
++/architect
+
+# 2025-08-27 11:09:43.323598
++You are not supposed to modify the rust code but the mm2 code in the SPACE_EXPRS string.
+
+# 2025-08-27 11:44:54.319720
++/ask
+
+# 2025-08-27 11:44:58.520559
++Can you explain that change.
+
+# 2025-08-27 16:24:35.949865
++/reset
+
+# 2025-08-27 16:26:05.339353
++/add kernel/src/explainer kernel/src/main.rs
+
+# 2025-08-27 16:26:09.634620
++N
+
+# 2025-08-27 16:26:13.598523
++/add kernel/src/explainer.txt
+
+# 2025-08-27 16:29:13.931962
++add a new function to work on skolemization (i want to preprocess facts/rule before adding them to the kb) create a new rust function to test that. The main work should be done in mm2 (SPACE_EXPRS) but we can use rust if there is no way around it. For example i want to take the input (-> (Dog $d) (And (Cat $c) (Chase $d $c))) here $c is unbound/existentially quantified and turn it into (-> (Dog $d) (And (Cat (f $d)) (Chase $d (f $d)))
+
+# 2025-08-28 11:56:23.106837
++N
+
+# 2025-08-28 11:56:31.980386
++/add kernel/src/main.rs
+
+# 2025-08-28 11:58:59.288604
++I am working on the `skolemize_test` which works except for one last issue if we have multipe universialy quanitefed variables we end up with multipe (out $old $new) mappings for each of them. Which results in multipe fcls . Do you have any idea on how to solve that?
+
+# 2025-08-28 12:01:18.073907
++N
+
+# 2025-08-28 12:05:39.315908
++That doesn't quite work and also i would have prefereed a version that does that in mm2 (the code in the string) and not rust. Currently i am getting (Pred2 &a (f &a)) (Pred2 &a (f &c)) but i want to get only (Pred2 &a (f &a &b))
+
+# 2025-08-28 13:18:23.919231
++Oh yes i ment (Pred &a (f &a &c))
+
+# 2025-08-28 13:22:00.144205
++N
+
+# 2025-08-28 13:22:18.082326
++Alright and now implement the soklemization in pure rust as a seperate function.
+
+# 2025-08-28 13:37:10.530198
++Okay so i didn't want you to replace the old code but create a seperate function so i can compare them. The pure rust code shouldn't use a Space at all. Instead start with a String and instead of doing your own tokenization use the SExp type from MORK
+
+# 2025-08-28 13:41:44.673776
++/undo
+
+# 2025-08-28 13:43:08.648956
++/add kernel/src/space.rs
+
+# 2025-08-28 13:44:36.601640
++Two strings for premies and conclusion but without the prefix. Yes for now return it as a string but again without the prefix fcls. For the which sexp / parser to use have a look in space.rs specifiaclly in load_all_sexpr.
+
+# 2025-08-28 13:50:11.462057
++/run cargo run -p kernel
+
+# 2025-08-28 13:50:11.469813
++/run cargo run -p kernel
+
+# 2025-08-28 13:50:16.324848
++N
+
+# 2025-08-28 13:50:23.333528
++!cd kernel && cargo run
+
+# 2025-08-28 13:50:31.545432
++What's wrong? Fix
+
+# 2025-08-28 13:54:35.583514
++/run cd kernel && cargo run
+
+# 2025-08-28 13:54:35.591370
++/run cd kernel && cargo run
+
+# 2025-08-28 13:55:12.638230
++What's wrong? Fix
+
+# 2025-08-28 13:56:50.846229
++/run cd kernel && cargo run
+
+# 2025-08-28 13:56:50.854044
++/run cd kernel && cargo run
+
+# 2025-08-28 13:58:06.768376
++Seems you are just guessing should i add more files to the context?
+
+# 2025-08-28 14:08:22.304262
++/run cd kernel && cargo run
+
+# 2025-08-28 14:08:22.311934
++/run cd kernel && cargo run
+
+# 2025-08-28 14:08:34.965532
++N
+
+# 2025-09-22 15:22:15.995662
++/add kernel/src/main.rs
+
+# 2025-09-22 15:22:46.198699
++Extend the run command so we can load multiple files instead of only a single input_path
+
+# 2025-09-22 15:23:15.961755
++/edit 
+
+# 2025-09-22 15:24:54.607748
++N
+
+# 2025-09-22 15:25:12.540595
++/add kernel/src/main.rs
+
+# 2025-09-22 15:25:16.098359
++Extend the run command so we can load multiple files instead of only a single input_path
+
+# 2025-09-22 15:50:39.882717
++/ask currently we are dumping everything in the space into the output file with `dump_all_sexpr` instead i would like to use s.dump_sexpr(expr!(s, "[2] ev $"), expr!(s, "_1"), &mut v)which takes an expression to match in the space and another expression to transform into. That way we could extract only what we need but i'm not sure how to best pass that info to the executable. Idea?
+
+# 2025-09-22 15:54:32.811298
++you were in ask mode please implement that change
+
+# 2025-09-22 15:55:16.148524
++If i only provide a list of files as inputs it assume the last one is the outputfile can we make sure that distingish that with -o or something
+
+# 2025-09-22 16:09:24.782786
++/commit

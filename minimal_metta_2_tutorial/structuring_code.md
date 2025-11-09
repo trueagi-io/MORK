@@ -145,7 +145,8 @@ eval
 # Entry Point
 ```
 
-; the macro creates defs
+
+; the macro creates DEF, the MACROS are \"compiled out\"
 (exec (macro) 
   (,
      (MACRO ($name main eval) $p $t)
@@ -153,7 +154,6 @@ eval
   )
   (O 
      (+ (DEF   ($name main eval) $p $t) )
-     (+ MACROS_EXPANDED                 )
 
      (- (MACRO ($name main eval) $p $t)              )
      (- (MACRO ($name $proc $op) $pattern $template) )
@@ -162,8 +162,7 @@ eval
 
 ; this should fire right when macros are done expanding
 (exec (BEGIN-PROGRAM) 
-  (, MACROS_EXPANDED
-     (INPUT $N $INPUT)
+  (, (INPUT $N $INPUT)
   )
   (,
     (main eval (fork (DONE $N)) $INPUT)
@@ -179,17 +178,18 @@ eval
          (exec (1 fork) $fork_p $fork_t) 
          (exec (0 join) $join_p $join_t) 
          
-         (exec MAIN $main-pattern $main-template)
-
          (exec (TERM)
            (, (main eval (join (DONE $N_)) $OUTPUT)
-              (exec MAIN $patterns $templates)
-           
            )
            (O (+ (OUTPUT $N_ $OUTPUT) )
 
               (- (main eval (join (DONE $N_)) $OUTPUT) )
            )
+         )
+
+         (exec (RESET)
+           (, (main eval ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
          )
       )
     )
@@ -198,3 +198,24 @@ eval
 
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

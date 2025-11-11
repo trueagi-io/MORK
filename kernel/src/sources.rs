@@ -70,7 +70,7 @@ impl Source for ACTSource {
         prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
         prefix.push(item_byte(Tag::SymbolSize( (self.act.size() as u8) - 1)));
         prefix.extend_from_slice(self.act.as_bytes());
-        println!("prefix {}", serialize(&prefix[..]));
+        trace!(target: "source", "prefix {}", serialize(&prefix[..]));
         let rz = PrefixZipper::new(prefix, rz);
         AFactor::ACTSource(rz)
     }

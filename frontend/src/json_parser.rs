@@ -871,7 +871,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    #[cfg(feature = "nightly")]
     pub fn parse_stream<S, T : ATranscriber<S>>(&mut self, t: &mut T) -> impl std::ops::Coroutine<(), Yield=S, Return=Result<()>> {
         #[coroutine] move || {
         let mut stack = Vec::with_capacity(3);

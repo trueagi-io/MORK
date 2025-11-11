@@ -261,7 +261,7 @@ use super::*;
     );
     load.to_bytes[0].0.read().unwrap().read_zipper().into_cata_side_effect(|_mask,_accs,val : Option<&ThinBytes>,_path|{
       match val {
-        Some(id) => core::assert!(unsafe {&(*id.as_raw_slice())[..]}.iter().all(|c| c.is_ascii_alphanumeric())),
+        Some(id) => core::assert!(unsafe {(*id.as_raw_slice()).as_ref()}.iter().all(|c| c.is_ascii_alphanumeric())),
         None => (),
       };
     });

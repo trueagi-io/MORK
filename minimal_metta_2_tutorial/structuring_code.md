@@ -83,16 +83,35 @@ It actually goes much further, where you have multiple sources, and multiple sin
 
 # Basics of MM2
 
+## Exec
 MM2 looks like this 
 ```
-(exec $priority 
-      $sources
-      $sinks
+(exec <priority> 
+      <sources>
+      <sinks>
 )
 ```
-Where `$priority` should be replaced with a ground s-expression.
+## Priority
+Where `<priority>` should be replaced with a ground s-expression.
 The priority tells the runtime when an exec should be run relative to execs.
 
+The order is based on path encoding of S-expressions ( if you are curious https://github.com/trueagi-io/MORK/wiki/Data-in-MORK ).
+
+The basic idea is that we can order priority like below
+
+Low arity Tuple > High Arity Tuple > Short Symbol > Long Symbol
+
+some examples
+- `(0) > (1)`
+- `(0) > (0 0)`
+- `(1) > (0 0)`
+- `(0 0) > (0 1)`
+- `0 > 1`
+- `1 > 00`
+- `00 > 01`
+
+## Sources
+Sources come in Two variants,`(, ...)` and `(I ...)`
 
 
 

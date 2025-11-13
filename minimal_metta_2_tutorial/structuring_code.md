@@ -2,6 +2,120 @@ Structuring a program in MM2 can be a little daunting.
 
 
 
+
+
+Let start with some basics.
+
+# Keeping Things Separate
+
+Say we have two metta files. 
+
+"file_1.metta"
+```
+a
+b
+```
+"file_2.metta"
+```
+b
+c
+```
+and we import both with: 
+- pattern  = `$x`
+- template = `$x`
+
+then export with the same pattern/template
+we get:
+```
+a
+b
+c
+```
+So we can see that imports constitute a set union.
+
+This may be the desired behavior, but often one would like to ensure that the separate files behave as separate sets.
+This would require a form of _predication_.
+
+We can do this simply by modifying the template on import.
+
+import "file1.metta" with
+- pattern  = `$x`
+- template = `(file1 $x)`
+
+
+import "file2.metta" with
+- pattern  = `$x`
+- template = `(file2 $x)`
+
+now if we export with
+- pattern  = `$x`
+- template = `$x`
+```
+(file1 a)
+(file1 b)
+(file2 b)
+(file2 c)
+```
+We still end up with a set union, but we can now use the predication
+to project out what we want
+
+export with
+- pattern  = `(file1 $x)`
+- template = `$x`
+```
+a
+b
+```
+
+`(file $x)` is _prefix_ that lets us access the suffix set that will be bound to `$x`.
+
+Lets think about the semantics of importing and exporting.
+It basically follows a `read source -> write sink` paradigm.
+This is transactional, it behaves as a single atomic action.
+The read is filtered by the pattern while acquiring bindings, and templates shape the writes to the sink.
+- Import is `read file -> write MORK`.
+- Export is `read MORK -> write file`.
+
+MM2 `exec`s introduce other interesting cases including:
+- `read MORK -> write MORK`.
+
+It actually goes much further, where you have multiple sources, and multiple sinks.
+
+# Basics of MM2
+
+MM2 looks like this 
+```
+(exec $priority 
+      $sources
+      $sinks
+)
+```
+Where `$priority` should be replaced with a ground s-expression.
+The priority tells the runtime when an exec should be run relative to execs.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 say we have a simple set of finite functions
 ```
 

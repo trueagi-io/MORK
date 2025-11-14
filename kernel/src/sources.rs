@@ -88,7 +88,7 @@ impl CmpSource {
         if c == 0 {
             if cmp == 0 {
                 trace!(target: "source", "== enrolling at {}", serialize(p));
-                // bug: de bruijn levels broken, easy fix: shift the copy of p by introductions(p) 
+                // bug: de bruijn levels broken, easy fix: shift the copy of p by introductions(p)
                 let e = Expr{ ptr: p.as_ptr().cast_mut() };
                 let mut qv = p.to_vec();
                 e.shift(e.newvars() as _, &mut mork_expr::ExprZipper::new(Expr{ ptr: qv.as_mut_ptr() }));

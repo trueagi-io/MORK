@@ -1792,13 +1792,12 @@ fn sink_sum_literal() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
-    // s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v); // (all $x) -> $x; assert $x == eighteen
     s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
     assert!(res.contains("correct"));
-    assert!(!res.contains("correct"))
+    assert!(!res.contains("incorrect"));
 }
 
 fn sink_sum_sets() {
@@ -1806,7 +1805,7 @@ fn sink_sum_sets() {
 
     const SPACE_EXPRS: &str = r#"
 (set ten 5) (set ten 3) (set ten 2)
-(set five 2) (set five 2) (set five 1)
+(set five 0) (set five 4) (set five 1)
 (set three 2) (set three 1)
 
 (exec 0 (, (set $s $x))
@@ -1820,12 +1819,12 @@ fn sink_sum_sets() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
-    // s.dump_sexpr(expr!(s, "[5] set $ contains $ elements"), expr!(s, "[2] _1 _2"), &mut v);
-    s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[5] set $ contains $ elements"), expr!(s, "[2] _1 _2"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(1 3)\n(2 3)\n(3 2)\n");
+    assert_eq!(res, "(ten 10)\n(five 5)\n(three 3)\n");
 }
 
 fn sink_count_constant() {
@@ -1876,6 +1875,87 @@ fn sink_count() {
 
     println!("result: {res}");
     assert_eq!(res, "18\n")
+}
+
+fn sink_act_readback() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (ACT sink_act_readback (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    {
+        let mut s = Space::new();
+        s.restore_tree(format!("{}sink_act_readback.act", ACT_PATH));
+        let mut v = vec![];
+        s.dump_all_sexpr(&mut v).unwrap();
+        let res = String::from_utf8(v).unwrap();
+
+        println!("result: {res}");
+        // assert_eq!(res, "18\n")
+    }
+}
+
+fn sink_hexlife_symbolic() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(neighbors ($q $r (S $s)) ($q (S $r) $s))
+(neighbors ($q $r (S $s)) ((S $q) $r $s))
+(neighbors ($q (S $r) $s) ((S $q) $r $s))
+(neighbors ($q (S $r) $s) ($q $r (S $s)))
+(neighbors ((S $q) $r $s) ($q (S $r) $s))
+(neighbors ((S $q) $r $s) ($q $r (S $s)))
+
+(cell dies 0)
+(cell dies 1)
+(cell lives 2)
+(cell dies 3)
+(cell dies 4)
+(cell dies 5)
+(cell dies 6)
+
+(alive ((S (S Z)) (S Z) (S Z)))
+(alive ((S Z) (S (S Z)) (S Z)))
+(alive ((S Z) (S (S (S Z))) Z))
+
+(exec 0 (, (alive $co) (neighbors $co $nco) (alive $nco))
+        (O (count (anbs $co $k) $k $nco)))
+(exec 0 (, (alive $co) (neighbors $co $nco) (neighbors $nco $nnco) (alive $nnco))
+        (O (count (adnbs $nco $k) $k $nnco)))
+
+(exec 1 (, (alive $co)) (, (anbs $co 0)))
+(exec 1 (, (anbs $co $k1) (adnbs $co $k2)) (O (- (adnbs $co $k2))))
+
+(exec 2 (, (anbs $co $c) (cell dies $c)) (O (- (alive $co))))
+(exec 3 (, (adnbs $co $c) (cell lives $c)) (O (+ (alive $co))))
+
+(exec 4 (, (anbs $co $c)) (O (- (anbs $co $c))))
+(exec 4 (, (adnbs $co $c)) (O (- (adnbs $co $c))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert_eq!(res, "stupid\n")
 }
 
 fn sink_wasm_add() {
@@ -3563,6 +3643,7 @@ fn main() {
     // cross_join_dict();
     // process_calculus_source_sink_bench(100, 20, 20);
     // source_cmp_rel();
+    // sink_act_readback();
     // return;
 
     let args = Cli::parse();
@@ -3635,8 +3716,9 @@ fn main() {
             sink_count_literal();
             sink_count_constant();
             sink_count();
-            // sink_sum_literal();
-            // sink_sum_sets();
+            sink_sum_literal();
+            sink_sum_sets();
+            sink_hexlife_symbolic();
 
             parse_csv();
             parse_json();
@@ -3674,7 +3756,7 @@ fn main() {
             let some_output_path = output_path.unwrap_or_else(|| format!("{}.{}", &input_path[..input_path.len()-input_path_extension.unwrap_or("").len()], output_format));
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
-            
+
             match (input_format.as_str(), output_format.as_str()) {
                 ("metta", "metta" | "act" | "paths") => {
                     let mut s = Space::new();
@@ -3683,7 +3765,7 @@ fn main() {
                     s.add_all_sexpr(&*mmapf);
                     println!("done loading in memory");
                     if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-                    
+
                     match output_format.as_str() {
                         "metta" => {
                             let f = std::fs::File::create(&some_output_path).unwrap();

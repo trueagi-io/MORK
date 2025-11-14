@@ -1,3 +1,4 @@
+#![allow(clippy::unused_io_amount)]
 use std::{str, slice};
 use std::char::decode_utf16;
 use std::convert::TryFrom;

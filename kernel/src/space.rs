@@ -315,7 +315,7 @@ impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
         (self.count, self.wz, self.pdp)
     }
 }
-impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
+impl <'a, 'c, 'bytes> mork_frontend::json_parser::ATranscriber<&'bytes [u8]> for ASpaceTranscriber<'a, 'c> {
     #[inline] fn descend_index(&mut self, i: usize, first: bool) -> () {
         if first { self.wz.push(item_byte(Tag::Arity(2))); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
@@ -326,7 +326,7 @@ impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpace
         self.wz.truncate(self.wz.len() - (self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1));
         if last { self.wz.truncate(self.wz.len() - 1); }
     }
-    #[inline] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
+    #[inline] fn write_empty_array(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("[]") }
     #[inline] fn descend_key(&mut self, k: &str, first: bool) -> () {
         if first { self.wz.push(item_byte(Tag::Arity(2))); }
         let token = self.pdp.tokenizer(k.as_bytes());
@@ -338,9 +338,9 @@ impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpace
         self.wz.truncate(self.wz.len() - (token.len() + 1));
         if last { self.wz.truncate(self.wz.len() - 1); }
     }
-    #[inline] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
-    #[inline] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
-    #[inline] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
+    #[inline] fn write_empty_object(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("{}") }
+    #[inline] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write(s) }
+    #[inline] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'bytes [u8]> {
         let mut buf = [0u8; 64];
         let mut cur = std::io::Cursor::new(&mut buf[..]);
         if negative { write!(cur, "-").unwrap(); }
@@ -348,11 +348,11 @@ impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpace
         if exponent != 0 { write!(cur, "e{}", exponent).unwrap(); }
         let len = cur.position() as usize;
         self.count += 1;
-        self.write(unsafe { std::mem::transmute::<_, &'static [u8]>(&cur.into_inner()[..len]) })
+        self.write(unsafe { std::mem::transmute::<_, &'bytes [u8]>(&cur.into_inner()[..len]) })
     }
-    #[inline] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
-    #[inline] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
-    #[inline] fn write_null(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("null") }
+    #[inline] fn write_true(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("true") }
+    #[inline] fn write_false(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("false") }
+    #[inline] fn write_null(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("null") }
     #[inline] fn begin(&mut self) -> () {}
     #[inline] fn end(&mut self) -> () {}
 }

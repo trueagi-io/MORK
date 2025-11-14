@@ -1,3 +1,4 @@
+#![allow(clippy::unused_io_amount)]
 #[allow(unused_imports)]
 use std::{
     fmt::{format, Debug, Formatter, Write}, 

@@ -1,11 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "interning/",
-    "expr/",
-    "frontend/",
-    "kernel/"
-]
+members = ["interning/", "expr/", "frontend/", "kernel/"]
 
 [workspace.package]
 edition = "2024"
@@ -13,17 +8,15 @@ edition = "2024"
 [workspace.dependencies]
 log = { version = "0.4.27" }
 env_logger = "0.11.8"
+# https://github.com/Adam-Vandervorst/PathMap
+pathmap = { path = "../PathMap", features = ["jemalloc", "arena_compact"] }
 
 # Internal to MORK
-mork-interning = {features = ["debug_api"], path = "./interning"}
-mork-expr = {path = "./expr"}
-mork-frontend = {path = "./frontend"}
-mork = {path = "./kernel"}
+mork-interning = { features = ["debug_api"], path = "./interning" }
+mork-expr = { path = "./expr" }
+mork-frontend = { path = "./frontend" }
+mork = { path = "./kernel" }
 
 # External to MORK
 #freeze = { version="0.1.1", git="https://github.com/luketpeterson/Freeze.git" } #Fixes build on MacOS
-gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for dag_serialization
-
-[workspace.dependencies.pathmap]
-path = "../PathMap"
-features = ["jemalloc", "arena_compact"]
+gxhash = { version = "3.4.1", git = "https://github.com/luketpeterson/gxhash/" } # for dag_serialization

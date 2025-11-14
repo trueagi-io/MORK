@@ -1692,11 +1692,36 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
 // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
 
 
+const NAIVE_UNION : &str =
+"
+((symetric-difference ($in_a $in_b) -> $out)
+    (, ($in_a $a)
+       ($in_a $mid)           
+       ($in_b $mid)
+       ($in_b $b)
+    )
+    (O (+ ($out $a)   )
+       (+ ($out $b)   )
+       (- ($out $mid) )
+    )
+)
+(arg_a a)
+(arg_a b)
+(arg_a c)
+(arg_b b)
+(arg_b c)
+(arg_b d)
+
+(exec 0 (, ((symetric-difference (arg_a arg_b) -> ret) $p $t) )
+        (, (exec 0 $p $t) )
+)
+";
+
 
     #[test]
     fn test_2(){
         let mut s = Space::new();
-        s.add_sexpr(BOOLEAN_ALG_MONOTONIC.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+        s.add_sexpr(NAIVE_UNION.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
 
 
         // for each in 0..100000 {
@@ -1724,9 +1749,10 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
         // crate::utils::print_sexpr_space(&s);
 
         let mut out = String::new();
-        s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
+        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), unsafe { out.as_mut_vec() });
+        // s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
         // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
-        println!("{:?}",out);
+        println!("{}",out);
 
         dbg!(end);
     }

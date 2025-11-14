@@ -94,7 +94,7 @@ pub enum Tag {
 // - stay shared as long as possible
 // - bring shared information to the front (bulk)
 
-#[inline(always)]
+#[inline]
 pub const fn item_byte(b: Tag) -> u8 {
     match b {
         Tag::NewVar => { 0b1100_0000 | 0 }
@@ -104,7 +104,7 @@ pub const fn item_byte(b: Tag) -> u8 {
     }
 }
 
-#[inline(always)]
+#[inline]
 pub fn byte_item(b: u8) -> Tag {
     if b == 0b1100_0000 { return Tag::NewVar; }
     else if (b & 0b1100_0000) == 0b1100_0000 { return Tag::SymbolSize(b & 0b0011_1111) }
@@ -197,12 +197,12 @@ macro_rules! traverse {
     ($t1:ty, $t2:ty, $x:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
         struct AnonTraversal {}
         impl Traversal<$t1, $t2> for AnonTraversal {
-            #[inline(always)] fn new_var(&mut self, offset: usize) -> $t2 { ($new_var)(offset) }
-            #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> $t2 { ($var_ref)(offset, i) }
-            #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> $t2 { ($symbol)(offset, s) }
-            #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> $t1 { ($zero)(offset, a) }
-            #[inline(always)] fn add(&mut self, offset: usize, acc: $t1, sub: $t2) -> $t1 { ($add)(offset, acc, sub) }
-            #[inline(always)] fn finalize(&mut self, offset: usize, acc: $t1) -> $t2 { ($finalize)(offset, acc) }
+            #[inline] fn new_var(&mut self, offset: usize) -> $t2 { ($new_var)(offset) }
+            #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> $t2 { ($var_ref)(offset, i) }
+            #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> $t2 { ($symbol)(offset, s) }
+            #[inline] fn zero(&mut self, offset: usize, a: u8) -> $t1 { ($zero)(offset, a) }
+            #[inline] fn add(&mut self, offset: usize, acc: $t1, sub: $t2) -> $t1 { ($add)(offset, acc, sub) }
+            #[inline] fn finalize(&mut self, offset: usize, acc: $t1) -> $t2 { ($finalize)(offset, acc) }
         }
 
         execute_loop(&mut AnonTraversal{}, $x, 0).1
@@ -994,15 +994,15 @@ let mut stack: Vec<(u8, A)> = Vec::with_capacity(8);
 struct DebugTraversal { string: String, transient: bool }
 #[allow(unused_variables)]
 impl Traversal<(), ()> for DebugTraversal {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.string.push(' '); }; self.string.push('$'); }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('_'); self.string.push_str((i as u16 + 1).to_string().as_str()); }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { match std::str::from_utf8(s) {
+    #[inline] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.string.push(' '); }; self.string.push('$'); }
+    #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('_'); self.string.push_str((i as u16 + 1).to_string().as_str()); }
+    #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { match std::str::from_utf8(s) {
         Ok(string) => { if self.transient { self.string.push(' '); }; self.string.push_str(string); }
         Err(_) => { if self.transient { self.string.push(' '); }; for b in s { self.string.push_str(format!("\\x{:x}", b).as_str()); }; }
     } }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('('); self.transient = false; }
-    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.string.push(')'); }
+    #[inline] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('('); self.transient = false; }
+    #[inline] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.string.push(')'); }
 }
 
 impl Debug for Expr {
@@ -1016,59 +1016,59 @@ impl Debug for Expr {
 struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
-    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+    #[inline] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
+    #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
+    #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
+    #[inline] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
 }
 
 struct SerializerTraversal2<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8 }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<(), ()> for SerializerTraversal2<'_, Target, F, G> {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(i, false).as_bytes()); }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
-    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+    #[inline] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
+    #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(i, false).as_bytes()); }
+    #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
+    #[inline] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
 }
 
 struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<Option<&'static str>, ()> for SerializerTraversalHighlights<'_, '_, Target, F, G> {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () {
+    #[inline] fn new_var(&mut self, offset: usize) -> () {
         if self.transient { self.out.write(" ".as_bytes()); };
         if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
         self.out.write((self.map_variable)(self.n, true).as_bytes());
         if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
         self.n += 1;
     }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {
+    #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> () {
         if self.transient { self.out.write(" ".as_bytes()); };
         if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
         self.out.write((self.map_variable)(i, false).as_bytes());
         if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
     }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
+    #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
         if self.transient { self.out.write(" ".as_bytes()); };
         if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
         self.out.write((self.map_symbol)(s).as_bytes());
         if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
     }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> Option<&'static str> {
+    #[inline] fn zero(&mut self, offset: usize, a: u8) -> Option<&'static str> {
         if self.transient { self.out.write(" ".as_bytes()); };
         if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
         self.out.write("(".as_bytes()); self.transient = false;
         if offset == self.targets[0].0 { let r = Some(self.targets[0].2); self.targets = &self.targets[1..]; r }
         else { None }
     }
-    #[inline(always)] fn add(&mut self, offset: usize, acc: Option<&'static str>, sub: ()) -> Option<&'static str> {
+    #[inline] fn add(&mut self, offset: usize, acc: Option<&'static str>, sub: ()) -> Option<&'static str> {
         self.transient = true;
         acc
     }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
+    #[inline] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
         self.out.write(")".as_bytes());
         if let Some(end) = acc { self.out.write(end.as_bytes()); }
     }
@@ -1122,7 +1122,7 @@ impl ExprZipper {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn write_symbol(&mut self, value: &[u8]) -> bool {
         unsafe {
             let l = value.len();
@@ -1599,12 +1599,12 @@ impl std::hash::Hash for ExprEnv {
 
 pub struct TraverseSide { ee: ExprEnv }
 impl Traversal<(), ()> for TraverseSide {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
-    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
+    #[inline] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; }
+    #[inline] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
+    #[inline] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
+    #[inline] fn zero(&mut self, offset: usize, a: u8) -> () {}
+    #[inline] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
+    #[inline] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
 }
 
 impl ExprEnv {

@@ -468,7 +468,7 @@ impl<'a> Parser<'a> {
     }
 
     // Check if we are at the end of the source.
-    #[inline(always)]
+    #[inline]
     fn is_eof(&mut self) -> bool {
         self.index == self.length
     }
@@ -479,7 +479,7 @@ impl<'a> Parser<'a> {
     // very very rarely, lead to a situation where the same byte is read
     // twice, but since this operation is using a raw pointer, the cost
     // is virtually irrelevant.
-    #[inline(always)]
+    #[inline]
     fn read_byte(&mut self) -> u8 {
         debug_assert!(self.index < self.length, "Reading out of bounds");
 
@@ -488,7 +488,7 @@ impl<'a> Parser<'a> {
 
     // Manually increment the index. Calling `read_byte` and then `bump`
     // is equivalent to consuming a byte on an iterator.
-    #[inline(always)]
+    #[inline]
     fn bump(&mut self) {
         self.index = self.index.wrapping_add(1);
     }

@@ -32,7 +32,7 @@ impl <'a> Context<'a> {
     Context{ src: r, loc: 0, variables: vec![] }
   }
 
-  #[inline(always)]
+  #[inline]
   fn peek(&mut self) -> Result<u8, ParserError> {
     if self.loc == self.src.len() {
       Err(ParserError::UnexpectedEOF)
@@ -41,7 +41,7 @@ impl <'a> Context<'a> {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   fn next(&mut self) -> Result<u8, ParserError> {
     if self.loc == self.src.len() {
       Err(ParserError::UnexpectedEOF)
@@ -52,7 +52,7 @@ impl <'a> Context<'a> {
     }
   }
 
-  #[inline(always)]
+  #[inline]
   fn has_next(&mut self) -> bool {
     self.loc < self.src.len()
   }

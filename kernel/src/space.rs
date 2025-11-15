@@ -252,7 +252,7 @@ impl <'a> ParDataParser<'a> {
 
 pub struct SpaceTranscriber<'a, 'b, 'c> { count: usize, wz: &'c mut WriteZipperUntracked<'a, 'b, ()>, pdp: ParDataParser<'a> }
 impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
-    #[inline(always)] fn write<S : AsRef<[u8]>>(&mut self, s: S) {
+    #[inline] fn write<S : AsRef<[u8]>>(&mut self, s: S) {
         let token = self.pdp.tokenizer(s.as_ref());
         let mut path = vec![item_byte(Tag::SymbolSize(token.len() as u8))];
         path.extend(token);
@@ -262,31 +262,31 @@ impl <'a, 'b, 'c> SpaceTranscriber<'a, 'b, 'c> {
     }
 }
 impl <'a, 'b, 'c> mork_frontend::json_parser::Transcriber for SpaceTranscriber<'a, 'b, 'c> {
-    #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+    #[inline] fn descend_index(&mut self, i: usize, first: bool) -> () {
         if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
         self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
         self.wz.descend_to(token);
     }
-    #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+    #[inline] fn ascend_index(&mut self, i: usize, last: bool) -> () {
         self.wz.ascend(self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1);
         if last { self.wz.ascend(1); }
     }
-    #[inline(always)] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
-    #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+    #[inline] fn write_empty_array(&mut self) -> () { self.write("[]"); self.count += 1; }
+    #[inline] fn descend_key(&mut self, k: &str, first: bool) -> () {
         if first { self.wz.descend_to(&[item_byte(Tag::Arity(2))]); }
         let token = self.pdp.tokenizer(k.as_bytes());
         self.wz.descend_to(&[item_byte(Tag::SymbolSize(token.len() as u8))]);
         self.wz.descend_to(token);
     }
-    #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+    #[inline] fn ascend_key(&mut self, k: &str, last: bool) -> () {
         let token = self.pdp.tokenizer(k.as_bytes());
         self.wz.ascend(token.len() + 1);
         if last { self.wz.ascend(1); }
     }
-    #[inline(always)] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
-    #[inline(always)] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
-    #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
+    #[inline] fn write_empty_object(&mut self) -> () { self.write("{}"); self.count += 1; }
+    #[inline] fn write_string(&mut self, s: &str) -> () { self.write(s); self.count += 1; }
+    #[inline] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
         let mut s = String::new();
         if negative { s.push('-'); }
         s.push_str(mantissa.to_string().as_str());
@@ -294,16 +294,16 @@ impl <'a, 'b, 'c> mork_frontend::json_parser::Transcriber for SpaceTranscriber<'
         self.write(s);
         self.count += 1;
     }
-    #[inline(always)] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
-    #[inline(always)] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
-    #[inline(always)] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
-    #[inline(always)] fn begin(&mut self) -> () {}
-    #[inline(always)] fn end(&mut self) -> () {}
+    #[inline] fn write_true(&mut self) -> () { self.write("true"); self.count += 1; }
+    #[inline] fn write_false(&mut self) -> () { self.write("false"); self.count += 1; }
+    #[inline] fn write_null(&mut self) -> () { self.write("null"); self.count += 1; }
+    #[inline] fn begin(&mut self) -> () {}
+    #[inline] fn end(&mut self) -> () {}
 }
 
 pub struct ASpaceTranscriber<'a, 'c> { count: usize, wz: &'c mut Vec<u8>, pdp: ParDataParser<'a> }
 impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
-    #[inline(always)] fn write<S : AsRef<[u8]>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
+    #[inline] fn write<S : AsRef<[u8]>>(&mut self, s: S) -> impl Iterator<Item=&'static [u8]> {
         gen move {
             let token = self.pdp.tokenizer(s.as_ref());
             self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
@@ -316,32 +316,32 @@ impl <'a, 'c> ASpaceTranscriber<'a, 'c> {
         (self.count, self.wz, self.pdp)
     }
 }
-impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpaceTranscriber<'a, 'c> {
-    #[inline(always)] fn descend_index(&mut self, i: usize, first: bool) -> () {
+impl <'a, 'c, 'bytes> mork_frontend::json_parser::ATranscriber<&'bytes [u8]> for ASpaceTranscriber<'a, 'c> {
+    #[inline] fn descend_index(&mut self, i: usize, first: bool) -> () {
         if first { self.wz.push(item_byte(Tag::Arity(2))); }
         let token = self.pdp.tokenizer(i.to_string().as_bytes());
         self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
         self.wz.extend_from_slice(token);
     }
-    #[inline(always)] fn ascend_index(&mut self, i: usize, last: bool) -> () {
+    #[inline] fn ascend_index(&mut self, i: usize, last: bool) -> () {
         self.wz.truncate(self.wz.len() - (self.pdp.tokenizer(i.to_string().as_bytes()).len() + 1));
         if last { self.wz.truncate(self.wz.len() - 1); }
     }
-    #[inline(always)] fn write_empty_array(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("[]") }
-    #[inline(always)] fn descend_key(&mut self, k: &str, first: bool) -> () {
+    #[inline] fn write_empty_array(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("[]") }
+    #[inline] fn descend_key(&mut self, k: &str, first: bool) -> () {
         if first { self.wz.push(item_byte(Tag::Arity(2))); }
         let token = self.pdp.tokenizer(k.as_bytes());
         self.wz.push(item_byte(Tag::SymbolSize(token.len() as u8)));
         self.wz.extend_from_slice(token);
     }
-    #[inline(always)] fn ascend_key(&mut self, k: &str, last: bool) -> () {
+    #[inline] fn ascend_key(&mut self, k: &str, last: bool) -> () {
         let token = self.pdp.tokenizer(k.as_bytes());
         self.wz.truncate(self.wz.len() - (token.len() + 1));
         if last { self.wz.truncate(self.wz.len() - 1); }
     }
-    #[inline(always)] fn write_empty_object(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("{}") }
-    #[inline(always)] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write(s) }
-    #[inline(always)] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'static [u8]> {
+    #[inline] fn write_empty_object(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("{}") }
+    #[inline] fn write_string(&mut self, s: &str) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write(s) }
+    #[inline] fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> impl Iterator<Item=&'bytes [u8]> {
         let mut buf = [0u8; 64];
         let mut cur = std::io::Cursor::new(&mut buf[..]);
         if negative { write!(cur, "-").unwrap(); }
@@ -349,13 +349,13 @@ impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpace
         if exponent != 0 { write!(cur, "e{}", exponent).unwrap(); }
         let len = cur.position() as usize;
         self.count += 1;
-        self.write(unsafe { std::mem::transmute::<_, &'static [u8]>(&cur.into_inner()[..len]) })
+        self.write(unsafe { std::mem::transmute::<_, &'bytes [u8]>(&cur.into_inner()[..len]) })
     }
-    #[inline(always)] fn write_true(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("true") }
-    #[inline(always)] fn write_false(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("false") }
-    #[inline(always)] fn write_null(&mut self) -> impl Iterator<Item=&'static [u8]> { self.count += 1; self.write("null") }
-    #[inline(always)] fn begin(&mut self) -> () {}
-    #[inline(always)] fn end(&mut self) -> () {}
+    #[inline] fn write_true(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("true") }
+    #[inline] fn write_false(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("false") }
+    #[inline] fn write_null(&mut self) -> impl Iterator<Item=&'bytes [u8]> { self.count += 1; self.write("null") }
+    #[inline] fn begin(&mut self) -> () {}
+    #[inline] fn end(&mut self) -> () {}
 }
 
 #[macro_export]
@@ -1043,7 +1043,7 @@ impl Space {
     }
 
     #[cfg(feature="no_search")]
-    #[inline(always)]
+    #[inline]
     pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut scratch = Vec::with_capacity(1 << 32);
 
@@ -1105,7 +1105,7 @@ impl Space {
     }
 
     #[cfg(not(feature="no_search"))]
-    #[inline(always)]
+    #[inline]
     pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 

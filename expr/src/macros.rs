@@ -143,7 +143,7 @@ macro_rules! destruct {
 
 impl TryFrom<Expr> for i32 {
     type Error = String;
-    #[inline(always)]
+    #[inline]
     fn try_from(value: Expr) -> Result<Self, Self::Error> {
         let tag = unsafe { byte_item(*value.ptr) };
         if tag != Tag::SymbolSize(4) {
@@ -163,36 +163,36 @@ impl SerializableExpr for i32 {
 }
 
 impl DeserializableExpr for i32 {
-    #[inline(always)]
+    #[inline]
     fn advanced(e: Expr) -> usize {
         4
     }
-    #[inline(always)]
+    #[inline]
     fn check(e: Expr) -> bool {
         unsafe { *e.ptr == item_byte(Tag::SymbolSize(4)) }
     }
-    #[inline(always)]
+    #[inline]
     fn deserialize_unchecked(e: Expr) -> Self {
         unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i32) }.swap_bytes()
     }
 }
 
 impl DeserializableExpr for &str {
-    #[inline(always)]
+    #[inline]
     fn advanced(e: Expr) -> usize {
         unsafe {
             let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { panic!("wrong symbol for str") };
             1usize + (arity as usize)
         }
     }
-    #[inline(always)]
+    #[inline]
     fn check(e: Expr) -> bool {
         unsafe {
             let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { unreachable!() };
             str::from_utf8(slice_from_raw_parts(e.ptr.add(1), arity as _).as_ref().unwrap()).is_ok()
         }
     }
-    #[inline(always)]
+    #[inline]
     fn deserialize_unchecked(e: Expr) -> Self {
         unsafe {
             let Tag::SymbolSize(arity) = byte_item(*e.ptr) else { unreachable!() };

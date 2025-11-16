@@ -125,21 +125,21 @@ pub struct WriteTranscriber<W : Write>{ pub w: W }
 #[allow(unused_variables)]
 impl <W : Write> Transcriber for WriteTranscriber<W> {
     fn begin(&mut self) -> () { }
-    fn descend_index(&mut self, i: usize, first: bool) -> () { if first { self.w.write("[".as_bytes()).unwrap(); }; }
-    fn ascend_index(&mut self, i: usize, last: bool) -> () { if last { self.w.write("]".as_bytes()).unwrap(); } else { self.w.write(", ".as_bytes()).unwrap(); }; }
-    fn write_empty_array(&mut self) -> () { self.w.write("[]".as_bytes()).unwrap(); }
-    fn descend_key(&mut self, k: &str, first: bool) -> () { if first { self.w.write("{".as_bytes()).unwrap(); }; self.w.write("\"".as_bytes()).unwrap(); self.w.write(k.as_bytes()).unwrap(); self.w.write("\": ".as_bytes()).unwrap(); }
-    fn ascend_key(&mut self, k: &str, last: bool) -> () { if last { self.w.write("}".as_bytes()).unwrap(); } else { self.w.write(", ".as_bytes()).unwrap(); }; }
-    fn write_empty_object(&mut self) -> () { self.w.write("{}".as_bytes()).unwrap(); }
-    fn write_string(&mut self, s: &str) -> () { self.w.write("\"".as_bytes()).unwrap(); self.w.write(s.as_bytes()).unwrap(); self.w.write("\"".as_bytes()).unwrap(); }
+    fn descend_index(&mut self, i: usize, first: bool) -> () { if first { self.w.write_all("[".as_bytes()).unwrap(); }; }
+    fn ascend_index(&mut self, i: usize, last: bool) -> () { if last { self.w.write_all("]".as_bytes()).unwrap(); } else { self.w.write_all(", ".as_bytes()).unwrap(); }; }
+    fn write_empty_array(&mut self) -> () { self.w.write_all("[]".as_bytes()).unwrap(); }
+    fn descend_key(&mut self, k: &str, first: bool) -> () { if first { self.w.write_all("{".as_bytes()).unwrap(); }; self.w.write_all("\"".as_bytes()).unwrap(); self.w.write_all(k.as_bytes()).unwrap(); self.w.write_all("\": ".as_bytes()).unwrap(); }
+    fn ascend_key(&mut self, k: &str, last: bool) -> () { if last { self.w.write_all("}".as_bytes()).unwrap(); } else { self.w.write_all(", ".as_bytes()).unwrap(); }; }
+    fn write_empty_object(&mut self) -> () { self.w.write_all("{}".as_bytes()).unwrap(); }
+    fn write_string(&mut self, s: &str) -> () { self.w.write_all("\"".as_bytes()).unwrap(); self.w.write_all(s.as_bytes()).unwrap(); self.w.write_all("\"".as_bytes()).unwrap(); }
     fn write_number(&mut self, negative: bool, mantissa: u64, exponent: i16) -> () {
-        if negative { self.w.write("-".as_bytes()).unwrap(); }
-        self.w.write(mantissa.to_string().as_bytes()).unwrap();
-        if exponent != 0 { self.w.write("e".as_bytes()).unwrap(); self.w.write(exponent.to_string().as_bytes()).unwrap(); }
+        if negative { self.w.write_all("-".as_bytes()).unwrap(); }
+        self.w.write_all(mantissa.to_string().as_bytes()).unwrap();
+        if exponent != 0 { self.w.write_all("e".as_bytes()).unwrap(); self.w.write_all(exponent.to_string().as_bytes()).unwrap(); }
     }
-    fn write_true(&mut self) -> () { self.w.write("true".as_bytes()).unwrap(); }
-    fn write_false(&mut self) -> () { self.w.write("false".as_bytes()).unwrap(); }
-    fn write_null(&mut self) -> () { self.w.write("null".as_bytes()).unwrap(); }
+    fn write_true(&mut self) -> () { self.w.write_all("true".as_bytes()).unwrap(); }
+    fn write_false(&mut self) -> () { self.w.write_all("false".as_bytes()).unwrap(); }
+    fn write_null(&mut self) -> () { self.w.write_all("null".as_bytes()).unwrap(); }
     fn end(&mut self) -> () { }
 }
 

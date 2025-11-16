@@ -7,6 +7,8 @@ members = [
     "kernel/"
 ]
 
+default-members = ["kernel/"]
+
 [workspace.package]
 edition = "2024"
 

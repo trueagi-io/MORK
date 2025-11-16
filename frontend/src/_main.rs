@@ -184,18 +184,18 @@ use pathmap::zipper::ZipperWriting;
 
 use mork_expr::{Expr, ExprZipper};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
-use pathmap::trie_map::BytesTrieMap;
+use pathmap::PathMap;
 
 struct DataParser {
     count: u64,
-    symbols: BytesTrieMap<u64>,
+    symbols: PathMap<u64>,
 }
 
 impl DataParser {
     fn new() -> Self {
         Self {
             count: 3,
-            symbols: BytesTrieMap::new(),
+            symbols: PathMap::new(),
         }
     }
 
@@ -241,7 +241,7 @@ fn main() {
     let mut parser = DataParser::new();
 
     let t0 = Instant::now();
-    // let mut btm = BytesTrieMap::new();
+    // let mut btm = PathMap::new();
     let mut i = 0;
     let mut stack = [0; 2 << 19];
     loop {

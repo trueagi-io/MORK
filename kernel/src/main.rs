@@ -1877,6 +1877,42 @@ fn sink_count() {
     assert_eq!(res, "18\n")
 }
 
+fn sink_exec_remove_trigger() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(state ready)
+
+(exec 0
+  (, (state ready))
+  (O (- (state ready))
+     (+ (trigger x))))
+
+(exec 1
+  (, (trigger x))
+  (O (+ (error x))
+     (- (trigger x))))
+
+(exec 2
+  (, (trigger x))
+  (O (+ (add x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("error"));
+    assert!(!res.contains("add"));
+}
+
 fn sink_act_readback() {
     let mut s = Space::new();
 
@@ -1952,6 +1988,73 @@ fn sink_hexlife_symbolic() {
     let mut v = vec![];
     // s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
     s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert_eq!(res, "stupid\n")
+}
+
+fn bench_sink_hexlife_axial() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(neighbors ++ ==)
+(neighbors ++ --)
+(neighbors == --)
+(neighbors -- ==)
+(neighbors -- ++)
+(neighbors == ++)
+
+(cell dies 0)
+(cell dies 1)
+(cell lives 2)
+(cell dies 3)
+(cell dies 4)
+(cell dies 5)
+(cell dies 6)
+
+(alive 2 1)
+(alive 1 2)
+(alive 1 3)
+
+(exec (0 0) (, (generations $n) (exec (0 0) $ps $ts) (offset $n -- $pn) )
+            (, () )
+
+
+(exec 0 (, (alive $q $r) (neighbors $dq $dr) (offset $q $dq $nq) (offset $r $dr $nr) (alive $nq $nr) )
+        (O (count (anbs $q $r $k) $k ($nq $nr))))
+(exec 0 (, (alive $q $r)
+           (neighbors $dq $dr) (offset $q $dq $nq) (offset $r $dr $nr)
+           (neighbors $ddq $ddr) (offset $nq $ddq $nnq) (offset $nr $ddr $nnr)
+           (alive $nnq $nnr))
+        (O (count (adnbs $nq $nr $k) $k ($nnq $nnr))))
+
+(exec 1 (, (alive $q $r)) (, (anbs $q $r 0)))
+(exec 1 (, (anbs $q $r $k1) (adnbs $q $r $k2)) (O (- (adnbs $q $r $k2))))
+
+(exec 2 (, (anbs $q $r $c) (cell dies $c)) (O (- (alive $q $r))))
+(exec 3 (, (adnbs $q $r $c) (cell lives $c)) (O (+ (alive $q $r))))
+
+(exec 4 (, (anbs $q $r $c)) (O (- (anbs $q $r $c))))
+(exec 4 (, (adnbs $q $r $c)) (O (- (adnbs $q $r $c))))
+    "#;
+
+    let mut numbers = String::new();
+    for i in -1000..=1000 {
+        numbers.push_str(format!("(offset {i} ++ {})\n", i+1).as_str());
+        numbers.push_str(format!("(offset {i} == {})\n", i).as_str());
+        numbers.push_str(format!("(offset {i} -- {})\n", i-1).as_str());
+    }
+    s.add_all_sexpr(numbers.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] alive $ $"), expr!(s, "[3] alive _1 _2"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
@@ -3644,6 +3747,7 @@ fn main() {
     // process_calculus_source_sink_bench(100, 20, 20);
     // source_cmp_rel();
     // sink_act_readback();
+    // bench_sink_hexlife_axial();
     // return;
 
     let args = Cli::parse();
@@ -3719,6 +3823,7 @@ fn main() {
             sink_sum_literal();
             sink_sum_sets();
             sink_hexlife_symbolic();
+            sink_exec_remove_trigger();
 
             parse_csv();
             parse_json();

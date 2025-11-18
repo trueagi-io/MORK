@@ -37,12 +37,13 @@ const BOOLEAN_ALG : &str ="
 (eval (0) -> 0)
 (eval (1) -> 1)
 
-; (ctor bool (1))
-; (ctor bool (0))
-; (ctor bool (and $x $y))
-; (ctor bool (or  $x $y))
-; (ctor bool (xor $x $y))
-; (ctor bool (if  $x $y))
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
 
 (INPUT 0
    (if (or (1) 
@@ -898,7 +899,7 @@ const BOOLEAN_ALG : &str ="
 
       )
       (O
-        (+ ($proc $op (join $ctx) $case/0) )
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
 
 
         (- ($proc $op (fork $ctx) ($case/0)) )
@@ -937,14 +938,14 @@ const BOOLEAN_ALG : &str ="
 ; case/0
 (MACRO
   (join $proc $op)
-      (, ($proc $op (join $ctx) ($case/0))
+      (, ($proc $op (join ($ctx case/0)) $case/0)
 
          ($op ($case/0) -> $out)
       )
       (O 
          (+ ($proc $op (join $ctx) $out) )
 
-         (- ($proc $op (join $op $ctx) ($case/0)) )
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
       )
 )
 ; case/1
@@ -1059,12 +1060,13 @@ const BOOLEAN_ALG : &str ="
 (eval (0) -> 0)
 (eval (1) -> 1)
 
-; (ctor bool (1))
-; (ctor bool (0))
-; (ctor bool (and $x $y))
-; (ctor bool (or  $x $y))
-; (ctor bool (xor $x $y))
-; (ctor bool (if  $x $y))
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
 
 (INPUT 0
    (if (or (1) 
@@ -1098,7 +1100,7 @@ const BOOLEAN_ALG : &str ="
 
       )
       (O
-        (+ ($proc $op (join ($ctx case/0)) ($case/0)) )
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
 
 
         (- ($proc $op (fork $ctx) ($case/0)) )
@@ -1137,14 +1139,14 @@ const BOOLEAN_ALG : &str ="
 ; case/0
 (MACRO
   (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) ($case/0))
+      (, ($proc $op (join ($ctx case/0)) $case/0)
 
          ($op ($case/0) -> $out)
       )
       (O 
          (+ ($proc $op (join $ctx) $out) )
 
-         (- ($proc $op (join $op $ctx) ($case/0)) )
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
       )
 )
 ; case/1
@@ -1256,12 +1258,13 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 (eval (0) -> 0)
 (eval (1) -> 1)
 
-; (ctor bool (1))
-; (ctor bool (0))
-; (ctor bool (and $x $y))
-; (ctor bool (or  $x $y))
-; (ctor bool (xor $x $y))
-; (ctor bool (if  $x $y))
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
 
 (INPUT 0
    (if (or (1) 
@@ -1292,7 +1295,7 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 (MACRO
   (fork $proc $op)
       (, ($proc $op (fork $ctx) ($case/0)) )
-      (, ($proc $op (join ($ctx case/0)) ($case/0)) )
+      (, ($proc $op (join ($ctx case/0)) $case/0) )
 )
 ; case/1
 (MACRO
@@ -1319,7 +1322,7 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 ; case/0
 (MACRO
   (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) ($case/0))
+      (, ($proc $op (join ($ctx case/0)) $case/0)
 
          ($op ($case/0) -> $out)
       )
@@ -1424,12 +1427,13 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC : &str ="
 (eval (0) -> 0)
 (eval (1) -> 1)
 
-; (ctor bool (1))
-; (ctor bool (0))
-; (ctor bool (and $x $y))
-; (ctor bool (or  $x $y))
-; (ctor bool (xor $x $y))
-; (ctor bool (if  $x $y))
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
 
 (INPUT
    (if (or (1) 
@@ -1448,7 +1452,7 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC : &str ="
 (MACRO
   (fork $proc $op)
       (, ($proc $op (fork $ctx) ($case/0)) )
-      (, ($proc $op (join ($ctx case/0)) ($case/0)) )
+      (, ($proc $op (join ($ctx case/0)) $case/0) )
 )
 ; case/1
 (MACRO
@@ -1475,7 +1479,7 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC : &str ="
 ; case/0
 (MACRO
   (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) ($case/0))
+      (, ($proc $op (join ($ctx case/0)) $case/0)
 
          ($op ($case/0) -> $out)
       )
@@ -1582,12 +1586,13 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
 (eval (0) -> 0)
 (eval (1) -> 1)
 
-; (ctor bool (1))
-; (ctor bool (0))
-; (ctor bool (and $x $y))
-; (ctor bool (or  $x $y))
-; (ctor bool (xor $x $y))
-; (ctor bool (if  $x $y))
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
 
 (INPUT
    (if (or (1)
@@ -1605,18 +1610,18 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
 ; case/0
 (DEF fork
       (, ((fork $ctx) ($case/0)) )
-      (, ((join ($ctx case/0)) ($case/0)) )
+      (, ((join ($ctx case/0)) $case/0) )
 )
 ; case/1
 (DEF fork
-      (, ((fork $ctx) ($case/1 $x))  )
+      (, ((fork $ctx) ($case/1 $x))   )
       (, ((fork ($ctx arg/0 )) $x     )
          ((join ($ctx case/1)) $case/1)
       )
 )
 ; case/2
 (DEF fork
-      (, ((fork $ctx) ($case/2 $x $y))  )
+      (, ((fork $ctx) ($case/2 $x $y)))
       (, ((fork ($ctx arg/0 )) $x     )
          ((fork ($ctx arg/1 )) $y     )
          ((join ($ctx case/2)) $case/2)
@@ -1626,7 +1631,7 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
 
 ; case/0
 (DEF join
-      (, ((join ($ctx case/0)) ($case/0))
+      (, ((join ($ctx case/0)) $case/0)
 
          (eval ($case/0) -> $out)
       )
@@ -1721,7 +1726,7 @@ const NAIVE_UNION : &str =
     #[test]
     fn test_2(){
         let mut s = Space::new();
-        s.add_sexpr(NAIVE_UNION.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+        s.add_sexpr(BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
 
 
         // for each in 0..100000 {

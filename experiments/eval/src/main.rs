@@ -12,7 +12,7 @@ struct Func {
 struct StackFrame {
     sink: ExprZipper,
     rest: usize,
-    resume: Expr,
+    expr: Expr,
 }
 
 struct EvalScope {
@@ -41,7 +41,7 @@ impl EvalScope {
         let ptr = sink_buf.as_mut_ptr();
         let sink = ExprZipper::new( Expr { ptr } );
         self.bufs.push(sink_buf);
-        self.stack.push(StackFrame { sink, rest: 1, resume: expr });
+        self.stack.push(StackFrame { sink, rest: 1, expr: expr });
         self.push_eval()?;
         self.eval_impl()?;
         let mut rv = core::mem::take(&mut self.bufs[0]);
@@ -49,7 +49,7 @@ impl EvalScope {
         Ok(rv)
     }
     fn push_eval(&mut self) -> Result<(), EvalError> {
-        let expr = self.stack.last().unwrap().resume;
+        let expr = self.stack.last().unwrap().expr;
         // take current expr item, and push a new frame to evaluate it.
         match maybe_byte_item(unsafe { *expr.ptr }) {
             Ok(Tag::Arity(arity)) => {
@@ -68,7 +68,7 @@ impl EvalScope {
                 let mut frame = StackFrame {
                     sink: ExprZipper::new(Expr { ptr }),
                     rest: arity as usize,
-                    resume: Expr { ptr: unsafe { expr.ptr.add(1) } },
+                    expr: Expr { ptr: unsafe { expr.ptr.add(1) } },
                 };
                 frame.sink.write_arity(arity);
                 frame.sink.loc += 1;
@@ -78,7 +78,7 @@ impl EvalScope {
                 let top_frame = self.stack.last_mut().unwrap();
                 // symbol
                 let symbol = unsafe { std::slice::from_raw_parts(expr.ptr.add(1), len as usize) };
-                top_frame.resume.ptr = unsafe { expr.ptr.add(1 + len as usize) };
+                top_frame.expr.ptr = unsafe { expr.ptr.add(1 + len as usize) };
                 top_frame.sink.write_symbol(symbol);
                 top_frame.sink.loc += 1 + len as usize;
             }

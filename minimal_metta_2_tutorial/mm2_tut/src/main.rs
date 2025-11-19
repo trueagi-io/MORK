@@ -1037,7 +1037,7 @@ const BOOLEAN_ALG : &str ="
 
 }
 
-const BOOLEAN_ALG : &str ="
+const BOOLEAN_ALG_MULTI : &str ="
 
 (eval (and 0 0) -> 0)
 (eval (and 0 1) -> 0)
@@ -1068,7 +1068,7 @@ const BOOLEAN_ALG : &str ="
 ; (ctor bool-expr (xor $x $y))
 ; (ctor bool-expr (if  $x $y))
 
-(INPUT 0
+(INPUT A
    (if (or (1) 
            (not (and (or (1) (0))
                      (1)
@@ -1080,7 +1080,7 @@ const BOOLEAN_ALG : &str ="
        )
    )
 )
-(INPUT 1
+(INPUT B
    (if (and (1) 
             (or (0) (1))
        )
@@ -1090,6 +1090,23 @@ const BOOLEAN_ALG : &str ="
                 )
            )
        )
+   )
+)
+
+(flip-tree ((node $val) $x $y) -> ((node $val) $y $x))
+(flip-tree (*) -> (*))
+
+; if it was infix
+(INPUT-TREE T 
+   ((node 4)
+      ((node 2) 
+         ((node 1) (*) (*))
+         ((node 3) (*) (*))
+      )
+      ((node 6)
+         ((node 5) (*) (*))
+         ((node 7) (*) (*))
+      )
    )
 )
 
@@ -1131,7 +1148,7 @@ const BOOLEAN_ALG : &str ="
          (+ ($proc $op (join ($ctx case/2)) $case/2) )
 
 
-        (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
       )
 )
 
@@ -1185,28 +1202,32 @@ const BOOLEAN_ALG : &str ="
 ; the macro creates DEF, the MACROS are \"compiled out\"
 (exec (macro) 
   (,
-     (MACRO ($name main eval) $p $t)
      (MACRO ($name $proc $op) $pattern $template)
+
+     (MACRO ($name main eval) $p $t)
+     (MACRO ($name main flip-tree) $p_ $t_)
   )
   (O 
-     (+ (DEF   ($name main eval) $p $t) )
+     (+ (DEF   ($name main eval)      $p $t) )
+     (+ (DEF   ($name main flip-tree) $p_ $t_) )
 
-     (- (MACRO ($name main eval) $p $t)              )
      (- (MACRO ($name $proc $op) $pattern $template) )
   )
 )
 
 ; this should fire right when macros are done expanding
 (exec (BEGIN-PROGRAM) 
-  (, (INPUT $N $INPUT)
+  (, (INPUT $TAG $INPUT)
+     (INPUT-TREE $TAG-TREE $INPUT-TREE)
   )
   (,
-    (main eval (fork (DONE $N)) $INPUT)
+    (main eval      (fork (DONE $TAG     )) $INPUT     )
+    (main flip-tree (fork (DONE $TAG-TREE)) $INPUT-TREE)
 
     (exec MAIN 
       (, 
-         (DEF (fork main eval) $fork_p $fork_t)
-         (DEF (join main eval) $join_p $join_t)
+         (DEF (fork main $op) $fork_p $fork_t)
+         (DEF (join main $op) $join_p $join_t)
          
          (exec MAIN $main-pattern $main-template)
       ) 
@@ -1215,16 +1236,16 @@ const BOOLEAN_ALG : &str ="
          (exec (0 join) $join_p $join_t) 
          
          (exec (TERM)
-           (, (main eval (join (DONE $N_)) $OUTPUT)
+           (, (main $op_ (join (DONE $TAG_)) $OUTPUT)
            )
-           (O (+ (OUTPUT $N_ $OUTPUT) )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
 
-              (- (main eval (join (DONE $N_)) $OUTPUT) )
+              (- (main $op_ (join (DONE $TAG_)) $OUTPUT) )
            )
          )
 
          (exec (RESET)
-           (, (main eval ($fork_join $ctx) $val)       )
+           (, (main $op ($fork_join $ctx) $val)       )
            (, (exec MAIN $main-pattern $main-template) )
          )
       )
@@ -1232,10 +1253,8 @@ const BOOLEAN_ALG : &str ="
   )
 )
 ";
-// s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
 
-
-const BOOLEAN_ALG_MONOTONIC : &str ="
+const BOOLEAN_ALG : &str ="
 
 (eval (and 0 0) -> 0)
 (eval (and 0 1) -> 0)
@@ -1266,7 +1285,7 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 ; (ctor bool-expr (xor $x $y))
 ; (ctor bool-expr (if  $x $y))
 
-(INPUT 0
+(INPUT A
    (if (or (1) 
            (not (and (or (1) (0))
                      (1)
@@ -1278,7 +1297,7 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
        )
    )
 )
-(INPUT 1
+(INPUT B
    (if (and (1) 
             (or (0) (1))
        )
@@ -1294,16 +1313,27 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 ; case/0 
 (MACRO
   (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/0)) )
-      (, ($proc $op (join ($ctx case/0)) $case/0) )
+      (, ($proc $op (fork $ctx) ($case/0))
+
+      )
+      (O
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
+
+
+        (- ($proc $op (fork $ctx) ($case/0)) )
+      )
 )
 ; case/1
 (MACRO
   (fork $proc $op)
       (, ($proc $op (fork $ctx) ($case/1 $x))
+      
       )
-      (, ($proc $op (fork ($ctx arg/0 )) $x     )
-         ($proc $op (join ($ctx case/1)) $case/1)
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
+         (+ ($proc $op (join ($ctx case/1)) $case/1) )
+
+         (- ($proc $op (fork $ctx) ($case/1 $x)) )
       )
 )
 ; case/2
@@ -1312,9 +1342,13 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
       (, ($proc $op (fork $ctx) ($case/2 $x $y))
 
       )
-      (, ($proc $op (fork ($ctx arg/0 )) $x     )
-         ($proc $op (fork ($ctx arg/1 )) $y     )
-         ($proc $op (join ($ctx case/2)) $case/2)
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
+         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
+         (+ ($proc $op (join ($ctx case/2)) $case/2) )
+
+
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
       )
 )
 
@@ -1326,7 +1360,10 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 
          ($op ($case/0) -> $out)
       )
-      (, ($proc $op (join $ctx) $out) 
+      (O 
+         (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
       )
 )
 ; case/1
@@ -1337,7 +1374,10 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
          
          ($op ($case/1 $x) -> $out)
       )
-      (, ($proc $op (join $ctx) $out)
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/1)) $case/1) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
       )
 )
 ; case/2
@@ -1349,7 +1389,11 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 
          ($op ($case/2 $x $y) -> $out)
       )
-      (, ($proc $op (join $ctx) $out)
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/2)) $case/2) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
       )
 )
 
@@ -1358,19 +1402,23 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
 ; the macro creates DEF, the MACROS are \"compiled out\"
 (exec (macro) 
   (,
-     (MACRO ($name main eval) $p $t)
      (MACRO ($name $proc $op) $pattern $template)
+     
+     (MACRO ($name main eval) $p $t)
   )
-  (, (DEF   ($name main eval) $p $t)
+  (O 
+     (+ (DEF   ($name main eval) $p $t) )
+
+     (- (MACRO ($name $proc $op) $pattern $template) )
   )
 )
 
 ; this should fire right when macros are done expanding
 (exec (BEGIN-PROGRAM) 
-  (, (INPUT $N $INPUT)
+  (, (INPUT $TAG $INPUT)
   )
   (,
-    (main eval (fork (DONE $N)) $INPUT)
+    (main eval (fork (DONE $TAG)) $INPUT)
 
     (exec MAIN 
       (, 
@@ -1384,11 +1432,11 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
          (exec (0 join) $join_p $join_t) 
          
          (exec (TERM)
-           (, (main eval (join (DONE $N_)) $OUTPUT)
+           (, (main eval (join (DONE $TAG_)) $OUTPUT)
            )
-           (O (+ (OUTPUT $N_ $OUTPUT) )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
 
-              (- (main eval (join (DONE $N_)) $OUTPUT) )
+              (- (main eval (join (DONE $TAG_)) $OUTPUT) )
            )
          )
 
@@ -1401,7 +1449,175 @@ const BOOLEAN_ALG_MONOTONIC : &str ="
   )
 )
 ";
-// s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
+// s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
+
+
+// const BOOLEAN_ALG_MONOTONIC : &str ="
+
+// (eval (and 0 0) -> 0)
+// (eval (and 0 1) -> 0)
+// (eval (and 1 0) -> 0)
+// (eval (and 1 1) -> 1)
+
+// (eval (or 0 0) -> 0)
+// (eval (or 0 1) -> 1)
+// (eval (or 1 0) -> 1)
+// (eval (or 1 1) -> 1)
+
+// (eval (if 0 0) -> 1)
+// (eval (if 0 1) -> 1)
+// (eval (if 1 0) -> 0)
+// (eval (if 1 1) -> 1)
+
+// (eval (not 0) -> 1)
+// (eval (not 1) -> 0)
+
+// (eval (0) -> 0)
+// (eval (1) -> 1)
+
+// ; (ctor bool 1)
+// ; (ctor bool 0)
+// ; (ctor bool-expr ($x))
+// ; (ctor bool-expr (and $x $y))
+// ; (ctor bool-expr (or  $x $y))
+// ; (ctor bool-expr (xor $x $y))
+// ; (ctor bool-expr (if  $x $y))
+
+// (INPUT 0
+//    (if (or (1) 
+//            (not (and (or (1) (0))
+//                      (1)
+//                 )
+//            )
+//        )
+//        (and (1) 
+//             (or (0) (1))
+//        )
+//    )
+// )
+// (INPUT 1
+//    (if (and (1) 
+//             (or (0) (1))
+//        )
+//        (or (1) 
+//            (not (and (or (1) (0))
+//                      (1)
+//                 )
+//            )
+//        )
+//    )
+// )
+
+// ; case/0 
+// (MACRO
+//   (fork $proc $op)
+//       (, ($proc $op (fork $ctx) ($case/0)) )
+//       (, ($proc $op (join ($ctx case/0)) $case/0) )
+// )
+// ; case/1
+// (MACRO
+//   (fork $proc $op)
+//       (, ($proc $op (fork $ctx) ($case/1 $x))
+//       )
+//       (, ($proc $op (fork ($ctx arg/0 )) $x     )
+//          ($proc $op (join ($ctx case/1)) $case/1)
+//       )
+// )
+// ; case/2
+// (MACRO
+//   (fork $proc $op)
+//       (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+//       )
+//       (, ($proc $op (fork ($ctx arg/0 )) $x     )
+//          ($proc $op (fork ($ctx arg/1 )) $y     )
+//          ($proc $op (join ($ctx case/2)) $case/2)
+//       )
+// )
+
+
+// ; case/0
+// (MACRO
+//   (join $proc $op)
+//       (, ($proc $op (join ($ctx case/0)) $case/0)
+
+//          ($op ($case/0) -> $out)
+//       )
+//       (, ($proc $op (join $ctx) $out) 
+//       )
+// )
+// ; case/1
+// (MACRO
+//   (join $proc $op)
+//       (, ($proc $op (join ($ctx case/1)) $case/1)
+//          ($proc $op (join ($ctx arg/0)) $x)
+         
+//          ($op ($case/1 $x) -> $out)
+//       )
+//       (, ($proc $op (join $ctx) $out)
+//       )
+// )
+// ; case/2
+// (MACRO
+//   (join $proc $op)
+//       (, ($proc $op (join ($ctx case/2)) $case/2)
+//          ($proc $op (join ($ctx arg/0 )) $x     )
+//          ($proc $op (join ($ctx arg/1 )) $y     )
+
+//          ($op ($case/2 $x $y) -> $out)
+//       )
+//       (, ($proc $op (join $ctx) $out)
+//       )
+// )
+
+
+
+// ; the macro creates DEF, the MACROS are \"compiled out\"
+// (exec (macro) 
+//   (,
+//      (MACRO ($name main eval) $p $t)
+//   )
+//   (, (DEF   ($name main eval) $p $t)
+//   )
+// )
+
+// ; this should fire right when macros are done expanding
+// (exec (BEGIN-PROGRAM) 
+//   (, (INPUT $N $INPUT)
+//   )
+//   (,
+//     (main eval (fork (DONE $N)) $INPUT)
+
+//     (exec MAIN 
+//       (, 
+//          (DEF (fork main eval) $fork_p $fork_t)
+//          (DEF (join main eval) $join_p $join_t)
+         
+//          (exec MAIN $main-pattern $main-template)
+//       ) 
+//       (, 
+//          (exec (1 fork) $fork_p $fork_t) 
+//          (exec (0 join) $join_p $join_t) 
+         
+//          (exec (TERM)
+//            (, (main eval (join (DONE $N_)) $OUTPUT)
+//            )
+//            (O (+ (OUTPUT $N_ $OUTPUT) )
+
+//               (- (main eval (join (DONE $N_)) $OUTPUT) )
+//            )
+//          )
+
+//          (exec (RESET)
+//            (, (main eval ($fork_join $ctx) $val)       )
+//            (, (exec MAIN $main-pattern $main-template) )
+//          )
+//       )
+//     )
+//   )
+// )
+// ";
+// // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
 
 
 const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC : &str ="
@@ -1516,7 +1732,6 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC : &str ="
 (exec (macro) 
   (,
      (MACRO ($name main eval) $p $t)
-     (MACRO ($name $proc $op) $pattern $template)
   )
   (, (DEF   ($name main eval) $p $t)
   )
@@ -1658,7 +1873,7 @@ const BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO : &str ="
 )
 
 (exec (BEGIN-PROGRAM) 
-  (, (INPUT $INPUT) 
+  (, (INPUT $INPUT)
   )
   (,
     ((fork DONE) $INPUT)
@@ -1726,7 +1941,7 @@ const NAIVE_UNION : &str =
     #[test]
     fn test_2(){
         let mut s = Space::new();
-        s.add_sexpr(BOOLEAN_ALG_SINGLE_INPUT_MONOTONIC_NO_MACRO.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+        s.add_sexpr(BOOLEAN_ALG_MULTI.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
 
 
         // for each in 0..100000 {
@@ -1754,8 +1969,8 @@ const NAIVE_UNION : &str =
         // crate::utils::print_sexpr_space(&s);
 
         let mut out = String::new();
-        s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), unsafe { out.as_mut_vec() });
-        // s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
+        // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), unsafe { out.as_mut_vec() });
+        s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
         // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
         println!("{}",out);
 

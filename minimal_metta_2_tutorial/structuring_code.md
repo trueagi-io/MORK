@@ -1061,8 +1061,556 @@ We'll define a `MACRO`, which just signals it requires a moment of staging.
 - `$op` will select what operation we will be running (in our case`$op`).
 
 
-We then make an exec with a high priority (in our case higher than `(BEGIN-PROGRAM)`) that will expand our macros.
+We then make an exec with a high priority (in our case higher than `(BEGIN-PROGRAM)`) that will expand our `MACROS`s to generate our `DEF`s.
+```
+; the macro creates DEF, the MACROS are \"compiled out\"
+(exec (macro) 
+  (,
+     (MACRO ($name main eval) $p $t)
+  )
+  (, (DEF   ($name main eval) $p $t)
+  )
+)
+```
+
+The main loop is then modified to use the modified `DEF`s.
+```
+; the `MAIN` sources
+(, 
+   (DEF fork $fork_p $fork_t)
+   (DEF join $join_p $join_t)
+
+   (exec MAIN $main-pattern $main-template)
+)
+=>
+(, 
+   (DEF (fork main eval) $fork_p $fork_t)
+   (DEF (join main eval) $join_p $join_t)
+   
+   (exec MAIN $main-pattern $main-template)
+)
+
+
+; The `(TERM)` sources
+(, ((join DONE) $OUTPUT)
+   ((fork $f_env) $arg)
+   ((join $j_env) $res)
+)
+=>
+(, (main eval (join DONE) $OUTPUT)
+   (main eval $env $arg)
+)
+
+
+; The `(TERM)` sinks
+(O (+ (OUTPUT $OUTPUT)   )
+   (- ((fork $f_env) $arg) )
+   (- ((join $j_env) $res) )
+)
+=>
+(O (+ (OUTPUT $OUTPUT)      )
+   (- (main eval $env $arg) )
+)
+
+; The (RESET) exec sources
+(, (($fork_join $ctx) $val)                 )
+=>
+(, (main eval ($fork_join $ctx) $val)       )
+```
+
+The modified code in total looks like this
+```
+(eval (and 0 0) -> 0)
+(eval (and 0 1) -> 0)
+(eval (and 1 0) -> 0)
+(eval (and 1 1) -> 1)
+
+(eval (or 0 0) -> 0)
+(eval (or 0 1) -> 1)
+(eval (or 1 0) -> 1)
+(eval (or 1 1) -> 1)
+
+(eval (if 0 0) -> 1)
+(eval (if 0 1) -> 1)
+(eval (if 1 0) -> 0)
+(eval (if 1 1) -> 1)
+
+(eval (not 0) -> 1)
+(eval (not 1) -> 0)
+
+(eval (0) -> 0)
+(eval (1) -> 1)
+
+
+(INPUT
+   (if (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+       (and (1) 
+            (or (0) (1))
+       )
+   )
+)
+
+; case/0 
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/0)) )
+      (, ($proc $op (join ($ctx case/0)) $case/0) )
+)
+; case/1
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/1 $x))
+      )
+      (, ($proc $op (fork ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx case/1)) $case/1)
+      )
+)
+; case/2
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+      )
+      (, ($proc $op (fork ($ctx arg/0 )) $x     )
+         ($proc $op (fork ($ctx arg/1 )) $y     )
+         ($proc $op (join ($ctx case/2)) $case/2)
+      )
+)
+
+
+; case/0
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/0)) $case/0)
+
+         ($op ($case/0) -> $out)
+      )
+      (, ($proc $op (join $ctx) $out) 
+      )
+)
+; case/1
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/1)) $case/1)
+         ($proc $op (join ($ctx arg/0)) $x)
+         
+         ($op ($case/1 $x) -> $out)
+      )
+      (, ($proc $op (join $ctx) $out)
+      )
+)
+; case/2
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/2)) $case/2)
+         ($proc $op (join ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx arg/1 )) $y     )
+
+         ($op ($case/2 $x $y) -> $out)
+      )
+      (, ($proc $op (join $ctx) $out)
+      )
+)
 
 
 
+; the macro creates DEF, the MACROS are \"compiled out\"
+(exec (macro) 
+  (,
+     (MACRO ($name main eval) $p $t)
+  )
+  (, (DEF   ($name main eval) $p $t)
+  )
+)
 
+; this should fire right when macros are done expanding
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $INPUT)
+  )
+  (,
+    (main eval (fork DONE) $INPUT)
+
+    (exec MAIN 
+      (, 
+         (DEF (fork main eval) $fork_p $fork_t)
+         (DEF (join main eval) $join_p $join_t)
+         
+         (exec MAIN $main-pattern $main-template)
+      )  
+      (, 
+         (exec (1 fork) $fork_p $fork_t)
+         (exec (0 join) $join_p $join_t)
+         
+         (exec (TERM)
+           (, (main eval (join DONE) $OUTPUT)
+              (main eval $env $arg)
+           )
+           (O (+ (OUTPUT $OUTPUT)      )
+              (- (main eval $env $arg) )
+           )
+         )
+
+         (exec (RESET)
+           (, (main eval ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)
+```
+
+# Running larger programs
+At the moment only one input expression is being processed at a time.
+
+
+Say the `(INPUT $expression)` was modified with a tag like this `(INPUT $tag $expression)`.
+Then one could query the outputs based on tag with `(OUTPUT $tag $result)`.
+
+The modification to the `MAIN` loop is minor, the main difference is that we will modify the `DONE` in the evaluation context to hold the tag: `(DONE $TAG)`.
+
+This will work (the modified code shown later).
+
+Let's now consider that currently we only clear temporary expressions once an evaluation terminates.
+
+On smaller expressions this is fine, but as expressions grow, and the number of input grows the memory we use could become a limitation.
+
+In our program there are clear points that we know an expression will not be needed anymore. We could remove those expressions using a `(O (- ...` sink.
+(It should be noted that using a `,` sink is often a fast-path, but we are optimizing now for space).
+
+lets look at the `(MACRO (fork ....` code for an example.
+```
+; case/1
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/1 $x))
+      )
+      (, ($proc $op (fork ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx case/1)) $case/1)
+      )
+)
+```
+
+After the fork happens, we don't need to spawn it again, so we could remove it. We modify it like so:
+```
+; case/2
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
+         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
+         (+ ($proc $op (join ($ctx case/2)) $case/2) )
+
+
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
+      )
+)
+```
+Note how we remove what we matched `($proc $op (fork $ctx) ($case/2 $x $y))`.
+
+In some sense we can see this pattern as an expression going out of scope.
+
+We can see that join can be modified similarly:
+```
+; case/2
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/2)) $case/2)
+         ($proc $op (join ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx arg/1 )) $y     )
+
+         ($op ($case/2 $x $y) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/2)) $case/2) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
+      )
+)
+```
+This looks more involved, but this is only because the 3 expressions we join all go out of scope together.
+It can be helpful to visually "brace" the scope by putting the value that will go out of scope at the top and bottom of the exec, with the rest of the transaction in the middle.
+
+After putting all this together the code looks like this:
+```
+(eval (and 0 0) -> 0)
+(eval (and 0 1) -> 0)
+(eval (and 1 0) -> 0)
+(eval (and 1 1) -> 1)
+
+(eval (or 0 0) -> 0)
+(eval (or 0 1) -> 1)
+(eval (or 1 0) -> 1)
+(eval (or 1 1) -> 1)
+
+(eval (if 0 0) -> 1)
+(eval (if 0 1) -> 1)
+(eval (if 1 0) -> 0)
+(eval (if 1 1) -> 1)
+
+(eval (not 0) -> 1)
+(eval (not 1) -> 0)
+
+(eval (0) -> 0)
+(eval (1) -> 1)
+
+(INPUT A
+   (if (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+       (and (1) 
+            (or (0) (1))
+       )
+   )
+)
+(INPUT B
+   (if (and (1) 
+            (or (0) (1))
+       )
+       (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+   )
+)
+
+; case/0 
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/0))
+
+      )
+      (O
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
+
+
+        (- ($proc $op (fork $ctx) ($case/0)) )
+      )
+)
+; case/1
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/1 $x))
+      
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
+         (+ ($proc $op (join ($ctx case/1)) $case/1) )
+
+         (- ($proc $op (fork $ctx) ($case/1 $x)) )
+      )
+)
+; case/2
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
+         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
+         (+ ($proc $op (join ($ctx case/2)) $case/2) )
+
+
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
+      )
+)
+
+
+; case/0
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/0)) $case/0)
+
+         ($op ($case/0) -> $out)
+      )
+      (O 
+         (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
+      )
+)
+; case/1
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/1)) $case/1)
+         ($proc $op (join ($ctx arg/0)) $x)
+         
+         ($op ($case/1 $x) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/1)) $case/1) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+      )
+)
+; case/2
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/2)) $case/2)
+         ($proc $op (join ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx arg/1 )) $y     )
+
+         ($op ($case/2 $x $y) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/2)) $case/2) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
+      )
+)
+
+
+
+; the macro creates DEF, the MACROS are \"compiled out\"
+(exec (macro) 
+  (,
+     (MACRO ($name main eval) $p $t)
+     (MACRO ($name $proc $op) $pattern $template)
+  )
+  (O 
+     (+ (DEF   ($name main eval) $p $t) )
+
+     (- (MACRO ($name $proc $op) $pattern $template) )
+  )
+)
+
+; this should fire right when macros are done expanding
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $TAG $INPUT)
+  )
+  (,
+    (main eval (fork (DONE $TAG)) $INPUT)
+
+    (exec MAIN 
+      (, 
+         (DEF (fork main eval) $fork_p $fork_t)
+         (DEF (join main eval) $join_p $join_t)
+         
+         (exec MAIN $main-pattern $main-template)
+      ) 
+      (, 
+         (exec (1 fork) $fork_p $fork_t) 
+         (exec (0 join) $join_p $join_t) 
+         
+         (exec (TERM)
+           (, (main eval (join (DONE $TAG_)) $OUTPUT)
+           )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
+
+              (- (main eval (join (DONE $TAG_)) $OUTPUT) )
+           )
+         )
+
+         (exec (RESET)
+           (, (main eval ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)
+```
+
+# Running multiple programs
+
+Let's add another program into the mix.
+The program will take a binary tree and flip it.
+We will reuse the logic of our fork join.
+To do so we need to only have recursive parts at the fork points.
+Non-recursive parts need to be held in the head of the nodes
+```
+
+; (ctor tree (*))
+; (ctor tree ((node $n) $x $y))
+
+(flip-tree ((node $val) $x $y) -> ((node $val) $y $x))
+(flip-tree (*) -> (*))
+
+; if it was infix
+(INPUT-TREE T 
+   ((node 4)
+      ((node 2) 
+         ((node 1) (*) (*))
+         ((node 3) (*) (*))
+      )
+      ((node 6)
+         ((node 5) (*) (*))
+         ((node 7) (*) (*))
+      )
+   )
+)
+```
+We'll add to our `MACRO` expander
+```
+(exec (macro) 
+  (,
+     (MACRO ($name $proc $op) $pattern $template)
+
+     (MACRO ($name main eval) $p $t)
+     (MACRO ($name main flip-tree) $p_ $t_)
+  )
+  (O 
+     (+ (DEF   ($name main eval)      $p $t) )
+     (+ (DEF   ($name main flip-tree) $p_ $t_) )
+
+     (- (MACRO ($name $proc $op) $pattern $template) )
+  )
+)
+```
+
+And modify `(BEGIN-PROGRAM)` to spawn the `INPUT-TREE`.
+We generalize the body from eval to `$op` and `$op_`.
+```
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $TAG $INPUT)
+     (INPUT-TREE $TAG-TREE $INPUT-TREE)
+  )
+  (,
+    (main eval      (fork (DONE $TAG     )) $INPUT     )
+    (main flip-tree (fork (DONE $TAG-TREE)) $INPUT-TREE)
+
+    (exec MAIN 
+      (, 
+         (DEF (fork main $op) $fork_p $fork_t)
+         (DEF (join main $op) $join_p $join_t)
+         
+         (exec MAIN $main-pattern $main-template)
+      ) 
+      (, 
+         (exec (1 fork) $fork_p $fork_t) 
+         (exec (0 join) $join_p $join_t) 
+         
+         (exec (TERM)
+           (, (main $op_ (join (DONE $TAG_)) $OUTPUT)
+           )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
+
+              (- (main $op_ (join (DONE $TAG_)) $OUTPUT) )
+           )
+         )
+
+         (exec (RESET)
+           (, (main $op ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)
+```

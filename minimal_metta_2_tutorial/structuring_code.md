@@ -1614,3 +1614,314 @@ We generalize the body from eval to `$op` and `$op_`.
   )
 )
 ```
+
+Making these changes we are able to run our two programs at the same time.
+
+If we query the results with
+- pattern  : `(OUTPUT $TAG $VAL)`
+- template : `(OUTPUT $TAG $VAL)`
+
+```
+(OUTPUT A 1)
+(OUTPUT B 1)
+(OUTPUT T ((node 4) ((node 6) ((node 7) (*) (*)) ((node 5) (*) (*))) ((node 2) ((node 3) (*) (*)) ((node 1) (*) (*)))))
+```
+The tree was successfully flipped. The other expressions evaluated.
+
+the full final code 
+```
+(eval (and 0 0) -> 0)
+(eval (and 0 1) -> 0)
+(eval (and 1 0) -> 0)
+(eval (and 1 1) -> 1)
+
+(eval (or 0 0) -> 0)
+(eval (or 0 1) -> 1)
+(eval (or 1 0) -> 1)
+(eval (or 1 1) -> 1)
+
+(eval (if 0 0) -> 1)
+(eval (if 0 1) -> 1)
+(eval (if 1 0) -> 0)
+(eval (if 1 1) -> 1)
+
+(eval (not 0) -> 1)
+(eval (not 1) -> 0)
+
+(eval (0) -> 0)
+(eval (1) -> 1)
+
+; (ctor bool 1)
+; (ctor bool 0)
+; (ctor bool-expr ($x))
+; (ctor bool-expr (and $x $y))
+; (ctor bool-expr (or  $x $y))
+; (ctor bool-expr (xor $x $y))
+; (ctor bool-expr (if  $x $y))
+
+(INPUT A
+   (if (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+       (and (1) 
+            (or (0) (1))
+       )
+   )
+)
+(INPUT B
+   (if (and (1) 
+            (or (0) (1))
+       )
+       (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+   )
+)
+
+(flip-tree ((node $val) $x $y) -> ((node $val) $y $x))
+(flip-tree (*) -> (*))
+
+; if it was infix
+(INPUT-TREE T 
+   ((node 4)
+      ((node 2) 
+         ((node 1) (*) (*))
+         ((node 3) (*) (*))
+      )
+      ((node 6)
+         ((node 5) (*) (*))
+         ((node 7) (*) (*))
+      )
+   )
+)
+
+; case/0 
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/0))
+
+      )
+      (O
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
+
+
+        (- ($proc $op (fork $ctx) ($case/0)) )
+      )
+)
+; case/1
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/1 $x))
+      
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
+         (+ ($proc $op (join ($ctx case/1)) $case/1) )
+
+         (- ($proc $op (fork $ctx) ($case/1 $x)) )
+      )
+)
+; case/2
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
+         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
+         (+ ($proc $op (join ($ctx case/2)) $case/2) )
+
+
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
+      )
+)
+
+
+; case/0
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/0)) $case/0)
+
+         ($op ($case/0) -> $out)
+      )
+      (O 
+         (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
+      )
+)
+; case/1
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/1)) $case/1)
+         ($proc $op (join ($ctx arg/0)) $x)
+         
+         ($op ($case/1 $x) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/1)) $case/1) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+      )
+)
+; case/2
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/2)) $case/2)
+         ($proc $op (join ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx arg/1 )) $y     )
+
+         ($op ($case/2 $x $y) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/2)) $case/2) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
+      )
+)
+
+
+
+; the macro creates DEF, the MACROS are \"compiled out\"
+(exec (macro) 
+  (,
+     (MACRO ($name $proc $op) $pattern $template)
+
+     (MACRO ($name main eval) $p $t)
+     (MACRO ($name main flip-tree) $p_ $t_)
+  )
+  (O 
+     (+ (DEF   ($name main eval)      $p $t) )
+     (+ (DEF   ($name main flip-tree) $p_ $t_) )
+
+     (- (MACRO ($name $proc $op) $pattern $template) )
+  )
+)
+
+; this should fire right when macros are done expanding
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $TAG $INPUT)
+     (INPUT-TREE $TAG-TREE $INPUT-TREE)
+  )
+  (,
+    (main eval      (fork (DONE $TAG     )) $INPUT     )
+    (main flip-tree (fork (DONE $TAG-TREE)) $INPUT-TREE)
+
+    (exec MAIN 
+      (, 
+         (DEF (fork main $op) $fork_p $fork_t)
+         (DEF (join main $op) $join_p $join_t)
+         
+         (exec MAIN $main-pattern $main-template)
+      ) 
+      (, 
+         (exec (1 fork) $fork_p $fork_t) 
+         (exec (0 join) $join_p $join_t) 
+         
+         (exec (TERM)
+           (, (main $op_ (join (DONE $TAG_)) $OUTPUT)
+           )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
+
+              (- (main $op_ (join (DONE $TAG_)) $OUTPUT) )
+           )
+         )
+
+         (exec (RESET)
+           (, (main $op ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)
+```
+
+# Closing Remarks
+
+Many important ideas have been covered here including:
+- predication for separation of "names"
+- execs
+- sources
+- sinks
+- priorities
+- unification
+- set operations
+- computing wide
+- building a program
+- macros for partial evaluation
+- running multiple inputs
+- running multiple programs
+
+The examples have been chosen to give a non-trivial examples that touch on strategies to expected issues people will encounter.
+These strategies should give enough room to explore alternatives.
+
+Some ideas that one could try:
+- The path representation could be modified form this form
+  ```
+  ((.   case/2) and)
+  (((.  arg/1 ) case/2) or)
+  ((((. arg/1 ) arg/1 ) case/0) 1)
+  ((((. arg/1 ) arg/2 ) case/0) 0)
+  (((.  arg/2 ) case/2) if)
+  ((((. arg/2 ) arg/1 ) case/0) 1)
+  ((((. arg/2 ) arg/2 ) case/0) 1)
+  ```
+  to this
+  ```
+  ((((. (arg/1 and)) (arg/1 or)) case/0) 1)
+  ((((. (arg/1 and)) (arg/2 or)) case/0) 0)
+  ((((. (arg/2 and)) (arg/1 if)) case/0) 1)
+  ((((. (arg/2 and)) (arg/2 if)) case/0) 1)
+  ```
+  How would the fork and join `DEF`s need to be modified for this change?
+
+- Consider an input like this:
+  ```
+  (INPUT C
+      (and
+        (and
+          (and ( or(1) (1))
+               ( if(1) (1))
+          )
+          (and (and (1) (1))
+               (and (1) (1))
+          )
+        )
+        (or
+          ( if(and (1) (1))
+               (and (1) (1))
+          )
+          (and ( or(1) (1))
+               ( if(1) (1))
+          )
+        )
+      )
+  )
+  ```
+  Many of the branches have the same subtree.
+  The following sub tree happens twice.
+  ```
+  (and ( or(1) (1))
+       ( if(1) (1))
+  )
+  ```
+  We could try to memoize the results; the right place to do so would be to
+  save the results in a store available for all executions that want to share results. If we tried to implement this strategy, how effective would it be? (in the above case it might be far less effective than expected).
+
+- We describe evaluating boolean expressions, which could be evaluated with short-cutting.
+  Short-cutting is usually more interesting with side effects.
+  Consider adding a side effects (writing to a shared global name for example) to the evaluation and modifying the code to make short-cutting work.
+  One strategy would be to construct execs that are deferred and are only spawned conditionally.
+  How does this affect the behavior of the process?
+
+
+

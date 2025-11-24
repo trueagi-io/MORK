@@ -3855,11 +3855,8 @@ fn main() {
                         break;
                     }
                 }
-                let p = s.metta_calculus(1);
-                performed += p;
-                if p == 0 {
-                    break;
-                }
+                let p = s.metta_calculus(0);
+                performed += 1;
             }
             println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }

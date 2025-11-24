@@ -245,8 +245,12 @@ macro_rules! traverseh {
             Tag::Arity(a) => {
                 let acc = ($zero)(&mut h, j, a);
                 j += 1;
-                stack.push(State{ iter: a, payload: acc });
-                continue 'putting;
+                if a == 0 {
+                    ($finalize)(&mut h, j, acc)
+                } else {
+                    stack.push(State{ iter: a, payload: acc });
+                    continue 'putting;
+                }
             }
         };
 
@@ -882,8 +886,12 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
             Tag::Arity(a) => {
                 let acc = t.zero(j, a);
                 j += 1;
-                stack.push(State{ iter: a, payload: acc });
-                continue 'putting;
+                if a == 0 {
+                    t.finalize(j, acc)
+                } else {
+                    stack.push(State{ iter: a, payload: acc });
+                    continue 'putting;
+                }
             }
         };
 
@@ -1359,7 +1367,8 @@ impl ExprZipper {
             Tag::NewVar => { 1 }
             Tag::VarRef(_r) => { 1 }
             Tag::SymbolSize(s) => { 1 + (s as usize) }
-            Tag::Arity(_a) => { unreachable!() /* expression can't end in arity */ }
+            Tag::Arity(0) => { 1 }
+            Tag::Arity(_a) => { unreachable!() /* expression can't end in non-zero expression */ }
         };
         return slice_from_raw_parts(self.root.ptr, size)
     }

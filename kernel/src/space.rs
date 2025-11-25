@@ -1262,7 +1262,7 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                         let mut void = std::io::sink();
                         let mut snk = mork_expr::item_sink(&mut void);
@@ -1279,7 +1279,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi += ti;
                         ass.clear();
                         astack.clear();
 
@@ -1341,7 +1342,7 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                         let mut void = std::io::sink();
                         let mut snk = mork_expr::item_sink(&mut void);
@@ -1357,7 +1358,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi += ti;
                         ass.clear();
                         astack.clear();
 
@@ -1427,7 +1429,7 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                         let mut void = std::io::sink();
                         let mut snk = mork_expr::item_sink(&mut void);
@@ -1443,7 +1445,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi += ti;
                         ass.clear();
                         astack.clear();
 
@@ -1517,7 +1520,7 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                         let mut void = std::io::sink();
                         let mut snk = mork_expr::item_sink(&mut void);
@@ -1534,7 +1537,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi += ti;
                         ass.clear();
                         astack.clear();
 

@@ -44,6 +44,7 @@
 ; we expect
 ; (incest Uru Vic) (incest Vic Uru)
 (considered_incest (S Z)) (considered_incest (S (S Z))) (considered_incest (S (S (S Z))))
-(exec (2 1) (, (considered_incest $x) (generation $x $p $a) (generation $x $q $a))
+(generalized_considered_incest (S (S Z)) (S Z))
+(exec (2 1) (, (generalized_considered_incest $x $y) (generation $x $p $a) (generation $y $q $a) (parent $p $c) (parent $q $c) )
             (, (incest $p $q)))
 (exec (2 2) (, (incest $p $p)) (O (- (incest $p $p))))

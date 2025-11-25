@@ -903,14 +903,21 @@ fn pattern_mining_lensy() {
 fn bench_pattern_mining_lensy() {
     let mut s = Space::new();
 
+    // constituency-agreed/jourals/corr$ cat abs-1811-12819
+    // (S (NP (DT This)) (VP (VBZ corroborates) (NP (NP (DT the) (NN validity)) (PP (IN of) (NP (NP (DT the) (JJ nonlinear) (NN model)) (CC and) (NP (DT the) (NN control) (NN scheme)))))) (. .))
+
     // language="sh"
     const SPACE_EXPRS: &str = r#"
-(lensOf ($x) $x $i ($i))
-(lensOf ($x $y) $x $i ($i $y))
-(lensOf ($x $y) $y $i ($x $i))
-(lensOf ($x $y $z) $x $i ($i $y $z))
-(lensOf ($x $y $z) $y $i ($x $i $z))
-(lensOf ($x $y $z) $z $i ($x $y $i))
+(lensOf ($f $x) $x $i ($f $i))
+(lensOf ($f $x $y) $x $i ($f $i $y))
+(lensOf ($f $x $y) $y $i ($f $x $i))
+(lensOf ($f $x $y $z) $x $i ($f $i $y $z))
+(lensOf ($f $x $y $z) $y $i ($f $x $i $z))
+(lensOf ($f $x $y $z) $z $i ($f $x $y $i))
+(lensOf ($f $x $y $z $w) $x $i ($f $i $y $z $w))
+(lensOf ($f $x $y $z $w) $y $i ($f $x $i $z $w))
+(lensOf ($f $x $y $z $w) $z $i ($f $x $y $i $w))
+(lensOf ($f $x $y $z $w) $w $i ($f $x $y $z $i))
 
 (exec (0 0) (, (data $x)) (, ((peel 0) $x $y (data $y)) ))
 (exec (1 0)
@@ -919,6 +926,9 @@ fn bench_pattern_mining_lensy() {
       (exec (1 0) (, ((peel $l) $e $yc $xc ) (lensOf $e $se $y $yc))
                   (, ((peel $nl) $se $y $xc)))))
 
+
+(exec (2 0) (, ((peel $_) (NP (DT the) (VBN proposed) (NN $x)) $q $y))
+        (, (found the_proposed $x $y)))
     "#;
 
     use std::os::unix::fs::MetadataExt;
@@ -934,12 +944,10 @@ fn bench_pattern_mining_lensy() {
             Err(err) => {
                 println!("err {:?}", err);
                 println!("file {:?}: {}", filen.file_name(), std::str::from_utf8(&v[..]).unwrap());
-                
             }
         }
-
     }
-    
+
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
     s.add_all_sexpr((0..10).map(|i| format!("(succ {} {})", i, i+1)).join(" ").as_bytes()).unwrap();
 
@@ -948,7 +956,9 @@ fn bench_pattern_mining_lensy() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
-    s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_sexpr(expr!(s, "[4] [2] peel $ $ $ $"), expr!(s, "[3] _2 -> _4"), &mut v);
+    s.dump_sexpr(expr!(s, "[4] found the_proposed $ $"), expr!(s, "[3] _1 -> _2"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result:\n{res}");
@@ -2056,6 +2066,76 @@ fn sink_act_readback() {
         println!("result: {res}");
         // assert_eq!(res, "18\n")
     }
+}
+
+fn sink_count_double() {
+    // https://github.com/trueagi-io/MORK/issues/37
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(item a)
+(item b)
+(item c)
+(item2 a)
+(item2 b)
+(item2 c)
+(item2 d)
+
+(exec 0
+  (, (item $x) (item2 $y))
+  (O (count (count-1 $k) $k $x)
+     (count (count-2 $j) $j $y)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("count-1 3"));
+    assert!(res.contains("count-2 4"));
+}
+
+fn sink_count_double_repeated() {
+    // https://github.com/trueagi-io/MORK/issues/37
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(item a)
+(item b)
+(item c)
+(item2 a)
+(item2 b)
+(item2 c)
+(item2 d)
+
+(exec 0
+  (, (item $x) (item2 $y))
+  (O (count (count-1 $k) $k $x)
+     (count (count-2 $k) $k $y)))
+    "#;
+    
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert!(res.contains("count-1 3"));
+    assert!(res.contains("count-2 4"));
 }
 
 fn sink_hexlife_symbolic() {
@@ -3943,6 +4023,8 @@ fn main() {
             sink_sum_sets();
             sink_hexlife_symbolic();
             sink_exec_remove_trigger();
+            sink_count_double();
+            sink_count_double_repeated();
             pattern_mining_lensy();
 
             parse_csv();

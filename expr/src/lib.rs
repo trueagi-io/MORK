@@ -84,6 +84,7 @@ pub struct Breadcrumb {
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]
+#[repr(C, u8)]
 pub enum Tag {
     NewVar, // $
     VarRef(u8), // _1 .. _63

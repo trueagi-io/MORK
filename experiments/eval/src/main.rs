@@ -1,16 +1,106 @@
-use mork_expr::{maybe_byte_item, construct, Tag, Expr, ExprZipper};
+#![feature(coroutine_trait)]
+#![feature(coroutines)]
+
+use mork_expr::{item_byte, maybe_byte_item, construct, Tag, Expr, ExprZipper};
+
+use std::pin::Pin;
+use std::ops::{Coroutine, CoroutineState, ControlFlow};
+use std::convert::Infallible;
 use std::collections::HashMap;
 
-type EvalError = String;
-type FuncPtr = fn(Expr, &mut ExprZipper) -> Result<(), EvalError>;
+#[derive(Debug)]
+enum EvalError {
+    Msg(String),
+    Io(std::io::Error),
+}
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvalError::Msg(s) => write!(f, "EvalError: {}", s),
+            EvalError::Io(e) => write!(f, "IO Error: {}", e),
+        }
+    }
+}
+impl std::error::Error for EvalError {}
+impl From<std::io::Error> for EvalError {
+    fn from(e: std::io::Error) -> Self {
+        EvalError::Io(e)
+    }
+}
+impl From<String> for EvalError {
+    fn from(s: String) -> Self {
+        EvalError::Msg(s)
+    }
+}
+type FuncPtr = fn(Expr, &mut dyn ExprSink) -> Result<(), EvalError>;
 enum FuncType { Macro, Pure }
 struct Func {
     func: FuncPtr,
     ty: FuncType,
 }
 
+#[repr(C, u8)]
+enum SinkItem {
+    Tag(Tag),
+    Symbol { ptr: *const u8, len: usize },
+}
+impl core::convert::From<&[u8]> for SinkItem {
+    fn from(slice: &[u8]) -> Self {
+        SinkItem::Symbol { ptr: slice.as_ptr(), len: slice.len() }
+    }
+}
+
+trait ExprSink {
+    fn write(&mut self, item: SinkItem) -> std::io::Result<()>;
+}
+
+struct ExprSinkOwned<W: std::io::Write> {
+    sink: W,
+}
+
+impl<W: std::io::Write> ExprSinkOwned<W> {
+    pub fn new(sink: W) -> Self {
+        Self { sink }
+    }
+    pub fn finish(self) -> W {
+        self.sink
+    }
+}
+
+extern "C" fn expr_sink_vec_write(sink_ptr: *mut std::ffi::c_void, item: SinkItem) -> std::io::Result<()> {
+    let sink = unsafe { &mut *(sink_ptr as *mut ExprSinkOwned<Vec<u8>>) };
+    sink.write(item)
+}
+
+impl<W: std::io::Write> ExprSink for ExprSinkOwned<W> {
+    fn write(&mut self, item: SinkItem) -> std::io::Result<()> {
+        match item {
+            SinkItem::Tag(Tag::SymbolSize(_)) => {
+                panic!("sink uses WriteSymbol for symbols, gotten Tag::SymbolSize")
+            }
+            SinkItem::Tag(tag) => {
+                self.sink.write_all( &[item_byte(tag)] )?;
+            }
+            SinkItem::Symbol { ptr, len } => {
+                debug_assert!(len < 64);
+                self.sink.write_all( &[item_byte(Tag::SymbolSize(len as _))] )?;
+                let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+                self.sink.write_all(slice)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+type SinkCoro = Pin<Box<dyn for<'a> Coroutine<
+    Result<Tag, &'a [u8]>,
+    Yield=(),
+    Return=std::io::Result<Infallible>>>
+>;
+
 struct StackFrame {
-    sink: ExprZipper,
+    sink: ExprSinkOwned<Vec<u8>>,
+    // sink: SinkCoro,
     rest: usize,
     expr: Expr,
 }
@@ -18,7 +108,8 @@ struct StackFrame {
 struct EvalScope {
     fns: HashMap<Vec<u8>, Func>,
     stack: Vec<StackFrame>,
-    expr: Expr,
+    // expr: SrcCoro<'a>,
+    // expr: Expr,
     bufs: Vec<Vec<u8>>,
 }
 const EXPR_SIZE: usize = 1024 * 1024;
@@ -28,7 +119,7 @@ impl EvalScope {
             fns: HashMap::new(),
             stack: Vec::new(),
             bufs: Vec::new(),
-            expr: Expr { ptr: core::ptr::null_mut() },
+            // expr: Expr { ptr: core::ptr::null_mut() },
         }
     }
     pub fn add_func(&mut self, name: &str, func: FuncPtr, ty: FuncType) {
@@ -37,15 +128,12 @@ impl EvalScope {
     fn eval(&mut self, expr: Expr) -> Result<Vec<u8>, EvalError> {
         self.stack.clear();
         self.bufs.clear();
-        let mut sink_buf = vec![0_u8; EXPR_SIZE];
-        let ptr = sink_buf.as_mut_ptr();
-        let sink = ExprZipper::new( Expr { ptr } );
-        self.bufs.push(sink_buf);
+        let sink = ExprSinkOwned::new(Vec::with_capacity(EXPR_SIZE));
         self.stack.push(StackFrame { sink, rest: 1, expr: expr });
         self.push_eval()?;
         self.eval_impl()?;
-        let mut rv = core::mem::take(&mut self.bufs[0]);
-        rv.truncate(self.stack[0].sink.loc);
+        let top = self.stack.pop().unwrap();
+        let rv = top.sink.finish();
         Ok(rv)
     }
     fn push_eval(&mut self) -> Result<(), EvalError> {
@@ -61,17 +149,14 @@ impl EvalScope {
                 //         false
                 //     };
                 // function application
-                while self.stack.len() >= self.bufs.len() {
-                    self.bufs.push(vec![0_u8; EXPR_SIZE]);
-                }
-                let ptr = self.bufs.last_mut().unwrap().as_mut_ptr();
+                let buf = self.bufs.pop().unwrap_or_else(||
+                    Vec::with_capacity(EXPR_SIZE));
                 let mut frame = StackFrame {
-                    sink: ExprZipper::new(Expr { ptr }),
+                    sink: ExprSinkOwned::new(buf),
                     rest: arity as usize,
                     expr: Expr { ptr: unsafe { expr.ptr.add(1) } },
                 };
-                frame.sink.write_arity(arity);
-                frame.sink.loc += 1;
+                frame.sink.write(SinkItem::Tag(Tag::Arity(arity)))?;
                 self.stack.push(frame);
             }
             Ok(Tag::SymbolSize(len)) => {
@@ -79,10 +164,9 @@ impl EvalScope {
                 // symbol
                 let symbol = unsafe { std::slice::from_raw_parts(expr.ptr.add(1), len as usize) };
                 top_frame.expr.ptr = unsafe { expr.ptr.add(1 + len as usize) };
-                top_frame.sink.write_symbol(symbol);
-                top_frame.sink.loc += 1 + len as usize;
+                top_frame.sink.write(SinkItem::from(symbol))?;
             }
-            _ => return Err(format!("not a list"))
+            _ => return Err(format!("not a list").into())
         }
         Ok(())
     }
@@ -95,15 +179,18 @@ impl EvalScope {
             // if the top frame is done, move its result into the parent frame.
             if top_frame.rest == 0 {
                 let prev_frame = parent_frames.last_mut().unwrap();
-                let mut expr = Expr { ptr: top_frame.sink.root.ptr };
-                // eprintln!("top frame done, expr: {:?}", expr.ptr);
+                let mut data = core::mem::take(&mut top_frame.sink.sink);
+                let mut expr = Expr { ptr: data.as_mut_ptr() };
+                // eprintln!("top frame done, expr: {:?}", data);
                 let (_items, fn_name) = consume_head(&mut expr)?;
                 let func = self.fns.get(fn_name)
                     .ok_or_else(|| format!("unknown function: {:?}", String::from_utf8_lossy(fn_name)))?;
-                (func.func)(Expr { ptr: top_frame.sink.root.ptr }, &mut prev_frame.sink)?;
-                let slice = unsafe { std::slice::from_raw_parts(prev_frame.sink.root.ptr, 16) };
+                (func.func)(Expr { ptr: data.as_mut_ptr() }, &mut prev_frame.sink)?;
+                // let slice = unsafe { std::slice::from_raw_parts(prev_frame.sink.root.ptr, 16) };
                 // eprintln!("after func call, parent frame slice: {:?} loc: {}", slice, prev_frame.sink.loc);
-                self.stack.pop();
+                let top = self.stack.pop().unwrap();
+                // eprintln!("popped frame, buf: {:?}", top.sink.sink);
+                self.bufs.push(data);
                 continue;
             }
             // otherwise, evaluate the next item in the top frame.
@@ -124,7 +211,7 @@ fn consume_head(expr: &mut Expr) -> Result<(usize, &[u8]), EvalError> {
             ptr = unsafe { ptr.add(1) };
             items = arity as usize;
         }
-        _ => return Err(format!("not a list2"))
+        _ => return Err(format!("not a list2").into())
     }
     let head;
     match maybe_byte_item(unsafe { *ptr }) {
@@ -133,7 +220,7 @@ fn consume_head(expr: &mut Expr) -> Result<(usize, &[u8]), EvalError> {
             ptr = unsafe { ptr.add(1 + len as usize) };
             items -= 1;
         }
-        _ => return Err(format!("head is not a symbol")),
+        _ => return Err(format!("head is not a symbol").into()),
     }
     expr.ptr = ptr;
     Ok((items, head))
@@ -143,7 +230,7 @@ fn consume_head_ck(expr: &mut Expr, symbol: &[u8]) -> Result<usize, EvalError> {
     let mut expr2 = Expr { ptr: expr.ptr };
     let (items, head) = consume_head(&mut expr2)?;
     if head != symbol {
-        return Err(format!("incorrect symbol provided, expected: {symbol:?}, got: {head:?}"));
+        return Err(format!("incorrect symbol provided, expected: {symbol:?}, got: {head:?}").into());
     }
     expr.ptr = expr2.ptr;
 
@@ -160,15 +247,15 @@ fn consume_i32(mut expr: &mut Expr) -> Result<i32, EvalError> {
             ptr = unsafe { ptr.add(1 + SIZE) };
         }
         Ok(Tag::SymbolSize(len)) => {
-            return Err(format!("invalid symbol size of i32: {len}"));
+            return Err(format!("invalid symbol size of i32: {len}").into());
         }
-        _ => return Err(format!("trying to read i32 from not a symbol"))
+        _ => return Err(format!("trying to read i32 from not a symbol").into())
     }
     expr.ptr = ptr;
     Ok(i32::from_be_bytes(array))
 }
 
-fn ground_mul(mut expr: Expr, sink: &mut ExprZipper) -> Result<(), EvalError> {
+fn ground_mul(mut expr: Expr, sink: &mut dyn ExprSink) -> Result<(), EvalError> {
     let items = consume_head_ck(&mut expr, b"*")?;
     let mut result: i32 = 1;
     for _ in 0..items {
@@ -176,12 +263,11 @@ fn ground_mul(mut expr: Expr, sink: &mut ExprZipper) -> Result<(), EvalError> {
         result = result.checked_mul(item)
             .ok_or_else(|| format!("overflow in *"))?
     }
-    sink.write_symbol(&result.to_be_bytes());
-    sink.loc += core::mem::size_of::<i32>();
+    sink.write(SinkItem::from(&result.to_be_bytes()[..]))?;
     Ok(())
 }
 
-fn ground_sum(mut expr: Expr, sink: &mut ExprZipper) -> Result<(), EvalError> {
+fn ground_sum(mut expr: Expr, sink: &mut dyn ExprSink) -> Result<(), EvalError> {
     let items = consume_head_ck(&mut expr, b"+")?;
     let mut result: i32 = 0;
     for _ in 0..items {
@@ -189,8 +275,7 @@ fn ground_sum(mut expr: Expr, sink: &mut ExprZipper) -> Result<(), EvalError> {
         result = result.checked_add(item)
             .ok_or_else(|| format!("overflow in +"))?
     }
-    sink.write_symbol(&result.to_be_bytes());
-    sink.loc += core::mem::size_of::<i32>();
+    sink.write(SinkItem::from(&result.to_be_bytes()[..]))?;
     Ok(())
 }
 

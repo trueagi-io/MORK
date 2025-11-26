@@ -1279,8 +1279,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
-                        oi += ti;
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
@@ -1358,8 +1358,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
-                        oi += ti;
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
@@ -1445,8 +1445,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
-                        oi += ti;
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
@@ -1537,8 +1537,8 @@ impl Space {
 
                         buffer.clear();
                         let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (_, ti) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
-                        oi += ti;
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 

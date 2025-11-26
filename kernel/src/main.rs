@@ -3250,6 +3250,53 @@ fn stv_roman() {
     println!("result: {res}");
 }
 
+fn large_statement() {
+    let mut s = Space::new();
+    let SPACE = r#"
+(exec (2 2) (, $x)
+    (,
+        (exec (1 0)
+          (, (recipe $product1 (numIngredients 1))
+             (recipe $product1 (ingredients 0 $xitem1))
+             (inventory $xitem1)
+             (recipe $product1 (result (id $productname1))))
+          (, (inventory $productname1))
+        )
+
+        (exec (1 1)
+          (, (recipe $product2 (numIngredients 1))
+             (recipe $product2 (result (id $productname2)))
+             (recipe $product2 (pattern 0 $x2))
+             (recipe $product2 (key ($x2 $xitem2)))
+             (inventory $xitem2))
+          (, (inventory $productname2))
+        )
+
+        (exec (1 2)
+          (, (recipe $product3 (numIngredients 2))
+             (recipe $product3 (result (id $productname3)))
+             (recipe $product3 (pattern 0 $x3)) (recipe $product3 (key ($x3 $xitem3)))
+             (recipe $product3 (pattern 1 $y3)) (recipe $product3 (key ($y3 $yitem3)))
+             (inventory $xitem3)
+             (inventory $yitem3))
+          (, (inventory $productname3))
+        )
+    )
+)
+    "#;
+    s.add_all_sexpr(SPACE.as_bytes()).unwrap();
+    s.metta_calculus(0);
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v);
+    let res = String::from_utf8(v).unwrap();
+    println!("result: {res}");
+    assert_eq!(res, "(exec (1 0) (, (recipe $a (numIngredients 1)) (recipe $a (ingredients 0 $b)) (inventory $b) (recipe $a (result (id $c)))) (, (inventory $c)))
+(exec (1 1) (, (recipe $a (numIngredients 1)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (inventory $d)) (, (inventory $b)))
+(exec (1 2) (, (recipe $a (numIngredients 2)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (recipe $a (pattern 1 $e)) (recipe $a (key ($e $f))) (inventory $d) (inventory $f)) (, (inventory $b)))
+");
+}
+
 fn exponential(max_steps: usize) {
     let mut s = Space::new();
 
@@ -3994,6 +4041,7 @@ fn main() {
             two_bipolar_equal_crossed();
             // func_type_unification(); // failing!
             top_level_match();
+            large_statement();
 
             process_calculus_reverse();
             logic_query();

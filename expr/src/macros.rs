@@ -28,37 +28,42 @@ use crate::{Expr, Tag, byte_item, item_byte};
 macro_rules! destruct {
     // top-level variables
     ($expr:expr, { $var:ident : $ty:ty }, $good:expr, $err:ident => $bad:expr) => {
-        $crate::destruct!(@at($expr, 0), { $var: $ty } , $good, $err => $bad);
+        $crate::destruct!($expr, { $var: $ty } , _length => $good, $err => $bad);
     };
-    (@at($expr:expr, $offset:expr), { $var:ident : $ty:ty }, $good:expr, $err:ident => $bad:expr) => {
+    ($expr:expr, { $var:ident : $ty:ty }, $length:ident => $good:expr, $err:ident => $bad:expr) => {
         use $crate::macros::{DeserializableExpr};
-        let expr = Expr { ptr: unsafe { $expr.ptr.add($offset) } };
+        let expr = Expr { ptr: $expr.ptr };
         if !<$ty as DeserializableExpr>::check(expr) {
             let $err: String = format!("expression did not match expected type");
             $bad
         } else {
+            let $length = <$ty as DeserializableExpr>::advanced(expr);
             let $var: $ty = <$ty as DeserializableExpr>::deserialize_unchecked(expr);
             $good
         }
     };
     ($expr:expr, ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
-        $crate::destruct!(@at($expr, 0), ( $($pattern)* ), $good, $err => $bad);
+        $crate::destruct!($expr, ( $($pattern)* ), _length => $good, $err => $bad);
     };
-    (@at($expr:expr, $offset:expr), ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
+    ($expr:expr, ( $($pattern:tt)* ), $length:ident => $good:expr, $err:ident => $bad:expr) => {
         {
             use ::core::convert::TryFrom;
             use $crate::{Tag, Expr, byte_item, parse};
             use $crate::macros::{DeserializableExpr};
+            let mut length = 0;
             let rv = 'ret: loop {
                 unsafe {
-                    let mut offset = $offset;
+                    let mut offset = 0;
                     $crate::destruct!(@chomp, 'ret, $expr, offset, ( $($pattern)* ) );
-                    let _ = offset;
+                    length = offset;
                     break 'ret Ok($crate::destruct!(@vars, $($pattern)*))
                 }
             };
             match rv {
-                Ok($crate::destruct!(@vars, $($pattern)*)) => $good,
+                Ok($crate::destruct!(@vars, $($pattern)*)) => {
+                    let $length = length;
+                    $good
+                }
                 Err($err) => $bad,
             }
         }
@@ -430,15 +435,15 @@ mod tests {
         );
     }
     #[test]
-    fn test_parse_typed_top_offset() {
+    fn test_parse_typed_top_length() {
         let buf = construct!( 42_i32 )
             .expect("construct failed");
 
         eprintln!("constructed: {buf:?}");
-        let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
+        let expr = Expr { ptr: unsafe { buf.as_ptr().add(1) } as *mut u8 };
         destruct!(
-            @at(expr, 1), {out_1:i32},
-            assert_eq!(out_1, 42),
+            expr, {out_1:i32},
+            len => assert_eq!((len, out_1), (5, 42)),
             err => panic!("failed {err:?}")
         );
     }

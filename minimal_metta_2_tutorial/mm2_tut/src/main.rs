@@ -6,12 +6,8 @@ mod relational_algebra;
 
 pub(crate) mod boolean_alg {
 
-    use std::{io::Write, sync::atomic::AtomicU64};
+    use std::io::{Write};
 
-    use mork::{expr, space::{self, Space}};
-    use pathmap::{morphisms::Catamorphism, zipper::{ZipperIteration, ZipperMoving}};
-
-    use crate::utils;
 mod boolean_alg_archive {
 
 const BOOLEAN_ALG : &str ="
@@ -1937,44 +1933,154 @@ const NAIVE_UNION : &str =
 )
 ";
 
+// use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
+// use mork::space::{ParDataParser};
+// use mork_expr::{Expr, ExprZipper};
+
+// fn parse_sexpr(s: &Space, r: &[u8], buf: &mut [u8]) -> Result<(Expr, usize), ParserError> {
+//     let mut it = Context::new(r);
+//     let mut parser = ParDataParser::new(&s.sm);
+//     let mut ez = ExprZipper::new(Expr { ptr: buf.as_mut_ptr() });
+//     parser.sexpr(&mut it, &mut ez).map(|_| (Expr { ptr: buf.as_mut_ptr() }, ez.loc))
+// }
+
+// /// expects `sexpr` to be a tuple `(<pattern> <template>)`
+// fn patten_template(s: &Space, sexpr : &str, parse_buf : &mut[u8]) -> Result<(Expr,Expr), ParserError> {
+//     let (q_expr, _used) = parse_sexpr(&s, sexpr.as_bytes(), parse_buf)?;
+//     let mut ez = ExprZipper::new(q_expr);
+//     assert!( ez.next_child() );
+//     let pattern =ez.subexpr();
+//     assert!( ez.next_child() );
+//     let template = ez.subexpr();
+//     assert!( !ez.next_child() );
+//     Ok( (pattern, template) )
+// }
+
+// fn import(s: &mut Space, pattern_template_sexpr: &str, import_data : &str) -> Result<(), ParserError> {
+//   let mut parse_buf = [0;4000];
+//   let (pattern, template) = patten_template(s, pattern_template_sexpr, &mut parse_buf)?;
+//   s.add_sexpr(import_data.as_bytes(), pattern, template);
+//   Ok(())
+// }
+// fn export<W:Write>(s: &Space, pattern_template_sexpr: &str, w: &mut W) -> Result<(), ParserError> {
+//   let mut parse_buf = [0;4000];
+//   let (pattern, template) = patten_template(s, pattern_template_sexpr, &mut parse_buf)?;
+//   s.dump_sexpr(pattern, template, w);
+//   Ok(())
+// }
 
     #[test]
-    fn test_2(){
-        let mut s = Space::new();
-        s.add_sexpr(BOOLEAN_ALG_MULTI.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+    fn test_2() -> std::io::Result<()>{
+      // //////////
+      // CONFIG //
+      // ////////
+      let input_file_path     = "/home/remyc/.trueai/MORK/minimal_metta_2_tutorial/Input.mm2";
+      let output_file_path    = "/home/remyc/.trueai/MORK/minimal_metta_2_tutorial/Output.mm2";
+      let trace_file_path     = "/home/remyc/.trueai/MORK/minimal_metta_2_tutorial/Trace.mm2";
+      let iterations          = 1;
+      let execs_per_iteration = 1;
+      let do_trace            = true; // tracing happens once per iteration
+      
+      let (in_pattern,    in_template   ) = ("$", "_1"); // $x => $x
+      let (out_pattern,   out_template  ) = ("$", "_1"); // $x => $x
+      let (trace_pattern, trace_template) = ("$", "_1"); // $x => $x
 
 
-        // for each in 0..100000 {
-        //     let str_ = format!("(INPUT {each:0>4} (if (or (1) (and (or (1) (0))(1) )) (and (1) (or (0) (1)))))\n");
-        //     s.add_sexpr(str_.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
-        // }
+      // ///////////////
+      // THE PROGRAM //
+      // /////////////
+
+      let     in_file    = std::fs::File::open(input_file_path)?; 
+      let mut out_file   = std::fs::File::options().create(true).write(true).open(output_file_path)?;
+      let mut trace_file = std::fs::File::options().create(true).write(true).open(trace_file_path)?;
+
+      // initialize the space
+      let mut s = mork::space::Space::new();
+      
+      // IMPORT
+      let input = std::io::read_to_string(&in_file)?;  
+      s.add_sexpr(input.as_bytes(), mork::expr!(s,"$"), mork::expr!(s,"_1"));
+      
 
 
-        // crate::utils::print_space(&s);
-        // crate::utils::print_sexpr_space(&s);
-        let mut dummy = String::new();
-        let start = std::time::Instant::now();
-        s.metta_calculus(1000);
-        // for _ in 0..300 {
-        //     std::io::stdin().read_line(&mut dummy);
-        //     s.metta_calculus(1);
+      // run execs and traces
+      let sys_time = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+      if do_trace {
+         writeln!(trace_file, "; Begin Trace at time since UNIX_EPOCH : {:?}", sys_time())?;
+      }
+      for each in 0..iterations{
+         if do_trace {
+            writeln!(trace_file, "\n; State {}",each*execs_per_iteration)?;
+            s.dump_sexpr(mork::expr!(s, trace_pattern), mork::expr!(s, trace_template), &mut trace_file);
+         }
+      
+         s.metta_calculus(execs_per_iteration);
+      }
+      if do_trace {
+         writeln!(trace_file, "\n; State {}",iterations*execs_per_iteration)?;
+         s.dump_sexpr(mork::expr!(s, trace_pattern), mork::expr!(s, trace_template), &mut trace_file);
+         writeln!(trace_file, "\n; End Trace at time since UNIX_EPOCH : {:?}\n", sys_time())?;
+      }
+
+
+      // EXPORT
+      writeln!(out_file, "; Output at time since UNIX_EPOCH : {:?}", sys_time())?;
+      s.dump_sexpr(mork::expr!(s, out_pattern), mork::expr!(s, out_template), &mut out_file);
+      writeln!(out_file, "; End Output\n")?;
+      Ok(())
+
+
+
+
+        // let mut s = Space::new();
+
+
+        // let file  = std::fs::File::open("/home/remyc/.trueai/MORK/minimal_metta_2_tutorial/Input.mm2").unwrap();
+        // let input = std::io::read_to_string(&file).unwrap();
+        // s.add_sexpr(input.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+
+
+        // // s.add_sexpr(BOOLEAN_ALG_MULTI.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+
+        // // for each in 0..100000 {
+        // //     let str_ = format!("(INPUT {each:0>4} (if (or (1) (and (or (1) (0))(1) )) (and (1) (or (0) (1)))))\n");
+        // //     s.add_sexpr(str_.as_bytes(), expr!(s,"$"), expr!(s,"_1"));
+        // // }
+
+
+        // // crate::utils::print_space(&s);
+        // // crate::utils::print_sexpr_space(&s);
+        
+        // // let mut dummy = String::new();
+        // // let start = std::time::Instant::now();
+        // s.metta_calculus(1000);
+        // // for _ in 0..300 {
+        // //     std::io::stdin().read_line(&mut dummy);
+        // //     s.metta_calculus(1);
             
-        //     println!("\n\n");
-        //     crate::utils::print_space(&s);
+        // //     println!("\n\n");
+        // //     crate::utils::print_space(&s);
+        // //     // crate::utils::print_sexpr_space(&s);
+        // //     dummy.clear();
+        // // }
+
+        // // let end = start.elapsed();
+        //     // crate::utils::print_space(&s);
+
         //     // crate::utils::print_sexpr_space(&s);
-        //     dummy.clear();
-        // }
-        let end = start.elapsed();
-            crate::utils::print_space(&s);
-        // crate::utils::print_sexpr_space(&s);
 
-        let mut out = String::new();
-        // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), unsafe { out.as_mut_vec() });
-        s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
-        // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
-        println!("{}",out);
+        // let mut out = std::fs::File::options().create(true).append(true).open("/home/remyc/.trueai/MORK/minimal_metta_2_tutorial/Output.mm2").unwrap();
+        // write!(out, "; Output at time since UNIX_EPOCH : {:?}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH));
+        // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut out);
+        // write!(out, "; End Output\n\n");
 
-        dbg!(end);
+        // // let mut out = String::new();
+        // // s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), unsafe { out.as_mut_vec() });
+        // // s.dump_sexpr(expr!(s, "[3] OUTPUT $ $"), expr!(s, "[3] OUTPUT _1 _2"), unsafe { out.as_mut_vec() });
+        // // s.dump_sexpr(expr!(s, "[2] OUTPUT $"), expr!(s, "[2] OUTPUT _1"), unsafe { out.as_mut_vec() });
+        // // println!("{}",out);
+
+        // // dbg!(end);
     }
 
 

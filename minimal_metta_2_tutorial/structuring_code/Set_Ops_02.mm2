@@ -1,0 +1,22 @@
+; The definition is just data, 
+;   the point is to find this data that has a useful shape dynamically.
+((union ($in_a $in_b) -> $out)
+    (, ($in_a $a)           
+       ($in_b $b)
+    )
+    (, ($out $a)
+       ($out $b)
+    )
+)
+; the argument data
+(arg_a a)
+(arg_a b)
+(arg_a c)
+(arg_b d)
+(arg_b e)
+(arg_b f)
+
+; what will search up our definition
+(exec 0 (, ((union (arg_a arg_b) -> ret) $p $t) )
+        (, (exec 0 $p $t) )
+)

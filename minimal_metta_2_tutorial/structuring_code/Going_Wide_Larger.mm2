@@ -1,0 +1,183 @@
+(eval (and 0 0) -> 0)
+(eval (and 0 1) -> 0)
+(eval (and 1 0) -> 0)
+(eval (and 1 1) -> 1)
+
+(eval (or 0 0) -> 0)
+(eval (or 0 1) -> 1)
+(eval (or 1 0) -> 1)
+(eval (or 1 1) -> 1)
+
+(eval (if 0 0) -> 1)
+(eval (if 0 1) -> 1)
+(eval (if 1 0) -> 0)
+(eval (if 1 1) -> 1)
+
+(eval (not 0) -> 1)
+(eval (not 1) -> 0)
+
+(eval (0) -> 0)
+(eval (1) -> 1)
+
+(INPUT A
+   (if (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+       (and (1) 
+            (or (0) (1))
+       )
+   )
+)
+(INPUT B
+   (if (and (1) 
+            (or (0) (1))
+       )
+       (or (1) 
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+   )
+)
+
+; case/0 
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/0))
+
+      )
+      (O
+        (+ ($proc $op (join ($ctx case/0)) $case/0) )
+
+
+        (- ($proc $op (fork $ctx) ($case/0)) )
+      )
+)
+; case/1
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/1 $x))
+      
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
+         (+ ($proc $op (join ($ctx case/1)) $case/1) )
+
+         (- ($proc $op (fork $ctx) ($case/1 $x)) )
+      )
+)
+; case/2
+(MACRO
+  (fork $proc $op)
+      (, ($proc $op (fork $ctx) ($case/2 $x $y))
+
+      )
+      (O 
+         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
+         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
+         (+ ($proc $op (join ($ctx case/2)) $case/2) )
+
+
+         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
+      )
+)
+
+
+; case/0
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/0)) $case/0)
+
+         ($op ($case/0) -> $out)
+      )
+      (O 
+         (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/0)) $case/0) )
+      )
+)
+; case/1
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/1)) $case/1)
+         ($proc $op (join ($ctx arg/0)) $x)
+         
+         ($op ($case/1 $x) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/1)) $case/1) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+      )
+)
+; case/2
+(MACRO
+  (join $proc $op)
+      (, ($proc $op (join ($ctx case/2)) $case/2)
+         ($proc $op (join ($ctx arg/0 )) $x     )
+         ($proc $op (join ($ctx arg/1 )) $y     )
+
+         ($op ($case/2 $x $y) -> $out)
+      )
+      (O (+ ($proc $op (join $ctx) $out) )
+
+         (- ($proc $op (join ($ctx case/2)) $case/2) )
+         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
+         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
+      )
+)
+
+
+
+; the macro creates DEF, the MACROS are \"compiled out\"
+(exec (macro) 
+  (,
+     (MACRO ($name main eval) $p $t)
+     (MACRO ($name $proc $op) $pattern $template)
+  )
+  (O 
+     (+ (DEF   ($name main eval) $p $t) )
+
+     (- (MACRO ($name $proc $op) $pattern $template) )
+  )
+)
+
+; this should fire right when macros are done expanding
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $TAG $INPUT)
+  )
+  (,
+    (main eval (fork (DONE $TAG)) $INPUT)
+
+    (exec MAIN 
+      (, 
+         (DEF (fork main eval) $fork_p $fork_t)
+         (DEF (join main eval) $join_p $join_t)
+         
+         (exec MAIN $main-pattern $main-template)
+      ) 
+      (, 
+         (exec (1 fork) $fork_p $fork_t) 
+         (exec (0 join) $join_p $join_t) 
+         
+         (exec (TERM)
+           (, (main eval (join (DONE $TAG_)) $OUTPUT)
+           )
+           (O (+ (OUTPUT $TAG_ $OUTPUT) )
+
+              (- (main eval (join (DONE $TAG_)) $OUTPUT) )
+           )
+         )
+
+         (exec (RESET)
+           (, (main eval ($fork_join $ctx) $val)       )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)

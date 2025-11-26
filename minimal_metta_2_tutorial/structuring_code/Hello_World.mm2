@@ -1,0 +1,6 @@
+(hello (Hello $name !) $name)
+
+(exec 0 (, (hello $out World) )
+        (, (say $out) )
+)
+

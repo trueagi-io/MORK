@@ -1,0 +1,120 @@
+(eval (and 0 0) -> 0)
+(eval (and 0 1) -> 0)
+(eval (and 1 0) -> 0)
+(eval (and 1 1) -> 1)
+
+(eval (or 0 0) -> 0)
+(eval (or 0 1) -> 1)
+(eval (or 1 0) -> 1)
+(eval (or 1 1) -> 1)
+
+(eval (if 0 0) -> 1)
+(eval (if 0 1) -> 1)
+(eval (if 1 0) -> 0)
+(eval (if 1 1) -> 1)
+
+(eval (not 0) -> 1)
+(eval (not 1) -> 0)
+
+(eval (0) -> 0)
+(eval (1) -> 1)
+
+(INPUT
+   (if (or (1)
+           (not (and (or (1) (0))
+                     (1)
+                )
+           )
+       )
+       (and (1) 
+            (or (0) (1))
+       )
+   )
+)
+
+; case/0
+(DEF fork
+      (, ((fork $ctx) ($case/0)) )
+      (, ((join ($ctx case/0)) $case/0) )
+)
+; case/1
+(DEF fork
+      (, ((fork $ctx) ($case/1 $x))   )
+      (, ((fork ($ctx arg/0 )) $x     )
+         ((join ($ctx case/1)) $case/1)
+      )
+)
+; case/2
+(DEF fork
+      (, ((fork $ctx) ($case/2 $x $y)))
+      (, ((fork ($ctx arg/0 )) $x     )
+         ((fork ($ctx arg/1 )) $y     )
+         ((join ($ctx case/2)) $case/2)
+      )
+)
+
+
+; case/0
+(DEF join
+      (, ((join ($ctx case/0)) $case/0)
+
+         (eval ($case/0) -> $out)
+      )
+      (, ((join $ctx) $out) )
+)
+; case/1
+(DEF join
+      (, ((join ($ctx case/1)) $case/1)
+         ((join ($ctx arg/0)) $x)
+
+         (eval ($case/1 $x) -> $out)
+      )
+      (, ((join $ctx) $out)  )
+)
+; case/2
+(DEF join
+      (, ((join ($ctx case/2)) $case/2)
+         ((join ($ctx arg/0 )) $x     )
+         ((join ($ctx arg/1 )) $y     )
+
+         (eval ($case/2 $x $y) -> $out)
+      )
+      (, ((join $ctx) $out)  )
+)
+
+(exec (BEGIN-PROGRAM) 
+  (, (INPUT $INPUT) 
+  )
+  (,
+    ((fork DONE) $INPUT)
+
+    (exec MAIN 
+      (, 
+         (DEF fork $fork_p $fork_t)
+         (DEF join $join_p $join_t)
+
+         (exec MAIN $main-pattern $main-template)
+      )
+      (, 
+         (exec (1 fork) $fork_p $fork_t)
+         (exec (0 join) $join_p $join_t)
+
+         (exec (TERM)
+           (, ((join DONE) $OUTPUT)
+              ((fork $f_env) $arg)
+              ((join $j_env) $res)
+           )
+           (O (+ (OUTPUT $OUTPUT)   )
+              (- ((fork $f_env) $arg) )
+              (- ((join $j_env) $res) )
+           )
+         )
+
+         (exec (RESET)
+           (, (($fork_join $ctx) $val)                 )
+           (, (exec MAIN $main-pattern $main-template) )
+         )
+      )
+    )
+  )
+)

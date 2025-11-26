@@ -4,8 +4,10 @@ members = [
     "interning/",
     "expr/",
     "frontend/",
-    "kernel/"
-, "minimal_metta_2_tutorial/mm2_tut"]
+    "kernel/", 
+    "minimal_metta_2_tutorial/mm2_tut",
+    "minimal_metta_2_tutorial/structuring_code/mork_playground"
+]
 
 [workspace.package]
 edition = "2024"

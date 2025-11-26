@@ -1,12 +1,72 @@
 Structuring a program in MM2 can be a little daunting.
 
+# Tutorial Files
+All the files referenced in the tutorial are to be found in the folder `structuring_code`
+
+The files in the folder
+- `structuring_code/structuring code.md` : This markdown file
+- `structuring_code/mork_playground`     : a rust binary crate program that serves as a template for basic file IO with an embedded MORK instance.
+- mm2 files, teach file has a comment of how many steps the exec should run : `; exec 2 steps`
+  - `structuring_code/Sinks_01.mm2`
+
+# Getting set up
+
+## using MORK via the CLI
+The recommended way to follow this tutorial is to use the CLI by compiling the MORK kernel binary.
+run `cargo build --release` in `./kernel` in the git repository with a nightly compiler `rustup toolchain install nightly`.
+The binary will be at `./target/release/mork`.
+
+You can do `mork --help` for help
+
+We will be using `mork run`
+
+With `mork run --help` we see the syntax
+```
+Usage: mork run [OPTIONS] <INPUT_PATH> [OUTPUT_PATH]
+
+Arguments:
+  <INPUT_PATH>   
+  [OUTPUT_PATH]  
+
+Options:
+      --steps <STEPS>                      [default: 1000000000000000]
+      --instrumentation <INSTRUMENTATION>  [default: 1]
+  -h, --help                               Print help
+```
+Run `mork run <INPUT_PATH>` :  input a file; output to stdout.
+Run `mork run <INPUT_PATH> [OUTPUT_PATH]` : input a file; output a file.
+
+(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs).
+
+For the tutorial it is recommended to move the new `mork` binary executable into the `structuring_code` folder.
+
+There is a file `structuring_code/Hello_World.mm2`, here are the contents.
+```
+(hello (Hello $name !) $name)
+
+(exec 0 (, (hello $out World) )
+        (, (say $out) )
+)
+
+```
+Do so then run `./mork run --steps 0 Hello_World.mm2` on one of the example files. (it actually runs --steps n + 1)
+
+if you see this kind of output, everything is working
+```
+loaded "example.mm2" ; running and outputing to Some("stdout")
+executing 1 steps took 0 ms (unifications 1, writes 1, transitions 8)
+dumping 2 expressions
+result:
+(say (Hello World !))
+(hello (Hello $a !) $a)
+
+```
+Note how it actually ran at one step with the `--steps 0`
 
 
+# Elementary Concepts
 
-
-Let start with some basics.
-
-# Keeping Things Separate
+## Keeping Things Separate
 
 Say we have two metta files. 
 
@@ -69,7 +129,10 @@ b
 
 `(file $x)` is a _prefix_ that lets us access the suffix set that will be bound to `$x`.
 
-Let's think about the semantics of importing and exporting.
+In this tutorial we will only import one file at a time, so importing with a predication isn't needed, but the concept of predication is; predication will be used as an _indexing_ mechanism.
+Data should (in general) be predicated to make querying only what one wants easier.
+
+Consider the semantics of importing and exporting.
 It basically follows a `read source -> write sink` paradigm.
 This is transactional, it behaves as a single atomic action.
 The read is filtered by the pattern while acquiring bindings, and templates shape the writes to the sink.
@@ -126,13 +189,7 @@ Some include:
 - `(== <pattern1> <pattern2>)` : Matching a pattern1 and a pattern2 bind if they unify.
 - `(!= <pattern1> <pattern2>)` : Matching a pattern1 and a pattern2 bind if they don't unify.
 
-The earlier pattern list could be done more verbosely as:
-```
-(I (== (a $x) $ax) (== (b $y) $by) )
-```
-
-This tutorial will mostly be focusing on the `,` variant.
-
+This tutorial will be focusing solely on the `,` variant.
 
 ## Sinks
 Sinks also come in two variants, `(, ...)` and `(O ...)`.
@@ -140,6 +197,7 @@ Sinks also come in two variants, `(, ...)` and `(O ...)`.
 
 The `,` list variant has templates to write into MORK.
 Say we had this space
+
 ```
 (a 1)
 (a 2)
@@ -149,6 +207,8 @@ Say we had this space
    (, (ab $x $y)    )
 )
 ```
+run `./mork run Sinks_01.mm2`
+
 When the exec is run
 The sources would generate these bindings: `{ { $x => 1, $y => 3}, { $x => 2, $y => 3} }`.
 the template would be written out for all valid bindings:
@@ -169,7 +229,7 @@ Some include:
 - `(+ <template>)` : equivalent to what `,` variant does.
 - `(- <template>)` : removes the bound template from MORK and from all writes in the current transaction.
 
-The `-` action is particularly useful, but know that often it is better to create a new predicated set, than to remove from an existing set. Use with care, it's behavior is non-monotonic.
+The `-` action is particularly useful, but use with care, it's behavior is non-monotonic.
 
 # Basic Set Operations
 
@@ -185,6 +245,7 @@ Functions in typical programming languages generally try to remove the concern o
 The arguments locations, and the return locations are decided at the call site. Once the function is executed, the locations are know for the remainder of it's execution.
 
 Lets work backward, we will assume we know where the locations are by using predication.
+
 ```
 ; we use `arg_a`, `arg_b` and `ret` as 'locations'
 (exec 0
@@ -204,6 +265,7 @@ Lets work backward, we will assume we know where the locations are by using pred
 (arg_b e)
 (arg_b f)
 ```
+run `./mork run --steps 0 Set_Ops_01.mm2`
 
 If we run our exec, we get this result.
 ```
@@ -226,6 +288,7 @@ So how do we avoid hard coding our locations, and make this reusable?
 
 We need an exec to build an exec!
 Our first exec will need a union definition:
+
 ```
 ; The definition is just data, 
 ;   the point is to find this data that has a useful shape dynamically.
@@ -250,6 +313,8 @@ Our first exec will need a union definition:
         (, (exec 0 $p $t) )
 )
 ```
+run `./mork run --steps 1 Set_Ops_02.mm2`
+
 This works!
 Let's break down why.
 The main workhorse here is unification.
@@ -261,7 +326,7 @@ Unification either fails to match, or succeeds to find the "Most General Unifier
 The MGU is a substitution set that if applied to either argument will
 result in the same value.
 
-Lets just examine some example arguments and results
+Let's examine some example arguments and results
 ```
 unify : (1 2) x (1 2)        
 MGU   : {}                                
@@ -316,7 +381,7 @@ MGU
 }
 ```
 We can then apply the MGU to itself until it has no more recursive parts.
-(In this case look at the $in_a $in_b and $out in $p and $t)
+(In this case look at the `$in_a` `$in_b` and `$out` in `$p` and `$t`)
 ```
 MGU
 { $in_a => arg_a
@@ -330,7 +395,7 @@ MGU
            )
 }
 ```
-We see what $p and $t are now.
+We see what `$p` and `$t` are now.
 Lets now substitute the exec's template
 ```
 ; substitute $p and $t
@@ -346,6 +411,7 @@ Lets now substitute the exec's template
    )
 )
 ```
+run `./mork run --steps 0 Set_Ops_02.mm2` and see the result.
 
 Take time to really understand this!
 We looked up a "specialized" version of an expression by unifying it's variables with constants.
@@ -365,6 +431,7 @@ Each one will have the same starting predicated sets, `(arg_a $elem_a)` and `(ar
 
 ## Union
 Union was explained above.
+
 ```
 ((union ($in_a $in_b) -> $out)
     (, ($in_a $a)           
@@ -382,6 +449,9 @@ the exec using the definition
         (, (exec 0 $p $t) )
 )
 ```
+
+run `./mork run Set_Ops_Union.mm2`
+
 After consuming the exec, it will leave behind these new values.
 ```
 (ret a)
@@ -407,6 +477,8 @@ the exec using the definition
         (, (exec 0 $p $t) )
 )
 ```
+run `./mork run Set_Ops_Intersection.mm2`
+
 after consuming the exec, it will leave behind these new values
 ```
 (ret b)
@@ -432,10 +504,13 @@ the exec using the definition
         (, (exec 0 $p $t) )
 )
 ```
+run `./mork run Set_Ops_Difference.mm2`
+
 after consuming the exec, it will leave behind these new values
 ```
 (ret a)
 ```
+
 ## Symmetric difference
 Symmetric difference could be implemented by computing the union, and the intersection, then taking the difference of the union and the intersection. The example below does this as a single transaction.
 ```
@@ -457,6 +532,8 @@ the exec using the definition
         (, (exec 0 $p $t) )
 )
 ```
+run `./mork run Set_Ops_Symmetric_Difference.mm2`
+
 after consuming the exec, it will leave behind these new values
 ```
 (ret a)
@@ -535,7 +612,7 @@ What follows are truth tables.
 (eval (0) -> 0)
 (eval (1) -> 1)
 ```
-We are going to use these to compute the tree bottom up.
+We are going to use these to evaluate the tree bottom up.
 If we can expose any number of expressions in this shape, we can process them in bulk.
 
 lets see how we would manually rewrite this using the above tables on a smaller example.
@@ -548,7 +625,7 @@ lets see how we would manually rewrite this using the above tables on a smaller 
 (and (or 1 0)
      (if 1 1)
 )
-; 4 leaves got processes
+; 4 leaves got processed
 
 => (eval ($bin_op $in_l $in_r) -> $out)
 (and 1
@@ -590,15 +667,15 @@ To describe this we will need multiple expressions
 ((((. arg/2 ) arg/1 ) case/0) 1)
 ((((. arg/2 ) arg/2 ) case/0) 1)
 ```
-Other representations are possible, but it is important that the different values are on disjoint paths
+It is important that the different values are on disjoint paths
 
-This is better for pattern matching, we can now easily access the leaves.
+This is better for pattern matching, we can now easily access the leaves and our path.
 ```
 (($path <tag>) $leaf)
 ```
-We can now look at what node a leaf is connected too
+We can now look at what node a leaf is connected to.
 
-for bare values
+For bare values:
 ```
 (, (($ctx case/0) $x)
    (eval ($x) -> $out)
@@ -688,6 +765,7 @@ Let's try an evaluation, in our case we will simply add our results in.
 This does what we set out to do, run multiple expressions at once.
 
 This might look space inefficient, but it's less so than one might initially think, due to prefix compression.
+( see  https://github.com/trueagi-io/MORK/wiki/Data-in-MORK )
 ```
 [2] . 1
    [2] .   case/2 and
@@ -715,6 +793,8 @@ Making an infinite loop is not very hard, we just need the exec that keeps const
         (, (exec 0 $p $t) )
 )
 ```
+run `./mork run --steps 0 Recursive.mm2`
+
 This exec unifies with itself
 ```
 MGU : {
@@ -736,12 +816,20 @@ We do so below by decrementing a counter.
 (exec LOOP (, (counter (S $N))
               (exec LOOP $p $t) 
            )
-           (O  (+ (exec 0 $p $t)   ) 
+           (O  (+ (exec LOOP $p $t)   ) 
                (+ (counter $N)     )
                (- (counter (S $N)) )
            )
 )
 ```
+run `./mork run --steps 0 Halts.mm2`
+you should find this
+```
+(counter (S (S Z)))
+(exec LOOP (, (counter (S $a)) (exec LOOP $b $c)) (O (+ (exec 0 $b $c)) (+ (counter $a)) (- (counter (S $a)))))
+```
+the counter decremented by one Peano successor.
+
 When the match fails at `(counter Z)`, the exec will be exhausted without making any writes, so it wont write itself back
 
 
@@ -894,128 +982,11 @@ When all the other execs have run, we reset the main loop when the conditions ho
 ```
 the (RESET) must have lower priority than (TERM), and our forks and joins (it does).
 
-Here is full program.
+let's run the full program.
+run `./mork run Going_Wide.mm2`
+Looking at the result we should find
 ```
-(eval (and 0 0) -> 0)
-(eval (and 0 1) -> 0)
-(eval (and 1 0) -> 0)
-(eval (and 1 1) -> 1)
-
-(eval (or 0 0) -> 0)
-(eval (or 0 1) -> 1)
-(eval (or 1 0) -> 1)
-(eval (or 1 1) -> 1)
-
-(eval (if 0 0) -> 1)
-(eval (if 0 1) -> 1)
-(eval (if 1 0) -> 0)
-(eval (if 1 1) -> 1)
-
-(eval (not 0) -> 1)
-(eval (not 1) -> 0)
-
-(eval (0) -> 0)
-(eval (1) -> 1)
-
-(INPUT
-   (if (or (1)
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-       (and (1) 
-            (or (0) (1))
-       )
-   )
-)
-
-; case/0
-(DEF fork
-      (, ((fork $ctx) ($case/0)) )
-      (, ((join ($ctx case/0)) $case/0) )
-)
-; case/1
-(DEF fork
-      (, ((fork $ctx) ($case/1 $x))   )
-      (, ((fork ($ctx arg/0 )) $x     )
-         ((join ($ctx case/1)) $case/1)
-      )
-)
-; case/2
-(DEF fork
-      (, ((fork $ctx) ($case/2 $x $y)))
-      (, ((fork ($ctx arg/0 )) $x     )
-         ((fork ($ctx arg/1 )) $y     )
-         ((join ($ctx case/2)) $case/2)
-      )
-)
-
-
-; case/0
-(DEF join
-      (, ((join ($ctx case/0)) $case/0)
-
-         (eval ($case/0) -> $out)
-      )
-      (, ((join $ctx) $out) )
-)
-; case/1
-(DEF join
-      (, ((join ($ctx case/1)) $case/1)
-         ((join ($ctx arg/0)) $x)
-
-         (eval ($case/1 $x) -> $out)
-      )
-      (, ((join $ctx) $out)  )
-)
-; case/2
-(DEF join
-      (, ((join ($ctx case/2)) $case/2)
-         ((join ($ctx arg/0 )) $x     )
-         ((join ($ctx arg/1 )) $y     )
-
-         (eval ($case/2 $x $y) -> $out)
-      )
-      (, ((join $ctx) $out)  )
-)
-
-(exec (BEGIN-PROGRAM) 
-  (, (INPUT $INPUT) 
-  )
-  (,
-    ((fork DONE) $INPUT)
-
-    (exec MAIN 
-      (, 
-         (DEF fork $fork_p $fork_t)
-         (DEF join $join_p $join_t)
-
-         (exec MAIN $main-pattern $main-template)
-      )
-      (, 
-         (exec (1 fork) $fork_p $fork_t)
-         (exec (0 join) $join_p $join_t)
-
-         (exec (TERM)
-           (, ((join DONE) $OUTPUT)
-              ((fork $f_env) $arg)
-              ((join $j_env) $res)
-           )
-           (O (+ (OUTPUT $OUTPUT)   )
-              (- ((fork $f_env) $arg) )
-              (- ((join $j_env) $res) )
-           )
-         )
-
-         (exec (RESET)
-           (, (($fork_join $ctx) $val)                 )
-           (, (exec MAIN $main-pattern $main-template) )
-         )
-      )
-    )
-  )
-)
+(OUTPUT 1)
 ```
 
 
@@ -1113,157 +1084,18 @@ The main loop is then modified to use the modified `DEF`s.
 )
 
 ; The (RESET) exec sources
-(, (($fork_join $ctx) $val)                 )
+(, (($fork_join $ctx) $val)           )
 =>
-(, (main eval ($fork_join $ctx) $val)       )
+(, (main eval ($fork_join $ctx) $val) )
 ```
 
 The modified code in total looks like this
-```
-(eval (and 0 0) -> 0)
-(eval (and 0 1) -> 0)
-(eval (and 1 0) -> 0)
-(eval (and 1 1) -> 1)
+run `./mork run Going_Wide_Macros.mm2`
+We still get `(OUTPUT 1)`
 
-(eval (or 0 0) -> 0)
-(eval (or 0 1) -> 1)
-(eval (or 1 0) -> 1)
-(eval (or 1 1) -> 1)
+try running with `--steps 0`, `--steps 1`, ... and so on.
+It's worthwhile to see how the program evolves.
 
-(eval (if 0 0) -> 1)
-(eval (if 0 1) -> 1)
-(eval (if 1 0) -> 0)
-(eval (if 1 1) -> 1)
-
-(eval (not 0) -> 1)
-(eval (not 1) -> 0)
-
-(eval (0) -> 0)
-(eval (1) -> 1)
-
-
-(INPUT
-   (if (or (1) 
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-       (and (1) 
-            (or (0) (1))
-       )
-   )
-)
-
-; case/0 
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/0)) )
-      (, ($proc $op (join ($ctx case/0)) $case/0) )
-)
-; case/1
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/1 $x))
-      )
-      (, ($proc $op (fork ($ctx arg/0 )) $x     )
-         ($proc $op (join ($ctx case/1)) $case/1)
-      )
-)
-; case/2
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/2 $x $y))
-
-      )
-      (, ($proc $op (fork ($ctx arg/0 )) $x     )
-         ($proc $op (fork ($ctx arg/1 )) $y     )
-         ($proc $op (join ($ctx case/2)) $case/2)
-      )
-)
-
-
-; case/0
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) $case/0)
-
-         ($op ($case/0) -> $out)
-      )
-      (, ($proc $op (join $ctx) $out) 
-      )
-)
-; case/1
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/1)) $case/1)
-         ($proc $op (join ($ctx arg/0)) $x)
-         
-         ($op ($case/1 $x) -> $out)
-      )
-      (, ($proc $op (join $ctx) $out)
-      )
-)
-; case/2
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/2)) $case/2)
-         ($proc $op (join ($ctx arg/0 )) $x     )
-         ($proc $op (join ($ctx arg/1 )) $y     )
-
-         ($op ($case/2 $x $y) -> $out)
-      )
-      (, ($proc $op (join $ctx) $out)
-      )
-)
-
-
-
-; the macro creates DEF, the MACROS are \"compiled out\"
-(exec (macro) 
-  (,
-     (MACRO ($name main eval) $p $t)
-  )
-  (, (DEF   ($name main eval) $p $t)
-  )
-)
-
-; this should fire right when macros are done expanding
-(exec (BEGIN-PROGRAM) 
-  (, (INPUT $INPUT)
-  )
-  (,
-    (main eval (fork DONE) $INPUT)
-
-    (exec MAIN 
-      (, 
-         (DEF (fork main eval) $fork_p $fork_t)
-         (DEF (join main eval) $join_p $join_t)
-         
-         (exec MAIN $main-pattern $main-template)
-      )  
-      (, 
-         (exec (1 fork) $fork_p $fork_t)
-         (exec (0 join) $join_p $join_t)
-         
-         (exec (TERM)
-           (, (main eval (join DONE) $OUTPUT)
-              (main eval $env $arg)
-           )
-           (O (+ (OUTPUT $OUTPUT)      )
-              (- (main eval $env $arg) )
-           )
-         )
-
-         (exec (RESET)
-           (, (main eval ($fork_join $ctx) $val)       )
-           (, (exec MAIN $main-pattern $main-template) )
-         )
-      )
-    )
-  )
-)
-```
 
 # Running larger programs
 At the moment only one input expression is being processed at a time.
@@ -1340,192 +1172,11 @@ We can see that join can be modified similarly:
 This looks more involved, but this is only because the 3 expressions we join all go out of scope together.
 It can be helpful to visually "brace" the scope by putting the value that will go out of scope at the top and bottom of the exec, with the rest of the transaction in the middle.
 
-After putting all this together the code looks like this:
-```
-(eval (and 0 0) -> 0)
-(eval (and 0 1) -> 0)
-(eval (and 1 0) -> 0)
-(eval (and 1 1) -> 1)
+After putting all this together we 
+run `./mork run Going_Wide_Larger.mm2`
 
-(eval (or 0 0) -> 0)
-(eval (or 0 1) -> 1)
-(eval (or 1 0) -> 1)
-(eval (or 1 1) -> 1)
-
-(eval (if 0 0) -> 1)
-(eval (if 0 1) -> 1)
-(eval (if 1 0) -> 0)
-(eval (if 1 1) -> 1)
-
-(eval (not 0) -> 1)
-(eval (not 1) -> 0)
-
-(eval (0) -> 0)
-(eval (1) -> 1)
-
-(INPUT A
-   (if (or (1) 
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-       (and (1) 
-            (or (0) (1))
-       )
-   )
-)
-(INPUT B
-   (if (and (1) 
-            (or (0) (1))
-       )
-       (or (1) 
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-   )
-)
-
-; case/0 
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/0))
-
-      )
-      (O
-        (+ ($proc $op (join ($ctx case/0)) $case/0) )
-
-
-        (- ($proc $op (fork $ctx) ($case/0)) )
-      )
-)
-; case/1
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/1 $x))
-      
-      )
-      (O 
-         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
-         (+ ($proc $op (join ($ctx case/1)) $case/1) )
-
-         (- ($proc $op (fork $ctx) ($case/1 $x)) )
-      )
-)
-; case/2
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/2 $x $y))
-
-      )
-      (O 
-         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
-         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
-         (+ ($proc $op (join ($ctx case/2)) $case/2) )
-
-
-         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
-      )
-)
-
-
-; case/0
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) $case/0)
-
-         ($op ($case/0) -> $out)
-      )
-      (O 
-         (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/0)) $case/0) )
-      )
-)
-; case/1
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/1)) $case/1)
-         ($proc $op (join ($ctx arg/0)) $x)
-         
-         ($op ($case/1 $x) -> $out)
-      )
-      (O (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/1)) $case/1) )
-         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
-      )
-)
-; case/2
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/2)) $case/2)
-         ($proc $op (join ($ctx arg/0 )) $x     )
-         ($proc $op (join ($ctx arg/1 )) $y     )
-
-         ($op ($case/2 $x $y) -> $out)
-      )
-      (O (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/2)) $case/2) )
-         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
-         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
-      )
-)
-
-
-
-; the macro creates DEF, the MACROS are \"compiled out\"
-(exec (macro) 
-  (,
-     (MACRO ($name main eval) $p $t)
-     (MACRO ($name $proc $op) $pattern $template)
-  )
-  (O 
-     (+ (DEF   ($name main eval) $p $t) )
-
-     (- (MACRO ($name $proc $op) $pattern $template) )
-  )
-)
-
-; this should fire right when macros are done expanding
-(exec (BEGIN-PROGRAM) 
-  (, (INPUT $TAG $INPUT)
-  )
-  (,
-    (main eval (fork (DONE $TAG)) $INPUT)
-
-    (exec MAIN 
-      (, 
-         (DEF (fork main eval) $fork_p $fork_t)
-         (DEF (join main eval) $join_p $join_t)
-         
-         (exec MAIN $main-pattern $main-template)
-      ) 
-      (, 
-         (exec (1 fork) $fork_p $fork_t) 
-         (exec (0 join) $join_p $join_t) 
-         
-         (exec (TERM)
-           (, (main eval (join (DONE $TAG_)) $OUTPUT)
-           )
-           (O (+ (OUTPUT $TAG_ $OUTPUT) )
-
-              (- (main eval (join (DONE $TAG_)) $OUTPUT) )
-           )
-         )
-
-         (exec (RESET)
-           (, (main eval ($fork_join $ctx) $val)       )
-           (, (exec MAIN $main-pattern $main-template) )
-         )
-      )
-    )
-  )
-)
-```
+Once again, try running with `--steps 0`, `--steps 1`, ... and so on.
+This time focus on how the program is cleaning up after itself mid execution.
 
 # Running multiple programs
 
@@ -1616,11 +1267,9 @@ We generalize the body from eval to `$op` and `$op_`.
 ```
 
 Making these changes we are able to run our two programs at the same time.
+run `./mork run Going_Wide_2_Programs.mm2`
 
-If we query the results with
-- pattern  : `(OUTPUT $TAG $VAL)`
-- template : `(OUTPUT $TAG $VAL)`
-
+If look at the results we can find
 ```
 (OUTPUT A 1)
 (OUTPUT B 1)
@@ -1628,222 +1277,6 @@ If we query the results with
 ```
 The tree was successfully flipped. The other expressions evaluated.
 
-the full final code 
-```
-(eval (and 0 0) -> 0)
-(eval (and 0 1) -> 0)
-(eval (and 1 0) -> 0)
-(eval (and 1 1) -> 1)
-
-(eval (or 0 0) -> 0)
-(eval (or 0 1) -> 1)
-(eval (or 1 0) -> 1)
-(eval (or 1 1) -> 1)
-
-(eval (if 0 0) -> 1)
-(eval (if 0 1) -> 1)
-(eval (if 1 0) -> 0)
-(eval (if 1 1) -> 1)
-
-(eval (not 0) -> 1)
-(eval (not 1) -> 0)
-
-(eval (0) -> 0)
-(eval (1) -> 1)
-
-; (ctor bool 1)
-; (ctor bool 0)
-; (ctor bool-expr ($x))
-; (ctor bool-expr (and $x $y))
-; (ctor bool-expr (or  $x $y))
-; (ctor bool-expr (xor $x $y))
-; (ctor bool-expr (if  $x $y))
-
-(INPUT A
-   (if (or (1) 
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-       (and (1) 
-            (or (0) (1))
-       )
-   )
-)
-(INPUT B
-   (if (and (1) 
-            (or (0) (1))
-       )
-       (or (1) 
-           (not (and (or (1) (0))
-                     (1)
-                )
-           )
-       )
-   )
-)
-
-(flip-tree ((node $val) $x $y) -> ((node $val) $y $x))
-(flip-tree (*) -> (*))
-
-; if it was infix
-(INPUT-TREE T 
-   ((node 4)
-      ((node 2) 
-         ((node 1) (*) (*))
-         ((node 3) (*) (*))
-      )
-      ((node 6)
-         ((node 5) (*) (*))
-         ((node 7) (*) (*))
-      )
-   )
-)
-
-; case/0 
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/0))
-
-      )
-      (O
-        (+ ($proc $op (join ($ctx case/0)) $case/0) )
-
-
-        (- ($proc $op (fork $ctx) ($case/0)) )
-      )
-)
-; case/1
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/1 $x))
-      
-      )
-      (O 
-         (+ ($proc $op (fork ($ctx arg/0)) $x)      )
-         (+ ($proc $op (join ($ctx case/1)) $case/1) )
-
-         (- ($proc $op (fork $ctx) ($case/1 $x)) )
-      )
-)
-; case/2
-(MACRO
-  (fork $proc $op)
-      (, ($proc $op (fork $ctx) ($case/2 $x $y))
-
-      )
-      (O 
-         (+ ($proc $op (fork ($ctx arg/0)) $x     ) )
-         (+ ($proc $op (fork ($ctx arg/1)) $y     ) )
-         (+ ($proc $op (join ($ctx case/2)) $case/2) )
-
-
-         (- ($proc $op (fork $ctx) ($case/2 $x $y)) )
-      )
-)
-
-
-; case/0
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/0)) $case/0)
-
-         ($op ($case/0) -> $out)
-      )
-      (O 
-         (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/0)) $case/0) )
-      )
-)
-; case/1
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/1)) $case/1)
-         ($proc $op (join ($ctx arg/0)) $x)
-         
-         ($op ($case/1 $x) -> $out)
-      )
-      (O (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/1)) $case/1) )
-         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
-      )
-)
-; case/2
-(MACRO
-  (join $proc $op)
-      (, ($proc $op (join ($ctx case/2)) $case/2)
-         ($proc $op (join ($ctx arg/0 )) $x     )
-         ($proc $op (join ($ctx arg/1 )) $y     )
-
-         ($op ($case/2 $x $y) -> $out)
-      )
-      (O (+ ($proc $op (join $ctx) $out) )
-
-         (- ($proc $op (join ($ctx case/2)) $case/2) )
-         (- ($proc $op (join ($ctx arg/0 )) $x     ) )
-         (- ($proc $op (join ($ctx arg/1 )) $y     ) )
-      )
-)
-
-
-
-; the macro creates DEF, the MACROS are \"compiled out\"
-(exec (macro) 
-  (,
-     (MACRO ($name $proc $op) $pattern $template)
-
-     (MACRO ($name main eval) $p $t)
-     (MACRO ($name main flip-tree) $p_ $t_)
-  )
-  (O 
-     (+ (DEF   ($name main eval)      $p $t) )
-     (+ (DEF   ($name main flip-tree) $p_ $t_) )
-
-     (- (MACRO ($name $proc $op) $pattern $template) )
-  )
-)
-
-; this should fire right when macros are done expanding
-(exec (BEGIN-PROGRAM) 
-  (, (INPUT $TAG $INPUT)
-     (INPUT-TREE $TAG-TREE $INPUT-TREE)
-  )
-  (,
-    (main eval      (fork (DONE $TAG     )) $INPUT     )
-    (main flip-tree (fork (DONE $TAG-TREE)) $INPUT-TREE)
-
-    (exec MAIN 
-      (, 
-         (DEF (fork main $op) $fork_p $fork_t)
-         (DEF (join main $op) $join_p $join_t)
-         
-         (exec MAIN $main-pattern $main-template)
-      ) 
-      (, 
-         (exec (1 fork) $fork_p $fork_t) 
-         (exec (0 join) $join_p $join_t) 
-         
-         (exec (TERM)
-           (, (main $op_ (join (DONE $TAG_)) $OUTPUT)
-           )
-           (O (+ (OUTPUT $TAG_ $OUTPUT) )
-
-              (- (main $op_ (join (DONE $TAG_)) $OUTPUT) )
-           )
-         )
-
-         (exec (RESET)
-           (, (main $op ($fork_join $ctx) $val)       )
-           (, (exec MAIN $main-pattern $main-template) )
-         )
-      )
-    )
-  )
-)
-```
 
 # Closing Remarks
 
@@ -1861,7 +1294,7 @@ Many important ideas have been covered here including:
 - running multiple inputs
 - running multiple programs
 
-The examples have been chosen to give a non-trivial examples that touch on strategies to expected issues people will encounter.
+The examples have been chosen to give a non-trivial example strategies to expected issues people will encounter.
 These strategies should give enough room to explore alternatives.
 
 Some ideas that one could try:
@@ -1921,7 +1354,33 @@ Some ideas that one could try:
   Short-cutting is usually more interesting with side effects.
   Consider adding a side effects (writing to a shared global name for example) to the evaluation and modifying the code to make short-cutting work.
   One strategy would be to construct execs that are deferred and are only spawned conditionally.
-  How does this affect the behavior of the process?
+  How does this affect the parallelism of the process?
 
+# Little extra
 
+## using MORK via the MORK internal libraries in Rust
+This section should only be done by people a little comfortable with Rust, that want to experiment with internals.
+At the current time some features are only possible with the `main` branch.
 
+There is a binary crate `mork_playground` in the at `structuring_code/mork_playground`
+It includes an import of a file, optional tracing, and a final file export.
+
+One can place the crate into the MORK workspace and build the crate.
+
+To keep it simple, it is just a monolithic main function.
+
+The MORK kernel library is designed for implementors; as such it has some low level details like the `expr!` macro
+The syntax based on the internal byte-string representation is:
+- arity byte `[n]` where n is the arity number
+- new variable `$`
+- reference `_n` where n is an integer that references the nth new variable
+- symbols are just strings of characters
+
+The patterns and templates are separate arguments, but they need to be treated as a single expression, `(<pattern> <template>)`, just without the tuple.
+For mor information on the internal representation, see [Data in MORK](https://github.com/trueagi-io/MORK/wiki/Data-in-MORK).
+
+The expr syntax is only for imports and exports in this tutorial.
+I've added basic tracing support to the above rust code where the syntax is also used.
+
+To run the code examples with `structuring_code/mork_playground`, simply add a file named `Input.mm2` into the folder and run the binary.
+in the folder with `cargo run --release` (with a nightly compiler)

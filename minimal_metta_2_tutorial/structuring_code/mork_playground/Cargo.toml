@@ -1,0 +1,9 @@
+[package]
+name = "mork_playground"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+mork          = { workspace=true }
+mork-expr     = { workspace=true }
+mork-frontend = { workspace=true }

@@ -1,0 +1,17 @@
+(arg_a a)
+(arg_a b)
+(arg_a c)
+(arg_b b)
+(arg_b c)
+(arg_b d)
+
+((intersection ($in_a $in_b) -> $out)
+    (, ($in_a $a)           
+       ($in_b $a)
+    )
+    (, ($out $a) )
+)
+
+(exec 0 (, ((intersection (arg_a arg_b) -> ret) $p $t) )
+        (, (exec 0 $p $t) )
+)

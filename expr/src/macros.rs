@@ -25,14 +25,32 @@ use crate::{Expr, Tag, byte_item, item_byte};
 /// ```
 #[macro_export]
 macro_rules! destruct {
+    // top-level variables
+    ($expr:expr, { $var:ident : $ty:ty }, $good:expr, $err:ident => $bad:expr) => {
+        $crate::destruct!(@at($expr, 0), { $var: $ty } , $good, $err => $bad);
+    };
+    (@at($expr:expr, $offset:expr), { $var:ident : $ty:ty }, $good:expr, $err:ident => $bad:expr) => {
+        use $crate::macros::{DeserializableExpr};
+        let expr = Expr { ptr: unsafe { $expr.ptr.add($offset) } };
+        if !<$ty as DeserializableExpr>::check(expr) {
+            let $err: String = format!("expression did not match expected type");
+            $bad
+        } else {
+            let $var: $ty = <$ty as DeserializableExpr>::deserialize_unchecked(expr);
+            $good
+        }
+    };
     ($expr:expr, ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
+        $crate::destruct!(@at($expr, 0), ( $($pattern)* ), $good, $err => $bad);
+    };
+    (@at($expr:expr, $offset:expr), ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
         {
             use ::core::convert::TryFrom;
             use $crate::{Tag, Expr, byte_item, parse};
             use $crate::macros::{DeserializableExpr};
             let rv = 'ret: loop {
                 unsafe {
-                    let mut offset = 0;
+                    let mut offset = $offset;
                     $crate::destruct!(@chomp, 'ret, $expr, offset, ( $($pattern)* ) );
                     let _ = offset;
                     break 'ret Ok($crate::destruct!(@vars, $($pattern)*))
@@ -165,7 +183,7 @@ impl SerializableExpr for i32 {
 impl DeserializableExpr for i32 {
     #[inline(always)]
     fn advanced(e: Expr) -> usize {
-        4
+        1 + core::mem::size_of::<Self>()
     }
     #[inline(always)]
     fn check(e: Expr) -> bool {
@@ -393,6 +411,21 @@ mod tests {
                 assert_eq!(out_2, 69);
             },
             err => { panic!("failed {err:?}") }
+        );
+    }
+    #[test]
+    fn test_parse_typed_top() {
+        use crate::macros::SerializableExpr;
+        let mut buf = Vec::new();
+        SerializableExpr::serialize(&42_i32, &mut buf)
+            .expect("construct failed");
+
+        eprintln!("constructed: {buf:?}");
+        let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
+        destruct!(
+            expr, {out_1:i32},
+            assert_eq!(out_1, 42),
+            err => panic!("failed {err:?}")
         );
     }
 

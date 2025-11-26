@@ -15,12 +15,13 @@ use crate::{Expr, Tag, byte_item, item_byte};
 ///
 /// Example usage:
 /// ```
-/// let mut expr = mork_expr::parse!("(eq? (+ 2 2) 4)");
+/// // let mut expr = mork_expr::parse!("(eq? (+ 2 2) 4)");
+/// let mut expr = mork_expr::parse!("[3] eq? [3] + 2 2 4");
 /// let expr = mork_expr::Expr { ptr: expr.as_mut_ptr() };
 /// mork_expr::destruct!(
 ///     expr, ("eq?" ("+" out_1 out_2) out_3),
 ///     eprintln!("{out_1:?}, {out_2:?}, {out_3:?}"),
-///     _err => { panic!("failed") }
+///     err => { panic!("failed: {err:?}") }
 /// );
 /// ```
 #[macro_export]
@@ -424,6 +425,19 @@ mod tests {
         let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
         destruct!(
             expr, {out_1:i32},
+            assert_eq!(out_1, 42),
+            err => panic!("failed {err:?}")
+        );
+    }
+    #[test]
+    fn test_parse_typed_top_offset() {
+        let buf = construct!( 42_i32 )
+            .expect("construct failed");
+
+        eprintln!("constructed: {buf:?}");
+        let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
+        destruct!(
+            @at(expr, 1), {out_1:i32},
             assert_eq!(out_1, 42),
             err => panic!("failed {err:?}")
         );

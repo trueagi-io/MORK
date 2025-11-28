@@ -49,7 +49,7 @@ If we run our exec, we get this result.
 (arg_b e)
 (arg_b f)
 ```
-not bad!
+Not bad!
 
 So how do we avoid hard coding our locations, and make this reusable?
 
@@ -83,8 +83,9 @@ Our first exec will need a union definition:
 run `./mork run --steps 1 Set_Ops_02_Parameterized_Locations.mm2`
 
 This works!
+
 Let's break down why.
-The main workhorse here is unification.
+The main workhorse here is _unification_.
 
 ## Unification
 Unification is a form of bidirectional pattern matching.
@@ -147,7 +148,7 @@ MGU
            )
 }
 ```
-We can then apply the MGU to itself until it has no more recursive parts.
+We can then apply the MGU to itself until it has no more recursive parts.  
 (In this case look at the `$in_a` `$in_b` and `$out` in `$p` and `$t`)
 ```
 MGU
@@ -180,8 +181,8 @@ Lets now substitute the exec's template
 ```
 run `./mork run --steps 0 Set_Ops_02_Parameterized_Locations.mm2` and see the result.
 
-Take time to really understand this!
-We looked up a "specialized" version of an expression by unifying it's variables with constants.
+Take time to really understand this!  
+We looked up a "specialized" version of an expression by unifying it's variables with constants.  
 The shared parts we unified with broadcasted those constants to the other parts of the expression.
 
 # The Set operations defined
@@ -210,7 +211,7 @@ Union was explained above.
 )
 
 ```
-the exec using the definition
+The exec using the definition.
 ```
 (exec 0 (, ((union (arg_a arg_b) -> ret) $p $t) )
         (, (exec 0 $p $t) )
@@ -229,7 +230,7 @@ After consuming the exec, it will leave behind these new values.
 
 ## Intersection
 
-For intersection we need to have the __constraint__ that both argument elements are the same value
+For intersection we need to have the __constraint__ that both argument elements are the same value.
 ```
 ((intersection ($in_a $in_b) -> $out)
     (, ($in_a $a)           
@@ -238,7 +239,7 @@ For intersection we need to have the __constraint__ that both argument elements 
     (, ($out $a) )
 )
 ```
-the exec using the definition
+The exec using the definition.
 ```
 (exec 0 (, ((intersection (arg_a arg_b) -> ret) $p $t) )
         (, (exec 0 $p $t) )
@@ -246,7 +247,7 @@ the exec using the definition
 ```
 run `./mork run Set_Ops_04_Intersection.mm2`
 
-after consuming the exec, it will leave behind these new values
+After consuming the exec, it will leave behind these new values.
 ```
 (ret b)
 (ret c)
@@ -265,7 +266,7 @@ The right argument will remove from the left. We are going to need to use the `O
     )
 )
 ```
-the exec using the definition
+The exec using the definition.
 ```
 (exec 0 (, ((difference (arg_a arg_b) -> ret) $p $t) )
         (, (exec 0 $p $t) )
@@ -273,7 +274,7 @@ the exec using the definition
 ```
 run `./mork run Set_Ops_05_Difference.mm2`
 
-after consuming the exec, it will leave behind these new values
+After consuming the exec, it will leave behind these new values.
 ```
 (ret a)
 ```
@@ -312,3 +313,7 @@ after consuming the exec, it will leave behind these new values
 Generally these operations need not be defined, rather they should be understood.
 Set operations are effectively implicitly happening every time you make make a query.
 More sophisticated actions are usually subtle variations of these examples above, with more domain specific behavior.
+
+----
+
+Next we start building a more involved program in `structuring_code_04_Going_Wide.md`.

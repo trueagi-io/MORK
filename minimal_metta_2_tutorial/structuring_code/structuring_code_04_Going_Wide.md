@@ -249,26 +249,27 @@ Making an infinite loop is not very hard, we just need the exec that keeps const
 ```
 run `./mork run --steps 0 Going_Wide_01_Recursive.mm2`
 
-This exec unifies with itself
+This exec unifies with itself ....
 ```
 MGU : {
    $p0 => (, (exec 0 $p1 $t1) )
    $t0 => (, (exec 0 $p1 $t1) )
 }
 ```
-Then templates itself
+then templates itself.
 ```
 (, (exec 0 $p0 $t0) )
 =>
 (, (exec 0 (, (exec 0 $p1 $t1) ) (, (exec 0 $p1 $t1) )) )
 ```
+We get the same exec back.
 
-The issue is that we want this to halt. We can do this either by making it fail to match.
-We do so below by decrementing a counter.
+The issue is that we want this to halt. We can do this by making it fail to match.  
+We do so below by decrementing a counter (here with Peano arithmetic).
 ```
 (counter (S (S (S Z))))
 (exec LOOP (, (counter (S $N))
-              (exec LOOP $p $t) 
+              (exec LOOP $p $t)
            )
            (O  (+ (exec LOOP $p $t)   ) 
                (+ (counter $N)     )
@@ -287,21 +288,21 @@ the counter decremented by one Peano successor.
 When the match fails at `(counter Z)`, the exec will be exhausted without making any writes, so it wont write itself back
 
 
-We just need one more piece; we need to turn our INPUT in a form that is in the Path-Context representation.
+We just need one more piece; we need to turn our INPUT in a form that is in the Path-Context representation.  
 We will need to _fork_ our expressions in order to use our evaluation code to _join_ them.
 
-We will start with an empty path and our expression. We are going to strip the top of the expression, make values when we find them, and fork more paths on recursive branches.
+Start with an empty path and our expression. Strip the top of the expression, make values when we find them, and fork more paths on recursive branches.
 
 We need to distinguish between Our forks and our joins
 
 
-We'll spawn a task to fork with our $INPUT
+Spawn a task to fork with our $INPUT
 `DONE` here will help mark later that we have a finished computing.
 ```
 ((fork DONE) $INPUT)
 ```
 
-We start with case/0; it simply converts it.
+Start with case/0; it simply converts it.
 ```
 ; case/0
 (DEF fork
@@ -309,7 +310,7 @@ We start with case/0; it simply converts it.
       (, ((join ($ctx case/0)) $case/0) )
 )
 ```
-then case/1 and case/2; We will leave behind the case to join on and continue forking on the recursive part.
+Then case/1 and case/2; Leave behind the case to join on and continue forking on the recursive part.
 ```
 ; case/1
 (DEF fork
@@ -359,7 +360,7 @@ If the these are run in a loop an expression would be forked like so
 ((join (((DONE arg/2) arg/2) case/0)) 1)
 ```
 
-We can re write our joins to be in a similar form.
+We can rewrite our joins to be in a similar form.
 ```
 ; case/0
 (DEF join
@@ -434,7 +435,7 @@ When all the other execs have run, we reset the main loop when the conditions ho
   (, (exec MAIN $main-pattern $main-template) )
 )
 ```
-the (RESET) must have lower priority than (TERM), and our forks and joins (it does).
+The `(RESET)` must have lower priority than `(TERM)`, and our forks and joins (it does).
 
 let's run the full program.
 run `./mork run Going_Wide_03.mm2`
@@ -442,3 +443,7 @@ Looking at the result we should find
 ```
 (OUTPUT 1)
 ```
+
+----
+
+Next we generalize for and join with partial evaluation in `structuring_code_05_Going_Wide.md`.

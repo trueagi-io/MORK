@@ -1,15 +1,15 @@
 # Getting set up
 
 ## using MORK via the CLI
-The recommended way to follow this tutorial is to use the CLI by compiling the MORK kernel binary.
-run `cargo build --release` in `./kernel` in the git repository with a nightly compiler `rustup toolchain install nightly`.
+The tutorial is to uses the MORK CLI by compiling the MORK kernel binary.
+run `cargo build --release` in `./kernel` in the mork git repository with a nightly compiler `rustup toolchain install nightly`.
 The binary will be at `./target/release/mork`.
 
-You can do `mork --help` for help
+You can do `./mork --help` for help
 
-We will be using `mork run`
+We will be using `./mork run`
 
-With `mork run --help` we see the syntax
+With `./mork run --help` we see the syntax
 ```
 Usage: mork run [OPTIONS] <INPUT_PATH> [OUTPUT_PATH]
 
@@ -25,9 +25,8 @@ Options:
 Run `mork run <INPUT_PATH>` :  input a file; output to stdout.
 Run `mork run <INPUT_PATH> [OUTPUT_PATH]` : input a file; output a file.
 
-(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs).
-
-For the tutorial it is recommended to move the new `mork` binary executable into the `structuring_code` folder.
+For the tutorial make a copy of the `mork` binary executable into the `structuring_code` folder.
+The tutorial will from time to time ask you to run a `./mork run` from the structuring code folder
 
 There is a file `structuring_code/Hello_World.mm2`, here are the contents.
 ```
@@ -38,9 +37,9 @@ There is a file `structuring_code/Hello_World.mm2`, here are the contents.
 )
 
 ```
-Do so then run `./mork run --steps 0 Setup_Hello_World.mm2` on one of the example files. (it actually runs --steps n + 1)
+run `./mork run --steps 0 Setup_Hello_World.mm2`
 
-if you see this kind of output, everything is working
+If you see this kind of output, everything is working.
 ```
 loaded "example.mm2" ; running and outputing to Some("stdout")
 executing 1 steps took 0 ms (unifications 1, writes 1, transitions 8)
@@ -50,4 +49,10 @@ result:
 (hello (Hello $a !) $a)
 
 ```
-Note how it actually ran at one step with the `--steps 0`
+The results are the full state of the program upon exiting.
+
+__Note__ : It actually ran _one_ step with the `--steps 0`
+
+----
+
+Next basics are introduced `structuring_code_02_Basics.md`

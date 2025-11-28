@@ -1,6 +1,8 @@
-# Elementary Concepts
+# Basics
 
 ## Keeping Things Separate
+
+(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs).
 
 Say we have two metta files. 
 
@@ -25,7 +27,7 @@ a
 b
 c
 ```
-So we can see that imports constitute a set union.
+So we can see that imports constitute a _set union_.
 
 This may be the desired behavior, but often one would like to ensure that the separate files behave as separate sets.
 This would require a form of _predication_.
@@ -35,7 +37,6 @@ We can do this simply by modifying the template on import.
 Import "file1.metta" with
 - pattern  = `$x`
 - template = `(file1 $x)`
-
 
 Import "file2.metta" with
 - pattern  = `$x`
@@ -66,6 +67,8 @@ b
 In this tutorial we will only import one file at a time, so importing with a predication isn't needed, but the concept of predication is; predication will be used as an _indexing_ mechanism.
 Data should (in general) be predicated to make querying only what one wants easier.
 
+----
+
 Consider the semantics of importing and exporting.
 It basically follows a `read source -> write sink` paradigm.
 This is transactional, it behaves as a single atomic action.
@@ -94,13 +97,12 @@ When an exec is run, it is removed from the space.
 Where `<priority>` should be replaced with a ground s-expression.
 The priority tells the runtime when an exec should be run relative to execs.
 
-The order is based on path encoding of S-expressions ( if you are curious https://github.com/trueagi-io/MORK/wiki/Data-in-MORK ).
+The order is based on path encoding of S-expressions; if you are curious see [Data in MORK]( https://github.com/trueagi-io/MORK/wiki/Data-in-MORK ).
 
-The basic idea is that we can order priority like below
+The basic idea is that we can order priority like below :
+- Low arity Tuple > High Arity Tuple > Short Symbol > Long Symbol
 
-Low arity Tuple > High Arity Tuple > Short Symbol > Long Symbol
-
-some examples
+Some examples :
 - `(0) > (1)`
 - `(0) > (0 0)`
 - `(1) > (0 0)`
@@ -130,8 +132,8 @@ Sinks also come in two variants, `(, ...)` and `(O ...)`.
 
 
 The `,` list variant has templates to write into MORK.
-Say we had this space
 
+Say we had this space :
 ```
 (a 1)
 (a 2)
@@ -143,9 +145,10 @@ Say we had this space
 ```
 run `./mork run Basics_Sources_Sinks.mm2`
 
-When the exec is run
-The sources would generate these bindings: `{ { $x => 1, $y => 3}, { $x => 2, $y => 3} }`.
-the template would be written out for all valid bindings:
+When the exec is run the sources would generate these bindings: 
+- `{ { $x => 1, $y => 3}, { $x => 2, $y => 3} }`
+
+The template would be written out for all valid bindings:
 - `(ab $x $y)[ { $x => 1, $y => 3} ]  => (ab 1 3)`
 - `(ab $x $y)[ { $x => 2, $y => 3} ]  => (ab 2 3)`
 
@@ -159,8 +162,13 @@ The final space would look like this.
 ```
 
 The `O` list variant adds more functionality and options.
+
 Some include:
 - `(+ <template>)` : equivalent to what `,` variant does.
 - `(- <template>)` : removes the bound template from MORK and from all writes in the current transaction.
 
 The `-` action is particularly useful, but use with care, it's behavior is non-monotonic.
+
+----
+
+In `structuring_code_03_SetOps.md` we will look into how to make use of how to make simple transactions with exec, and unification.

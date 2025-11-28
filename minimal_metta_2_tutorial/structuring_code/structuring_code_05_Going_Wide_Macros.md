@@ -15,13 +15,13 @@ Lets have a look at some of the `DEF`s.
       (, ((join $ctx) $out)  )
 )
 ```
-There are currently 2 points we are going to modify.
-First is that there is no separation possible between two processes running execs this definition.
-Predication can make this possible.
+There are 2 points we are going to modify.
+
+First is that there is no separation possible between two processes running execs this definition. Predication can make this possible.  
 Second is that `eval` is hard coded in to join despite join being a rather general.
 
-We still want the specialized version so we will need to stage creation of the `DEF`s.
-We'll define a `MACRO`, which just signals it requires a moment of staging.
+We still want the specialized version so we will need to stage creation of the `DEF`s.  
+Define a `MACRO`, which signals (to ourselves) that it requires expansion.
 ```
 ; case/2
 (MACRO
@@ -40,7 +40,7 @@ We'll define a `MACRO`, which just signals it requires a moment of staging.
 - `$op` will select what operation we will be running (in our case`$op`).
 
 
-We then make an exec with a high priority (in our case higher than `(BEGIN-PROGRAM)`) that will expand our `MACROS`s to generate our `DEF`s.
+Make an exec with a high priority (in our case higher than `(BEGIN-PROGRAM)`) that will expand our `MACROS`s to generate our `DEF`s.
 ```
 ; the macro creates DEF, the MACROS are \"compiled out\"
 (exec (macro) 
@@ -97,9 +97,12 @@ The main loop is then modified to use the modified `DEF`s.
 (, (main eval ($fork_join $ctx) $val) )
 ```
 
-The modified code in total looks like this
 run `./mork run Going_Wide_11_Macros.mm2`
 We still get `(OUTPUT 1)`
 
-try running with `--steps 0`, `--steps 1`, ... and so on.
+Try running with `--steps 0`, `--steps 1`, ... and so on.
 It's worthwhile to see how the program evolves.
+
+----
+
+Next we see if we can scale this program to more inputs in `structuring_code_05_Going_Wide_Macros.md`.

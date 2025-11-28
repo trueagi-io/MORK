@@ -3,8 +3,12 @@ This tutorial aims to walk through how a program can be constructed in MM2, focu
 # Tutorial Files
 All the files referenced in the tutorial are to be found in the folder `structuring_code/`
 
+The tutorial is expected to be read in the order written in this file.
+
+If one wants to jump right in, head to `structuring_code_00_Intro_and_Contents.md`
+
 # Files in `structuring_code/`
-- ## The tutorial text files
+- ## `.md` tutorial text files
   - `structuring_code_00_Intro_and_Contents.md`          
     - This markdown file
   - `structuring_code_01_Setup.md`             
@@ -44,7 +48,7 @@ All the files referenced in the tutorial are to be found in the folder `structur
     - Introduction to a Rust template to experiment with the internals.
 
 
-- ## `.mm2` files
+- ## `.mm2` programs
   - Setup 
     - `Setup_Hello_World.mm2`
       - A basic file to see if the tutorial environment is set up.
@@ -75,6 +79,6 @@ All the files referenced in the tutorial are to be found in the folder `structur
     - `Going_Wide_31_Two_Programs.mm2`
       - a modified `Going_Wide_21_Larger_Programs.mm2` to support running a second process type using the same fork/join logic.
 
-- ## `mork_playground`
+- ## `mork_playground/`
   - a rust binary crate program that serves as a template for basic file IO with an embedded MORK instance.
   - mentioned in `structuring_code_09_Rust_Extra.md`

@@ -2,8 +2,9 @@
 
 Let's add another program into the mix.
 The program will take a binary tree and flip it.
+
 We will reuse the logic of our fork join.
-To do so we need to only have recursive parts at the fork points.
+To do so we need to only have recursive parts at the fork points.  
 Non-recursive parts need to be held in the head of the nodes
 ```
 
@@ -27,7 +28,7 @@ Non-recursive parts need to be held in the head of the nodes
    )
 )
 ```
-We'll add to our `MACRO` expander
+Add to our `MACRO` expander :
 ```
 (exec (macro) 
   (,
@@ -45,7 +46,7 @@ We'll add to our `MACRO` expander
 )
 ```
 
-And modify `(BEGIN-PROGRAM)` to spawn the `INPUT-TREE`.
+And modify `(BEGIN-PROGRAM)` to spawn the `INPUT-TREE`.  
 We generalize the body from eval to `$op` and `$op_`.
 ```
 (exec (BEGIN-PROGRAM) 
@@ -87,9 +88,10 @@ We generalize the body from eval to `$op` and `$op_`.
 ```
 
 Making these changes we are able to run our two programs at the same time.
+
 run `./mork run Going_Wide_31_Two_Programs.mm2`
 
-If look at the results we can find
+Look at the results, we can find :
 ```
 (OUTPUT A 1)
 (OUTPUT B 1)

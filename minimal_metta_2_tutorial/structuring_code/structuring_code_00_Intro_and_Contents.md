@@ -62,8 +62,11 @@ If one wants to jump right in, head to `structuring_code_00_Intro_and_Contents.m
       - Runs an exec as a function where the argument and return locations are hardcoded.
     - `Set_Ops_02_Parameterized_Locations.mm2`
       - The initial exec uses a "definition" in the database to construct a function with the right argument and return locations.
-    - `Set_Ops_03_Union.mm2` | `Set_Ops_04_Intersection.mm2` | `Set_Ops_05_Difference.mm2` | `Set_Ops_06_Symmetric_Difference.mm2`
-      - examples that used the parameterized location pattern to implement set operations.
+    - | `Set_Ops_03_Union.mm2`  
+      | `Set_Ops_04_Intersection.mm2`  
+      | `Set_Ops_05_Difference.mm2`  
+      | `Set_Ops_06_Symmetric_Difference.mm2`
+      - Examples that used the parameterized location pattern to implement set operations.
 
   - Going Wide
     - `Going_Wide_01_Recursive.mm2`
@@ -73,12 +76,12 @@ If one wants to jump right in, head to `structuring_code_00_Intro_and_Contents.m
     - `Going_Wide_03.mm2`
       - A program that takes a recursive expression, splits it into paths, then evaluates with by joining results with a finite function
     - `Going_Wide_11_Macros.mm2`
-      - a modified `Going_Wide_03.mm2` by using using partial evaluation to allow the forks and joins to be generic, but specialize them before the main loop.
+      - A modified `Going_Wide_03.mm2` by using using partial evaluation to allow the forks and joins to be generic, but specialize them before the main loop.
     - `Going_Wide_21_Larger_Programs.mm2`
-      - a modified `Going_Wide_11_Macros.mm2` to support multiple inputs and to use less memory.
+      - A modified `Going_Wide_11_Macros.mm2` to support multiple inputs and to use less memory.
     - `Going_Wide_31_Two_Programs.mm2`
-      - a modified `Going_Wide_21_Larger_Programs.mm2` to support running a second process type using the same fork/join logic.
+      - A modified `Going_Wide_21_Larger_Programs.mm2` to support running a second process type using the same fork/join logic.
 
 - ## `mork_playground/`
-  - a rust binary crate program that serves as a template for basic file IO with an embedded MORK instance.
-  - mentioned in `structuring_code_09_Rust_Extra.md`
+  - A rust binary crate program that serves as a template for basic file IO with an embedded MORK instance.  
+  mentioned in `structuring_code_09_Rust_Extra.md`

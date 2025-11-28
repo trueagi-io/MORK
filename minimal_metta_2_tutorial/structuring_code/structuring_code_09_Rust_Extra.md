@@ -1,11 +1,11 @@
 # Little extra
 
-## using MORK via the MORK internal libraries in Rust
-This section should only be done by people a little comfortable with Rust, that want to experiment with internals.
+## Using MORK via the internal Rust libraries
+This section should only be done by people a little comfortable with Rust, that want to experiment with internals.  
 At the current time some features are only possible with the `main` branch.
 
-There is a binary crate `mork_playground` in the at `structuring_code/mork_playground`
-It includes an import of a file, optional tracing, and a final file export.
+There is a binary crate `mork_playground` in the at `structuring_code/mork_playground`; 
+it includes an import of a file, optional tracing, and a final file export.
 
 One can place the crate into the MORK workspace and build the crate.
 
@@ -26,3 +26,7 @@ I've added basic tracing support to the above rust code where the syntax is also
 
 To run the code examples with `structuring_code/mork_playground`, simply add a file named `Input.mm2` into the folder and run the binary.
 in the folder with `cargo run --release` (with a nightly compiler)
+
+----
+
+We conclude the tutorial here.

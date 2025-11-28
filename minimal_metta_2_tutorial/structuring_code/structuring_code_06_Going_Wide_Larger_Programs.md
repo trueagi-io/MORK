@@ -78,3 +78,8 @@ run `./mork run Going_Wide_21_Larger_Programs.mm2`
 
 Once again, try running with `--steps 0`, `--steps 1`, ... and so on.
 This time focus on how the program is cleaning up after itself mid execution.
+
+----
+
+Next we will process two similar processes at the same time in `structuring_code_07_Going_Wide_Two_Programs.md`.
+

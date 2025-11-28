@@ -96,3 +96,7 @@ If look at the results we can find
 (OUTPUT T ((node 4) ((node 6) ((node 7) (*) (*)) ((node 5) (*) (*))) ((node 2) ((node 3) (*) (*)) ((node 1) (*) (*)))))
 ```
 The tree was successfully flipped. The other expressions evaluated.
+
+----
+
+Next we take stock in `structuring_code_In_Closing.md`.

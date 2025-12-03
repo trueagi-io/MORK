@@ -63,6 +63,10 @@ b
 ```
 
 `(file $x)` is a _prefix_ that lets us access the suffix set that will be bound to `$x`.
+    >>> after meeting with you and having you explain it to me Remy, I am pretty sure understand most of the above, but it doesn't appear there's an easy way to play with 
+    this and "try" it (at least not that I can figure out) -- maybe this is not the place to give someone an opportunity to experiment with imports (and the explanation 
+    is enough), but I'm not sure that people will understand it easily (without the advantage I had of asking my questions of you as I was trying to figure out what 
+    was being conveyed here <<<
 
 In this tutorial we will only import one file at a time, so importing with a predication isn't needed, but the concept of predication is; predication will be used as an _indexing_ mechanism.
 Data should (in general) be predicated to make querying only what one wants easier.

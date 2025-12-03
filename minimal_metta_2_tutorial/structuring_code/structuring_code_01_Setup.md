@@ -22,7 +22,7 @@ Options:
       --instrumentation <INSTRUMENTATION>  [default: 1]
   -h, --help                               Print help
 ```
-Run `mork run <INPUT_PATH>` :  input a file; output to stdout.
+Run `mork run <INPUT_PATH>` :  input a file; output to stdout.  
 Run `mork run <INPUT_PATH> [OUTPUT_PATH]` : input a file; output a file.
 
 For the tutorial make a copy of the `mork` binary executable into the `structuring_code` folder.

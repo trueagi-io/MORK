@@ -1,0 +1,7 @@
+; from `file1.mm2`
+a
+b
+
+; from `file2.mm2`
+b
+c

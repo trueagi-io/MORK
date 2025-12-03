@@ -1,0 +1,12 @@
+; from `file1.mm2`
+(file1 a)
+(file1 b)
+
+; from `file2.mm2`
+(file2 b)
+(file2 c)
+
+(exec 0 
+    (, (file1     $x) )
+    (, (projected $x) )
+)

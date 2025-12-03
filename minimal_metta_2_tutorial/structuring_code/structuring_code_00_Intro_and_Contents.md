@@ -43,9 +43,9 @@ If one wants to jump right in, head to `structuring_code_00_Intro_and_Contents.m
     - modify the inputs to include the new data to evaluate in to the main loop
   - `structuring_code_08_In_Closing.md`
     - take stock of the subjects that were covered
-    - Ideas to consider.
+    - ideas to consider
   - `structuring_code_09_Rust_Extra.md`
-    - Introduction to a Rust template to experiment with the internals.
+    - introduction to a Rust template to experiment with the internals
 
 
 - ## `.mm2` programs
@@ -54,7 +54,20 @@ If one wants to jump right in, head to `structuring_code_00_Intro_and_Contents.m
       - A basic file to see if the tutorial environment is set up.
 
   - Basics
-    - `Basics_Sources_Sinks.mm2`
+    - | `Basics_file1.mm2`  
+      | `Basics_file2.mm2`  
+      | `Basics_file1_file2.mm2`  
+      | `Basics_file1_file2_project.mm2`  
+      | `Basics_file1_file2_predication.mm2`  
+      - Examples showing the behavior of loading a file, and motivating predication.
+    - | `Basics_Priority_0_1.mm2`  
+      | `Basics_Priority_1_00.mm2`  
+      | `Basics_Priority_00_01.mm2`  
+      | `Basics_Priority_0_(0_0).mm2`  
+      | `Basics_Priority_(1)_(0_0).mm2`  
+      | `Basics_Priority_(0_0)_(0_1).mm2`  
+      - Examples to see what order execs run in.
+    - `Basics_Sources_Sinks.mm2`  
       - A basic example to showcase pattern sources and template sinks.
 
   - Set Operations

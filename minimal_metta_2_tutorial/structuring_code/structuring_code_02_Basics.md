@@ -2,7 +2,7 @@
 
 ## Keeping Things Separate
 
-(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs).
+(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs). >>>what is being conveyed by this parenthetical is not clear<<<
 
 Say we have two metta files. 
 

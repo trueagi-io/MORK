@@ -31,7 +31,7 @@ Run `mork run <INPUT_PATH> [OUTPUT_PATH]` : input a file; output a file.
 For the tutorial make a copy of the `mork` binary executable into the `structuring_code/` folder.
 The tutorial will from time to time ask you to run a `./mork run` from with `structuring_code/` as the current directory.
 
-There is a file `structuring_code/Hello_World.mm2`, here are the contents.
+There is a file `structuring_code/Setup_Hello_World.mm2`, here are the contents.
 ```
 (hello (Hello $name !) $name)
 

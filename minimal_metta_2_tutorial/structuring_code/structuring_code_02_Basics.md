@@ -2,8 +2,6 @@
 
 ## Keeping Things Separate
 
-(there is a PR for patterns and templates, but the bulk of the tutorial does not require patterns and templates for input and output to follow along, just for execs).
-
 We have two `.mm2` files. 
 
 `Basics_file1.mm2`
@@ -93,7 +91,7 @@ we get this.
 (projected b)
 ```
 
-`(file $x)` is a _prefix_ that lets us access the suffix set that will be bound to `$x`.
+`(file1 $x)` is a _prefix_ that lets us access the suffix set that will be bound to `$x`.
 
 Predication will be used as an _indexing_ mechanism.
 Data should (in general) be predicated to make querying only what one wants easier.
@@ -109,6 +107,7 @@ We have 3 primary ways to construct expressions
 - Variables `$<VAR_NAME>`  
   Variables represent unbound values, having the same variable in an expression behaves as a reference (`($x $x)`);  
   when the value is bound, the reference will be bound to the same value; in a dual way it behaves as a constraint that both values must be the same.
+
 
 # Basics of MM2
 
@@ -214,6 +213,12 @@ The `-` action is particularly useful, but use with care, it's behavior is non-m
 
 a
 b
+```
+run `./mork run Basics_Sink_Removal.mm2`
+
+it should output this
+```
+a
 ```
 
 ----

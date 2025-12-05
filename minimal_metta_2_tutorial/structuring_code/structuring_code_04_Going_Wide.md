@@ -91,7 +91,7 @@ lets see how we would manually rewrite this using the above tables on a smaller 
 1
 ; 1 node got processed
 ```
-We could only apply the rules at what is effectively the current leaf of the tree we are collapsing.
+We could only apply the rules at what is the current leaf of the tree we are collapsing.
 
 The issue we face is that leaf values are not trivially pattern matched upon.
 

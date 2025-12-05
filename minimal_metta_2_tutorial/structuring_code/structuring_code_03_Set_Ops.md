@@ -96,8 +96,8 @@ result in the same value.
 
 Let's examine some example arguments and results
 ```
-unify : (1 2) x (1 2)        
-MGU   : {}                                
+unify : (1 2) (1 2)
+MGU   : {}
 subst : (1 2)
 ; constants match themselves
 
@@ -117,7 +117,7 @@ subst : ((3 4) (2 4))
 ; shared variables share substitutions
 ```
 
-We know have enough intuition to see how the union definition works.
+We now have enough intuition to see how the union definition works.
 
 The exec has this pattern:
 ```
@@ -181,7 +181,8 @@ Lets now substitute the exec's template
 ```
 run `./mork run --steps 0 Set_Ops_02_Parameterized_Locations.mm2` and see the result.
 
-Take time to really understand this!  
+Take time to really understand this!
+
 We looked up a "specialized" version of an expression by unifying it's variables with constants.  
 The shared parts we unified with broadcasted those constants to the other parts of the expression.
 
@@ -285,7 +286,7 @@ Symmetric difference could be implemented by computing the union, and the inters
 ((symmetric-difference ($in_a $in_b) -> $out)
     (, ($in_a $a)
        ($in_b $b)
-       ($in_a $mid)           
+       ($in_a $mid)
        ($in_b $mid)
     )
     (O (+ ($out $a)   )
@@ -311,7 +312,7 @@ after consuming the exec, it will leave behind these new values
 # Closing on Set operations
 
 Generally these operations need not be defined, rather they should be understood.
-Set operations are effectively implicitly happening every time you make make a query.
+Set operations are implicitly happening every time you run an exec.
 More sophisticated actions are usually subtle variations of these examples above, with more domain specific behavior.
 
 ----

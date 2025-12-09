@@ -1,0 +1,5 @@
+(case b)
+(case c)
+(exec 0 (, (case a)) (, a))
+(exec 0 (, (case b)) (, b))
+(exec 0 (, (case c)) (, c))

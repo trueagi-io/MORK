@@ -1,0 +1,22 @@
+; guarantees execution of initial execs
+t
+
+; thread 1
+(exec (thread-1 0) (, t)
+                   (, 
+                      (t 1)
+                      (exec (thread-1 0) (, (t 2)   ) 
+                                         (, (t 2 1) )
+                      )
+                   )
+)
+
+; thread 2
+(exec (thread-2 0) (, t) 
+                   (, 
+                      (t 2)
+                      (exec (thread-2 0) (, (t 1)   )   
+                                         (, (t 1 2) )
+                      )
+                   )
+)

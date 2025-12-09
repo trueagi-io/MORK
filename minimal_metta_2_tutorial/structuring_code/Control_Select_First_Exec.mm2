@@ -1,0 +1,7 @@
+(case b)
+(case c)
+(exec 0 (, (case a) (exec 0 $p $t)) (O (+ a) (- (exec 0 $p $t) )))
+(exec 0 (, (case b) (exec 0 $p $t)) (O (+ b) (- (exec 0 $p $t) )))
+(exec 0 (, (case c) (exec 0 $p $t)) (O (+ c) (- (exec 0 $p $t) )))
+
+(exec 1 (, $x) (, (Ran After)))

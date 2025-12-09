@@ -1,0 +1,5 @@
+(case b)
+(case c)
+(exec 0 (, (case a) (case $x)) (O (+ a) (- (case $x) )))
+(exec 0 (, (case b) (case $x)) (O (+ b) (- (case $x) )))
+(exec 0 (, (case c) (case $x)) (O (+ c) (- (case $x) )))

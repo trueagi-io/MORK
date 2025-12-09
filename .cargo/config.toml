@@ -4,7 +4,7 @@
 # "--emit", "asm", 
 
 # "opt-level=3" removes debug asserts
-rustflags = ["-C", "target-cpu=native"] #, "-Awarnings"]
+rustflags = ["-C", "target-cpu=native", "-Awarnings"]
 #rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "target-feature=+aes", "-Awarnings"]
 
 # this allows tests to reference files datasets from the workspace root instead of being forced to work backwards

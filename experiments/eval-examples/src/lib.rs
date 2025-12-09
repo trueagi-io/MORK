@@ -1,6 +1,6 @@
 use eval_ffi::{ExprSink, ExprSource, SinkItem, SourceItem, EvalError, Tag};
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "ground_mul")]
 pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
@@ -15,7 +15,7 @@ pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
     Ok(())
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "ground_sum")]
 pub extern "C" fn ground_sum(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };

@@ -9,6 +9,8 @@ members = [
     "minimal_metta_2_tutorial/structuring_code/mork_playground"
 ]
 
+default-members = ["kernel/"]
+
 [workspace.package]
 edition = "2024"
 

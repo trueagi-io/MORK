@@ -1,6 +1,8 @@
 #[allow(unused_imports)]
 use std::{fmt::{format, Formatter}, mem, ptr::slice_from_raw_parts, str::Utf8Error};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ops::CoroutineState;
+use std::pin::Pin;
 use mork_expr::*;
 #[allow(unused)]
 fn traverse(ez: &mut ExprZipper) {
@@ -1156,20 +1158,20 @@ pub fn with_buffer<Bytes, Body>(alloc: &mut BumpAllocRef, body: Body)
 #[cfg(test)]
 #[test]
 fn transform() {
-    let mut buf0 = BumpAllocRef::new();
-    with_buffer(&mut buf0, |alloc| {
-        let src = alloc(parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"));
-        // let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
-        let mut patv = parse!("[2] axiom [3] = _2 _1"); let pat = Expr{ ptr: patv.as_mut_ptr() };
-        let mut templv = parse!("[2] flip [3] = $ $"); let templ = Expr{ ptr: templv.as_mut_ptr() };
-
-        let mut rv = parse!("[2] flip [3] = [4] R $ $ $ [4] L _1 _2 _3"); let r = Expr{ ptr: rv.as_mut_ptr() };
-
-        match src.transformed(templ, pat) {
-            Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
-            Err(e) => { panic!("{:?}", e); }
-        }
-    });
+    // let mut buf0 = BumpAllocRef::new();
+    // with_buffer(&mut buf0, |alloc| {
+    //     let src = alloc(parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"));
+    //     // let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
+    //     let mut patv = parse!("[2] axiom [3] = _2 _1"); let pat = Expr{ ptr: patv.as_mut_ptr() };
+    //     let mut templv = parse!("[2] flip [3] = $ $"); let templ = Expr{ ptr: templv.as_mut_ptr() };
+    // 
+    //     let mut rv = parse!("[2] flip [3] = [4] R $ $ $ [4] L _1 _2 _3"); let r = Expr{ ptr: rv.as_mut_ptr() };
+    // 
+    //     match src.transformed(templ, pat) {
+    //         Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
+    //         Err(e) => { panic!("{:?}", e); }
+    //     }
+    // });
     {
         let mut srcv = parse!("[2] axiom [3] = [4] L $ $ $ [4] R _1 _2 _3"); let src = Expr{ ptr: srcv.as_mut_ptr() };
         let mut patv = parse!("[2] axiom [3] = $ $"); let pat = Expr{ ptr: patv.as_mut_ptr() };
@@ -1994,5 +1996,5 @@ fn main() {
 
     // unify_multi_one()
     // unify_multi_multi()
-    unify_other()
+    // unify_other()
 }

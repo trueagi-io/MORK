@@ -28,6 +28,7 @@ pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
 pub static ACT_PATH: &'static str = "/dev/shm/";
+// pub static ACT_PATH: &'static str = "/mnt/data/";
 
 pub struct Space {
     pub btm: PathMap<()>,
@@ -35,7 +36,7 @@ pub struct Space {
     pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>
 }
 
-const SIZES: [u64; 4] = {
+pub(crate) const SIZES: [u64; 4] = {
     let mut ret = [0u64; 4];
     let mut size = 1;
     while size < 64 {
@@ -45,7 +46,7 @@ const SIZES: [u64; 4] = {
     }
     ret
 };
-const ARITIES: [u64; 4] = {
+pub(crate) const ARITIES: [u64; 4] = {
     let mut ret = [0u64; 4];
     let mut arity = 1;
     while arity < 64 {
@@ -55,7 +56,7 @@ const ARITIES: [u64; 4] = {
     }
     ret
 };
-const VARS: [u64; 4] = {
+pub(crate) const VARS: [u64; 4] = {
     let mut ret = [0u64; 4];
     let nv_byte = item_byte(Tag::NewVar);
     ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
@@ -546,7 +547,6 @@ impl Space {
         Ok(st.count)
     }
 
-    #[cfg(all(feature = "nightly"))]
     pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<usize, String> {
         let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
 
@@ -566,7 +566,6 @@ impl Space {
         Ok(st.count)
     }
 
-    #[cfg(all(feature = "nightly"))]
     pub fn jsonl_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<(usize, usize), String> {
         let mut lines = 0usize;
         let mut count = 0usize;
@@ -874,7 +873,7 @@ impl Space {
                     wz.reset();
                 }
                 Err(ParserError::InputFinished) => { break }
-                Err(other) => { panic!("{:?}", other) }
+                Err(other) => { return Err(format!("{:?}", other)) }
             }
             i += 1;
             it.variables.clear();
@@ -1191,6 +1190,34 @@ impl Space {
         out
     }
 
+    // pub fn prefix_subsumption_resources(prefixes: &[crate::sinks::WriteResourceRequest]) -> Vec<usize> {
+    //     let n = prefixes.len();
+    //     let mut out = Vec::with_capacity(n);
+    //
+    //     for (i, &cur) in prefixes.iter().enumerate() {
+    //         let mut best_idx = i;
+    //         let mut best_len = cur.len();
+    //
+    //         for (j, &cand) in prefixes.iter().enumerate() {
+    //             // cand \/ cur == cand
+    //             // x <= y  <=>  (x \/ y) == y
+    //             if pathmap::utils::find_prefix_overlap(cand, cur) == cand.len() {
+    //                 let cand_len = cand.len();
+    //
+    //                 // cand < best || (cand == best &&)
+    //                 if cand_len < best_len || (cand_len == best_len && j < best_idx) {
+    //                     best_idx = j;
+    //                     best_len = cand_len;
+    //                 }
+    //             }
+    //         }
+    //
+    //         out.push(best_idx);
+    //     }
+    //
+    //     out
+    // }
+
     pub fn transform_multi_multi_(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
@@ -1216,21 +1243,10 @@ impl Space {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
         trace!(target: "transform", "subsumption {:?}", subsumption);
-        // let pvs = pat_expr.variables();
-        // let mut pvc = 0;
-        // let mut psubs = vec![0; 64];
-        // static nv: u8 = item_byte(Tag::NewVar);
-        // let mut refs_es = (0..64).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }).collect::<Vec<_>>();
-        // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
-        // for l in psubs.iter_mut() { *l -= pvs as u8; }
-
-        let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
-
-        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
+        
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
@@ -1240,50 +1256,36 @@ impl Space {
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
-                    // refs_es.clear();
-                    // refs_es.extend(refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }));
-                    // refs_es.extend((0..(64-refs.len())).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }));
-                    // trace!(target: "transform", "S refs out {:?}", refs_es);
-                    // trace!(target: "transform", "S refs pat {:?} {pvs}", pat_expr);
-                    //
-                    // for (i, template) in templates.iter().enumerate() {
-                    //     let wz = &mut template_wzs[subsumption[i]];
-                    //     oz.reset();
-                    //
-                    //     trace!(target: "transform", "S refs tpl {:?}", template);
-                    //     template.substitute_de_bruijn_ivc(&refs_es[..], &mut oz, &mut pvc.clone(), &mut psubs.clone());
-                    //
-                    //     trace!(target: "transform", "S {i} out {:?}", oz.root);
-                    //     wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
-                    //     any_new |= wz.set_val(()).is_none();
-                    // }
-                    true
+                    unreachable!()
                 }
                 Err((ref bindings)) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        let mut void = std::io::sink();
+                        let mut snk = mork_expr::item_sink(&mut void);
+                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
                         trace.clear();
                         assignments.clear();
-                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                         r
                     };
 
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
-                        oz.reset();
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        buffer.clear();
+                        let mut snk = mork_expr::item_sink(&mut buffer);
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
-                        trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                        trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
+                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..]);
                         any_new |= wz.set_val(()).is_none();
                     }
                     true
@@ -1321,21 +1323,10 @@ impl Space {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
         trace!(target: "transform", "subsumption {:?}", subsumption);
-        // let pvs = pat_expr.variables();
-        // let mut pvc = 0;
-        // let mut psubs = vec![0; 64];
-        // static nv: u8 = item_byte(Tag::NewVar);
-        // let mut refs_es = (0..64).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }).collect::<Vec<_>>();
-        // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
-        // for l in psubs.iter_mut() { *l -= pvs as u8; }
-
-        let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
-
-        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
+        
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
@@ -1345,50 +1336,35 @@ impl Space {
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
-                    // refs_es.clear();
-                    // refs_es.extend(refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }));
-                    // refs_es.extend((0..(64-refs.len())).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }));
-                    // trace!(target: "transform", "S refs out {:?}", refs_es);
-                    // trace!(target: "transform", "S refs pat {:?} {pvs}", pat_expr);
-                    // 
-                    // for (i, template) in templates.iter().enumerate() {
-                    //     let wz = &mut template_wzs[subsumption[i]];
-                    //     oz.reset();
-                    // 
-                    //     trace!(target: "transform", "S refs tpl {:?}", template);
-                    //     template.substitute_de_bruijn_ivc(&refs_es[..], &mut oz, &mut pvc.clone(), &mut psubs.clone());
-                    // 
-                    //     trace!(target: "transform", "S {i} out {:?}", oz.root);
-                    //     wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
-                    //     any_new |= wz.set_val(()).is_none();
-                    // }
-                    true
+                    unreachable!()
                 }
                 Err((ref bindings)) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
+                        let mut void = std::io::sink();
+                        let mut snk = mork_expr::item_sink(&mut void);
+                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);                        trace.clear();
                         assignments.clear();
-                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                         r
                     };
 
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
-                        oz.reset();
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        buffer.clear();
+                        let mut snk = mork_expr::item_sink(&mut buffer);
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
-                        trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                        trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
+                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..]);
                         any_new |= wz.set_val(()).is_none();
                     }
                     true
@@ -1410,7 +1386,12 @@ impl Space {
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
         let mut sinks: Vec<_> = templates.iter().map(|e| ASink::new(*e)).collect();
-        let mut template_prefixes: Vec<_> = sinks.iter().map(|sink| sink.request().next().unwrap() ).collect();
+        let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
+            match sink.request().next().unwrap() {
+                WriteResourceRequest::BTM(p) => p,
+                WriteResourceRequest::ACT(_) => unreachable!()
+            }
+        ).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
@@ -1429,21 +1410,10 @@ impl Space {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
         trace!(target: "transform", "subsumption {:?}", subsumption);
-        // let pvs = pat_expr.variables();
-        // let mut pvc = 0;
-        // let mut psubs = vec![0; 64];
-        // static nv: u8 = item_byte(Tag::NewVar);
-        // let mut refs_es = (0..64).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }).collect::<Vec<_>>();
-        // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
-        // for l in psubs.iter_mut() { *l -= pvs as u8; }
-
-        let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
         
-        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
@@ -1453,49 +1423,35 @@ impl Space {
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
-                    // refs_es.clear();
-                    // refs_es.extend(refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }));
-                    // refs_es.extend((0..(64-refs.len())).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }));
-                    // trace!(target: "transform", "S refs out {:?}", refs_es);
-                    // trace!(target: "transform", "S refs pat {:?} {pvs}", pat_expr);
-                    // 
-                    // for (i, template) in templates.iter().enumerate() {
-                    //     let wz = &mut template_wzs[subsumption[i]];
-                    //     oz.reset();
-                    // 
-                    //     trace!(target: "transform", "S refs tpl {:?}", template);
-                    //     template.substitute_de_bruijn_ivc(&refs_es[..], &mut oz, &mut pvc.clone(), &mut psubs.clone());
-                    // 
-                    //     trace!(target: "transform", "S {i} out {:?}", oz.root);
-                    //     sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
-                    // }
-                    true
+                    unreachable!()
                 }
                 Err(ref bindings) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
+                        let mut void = std::io::sink();
+                        let mut snk = mork_expr::item_sink(&mut void);
+                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);                        trace.clear();
                         assignments.clear();
-                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                         r
                     };
                 
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
-                        oz.reset();
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        buffer.clear();
+                        let mut snk = mork_expr::item_sink(&mut buffer);
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
-                        trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
+                        trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
+                        sinks[i].sink(std::iter::once(WriteResource::BTM(wz)), &buffer[..]);
                     }
                     true
                 }
@@ -1504,7 +1460,7 @@ impl Space {
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = &mut template_wzs[subsumption[i]];
-            any_new |= s.finalize(std::iter::once(wz));
+            any_new |= s.finalize(std::iter::once(WriteResource::BTM(wz)));
         }
         for wz in template_wzs {
             zh.cleanup_write_zipper(wz);
@@ -1521,7 +1477,12 @@ impl Space {
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
         let mut sinks: Vec<_> = templates.iter().map(|e| ASink::new(*e)).collect();
-        let mut template_prefixes: Vec<_> = sinks.iter().map(|sink| sink.request().next().unwrap() ).collect();
+        let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
+            match sink.request().next().unwrap() {
+                WriteResourceRequest::BTM(p) => p,
+                WriteResourceRequest::ACT(_) => unreachable!()
+            }
+        ).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
@@ -1540,20 +1501,9 @@ impl Space {
         trace!(target: "transform", "templates {:?}", templates);
         trace!(target: "transform", "prefixes {:?}", template_prefixes);
         trace!(target: "transform", "subsumption {:?}", subsumption);
-        // let pvs = pat_expr.variables();
-        // let mut pvc = 0;
-        // let mut psubs = vec![0; 64];
-        // static nv: u8 = item_byte(Tag::NewVar);
-        // let mut refs_es = (0..64).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }).collect::<Vec<_>>();
-        // pat_expr.substitute_de_bruijn_ivc(&refs_es[..], &mut ExprZipper::new(Expr{ ptr: vec![0; 512].leak().as_mut_ptr() }), &mut pvc, &mut psubs[..]);
-        // for l in psubs.iter_mut() { *l -= pvs as u8; }
-
-        let mut scratch = Vec::with_capacity(1 << 32);
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
-
-        let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
@@ -1564,49 +1514,36 @@ impl Space {
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
-                    // refs_es.clear();
-                    // refs_es.extend(refs.iter().map(|o| Expr { ptr: unsafe { loc.ptr.offset(*o as _) } }));
-                    // refs_es.extend((0..(64-refs.len())).map(|_|  Expr{ ptr: ((&nv) as *const u8).cast_mut() }));
-                    // trace!(target: "transform", "S refs out {:?}", refs_es);
-                    // trace!(target: "transform", "S refs pat {:?} {pvs}", pat_expr);
-                    //
-                    // for (i, template) in templates.iter().enumerate() {
-                    //     let wz = &mut template_wzs[subsumption[i]];
-                    //     oz.reset();
-                    //
-                    //     trace!(target: "transform", "S refs tpl {:?}", template);
-                    //     template.substitute_de_bruijn_ivc(&refs_es[..], &mut oz, &mut pvc.clone(), &mut psubs.clone());
-                    //
-                    //     trace!(target: "transform", "S {i} out {:?}", oz.root);
-                    //     sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
-                    // }
-                    true
+                    unreachable!()
                 }
                 Err(ref bindings) => {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (oi, ni) = {
+                    let (mut oi, ni) = {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bindings, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
+                        let mut void = std::io::sink();
+                        let mut snk = mork_expr::item_sink(&mut void);
+                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
                         trace.clear();
                         assignments.clear();
-                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
                         r
                     };
 
                     for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
-                        oz.reset();
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
-                        let res = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut oz, &mut BTreeMap::new(), &mut astack, &mut ass);
+                        buffer.clear();
+                        let mut snk = mork_expr::item_sink(&mut buffer);
+                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        oi = toi;
                         ass.clear();
                         astack.clear();
 
-                        trace!(target: "transform", "U {i} out {:?}", oz.root);
-                        sinks[i].sink(std::iter::once(wz), &buffer[..oz.loc]);
+                        trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
+                        sinks[i].sink(std::iter::once(WriteResource::BTM(wz)), &buffer[..]);
                     }
                     true
                 }
@@ -1615,7 +1552,7 @@ impl Space {
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = &mut template_wzs[subsumption[i]];
-            any_new |= s.finalize(std::iter::once(wz));
+            any_new |= s.finalize(std::iter::once(WriteResource::BTM(wz)));
         }
         for wz in template_wzs {
             zh.cleanup_write_zipper(wz);

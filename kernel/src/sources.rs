@@ -70,7 +70,7 @@ impl Source for ACTSource {
         prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
         prefix.push(item_byte(Tag::SymbolSize( (self.act.size() as u8) - 1)));
         prefix.extend_from_slice(self.act.as_bytes());
-        println!("prefix {}", serialize(&prefix[..]));
+        trace!(target: "source", "prefix {}", serialize(&prefix[..]));
         let rz = PrefixZipper::new(prefix, rz);
         AFactor::ACTSource(rz)
     }
@@ -88,7 +88,7 @@ impl CmpSource {
         if c == 0 {
             if cmp == 0 {
                 trace!(target: "source", "== enrolling at {}", serialize(p));
-                // bug: de bruijn levels broken, easy fix: shift the copy of p by introductions(p) 
+                // bug: de bruijn levels broken, easy fix: shift the copy of p by introductions(p)
                 let e = Expr{ ptr: p.as_ptr().cast_mut() };
                 let mut qv = p.to_vec();
                 e.shift(e.newvars() as _, &mut mork_expr::ExprZipper::new(Expr{ ptr: qv.as_mut_ptr() }));

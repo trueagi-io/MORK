@@ -60,7 +60,7 @@ impl SharedMapping {
     }
 
     buffer.start_file::<&str,_>(FILE_SIZES_META_FILENAME, zip::write::FileOptions::<()>::default())?;
-    buffer.write(&metadata)?;
+    buffer.write_all(&metadata)?;
 
     buffer.finish()?.flush()?;
 

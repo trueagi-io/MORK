@@ -15,31 +15,55 @@ use crate::{Expr, Tag, byte_item, item_byte};
 ///
 /// Example usage:
 /// ```
-/// let mut expr = mork_expr::parse!("(eq? (+ 2 2) 4)");
+/// // let mut expr = mork_expr::parse!("(eq? (+ 2 2) 4)");
+/// let mut expr = mork_expr::parse!("[3] eq? [3] + 2 2 4");
 /// let expr = mork_expr::Expr { ptr: expr.as_mut_ptr() };
 /// mork_expr::destruct!(
 ///     expr, ("eq?" ("+" out_1 out_2) out_3),
 ///     eprintln!("{out_1:?}, {out_2:?}, {out_3:?}"),
-///     _err => { panic!("failed") }
+///     err => { panic!("failed: {err:?}") }
 /// );
 /// ```
 #[macro_export]
 macro_rules! destruct {
+    // top-level variables
+    ($expr:expr, { $var:ident : $ty:ty }, $good:expr, $err:ident => $bad:expr) => {
+        $crate::destruct!($expr, { $var: $ty } , _length => $good, $err => $bad);
+    };
+    ($expr:expr, { $var:ident : $ty:ty }, $length:ident => $good:expr, $err:ident => $bad:expr) => {
+        use $crate::macros::{DeserializableExpr};
+        let expr = Expr { ptr: $expr.ptr };
+        if !<$ty as DeserializableExpr>::check(expr) {
+            let $err: String = format!("expression did not match expected type");
+            $bad
+        } else {
+            let $length = <$ty as DeserializableExpr>::advanced(expr);
+            let $var: $ty = <$ty as DeserializableExpr>::deserialize_unchecked(expr);
+            $good
+        }
+    };
     ($expr:expr, ( $($pattern:tt)* ), $good:expr, $err:ident => $bad:expr) => {
+        $crate::destruct!($expr, ( $($pattern)* ), _length => $good, $err => $bad);
+    };
+    ($expr:expr, ( $($pattern:tt)* ), $length:ident => $good:expr, $err:ident => $bad:expr) => {
         {
             use ::core::convert::TryFrom;
             use $crate::{Tag, Expr, byte_item, parse};
             use $crate::macros::{DeserializableExpr};
+            let mut length = 0;
             let rv = 'ret: loop {
                 unsafe {
                     let mut offset = 0;
                     $crate::destruct!(@chomp, 'ret, $expr, offset, ( $($pattern)* ) );
-                    let _ = offset;
+                    length = offset;
                     break 'ret Ok($crate::destruct!(@vars, $($pattern)*))
                 }
             };
             match rv {
-                Ok($crate::destruct!(@vars, $($pattern)*)) => $good,
+                Ok($crate::destruct!(@vars, $($pattern)*)) => {
+                    let $length = length;
+                    $good
+                }
                 Err($err) => $bad,
             }
         }
@@ -165,7 +189,7 @@ impl SerializableExpr for i32 {
 impl DeserializableExpr for i32 {
     #[inline(always)]
     fn advanced(e: Expr) -> usize {
-        4
+        1 + core::mem::size_of::<Self>()
     }
     #[inline(always)]
     fn check(e: Expr) -> bool {
@@ -393,6 +417,34 @@ mod tests {
                 assert_eq!(out_2, 69);
             },
             err => { panic!("failed {err:?}") }
+        );
+    }
+    #[test]
+    fn test_parse_typed_top() {
+        use crate::macros::SerializableExpr;
+        let mut buf = Vec::new();
+        SerializableExpr::serialize(&42_i32, &mut buf)
+            .expect("construct failed");
+
+        eprintln!("constructed: {buf:?}");
+        let expr = Expr { ptr: buf.as_ptr() as *mut u8 };
+        destruct!(
+            expr, {out_1:i32},
+            assert_eq!(out_1, 42),
+            err => panic!("failed {err:?}")
+        );
+    }
+    #[test]
+    fn test_parse_typed_top_length() {
+        let buf = construct!( 42_i32 )
+            .expect("construct failed");
+
+        eprintln!("constructed: {buf:?}");
+        let expr = Expr { ptr: unsafe { buf.as_ptr().add(1) } as *mut u8 };
+        destruct!(
+            expr, {out_1:i32},
+            len => assert_eq!((len, out_1), (5, 42)),
+            err => panic!("failed {err:?}")
         );
     }
 

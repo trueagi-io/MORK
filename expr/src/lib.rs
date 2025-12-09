@@ -1,3 +1,12 @@
+#![cfg_attr(feature = "nightly", allow(internal_features), feature(core_intrinsics))]
+#![cfg_attr(feature = "nightly", feature(portable_simd))]
+#![cfg_attr(feature = "nightly", feature(allocator_api))]
+#![cfg_attr(feature = "nightly", feature(coroutine_trait))]
+#![cfg_attr(feature = "nightly", feature(coroutines))]
+#![cfg_attr(feature = "nightly", feature(stmt_expr_attributes))]
+#![cfg_attr(feature = "nightly", feature(gen_blocks))]
+#![cfg_attr(feature = "nightly", feature(yield_expr))]
+
 #[allow(unused_imports)]
 use std::{
     fmt::{format, Debug, Formatter, Write}, 
@@ -13,6 +22,12 @@ pub mod macros;
 
 #[cfg(gxhash)]
 use gxhash;
+
+#[cfg(feature="nightly")]
+#[path="lib_nightly.rs"]
+mod lib_nightly;
+#[cfg(feature="nightly")]
+pub use lib_nightly::*;
 
 #[cfg(not(gxhash))]
 mod gxhash {
@@ -230,8 +245,12 @@ macro_rules! traverseh {
             Tag::Arity(a) => {
                 let acc = ($zero)(&mut h, j, a);
                 j += 1;
-                stack.push(State{ iter: a, payload: acc });
-                continue 'putting;
+                if a == 0 {
+                    ($finalize)(&mut h, j, acc)
+                } else {
+                    stack.push(State{ iter: a, payload: acc });
+                    continue 'putting;
+                }
             }
         };
 
@@ -777,7 +796,7 @@ impl Expr {
     }
 
     // pub const VARNAMES: [&'static str; 64] = ["$x0", "$x1", "$x2", "$x3", "$x4", "$x5", "$x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
-    pub const VARNAMES: [&'static str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31", "x32", "x33", "x34", "x35", "x36", "x37", "x38", "x39", "x40", "x41", "x42", "x43", "x44", "x45", "x46", "x47", "x48", "x49", "x50", "x51", "x52", "x53", "x54", "x55", "x56", "x57", "x58", "x59", "x60", "x61", "x62", "x63"];
+    pub const VARNAMES: [&'static str; 64] = ["$a", "$b", "$c", "$d", "$e", "$f", "$g", "$h", "$i", "$j", "$x10", "$x11", "$x12", "$x13", "$x14", "$x15", "$x16", "$x17", "$x18", "$x19", "$x20", "$x21", "$x22", "$x23", "$x24", "$x25", "$x26", "$x27", "$x28", "$x29", "$x30", "$x31", "$x32", "$x33", "$x34", "$x35", "$x36", "$x37", "$x38", "$x39", "$x40", "$x41", "$x42", "$x43", "$x44", "$x45", "$x46", "$x47", "$x48", "$x49", "$x50", "$x51", "$x52", "$x53", "$x54", "$x55", "$x56", "$x57", "$x58", "$x59", "$x60", "$x61", "$x62", "$x63"];
 
     #[inline(never)]
     pub fn serialize2<Target : std::io::Write, F : for <'a> Fn(&'a [u8]) -> &'a str, G : Fn(u8, bool) -> &'static str>(&self, t: &mut Target, map_symbol: F, map_variable: G) -> () {
@@ -867,8 +886,12 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
             Tag::Arity(a) => {
                 let acc = t.zero(j, a);
                 j += 1;
-                stack.push(State{ iter: a, payload: acc });
-                continue 'putting;
+                if a == 0 {
+                    t.finalize(j, acc)
+                } else {
+                    stack.push(State{ iter: a, payload: acc });
+                    continue 'putting;
+                }
             }
         };
 
@@ -1016,51 +1039,51 @@ impl Debug for Expr {
 struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("$".as_bytes()); }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("_".as_bytes()); self.out.write_all((i as u16 + 1).to_string().as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all((self.map_symbol)(s).as_bytes()); }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write_all(")".as_bytes()); }
 }
 
 struct SerializerTraversal2<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8 }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<(), ()> for SerializerTraversal2<'_, Target, F, G> {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_variable)(i, false).as_bytes()); }
-    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }
-    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("(".as_bytes()); self.transient = false; }
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all((self.map_variable)(self.n, true).as_bytes()); self.n += 1; }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all((self.map_variable)(i, false).as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all((self.map_symbol)(s).as_bytes()); }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
-    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(")".as_bytes()); }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write_all(")".as_bytes()); }
 }
 
 struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
 #[allow(unused_variables, unused_must_use)]
 impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> Traversal<Option<&'static str>, ()> for SerializerTraversalHighlights<'_, '_, Target, F, G> {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () {
-        if self.transient { self.out.write(" ".as_bytes()); };
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
-        self.out.write((self.map_variable)(self.n, true).as_bytes());
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+        if self.transient { self.out.write_all(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].1.as_bytes()); }
+        self.out.write_all((self.map_variable)(self.n, true).as_bytes());
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
         self.n += 1;
     }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {
-        if self.transient { self.out.write(" ".as_bytes()); };
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
-        self.out.write((self.map_variable)(i, false).as_bytes());
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+        if self.transient { self.out.write_all(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].1.as_bytes()); }
+        self.out.write_all((self.map_variable)(i, false).as_bytes());
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
     }
     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
-        if self.transient { self.out.write(" ".as_bytes()); };
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
-        self.out.write((self.map_symbol)(s).as_bytes());
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+        if self.transient { self.out.write_all(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].1.as_bytes()); }
+        self.out.write_all((self.map_symbol)(s).as_bytes());
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
     }
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> Option<&'static str> {
-        if self.transient { self.out.write(" ".as_bytes()); };
-        if offset == self.targets[0].0 { self.out.write(self.targets[0].1.as_bytes()); }
-        self.out.write("(".as_bytes()); self.transient = false;
+        if self.transient { self.out.write_all(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].1.as_bytes()); }
+        self.out.write_all("(".as_bytes()); self.transient = false;
         if offset == self.targets[0].0 { let r = Some(self.targets[0].2); self.targets = &self.targets[1..]; r }
         else { None }
     }
@@ -1069,8 +1092,8 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, 
         acc
     }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
-        self.out.write(")".as_bytes());
-        if let Some(end) = acc { self.out.write(end.as_bytes()); }
+        self.out.write_all(")".as_bytes());
+        if let Some(end) = acc { self.out.write_all(end.as_bytes()); }
     }
 }
 
@@ -1344,7 +1367,8 @@ impl ExprZipper {
             Tag::NewVar => { 1 }
             Tag::VarRef(_r) => { 1 }
             Tag::SymbolSize(s) => { 1 + (s as usize) }
-            Tag::Arity(_a) => { unreachable!() /* expression can't end in arity */ }
+            Tag::Arity(0) => { 1 }
+            Tag::Arity(_a) => { unreachable!() /* expression can't end in non-zero expression */ }
         };
         return slice_from_raw_parts(self.root.ptr, size)
     }
@@ -1820,108 +1844,6 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
     }
 }
 
-
-#[inline(never)]
-pub fn apply_e(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bindings: &BTreeMap<ExprVar, ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
-    let depth = stack.len();
-    if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
-    if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, e); }
-    traverseh!((), (), (), e, (),
-        |_, o| { 
-        match bindings.get(&(n, original_intros)) {
-            None => {
-                if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
-                // println!("original {original_intros} new {new_intros}");
-                if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
-                    // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
-                    oz.write_var_ref(pos as u8);
-                } else {
-                    oz.write_new_var();
-                    new_intros += 1;
-                    assignments.push((n, original_intros));
-                }
-                oz.loc += 1;
-                original_intros += 1;
-
-            }
-            Some(rhs) => {
-                if PRINT_DEBUG { println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros)); }
-                // println!("stack={stack:?}");
-                if let Some(introduced) = cycled.get(&(n, original_intros)) {
-                    if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
-                    oz.write_var_ref(*introduced);
-                    // println!("nv cycled contains {:?}", (n, original_intros));
-                    oz.loc += 1;
-                } else if stack.contains(&(n, original_intros)) {
-                    cycled.insert((n, original_intros), new_intros);
-                    // println!("nv cycled insert {:?}", (n, original_intros));
-                    oz.write_new_var();
-                    oz.loc += 1;
-                    new_intros += 1;
-                } else {
-                    stack.push((n, original_intros));
-                    let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
-                    new_intros = nvars_;
-                    stack.pop();
-                }
-                original_intros += 1;
-            }
-        }
-        },
-        |_, o, i| {
-        match bindings.get(&(n, i)) {
-            None => {
-                if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
-                if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
-                    // println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
-                    oz.write_var_ref(pos as u8);
-                } else {
-                    oz.write_new_var();
-                    new_intros += 1;
-                    assignments.push((n, i)); // this can't be right in general
-                }
-                oz.loc += 1;
-            }
-            Some(rhs) => {
-                if PRINT_DEBUG { println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i)); }
-                // println!("stack={stack:?}");
-                if let Some(introduced) = cycled.get(&(n, i)) {
-                    // println!("vr cycled contains {:?}", (n, i));
-                    if PRINT_DEBUG { println!("{}cycled _{} for {:?} (ref) rhs={}", "  ".repeat(depth), *introduced+1, (n, i), rhs.show()); }
-                    oz.write_var_ref(*introduced);
-                    oz.loc += 1;
-                } else if stack.contains(&(n, i)) {
-                    // println!("vr cycled insert {:?}", (n, i));
-                    cycled.insert((n, i), new_intros);
-                    oz.write_new_var();
-                    oz.loc += 1;
-                    new_intros += 1;
-                } else {
-                    stack.push((n, i));
-                    let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, oz, cycled, stack, assignments);
-                    new_intros = nvars_;
-                    stack.pop();
-                }
-                // oz.write_var_ref(i);
-                // oz.loc += 1;
-            }
-        }
-        },
-        |_, o, s| {
-            if PRINT_DEBUG { println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(s) }); }
-            oz.write_symbol(s);
-            oz.loc += 1 + s.len();
-        },
-        |_, o, a| { 
-            if PRINT_DEBUG { println!("{}@ [{}]", "  ".repeat(depth), a); }
-            oz.write_arity(a);
-            oz.loc += 1;
-        },
-        |_, o, _, _| {},
-        |_, _, _| {}
-    );
-    (original_intros, new_intros)
-}
 
 #[inline(never)]
 pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {

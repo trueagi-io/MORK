@@ -1639,8 +1639,8 @@ impl DefaultSpace {
     pub fn backup_as_dag<OutFilePath : AsRef<std::path::Path>>(&self, path: OutFilePath) -> Result<(), std::io::Error> {
         let mut reader = self.new_reader(&[], &()).unwrap();
         let rz = self.read_zipper(&mut reader);
-        pathmap::serialization::write_trie("neo4j triples", rz,
-                                           |_v, _b| pathmap::serialization::ValueSlice::Read(&[]),
+        pathmap::experimental::serialization::write_trie("neo4j triples", rz,
+                                           |_v, _b| pathmap::experimental::serialization::ValueSlice::Read(&[]),
                                            path.as_ref()).map(|_| ())
     }
 

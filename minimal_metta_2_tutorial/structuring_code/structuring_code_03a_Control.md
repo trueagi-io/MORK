@@ -217,13 +217,6 @@ Another alternative is to spawn other execs with higher priority, and it would d
 (exec (LOOP 9) 
    (, (exec (LOOP 9) $p $t) )
    (O  
-       (+ (exec (LOOP 0) 
-            (, (exec (LOOP $n) $_p $_t)
-               (counter Z) 
-            )
-            (O (- (exec (LOOP $n) $_p $_t) ))
-          )
-       )
        (+ (exec (LOOP 1) 
             (, (counter (S $x)) ) 
             (O 
@@ -232,11 +225,23 @@ Another alternative is to spawn other execs with higher priority, and it would d
             )
           )
        )
+       (+ (exec (LOOP 0) 
+            (, (exec (LOOP $n) $_p $_t)
+               (counter Z) 
+            )
+            (O (- (exec (LOOP $n) $_p $_t) ))
+          )
+       )
        (+ (exec (LOOP 9) $p $t))
    )
 )
 ```
 
+----
+
+The rest of this section 
+
+----
 
 
 # Multithreaded concurrent/parallel execution
@@ -411,3 +416,118 @@ This would guarantee however that a thread can store things like program counter
 Once a program counter or a state label has been changed, execs can be engineered to go from succeeding to match, to failing to match local state. This includes recursive execs...
 
 ### Ordered Cycles
+The solution to the issue is reintroduce determinism with loops using temporal logic.
+
+In temporal logic we can describe two temporal quantifiers, "Always" and "Eventually" (as in "Always the case" and "Eventually the case").
+
+We abbreviate
+- "Always" to "[]" (a box).
+- "Eventually" to "<>" (a diamond)
+
+We can use this language to describe progress in a system:
+- Eventually the counter reaches 0  
+  ```
+  <>( counter = 0 )
+  ```
+- Always the case that when the counter is not equal to 0, the next state of counter is counter - 1 
+  ```
+  [](  counter =/= 0 
+    => counter' = counter - 1
+    )
+  ```
+- We can combine these with logical and to describe a _behavior_:  
+  - Counter is not negative
+  - Always the case that when counter is not 0, the next state of the counter is counter - 1
+  - Eventually the counter is 0
+  ```
+      (counter >= 0)
+  AND [](  counter =/= 0 
+        => counter' = counter - 1
+        )
+  AND <>( counter = 0 )
+  ```
+
+A powerful way to use these is actually to use both on the same specification.
+- `<>[]` Eventually always the case
+- `[]<>` Always eventually the case
+
+We can try to understand our programs by visualizing them as graphs.
+
+Here is a sequence from to state to state (s), with a series of actions (a).
+```
+s0 --a0--> s1 --a1--> s2
+```
+
+Here is a sequence entering a loop, then exitig a loop.
+```
+            +---> a1 ---+
+            |           |
+            |           v
+s0 --a0--> s1           s2 --a3--> s3
+            ^           |
+            |           |
+            +--- a2 <---+
+```
+
+Let's assume we _always_ start at state `s0` and all actions are tried in a given order (when an action is not associated to a state it is ignored);  
+so long as `a0` appears __once__ in the stream of actions,  
+_eventually_ we will transition to state `s1`.
+```
+[]<>(state = s1)
+```
+For this to be true we only need to reach `s1` once.
+
+We just need to guarantee that when `a0` runs, it runs completely without interruption, this is called atomicity.
+
+This is also true for `s2`.
+```
+    []<>(state = s1)
+AND []<>(state = s2)
+```
+
+Same as before for `a1`, it needs only appear __once__ in the stream of actions.
+
+Transactions are atomic, so if they run, they run completely.
+If there was a transaction that regularly is given a chance to run, should eventually run.
+
+Using the above can we say the same for reaching `s3`?
+No. The given order has not been specified enough. It may just loop back and forth between `s1` and `s2`.
+
+What we can do is make the atomic action of `a1` cause the next action of `a3` to become more likely.
+
+we'll now pair our previous machine with another another one. We'll then require actions to only run, if it can run on both machines.
+
+```
+            +---> a1 ---+
+            |           |
+            |           v
+s0 --a0--> s1           s2 --a3--> s3
+            ^           |
+            |           |
+            +--- a2 <---+
+
+
+ t0 --a1--> t1 --a1--> t2 -a1-> t3 --a3-->
+/ ^        / ^        / ^
+| |        | |        | |
+{a0,a2,a3} {a0,a2,a3} {a0,a2,a3}
+```
+
+We can now see that so long as both machines move in lockstep, the second machine (t) will limit the number of times `a1` is run, and avoid running `a2` after. We guarantee that after this point, if `a3` happens at least __once__, we will eventually get to state `s3`.
+
+It would now be possible to reason that `[]<>(state = s3)`
+
+Since there is nowhere to go after `s3`, trivially stalling `<>[](state = s3)`
+
+What does this look like in MM2?
+```
+(thread-local thread-1 (state-s s0))
+(thread-local thread-1 (state-t t0))
+
+(exec (thread-1 0)
+   (, )
+)
+```
+
+
+

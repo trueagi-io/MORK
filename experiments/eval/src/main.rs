@@ -1,6 +1,8 @@
 #![feature(coroutine_trait)]
 #![feature(coroutines)]
 
+mod alloc;
+
 use mork_expr::{construct};
 
 use std::pin::Pin;
@@ -27,9 +29,10 @@ struct Func {
 struct EvalScope {
     fns: HashMap<Vec<u8>, Func>,
     stack: Vec<StackFrame>,
-    // expr: SrcCoro<'a>,
-    // expr: Expr,
-    bufs: Vec<Vec<u8>>,
+    /// Re-used buffer allocation pool.
+    /// These are used to create ExprSinks for stack frames.
+    /// This avoids repeated allocations during evaluation.
+    alloc_pool: Vec<Vec<u8>>,
 }
 
 const EXPR_SIZE: usize = 1024 * 1024;
@@ -38,17 +41,28 @@ impl EvalScope {
         Self {
             fns: HashMap::new(),
             stack: Vec::new(),
-            bufs: Vec::new(),
-            // expr: Expr { ptr: core::ptr::null_mut() },
+            alloc_pool: Vec::new(),
         }
     }
     pub fn add_func(&mut self, name: &str, func: FuncPtr, ty: FuncType) {
         self.fns.insert(name.as_bytes().to_vec(), Func { func, ty });
     }
+    #[inline]
+    fn get_alloc(&mut self) -> Vec<u8> {
+        if let Some(mut rv) = self.alloc_pool.pop() {
+            return rv;
+        }
+        Vec::with_capacity(EXPR_SIZE)
+    }
+    #[inline]
+    pub fn return_alloc(&mut self, mut buf: Vec<u8>) {
+        buf.clear();
+        self.alloc_pool.push(buf);
+    }
     fn eval(&mut self, expr: ExprSource) -> Result<Vec<u8>, EvalError> {
         self.stack.clear();
-        self.bufs.clear();
-        let sink = ExprSink::new(Vec::with_capacity(EXPR_SIZE));
+        // self.alloc_pool.clear();
+        let sink = ExprSink::new(self.get_alloc());
         self.stack.push(StackFrame { sink, rest: 1, expr: expr });
         self.push_eval()?;
         self.eval_impl()?;
@@ -61,10 +75,8 @@ impl EvalScope {
         // take current expr item, and push a new frame to evaluate it.
         match expr.read() {
             SourceItem::Tag(Tag::Arity(arity)) => {
-                let buf = self.bufs.pop().unwrap_or_else(||
-                    Vec::with_capacity(EXPR_SIZE));
                 let mut frame = StackFrame {
-                    sink: ExprSink::new(buf),
+                    sink: ExprSink::new(self.get_alloc()),
                     rest: arity as usize,
                     expr: expr.clone(),
                 };
@@ -97,7 +109,8 @@ impl EvalScope {
                     .ok_or_else(|| "unknown function")?;
                 (func.func)(&mut ExprSource::new(data.as_ptr()), &mut prev_frame.sink)?;
                 let top = self.stack.pop().unwrap();
-                self.bufs.push(data);
+                // return buffer to pool
+                self.return_alloc(data);
                 continue;
             }
             self.push_eval()?;
@@ -108,6 +121,17 @@ impl EvalScope {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    const TRACE_ALLOC: bool = false;
+    let _ = tracking_allocator::AllocationRegistry::set_global_tracker(alloc::StdoutTracker)
+        .expect("no other global tracker should be set yet");
+    if TRACE_ALLOC {
+        tracking_allocator::AllocationRegistry::enable_tracking();
+    }
+    let mut local_token =
+        tracking_allocator::AllocationGroupToken::register()
+        .expect("failed to register allocation group");
+
+
     let mut scope = EvalScope::new();
     unsafe {
         // build the dynamically loaded library
@@ -131,13 +155,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ground_mul: libloading::Symbol<FuncPtr> = lib.get(b"ground_mul")?;
         scope.add_func("*", *ground_mul, FuncType::Pure);
     }
+
+    // Now, get an allocation guard from our token.  This guard ensures the allocation group is marked as the current
+    // allocation group, so that our allocations are properly associated.
+    let local_guard = local_token.enter();
+
     let mut expr = construct!("+" 2 ("*" 3 4)).unwrap();
     // let mut expr = construct!("+" 42 69).unwrap();
-    let expr = ExprSource::new(expr.as_ptr());
-    println!("{}", expr.print());
-    let mut rv = scope.eval(expr).unwrap();
-    let mut rv = ExprSource::new(rv.as_ptr());
-    let result = rv.consume_i32().unwrap();
+    // println!("{}", expr.print());
+    println!("eval...");
+    let expr_src = ExprSource::new(expr.as_ptr());
+    let mut rv_buf = scope.eval(expr_src).unwrap();
+    let mut rv_expr = ExprSource::new(rv_buf.as_ptr());
+    let result = rv_expr.consume_i32().unwrap();
     println!("result: {}", result);
+    drop(rv_expr);
+    scope.return_alloc(rv_buf);
+    println!("eval...");
+    let expr_src = ExprSource::new(expr.as_ptr());
+    let mut rv_buf = scope.eval(expr_src).unwrap();
+    let mut rv_expr = ExprSource::new(rv_buf.as_ptr());
+    println!("result: {}", result);
+    drop(rv_expr);
+    scope.return_alloc(rv_buf);
+    drop(local_guard);
+
     Ok(())
 }

@@ -65,9 +65,9 @@
 
 ; Run the counter machine, increment the clock every cycle, keeping all previous states
 ; Only scheduling the next batch of steps for execution when there's a next timestep state (not the case with halt)
-(exec (clocked Z)
-        (, (exec (clocked $ts) $p1 $t1) 
-           (state $ts (IC $_))
-           ((step $k $ts) $p0 $t0))
-        (, (exec ($k $ts) $p0 $t0)
-           (exec (clocked (S $ts)) $p1 $t1)))
+(exec (clocked Z)  ; start clock at 0
+        (, (exec (clocked $ts) $p1 $t1)       ; given our current executing rewrite rule (reflective!)
+           (state $ts (IC $_))                ; when there is some state to continue on (not halted)
+           ((step $k $ts) $p0 $t0))           ; get the rewrite rule for each of the counter machine cases
+        (, (exec ($k $ts) $p0 $t0)            ; schedule the case rewrite rule
+           (exec (clocked (S $ts)) $p1 $t1))) ; schedule our rewrite rule again (for execution after the steps)

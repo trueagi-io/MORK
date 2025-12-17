@@ -54,8 +54,10 @@
   (, (state $ts (IC $i)) (program $i (DEC $r)) (state $ts (REG $r (S $v))) ($r != $o) (state $ts (REG $o $ov)))
   (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r $v)) (state (S $ts) (REG $o $ov))))  
 
-; Halt (do not keep the rest)
-; <nothing to carry over to the next state>
+; Halt, no progression to the next state
+((step HALT $ts)
+  (, (state $ts (IC $i)) (program $i H))
+  (, (HALTED $ts)))
 
 ; Run the counter machine, increment the clock every cycle, keeping all previous states
 ; Only scheduling the next batch of steps for execution when there's a next timestep state (not the case with halt)

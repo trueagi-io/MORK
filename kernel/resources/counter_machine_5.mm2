@@ -23,6 +23,7 @@
 (state Z (REG 2 (S (S (S (S (S Z)))))))
 (state Z (REG 3 Z))
 (state Z (REG 4 Z))
+; Set the instruction counter to 0
 (state Z (IC Z))
 ; (if <peano_nonzero> <then> <else> <result>)
 (if (S $n) $x $y $x)
@@ -35,6 +36,7 @@
 (4 != 1) (4 != 2) (4 != 0) (4 != 3)
 
 ; These are the three rules "(state k <previous_state>) => (state <k+1> <next_state>)" that evolve the system
+
 ; Update instruction counter to $j if $r is zero (keep the rest the same)
 ((step JZ $ts)
 ; for the current IC, maybe get the JZ instruction, get the register it checks, calculate next IC, and get all other state
@@ -44,7 +46,7 @@
 
 ; Increment register $r (keep the rest the same)
 ((step INC $ts)
-; for the current UC, maybe get the INC instruction, get the register, and all other, registers
+; for the current IC, maybe get the INC instruction, get the register, and all other, registers
   (, (state $ts (IC $i)) (program $i (INC $r)) (state $ts (REG $r $v)) ($r != $o) (state $ts (REG $o $ov)))
 ; set the next IC (just incremented), the calculated new register value, and keep all other registers
   (, (state (S $ts) (IC (S $i))) (state (S $ts) (REG $r (S $v))) (state (S $ts) (REG $o $ov))))
@@ -56,7 +58,9 @@
 
 ; Halt, no progression to the next state
 ((step HALT $ts)
+; for the current IC, maybe get the H instruction
   (, (state $ts (IC $i)) (program $i H))
+; set the global halted property with the final state's clock
   (, (HALTED $ts)))
 
 ; Run the counter machine, increment the clock every cycle, keeping all previous states

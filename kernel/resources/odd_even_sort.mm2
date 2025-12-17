@@ -1,0 +1,15 @@
+(lt A B) (lt A C) (lt A D) (lt A E) (lt B C) (lt B D) (lt B E) (lt C D) (lt C E) (lt D E)
+(succ 0 1) (succ 1 2) (succ 2 3) (succ 3 4) (succ 4 5)
+(parity 0 even) (parity 1 odd) (parity 2 even) (parity 3 odd) (parity 4 even)
+
+(A 0 B)
+(A 1 A)
+(A 2 E)
+(A 3 C)
+(A 4 D)
+
+((phase $p)  (, (parity $i $p) (succ $i $si) (A $i $e) (A $si $se) (lt $se $e))
+             (O (- (A $i $e)) (- (A $si $se)) (+ (A $i $se)) (+ (A $si $e))))
+(phase 0 odd) (phase 1 even)
+(exec repeat (, (A $k $_) (phase $kp $phase) ((phase $phase) $p0 $t0))
+             (, (exec ($k $kp) $p0 $t0)))

@@ -1,0 +1,9 @@
+(triangle brussels paris london)
+(triangle brussels st-petersburg istanbul)
+
+(exec 0 (, (triangle $x $y $z)) (, (edge $z $x) (edge $y $z) (edge $x $y)))
+
+(exec 1 (, (edge $x $y) (edge $y $z)) (, (edge $x $z)))
+
+(exec 2 (, (edge $z $x) (edge $y $z) (edge $x $y)) (, (triangle $x $y $z)))
+

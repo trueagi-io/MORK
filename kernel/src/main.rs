@@ -850,6 +850,82 @@ fn pattern_mining() {
     assert_eq!(res, "(test (foo 1))\n");
 }
 
+fn formula_execution() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(= (car ($x)) $x) (= (cdr ($x)) ())
+(= (car ($x $y)) $x) (= (cdr ($x $y)) ($y)) (= (cadr ($x $y)) $y)
+(= (car ($x $y $z)) $x) (= (cdr ($x $y $z)) ($y $z)) (= (cadr ($x $y $z)) $y)
+(= (car ($x $y $z $w)) $x) (= (cdr ($x $y $z $w)) ($y $z $w)) (= (cadr ($x $y $z $w)) $y)
+
+(= (reverse ()) ())
+(= (reverse ($x)) ($x))
+(= (reverse ($x $y)) ($y $x))
+(= (reverse ($x $y $z)) ($z $y $x))
+(= (reverse ($x $y $z $w)) ($w $z $y $x))
+
+(= (length ()) 0)
+(= (length ($a)) 1)
+(= (length ($a $b)) 2)
+(= (length ($a $b $c)) 3)
+(= (length ($a $b $c $d)) 4)
+
+(= (explode foo) (f o o))
+(= (explode bar) (b a r))
+(= (implode (f o o)) foo)
+(= (implode (b a r)) bar)
+(= (implode (o f)) of)
+
+(eval (implode (cdr (reverse (explode foo)))))
+
+; sg ($x + $y) (, (eval $x) (eval $y)) (, (res $x) (res $y)) (O (pure ($x + $y)))
+
+; delimit (reverse ($x $y $z)) (reverse (a b c))
+; (reverse ($x b c)) $x
+; (reverse (a $y c)) $y
+; (reverse (a b $z)) $z
+
+(lensOf ($f $x) $x $i ($f $i))
+(lensOf ($f $x $y) $x $i ($f $i $y))
+(lensOf ($f $x $y) $y $i ($f $x $i))
+(lensOf ($f $x $y $z) $x $i ($f $i $y $z))
+(lensOf ($f $x $y $z) $y $i ($f $x $i $z))
+(lensOf ($f $x $y $z) $z $i ($f $x $y $i))
+(lensOf ($f $x $y $z $w) $x $i ($f $i $y $z $w))
+(lensOf ($f $x $y $z $w) $y $i ($f $x $i $z $w))
+(lensOf ($f $x $y $z $w) $z $i ($f $x $y $i $w))
+(lensOf ($f $x $y $z $w) $w $i ($f $x $y $z $i))
+
+
+(exec (0 0) (, (eval $x)) (, ((peel 10) $x $y (result $y)) ))
+(exec (1 10)
+  (, (exec (1 $l) $ps $ts) (pred $l $nl))
+  (, (exec (1 $nl) $ps $ts)
+;     (exec (1 1) (, ((peel $l) $e $yc $xc )) (O (- ((peel $l) $e $yc $xc))))
+     (exec (1 0) (, ((peel $l) $e $yc $xc ) (lensOf $e $se $y $yc))
+                 (, ((peel $nl) $se $y $xc)))))
+
+(exec (2 0)
+  (, ((peel $p) $x $fx $yc))
+  (, (exec $p (, (= $x $fx)) (, (res $yc)))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.add_all_sexpr((0..10).map(|i| format!("(pred {} {})", i+1, i)).join(" ").as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+}
+
 fn pattern_mining_lensy() {
     let mut s = Space::new();
 
@@ -3993,6 +4069,7 @@ fn main() {
     // sink_act_readback();
     // bench_sink_hexlife_axial();
     // bench_pattern_mining_lensy();
+    // formula_execution();
     // return;
 
     let args = Cli::parse();

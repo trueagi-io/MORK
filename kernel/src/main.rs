@@ -4100,8 +4100,8 @@ fn main() {
     // bench_sink_hexlife_axial();
     // bench_pattern_mining_lensy();
     // formula_execution();
-    sink_pure_basic();
-    return;
+    // sink_pure_basic();
+    // return;
 
     let args = Cli::parse();
 

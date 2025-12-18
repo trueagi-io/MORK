@@ -148,7 +148,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "windows")]
         const LIB_SUFFIX: &str = ".dll";
 
-        let lib_path = format!("../../target/release/libeval_examples{}", LIB_SUFFIX);
+        use std::path::PathBuf;
+        let target_dir = format!("{}/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            "../../target/release",
+        );
+        let lib_path = format!("{target_dir}/libeval_examples{LIB_SUFFIX}");
         lib = libloading::Library::new(lib_path)?;
 
         let ground_sum: libloading::Symbol<FuncPtr> = lib.get(b"ground_sum")?;

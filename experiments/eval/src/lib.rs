@@ -9,7 +9,6 @@ pub struct StackFrame {
     sink: ExprSink,
     // sink: SinkCoro,
     rest: usize,
-    expr: ExprSource,
 }
 
 pub enum FuncType { Macro, Pure }
@@ -21,6 +20,7 @@ pub struct Func {
 
 pub struct EvalScope {
     fns: HashMap<Vec<u8>, Func>,
+    expr: ExprSource,
     stack: Vec<StackFrame>,
     /// Re-used buffer allocation pool.
     /// These are used to create ExprSinks for stack frames.
@@ -35,6 +35,7 @@ impl EvalScope {
             fns: HashMap::new(),
             stack: Vec::new(),
             alloc_pool: Vec::new(),
+            expr: ExprSource::new(core::ptr::null()),
         }
     }
     pub fn add_func(&mut self, name: &str, func: FuncPtr, ty: FuncType) {
@@ -43,6 +44,7 @@ impl EvalScope {
     #[inline]
     fn get_alloc(&mut self) -> Vec<u8> {
         if let Some(mut rv) = self.alloc_pool.pop() {
+            rv.clear();
             return rv;
         }
         Vec::with_capacity(EXPR_SIZE)
@@ -53,10 +55,11 @@ impl EvalScope {
         self.alloc_pool.push(buf);
     }
     pub fn eval(&mut self, expr: ExprSource) -> Result<Vec<u8>, EvalError> {
+        self.expr = expr;
         self.stack.clear();
         // self.alloc_pool.clear();
         let sink = ExprSink::new(self.get_alloc());
-        self.stack.push(StackFrame { sink, rest: 1, expr: expr });
+        self.stack.push(StackFrame { sink, rest: 1 });
         self.push_eval()?;
         self.eval_impl()?;
         let top = self.stack.pop().unwrap();
@@ -64,14 +67,12 @@ impl EvalScope {
         Ok(rv)
     }
     fn push_eval(&mut self) -> Result<(), EvalError> {
-        let mut expr = self.stack.last().unwrap().expr.clone();
         // take current expr item, and push a new frame to evaluate it.
-        match expr.read() {
+        match self.expr.read() {
             SourceItem::Tag(Tag::Arity(arity)) => {
                 let mut frame = StackFrame {
                     sink: ExprSink::new(self.get_alloc()),
                     rest: arity as usize,
-                    expr: expr.clone(),
                 };
                 frame.sink.write(SinkItem::Tag(Tag::Arity(arity)))?;
                 self.stack.push(frame);
@@ -79,7 +80,6 @@ impl EvalScope {
             SourceItem::Symbol(symbol) => {
                 let top_frame = self.stack.last_mut().unwrap();
                 top_frame.sink.write(SinkItem::from(symbol))?;
-                top_frame.expr = expr.clone();
             }
             _ => return Err(EvalError::from("not a list")),
         }

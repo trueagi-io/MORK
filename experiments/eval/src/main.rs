@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // allocation group, so that our allocations are properly associated.
     let local_guard = local_token.enter();
 
-    let mut expr = construct!("+" 2 ("*" 3 4)).unwrap();
+    let mut expr = construct!("+" ("*" 1 2) ("*" 3 4)).unwrap();
     // let mut expr = construct!("+" 42 69).unwrap();
     // println!("{}", expr.print());
     println!("eval...");

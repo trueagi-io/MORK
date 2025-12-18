@@ -592,7 +592,6 @@ mod pure {
         if items != 2 { return Err(EvalError::from("takes two arguments")) }
         let x = expr.consume_f32()?;
         let y = expr.consume_f32()?;
-        println!("sub_f32 {x} / {y} {}", x/y);
         let result = x - y;
         sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
         Ok(())
@@ -605,7 +604,6 @@ mod pure {
         if items != 2 { return Err(EvalError::from("takes two arguments")) }
         let x = expr.consume_f32()?;
         let y = expr.consume_f32()?;
-        println!("div_f32 {x} / {y} {}", x/y);
         let result = x / y;
         sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
         Ok(())
@@ -651,7 +649,7 @@ mod pure {
     }
 }
 
-// (pure (result $x) $x (ascii_to_i32 2))
+// (pure (result $x) $x (f32_from_string 0.2))
 #[cfg(feature = "grounding")]
 pub struct PureSink { e: Expr, unique: PathMap<()> , scope: EvalScope }
 impl Sink for PureSink {

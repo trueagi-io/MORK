@@ -932,7 +932,13 @@ fn sink_pure_roman_validation() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    // assert_eq!(res, "(B 0 123)\n(B 1 racecar)\n(B 2 \"nipson anomemata me monan opsin\")\n");
+    assert_eq!(res, "(result div_f32 0.26747966)
+(result max_f32 1.23)
+(result min_f32 0.329)
+(result sub_f32 -0.901)
+(result sum_f32 1.559)
+(result product_f32 0.40467)
+");
 }
 
 fn formula_execution() {
@@ -4241,6 +4247,7 @@ fn main() {
 
             sink_pure_basic();
             sink_pure_basic_nested();
+            sink_pure_roman_validation();
 
             parse_csv();
             parse_json();

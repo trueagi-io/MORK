@@ -136,4 +136,20 @@ impl ExprSource {
         }
         Ok(i32::from_be_bytes(array))
     }
+
+    /// Consumes an f32 symbol from the expression.
+    pub fn consume_f32(&mut self) -> Result<f32, EvalError> {
+        let array;
+        const SIZE: usize = core::mem::size_of::<f32>();
+        match self.read() {
+            SourceItem::Symbol(slice) if slice.len() == SIZE => {
+                array = unsafe { slice.as_ptr().cast::<[u8; SIZE]>().read() };
+            }
+            SourceItem::Symbol(slice) => {
+                return Err(EvalError::from("invalid symbol size of f32"));
+            }
+            _ => return Err(EvalError::from("trying to read f32 from not a symbol"))
+        }
+        Ok(f32::from_be_bytes(array))
+    }
 }

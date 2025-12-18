@@ -520,25 +520,122 @@ impl Sink for SumSink {
 
 mod pure {
     use log::trace;
+    use std::io::Write;
     use eval::*;
     use eval_ffi::{ExprSink, ExprSource, SinkItem, SourceItem, EvalError, Tag};
 
-    #[unsafe(export_name = "sum")]
-    pub extern "C" fn sum(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+    pub extern "C" fn sum_i32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
         let expr = unsafe { &mut *expr };
         let sink = unsafe { &mut *sink };
-        let items = expr.consume_head_check(b"+")?;
+        let items = expr.consume_head_check(b"sum_i32")?;
         let mut result: i32 = 0;
         for _ in 0..items {
-            let item = expr.consume_i32()?;
-            result = result.checked_add(item)
+            result = result.checked_add(expr.consume_i32()?)
                 .ok_or_else(|| EvalError::from("overflow in +"))?
         }
         sink.write(result.to_be_bytes()[..].into())?;
         Ok(())
     }
 
-    #[unsafe(export_name = "reverse_symbol")]
+    pub extern "C" fn sum_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"sum_f32")?;
+        let mut result: f64 = 0f64;
+        for _ in 0..items {
+            result += expr.consume_f32()? as f64;
+        }
+        sink.write((result as f32).to_be_bytes()[..].into())?;
+        Ok(())
+    }
+
+    pub extern "C" fn product_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"product_f32")?;
+        let mut result: f64 = 1f64;
+        for _ in 0..items {
+            result *= expr.consume_f32()? as f64;
+        }
+        sink.write((result as f32).to_be_bytes()[..].into())?;
+        Ok(())
+    }
+
+    pub extern "C" fn max_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"max_f32")?;
+        let mut result: f32 = f32::NEG_INFINITY;
+        for _ in 0..items {
+            result = expr.consume_f32()?.max(result);
+        }
+        sink.write(result.to_be_bytes()[..].into())?;
+        Ok(())
+    }
+
+    pub extern "C" fn min_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"min_f32")?;
+        let mut result: f32 = f32::INFINITY;
+        for _ in 0..items {
+            result = expr.consume_f32()?.min(result);
+        }
+        sink.write(result.to_be_bytes()[..].into())?;
+        Ok(())
+    }
+
+    pub extern "C" fn sub_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"sub_f32")?;
+        if items != 2 { return Err(EvalError::from("takes two arguments")) }
+        let x = expr.consume_f32()?;
+        let y = expr.consume_f32()?;
+        println!("sub_f32 {x} / {y} {}", x/y);
+        let result = x - y;
+        sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+        Ok(())
+    }
+
+    pub extern "C" fn div_f32(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"div_f32")?;
+        if items != 2 { return Err(EvalError::from("takes two arguments")) }
+        let x = expr.consume_f32()?;
+        let y = expr.consume_f32()?;
+        println!("div_f32 {x} / {y} {}", x/y);
+        let result = x / y;
+        sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+        Ok(())
+    }
+
+    pub extern "C" fn f32_from_string(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"f32_from_string")?;
+        if items != 1 { return Err(EvalError::from("only takes one argument")) }
+        let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only reverses symbols")) };
+        let result: f32 = str::from_utf8(symbol).map_err(|_| EvalError::from("f32 parsing string not utf8"))?.parse().map_err(|_| EvalError::from("string not a valid f32"))?;
+        sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+        Ok(())
+    }
+
+    pub extern "C" fn f32_to_string(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"f32_to_string")?;
+        if items != 1 { return Err(EvalError::from("only takes one argument")) }
+        let x = expr.consume_f32()?;
+        let mut buf = [0u8; 64];
+        let mut cur = std::io::Cursor::new(&mut buf[..]);
+        write!(&mut cur, "{}", x).unwrap();
+        let pos = cur.position() as usize;
+        sink.write(SinkItem::Symbol(&buf[..pos]))?;
+        Ok(())
+    }
+
     pub extern "C" fn reverse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
         let expr = unsafe { &mut *expr };
         let sink = unsafe { &mut *sink };
@@ -562,6 +659,15 @@ impl Sink for PureSink {
         let mut scope = EvalScope::new();
 
         scope.add_func("reverse_symbol", pure::reverse_symbol, eval::FuncType::Pure);
+
+        scope.add_func("f32_from_string", pure::f32_from_string, eval::FuncType::Pure);
+        scope.add_func("f32_to_string", pure::f32_to_string, eval::FuncType::Pure);
+        scope.add_func("sum_f32", pure::sum_f32, eval::FuncType::Pure);
+        scope.add_func("product_f32", pure::product_f32, eval::FuncType::Pure);
+        scope.add_func("sub_f32", pure::sub_f32, eval::FuncType::Pure);
+        scope.add_func("div_f32", pure::div_f32, eval::FuncType::Pure);
+        scope.add_func("max_f32", pure::max_f32, eval::FuncType::Pure);
+        scope.add_func("min_f32", pure::min_f32, eval::FuncType::Pure);
 
         PureSink { e, unique: PathMap::new(), scope }
     }

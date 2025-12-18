@@ -864,12 +864,9 @@ fn sink_pure_basic() {
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
-    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
-
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
-    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
@@ -894,12 +891,9 @@ fn sink_pure_basic_nested() {
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
-    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
-
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
-    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
@@ -908,6 +902,37 @@ fn sink_pure_basic_nested() {
 
     println!("result: {res}");
     assert_eq!(res, "(B 0 123)\n(B 1 racecar)\n(B 2 \"nipson anomemata me monan opsin\")\n");
+}
+
+fn sink_pure_roman_validation() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(pair 0.329 1.230)
+(func max_f32)
+(func min_f32)
+(func sub_f32)
+(func div_f32)
+(func sum_f32)
+(func product_f32)
+
+(exec 0 (, (pair $x $y) (func $func))
+        (O (pure (result $func $z) $z (f32_to_string ($func (f32_from_string $x) (f32_from_string $y))) )))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] result $ $"), expr!(s, "[3] result _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert_eq!(res, "(B 0 123)\n(B 1 racecar)\n(B 2 \"nipson anomemata me monan opsin\")\n");
 }
 
 fn formula_execution() {
@@ -4131,6 +4156,7 @@ fn main() {
     // bench_pattern_mining_lensy();
     // formula_execution();
     // sink_pure_basic();
+    // sink_pure_roman_validation();
     // return;
 
     let args = Cli::parse();

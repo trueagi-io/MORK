@@ -133,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let mut scope = EvalScope::new();
+    let lib;
     unsafe {
         // build the dynamically loaded library
         std::process::Command::new("cargo")
@@ -148,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         const LIB_SUFFIX: &str = ".dll";
 
         let lib_path = format!("../../target/release/libeval_examples{}", LIB_SUFFIX);
-        let lib = libloading::Library::new(lib_path)?;
+        lib = libloading::Library::new(lib_path)?;
 
         let ground_sum: libloading::Symbol<FuncPtr> = lib.get(b"ground_sum")?;
         scope.add_func("+", *ground_sum, FuncType::Pure);

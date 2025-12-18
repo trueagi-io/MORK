@@ -4,7 +4,10 @@ members = [
     "interning/",
     "expr/",
     "frontend/",
-    "kernel/"
+    "kernel/",
+    "experiments/eval",
+    "experiments/eval-ffi",
+    "experiments/eval-examples",
 ]
 
 default-members = ["kernel/"]

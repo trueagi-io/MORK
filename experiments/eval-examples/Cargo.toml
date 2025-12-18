@@ -1,0 +1,10 @@
+[package]
+name = "eval-examples"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+eval-ffi = { path = "../eval-ffi" }

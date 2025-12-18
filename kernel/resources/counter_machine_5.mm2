@@ -4,7 +4,7 @@
 ; 0   1   2   3   4   5   6   7   8   9
 ; JZ  DEC INC INC JZ  JZ  DEC INC JZ  H  ; instruction
 ; 2   2   3   1   0   1   1   2   0      ; register it checks
-; 6               1   10          6      ; jump to instruction number
+; 5               0   9           5      ; jump to instruction number
 (program Z (JZ 2 (S (S (S (S (S Z))))) ))
 (program (S Z) (DEC 2))
 (program (S (S Z)) (INC 3))

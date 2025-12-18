@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+eval = { workspace=true }
+eval-ffi = { workspace=true }
 mork-frontend = { workspace=true }
 mork-expr = { workspace=true }
 mork-interning = { workspace = true }

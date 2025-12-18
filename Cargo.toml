@@ -20,6 +20,8 @@ log = { version = "0.4.27" }
 env_logger = "0.11.8"
 
 # Internal to MORK
+eval = {path = "experiments/eval"}
+eval-ffi = {path = "experiments/eval-ffi"}
 mork-interning = {features = ["debug_api"], path = "./interning"}
 mork-expr = {path = "./expr"}
 mork-frontend = {path = "./frontend"}

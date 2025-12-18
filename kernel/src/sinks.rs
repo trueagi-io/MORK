@@ -2,6 +2,7 @@ use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::fs::File;
 use std::hint::unreachable_unchecked;
 use std::mem::MaybeUninit;
@@ -21,6 +22,8 @@ use pathmap::zipper::*;
 use mork_frontend::json_parser::Transcriber;
 use log::*;
 use pathmap::PathMap;
+use eval::EvalScope;
+use eval_ffi::ExprSource;
 use crate::space::ACT_PATH;
 
 pub(crate) enum WriteResourceRequest {
@@ -516,33 +519,147 @@ impl Sink for SumSink {
 }
 
 mod pure {
-    fn add_i32(i: &[u8], o: &mut [u8]) -> bool {
-        false
+    use log::trace;
+    use eval::*;
+    use eval_ffi::{ExprSink, ExprSource, SinkItem, SourceItem, EvalError, Tag};
+
+    #[unsafe(export_name = "sum")]
+    pub extern "C" fn sum(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"+")?;
+        let mut result: i32 = 0;
+        for _ in 0..items {
+            let item = expr.consume_i32()?;
+            result = result.checked_add(item)
+                .ok_or_else(|| EvalError::from("overflow in +"))?
+        }
+        sink.write(result.to_be_bytes()[..].into())?;
+        Ok(())
+    }
+
+    #[unsafe(export_name = "reverse_symbol")]
+    pub extern "C" fn reverse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"reverse_symbol")?;
+        if items != 1 { return Err(EvalError::from("only takes one argument")) }
+        trace!(target: "ground", "reverse_symbol consumed {:?}", items);
+        let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only reverses symbols")) };
+        let mut buf = [0u8; 64];
+        buf[..symbol.len()].clone_from_slice(symbol);
+        buf[..symbol.len()].reverse();
+        sink.write(SinkItem::Symbol(&buf[..symbol.len()]))?;
+        Ok(())
     }
 }
 
 // (pure (result $x) $x (ascii_to_i32 2))
-pub struct PureSink { e: Expr }
+#[cfg(feature = "grounding")]
+pub struct PureSink { e: Expr, unique: PathMap<()> , scope: EvalScope }
 impl Sink for PureSink {
     fn new(e: Expr) -> Self {
-        PureSink { e }
+        let mut scope = EvalScope::new();
+
+        scope.add_func("reverse_symbol", pure::reverse_symbol, eval::FuncType::Pure);
+
+        PureSink { e, unique: PathMap::new(), scope }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[6..];
         trace!(target: "sink", "count requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
-    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        // let mut wz = it.next().unwrap();
-        // let mpath = &path[7+wz.root_prefix_path().len()..];
-        // let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
-        // trace!(target: "sink", "count at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
-        // trace!(target: "sink", "count registering in ctx {:?}", ctx);
-        // self.unique.insert(mpath, ());
-        // wz.move_to_path(opath)
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        let mpath = &path[6+wz.root_prefix_path().len()..];
+        let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+        trace!(target: "sink", "pure at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "pure registering in ctx {:?}", serialize(mpath));
+        self.unique.insert(mpath, ());
+
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
-        true
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        wz.reset();
+        trace!(target: "sink", "pure finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
+
+        let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
+        let mut rooted_input = PathMap::new();
+        rooted_input.write_zipper_at_path(wz.root_prefix_path()).graft_map(_to_swap);
+
+        static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+        let mut prz = OneFactor::new(rooted_input.into_read_zipper(&[]));
+        let prz_ptr = (&prz) as *const OneFactor<_>;
+        let mut changed = false;
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+
+            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+                let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
+                prz.descend_to_byte(b);
+                debug_assert!(prz.path_exists());
+                if !prz.descend_first_k_path(size as _) { unreachable!() }
+                loop {
+                    let clen = prz.origin_path().len();
+
+                    let mut rz = prz.fork_read_zipper();
+                    'vals: while rz.to_next_val() {
+                        let p = rz.origin_path();
+                        trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
+                        todo!();
+                    }
+
+                    if !prz.to_next_k_path(size as _) { break }
+                }
+                if !prz.ascend_byte() { unreachable!() }
+            }
+
+            for b in prz.child_mask().and(&ByteMask(crate::space::ARITIES)).iter() {
+                todo!();
+            }
+
+            if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
+                let ignored = &prz.path()[..prz.path().len()-1];
+                trace!(target: "sink", "ignored guard {}", serialize(ignored));
+                wz.move_to_path(ignored);
+                wz.set_val(());
+                changed |= true;
+                prz.ascend_byte();
+            }
+            if prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+                    let clen = prz.path().len();
+                    let mut rz = prz.fork_read_zipper();
+                    'vals: while rz.to_next_val() {
+                        let p = rz.origin_path();
+                        trace!(target: "sink", "path {:?}", serialize(p));
+                        trace!(target: "sink", "path {:?}", serialize(&p[clen..]));
+
+                        let mut res = match self.scope.eval(ExprSource::new(&p[clen])) {
+                            Ok(res) => { res }
+                            Err(er) => { trace!(target: "sink", "err {}", er); continue 'vals }
+                        };
+
+                        trace!(target: "sink", "result {:?}", serialize(&res[..]));
+
+                        let varref = &prz.path()[..prz.path().len()-1];
+                        let ie = Expr { ptr: (&varref[0] as *const u8).cast_mut() };
+                        let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                        trace!(target: "sink", "ref guard '{}' var {:?} with '{}'", serialize(varref), k, serialize(&res[..]));
+                        let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: res.as_mut_ptr() }, &mut oz);
+                        unsafe { buffer.set_len(oz.loc) }
+                        trace!(target: "sink", "ref guard subs '{:?}'", serialize(&buffer[..oz.loc]));
+                        wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                        wz.set_val(());
+                        changed |= true
+                    }
+                }
+                prz.ascend_byte();
+            }
+            true
+        });
+        changed
     }
 }
 

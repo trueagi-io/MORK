@@ -872,12 +872,42 @@ fn sink_pure_basic() {
     s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
 
     let mut v = vec![];
-    s.dump_all_sexpr(&mut v).unwrap();
-    // s.dump_sexpr(expr!(s, "[2] res $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] B $ $"), expr!(s, "[3] B _1 _2"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    // assert_eq!(res, "(test (foo 1))\n");
+    assert_eq!(res, "(B 0 321)\n(B 1 racecar)\n(B 2 \"nispo nanom em atamemona nospin\")\n");
+}
+
+fn sink_pure_basic_nested() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(A 0 123)
+(A 1 racecar)
+(A 2 "nipson anomemata me monan opsin")
+
+(exec 0 (, (A $i $s))
+        (O (pure (B $i $rs) $rs (reverse_symbol (reverse_symbol $s)))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+    s.btm.iter().for_each(|(p, k)| println!("{}", serialize(&p[..])));
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] B $ $"), expr!(s, "[3] B _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(B 0 123)\n(B 1 racecar)\n(B 2 \"nipson anomemata me monan opsin\")\n");
 }
 
 fn formula_execution() {
@@ -4182,6 +4212,9 @@ fn main() {
             sink_count_double();
             sink_count_double_repeated();
             pattern_mining_lensy();
+
+            sink_pure_basic();
+            sink_pure_basic_nested();
 
             parse_csv();
             parse_json();

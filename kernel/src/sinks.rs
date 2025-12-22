@@ -592,7 +592,21 @@ mod pure {
                 let items = expr.consume_head_check(stringify!($name).as_bytes())?;
                 if items != 1 { return Err(EvalError::from("only takes one argument")) }
                 let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only parses symbols")) };
-                let result: $t = str::from_utf8(symbol).map_err(|_| EvalError::from(concat!(stringify!($name), " parsing string not utf8")))?.parse().map_err(|_| EvalError::from(concat!("string not a valid type", stringify!($name))))?;
+                let result: $t = str::from_utf8(symbol).map_err(|_| EvalError::from(concat!(stringify!($name), " parsing string not utf8")))?.parse().map_err(|_| EvalError::from(concat!("string not a valid type in ", stringify!($name))))?;
+                sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+                Ok(())
+            }
+        };
+        (num from_hex $name:ident<$t:ty>) => {
+            pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+                let expr = unsafe { &mut *expr };
+                let sink = unsafe { &mut *sink };
+                let items = expr.consume_head_check(stringify!($name).as_bytes())?;
+                if items != 1 { return Err(EvalError::from("only takes one argument")) }
+                let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only parses symbols")) };
+                if symbol[0] != b'0' || symbol[1] != b'x' { return Err(EvalError::from("hex expects symbols to start with 0x")) }
+                let result: $t = <$t>::from_str_radix(str::from_utf8(&symbol[2..]).map_err(|_| EvalError::from(concat!(stringify!($name), " parsing string not utf8")))?, 16)
+                    .map_err(|_| EvalError::from(concat!("string not a valid type in ", stringify!($name))))?;
                 sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
                 Ok(())
             }
@@ -613,6 +627,11 @@ mod pure {
             }
         };
     }
+
+    op!(num from_hex i8_from_hex<i8>);
+    op!(num from_hex i16_from_hex<i16>);
+    op!(num from_hex i32_from_hex<i32>);
+    op!(num from_hex i64_from_hex<i64>);
 
     op!(num unary i8_as_i16(x: i8) => x as i16);
     op!(num unary i8_as_i32(x: i8) => x as i32);
@@ -833,6 +852,11 @@ impl Sink for PureSink {
         // GENERATED from the above
         // op!\(num \w+ (\w+)\W.+
         // scope.add_func("$1", pure::$1, eval::FuncType::Pure);
+        scope.add_func("i8_from_hex", pure::i8_from_hex, eval::FuncType::Pure);
+        scope.add_func("i16_from_hex", pure::i16_from_hex, eval::FuncType::Pure);
+        scope.add_func("i32_from_hex", pure::i32_from_hex, eval::FuncType::Pure);
+        scope.add_func("i64_from_hex", pure::i64_from_hex, eval::FuncType::Pure);
+
         scope.add_func("i8_as_i16", pure::i8_as_i16, eval::FuncType::Pure);
         scope.add_func("i8_as_i32", pure::i8_as_i32, eval::FuncType::Pure);
         scope.add_func("i8_as_i64", pure::i8_as_i64, eval::FuncType::Pure);
@@ -1100,7 +1124,7 @@ impl Sink for PureSink {
 
                         let mut res = match self.scope.eval(ExprSource::new(&p[clen])) {
                             Ok(res) => { res }
-                            Err(er) => { trace!(target: "sink", "err {}", er); continue 'vals }
+                            Err(er) => { trace!(target: "pure", "err {}", er); continue 'vals }
                         };
 
                         trace!(target: "sink", "result {:?}", serialize(&res[..]));
@@ -1165,7 +1189,7 @@ impl Sink for ASink {
             #[cfg(not(feature = "grounding"))]
             panic!("MORK was not built with the grounding feature, yet trying to call {:?}", e);
         } else {
-            unreachable!()
+            panic!("unrecognized sink")
         }
     }
 

@@ -1,0 +1,68 @@
+(inputfile 0 (arg 1390) (arg 0.9257))
+(inputfile 1 (arg 3490) (arg 1.2329))
+
+(myhex 0x48)
+(exec 0 (, (myhex $x))
+        (O (pure (myparsedhex $i) $i (i16_to_string (i8_as_i16 (i8_from_hex $x) ) )  ))
+)
+
+(normalize $e (div_f64 (sum_f64 (f64_from_string 1.0) $e) (f64_from_string 10.0)))
+;
+;; grounding can come from sources/sinks
+;; can be embedded in wasm (sinks) JIT'd
+;; NEW: can be interpreted in pure (sinks)
+(exec 0
+  (, (inputfile $i (arg $x) (arg $y)) (normalize
+        (product_f64 (i64_as_f64 (i64_from_string $x)) (f64_from_string $y))
+        $normalized
+    ))
+  (O (pure (result $i $res) $res (f64_to_string
+     $normalized
+  )))
+)
+
+
+(file (to_normalize 1 43954.23890))
+(file (name_of 1 "foo"))
+(file (to_normalize 2 39430.230))
+(file (name_of 2 "bar"))
+
+; step 1: organize your data into a metagraph and intern your string and parse your numbers and ...
+(exec 0 (, (file (to_normalize $i $number_text)) (file (name_of $i $name)))
+        (O (pure (Normalize $name (f64 $number)) $number (f64_from_string $number_text)))
+)
+
+; step 2: do your bulk compute
+(exec 1
+  (, (Normalize $name (f64 $x)))
+  (O (pure (NormalizedResult $name (f64 $res)) $res
+     (div_f64 (sum_f64 (f64_from_string 1.0) $x) (f64_from_string 10.0))
+  ))
+)
+
+; step 3a: output into user-friendly form (or file type)
+(exec 2
+  (, (NormalizedResult $name (f64 $x)))
+  (O (pure (normalization of $name is $res) $res
+     (f64_to_string $x)
+  ))
+)
+
+;(exec 2
+;  (, (NormalizedResult $name (f64 $x)))
+;  (O (pure (wrong_type $res) $res (i64_to_string $x)))
+;)
+;
+;(exec 2
+;  (, (NormalizedResult $name (f64 $x)))
+;  (O (pure (wrong_size $res) $res (f32_to_string (f64_as_f32 $x))))
+;)
+
+(exec 3
+  (, (NormalizedResult $name $x))
+  (O (- (NormalizedResult $name $x)))
+)
+(exec 3
+  (, (Normalize $name $number))
+  (O (- (Normalize $name $number)))
+)

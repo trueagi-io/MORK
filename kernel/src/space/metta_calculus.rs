@@ -311,7 +311,7 @@ fn transform_impl<'space, 'machine, S: Space>(controller : Controller<'machine, 
         let mut wz = space.write_zipper(&mut writers[exec_writer_index]);
         core::debug_assert_eq!(wz.origin_path(), &buffer[..*prefix_len]);
         wz.descend_to(&buffer[*prefix_len..]);
-        wz.remove_val();
+        wz.remove_val(true);
     }
 
     space.transform_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
@@ -439,7 +439,7 @@ pub(crate) fn acquire_exec_permissions<'s, E: ExprTrait, S : Space>(
                 wz.descend_to(&path[exec_path.len()..]);
 
                 // I might be able to do something more elegant if the trait bounds were different.
-                let s_map = wz.take_map();
+                let s_map = wz.take_map(true);
                 if let Some(map) = s_map {
                     wz.graft_map(map.clone());
                     let mut wz_map = read_map.write_zipper_at_path(path);

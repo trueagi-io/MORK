@@ -776,7 +776,7 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
             thread_local!{
                 static BUF: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
             }
-            let pathmap::paths_serialization::DeserializationStats { path_count, .. } = buf.with(|b| {
+            let pathmap::paths_serialization::DeserializationStats { path_count, .. } = BUF.with(|b| {
                 // println!("for each deserialized...");
                 pathmap::paths_serialization::for_each_deserialized_path(src, |k, p| {
                     let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });

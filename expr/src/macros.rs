@@ -186,6 +186,37 @@ impl SerializableExpr for i32 {
     }
 }
 
+impl DeserializableExpr for i8 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        1 + core::mem::size_of::<Self>()
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(1)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i8) }
+    }
+}
+
+
+impl DeserializableExpr for i16 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        1 + core::mem::size_of::<Self>()
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(2)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i16) }.swap_bytes()
+    }
+}
+
 impl DeserializableExpr for i32 {
     #[inline(always)]
     fn advanced(e: Expr) -> usize {
@@ -198,6 +229,51 @@ impl DeserializableExpr for i32 {
     #[inline(always)]
     fn deserialize_unchecked(e: Expr) -> Self {
         unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i32) }.swap_bytes()
+    }
+}
+
+impl DeserializableExpr for i64 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        1 + core::mem::size_of::<Self>()
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(8)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i64) }.swap_bytes()
+    }
+}
+
+impl DeserializableExpr for f32 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        1 + core::mem::size_of::<Self>()
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(4)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { f32::from_be_bytes(std::ptr::read_unaligned(e.ptr.add(1) as *const [u8; 4])) }
+    }
+}
+
+impl DeserializableExpr for f64 {
+    #[inline(always)]
+    fn advanced(e: Expr) -> usize {
+        1 + core::mem::size_of::<Self>()
+    }
+    #[inline(always)]
+    fn check(e: Expr) -> bool {
+        unsafe { *e.ptr == item_byte(Tag::SymbolSize(8)) }
+    }
+    #[inline(always)]
+    fn deserialize_unchecked(e: Expr) -> Self {
+        unsafe { f64::from_be_bytes(std::ptr::read_unaligned(e.ptr.add(1) as *const [u8; 8])) }
     }
 }
 

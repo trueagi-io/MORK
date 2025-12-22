@@ -1,4 +1,4 @@
-use mork_expr::{byte_item, Tag};
+use mork_expr::{byte_item, Expr, Tag};
 
 use crate::EvalError;
 
@@ -16,7 +16,8 @@ pub struct ExprSource {
 }
 
 #[cfg(feature = "std")]
-use alloc::string::String;
+use alloc::{string::String, format};
+use mork_expr::macros::DeserializableExpr;
 
 impl ExprSource {
     #[cfg(feature = "std")]
@@ -151,5 +152,16 @@ impl ExprSource {
             _ => return Err(EvalError::from("trying to read f32 from not a symbol"))
         }
         Ok(f32::from_be_bytes(array))
+    }
+
+    pub fn consume<T : DeserializableExpr>(&mut self) -> Result<T, EvalError> {
+        let se = unsafe { Expr{ ptr: self.ptr.add(self.position).cast_mut() } };
+
+        if T::check(se) {
+            self.position += T::advanced(se);
+            Ok(T::deserialize_unchecked(se))
+        } else {
+            Err(EvalError::from("failed to consume <T>"))
+        }
     }
 }

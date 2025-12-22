@@ -1,18 +1,13 @@
-use mork_expr::{byte_item, Expr, Tag};
+use mork_expr::{byte_item, Expr, Tag, SourceItem};
 
 use crate::EvalError;
-
-pub enum SourceItem<'a> {
-    Tag(Tag),
-    Symbol(&'a[u8]),
-}
 
 #[derive(Clone)]
 #[repr(C)]
 pub struct ExprSource {
-    ptr: *const u8,
+    pub ptr: *const u8,
     // len: usize,
-    position: usize,
+    pub position: usize,
 }
 
 #[cfg(feature = "std")]

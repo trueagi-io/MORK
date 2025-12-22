@@ -1,4 +1,4 @@
-use eval_ffi::{ExprSink, ExprSource, SinkItem, SourceItem, EvalError, Tag};
+use eval_ffi::{ExprSink, ExprSource, EvalError, SourceItem};
 
 #[unsafe(export_name = "ground_mul")]
 pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
@@ -11,7 +11,7 @@ pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
         result = result.checked_mul(item)
             .ok_or_else(|| EvalError::from("overflow in *"))?
     }
-    sink.write(result.to_be_bytes()[..].into())?;
+    sink.write(SourceItem::Symbol(result.to_be_bytes()[..].into()))?;
     Ok(())
 }
 
@@ -26,6 +26,6 @@ pub extern "C" fn ground_sum(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
         result = result.checked_add(item)
             .ok_or_else(|| EvalError::from("overflow in +"))?
     }
-    sink.write(result.to_be_bytes()[..].into())?;
+    sink.write(SourceItem::Symbol(&result.to_be_bytes()[..]))?;
     Ok(())
 }

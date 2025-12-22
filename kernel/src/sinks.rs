@@ -522,7 +522,8 @@ mod pure {
     use log::trace;
     use std::io::Write;
     use eval::*;
-    use eval_ffi::{ExprSink, ExprSource, SinkItem, SourceItem, EvalError, Tag};
+    use mork_expr::SourceItem;
+    use eval_ffi::{ExprSink, ExprSource, EvalError, Tag};
 
     macro_rules! op {
         (num nary $name:ident($initial:expr, $t:ident: $tt:ty, $x:ident: $tx:ty) => $e:expr) => {
@@ -535,7 +536,7 @@ mod pure {
                     let $x = expr.consume::<$tx>()?;
                     $t = $e;
                 }
-                sink.write(SinkItem::Symbol(($t).to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(($t).to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -548,7 +549,7 @@ mod pure {
                 let $x = expr.consume::<$tx>()?;
                 let $y = expr.consume::<$ty>()?;
                 let $z = expr.consume::<$tz>()?;
-                sink.write(SinkItem::Symbol(($e).to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(($e).to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -560,7 +561,7 @@ mod pure {
                 if items != 2 { return Err(EvalError::from(concat!(stringify!($name), " takes two arguments"))) }
                 let $x = expr.consume::<$tx>()?;
                 let $y = expr.consume::<$ty>()?;
-                sink.write(SinkItem::Symbol(($e).to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(($e).to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -571,7 +572,7 @@ mod pure {
                 let items = expr.consume_head_check(stringify!($name).as_bytes())?;
                 if items != 1 { return Err(EvalError::from(concat!(stringify!($name), " takes one argument"))) }
                 let $x = expr.consume::<$tx>()?;
-                sink.write(SinkItem::Symbol(($e).to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(($e).to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -581,7 +582,7 @@ mod pure {
                 let sink = unsafe { &mut *sink };
                 let items = expr.consume_head_check(stringify!($name).as_bytes())?;
                 if items != 0 { return Err(EvalError::from(concat!(stringify!($name), " takes no arguments"))) }
-                sink.write(SinkItem::Symbol(($e).to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(($e).to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -593,7 +594,7 @@ mod pure {
                 if items != 1 { return Err(EvalError::from("only takes one argument")) }
                 let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only parses symbols")) };
                 let result: $t = str::from_utf8(symbol).map_err(|_| EvalError::from(concat!(stringify!($name), " parsing string not utf8")))?.parse().map_err(|_| EvalError::from(concat!("string not a valid type in ", stringify!($name))))?;
-                sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(result.to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -607,7 +608,7 @@ mod pure {
                 if symbol[0] != b'0' || symbol[1] != b'x' { return Err(EvalError::from("hex expects symbols to start with 0x")) }
                 let result: $t = <$t>::from_str_radix(str::from_utf8(&symbol[2..]).map_err(|_| EvalError::from(concat!(stringify!($name), " parsing string not utf8")))?, 16)
                     .map_err(|_| EvalError::from(concat!("string not a valid type in ", stringify!($name))))?;
-                sink.write(SinkItem::Symbol(result.to_be_bytes()[..].into()))?;
+                sink.write(SourceItem::Symbol(result.to_be_bytes()[..].into()))?;
                 Ok(())
             }
         };
@@ -622,7 +623,7 @@ mod pure {
                 let mut cur = std::io::Cursor::new(&mut buf[..]);
                 write!(&mut cur, "{}", x).unwrap();
                 let pos = cur.position() as usize;
-                sink.write(SinkItem::Symbol(&buf[..pos]))?;
+                sink.write(SourceItem::Symbol(&buf[..pos]))?;
                 Ok(())
             }
         };
@@ -830,12 +831,44 @@ mod pure {
         let sink = unsafe { &mut *sink };
         let items = expr.consume_head_check(b"reverse_symbol")?;
         if items != 1 { return Err(EvalError::from("only takes one argument")) }
-        trace!(target: "ground", "reverse_symbol consumed {:?}", items);
         let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("only reverses symbols")) };
         let mut buf = [0u8; 64];
         buf[..symbol.len()].clone_from_slice(symbol);
         buf[..symbol.len()].reverse();
-        sink.write(SinkItem::Symbol(&buf[..symbol.len()]))?;
+        sink.write(SourceItem::Symbol(&buf[..symbol.len()]))?;
+        Ok(())
+    }
+
+    pub extern "C" fn collapse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"collapse_symbol")?;
+        if items != 1 { return Err(EvalError::from("only takes one argument (an expression of symbols)")) }
+        let si = expr.read();
+        if let SourceItem::Symbol(s) = si { println!("si {:?}", s); }
+        let SourceItem::Tag(Tag::Arity(a)) = si else { return Err(EvalError::from("argument should be an expression")) };
+        let mut buf = [0u8; 64];
+        let mut i = 0;
+        for _ in 0..a {
+            let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("can only concat symbols in collapse")) };
+            if i + symbol.len() >= 64 { return Err(EvalError::from("new symbol can not be larger than 63 bytes")) }
+            buf[i..i+symbol.len()].clone_from_slice(symbol);
+            i += symbol.len();
+        }
+        sink.write(SourceItem::Symbol(&buf[..i]))?;
+        Ok(())
+    }
+
+    pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        let expr = unsafe { &mut *expr };
+        let sink = unsafe { &mut *sink };
+        let items = expr.consume_head_check(b"explode_symbol")?;
+        if items != 1 { return Err(EvalError::from("only takes one argument (a symbol)")) }
+        let SourceItem::Symbol(symbol) = expr.read() else { return Err(EvalError::from("arguments needs to be a symbol")) };
+        sink.write(SourceItem::Tag(Tag::Arity(symbol.len() as _)))?;
+        for i in 0..symbol.len() {
+            sink.write(SourceItem::Symbol(&symbol[i..i+1]))?;
+        }
         Ok(())
     }
 }
@@ -848,7 +881,9 @@ impl Sink for PureSink {
         let mut scope = EvalScope::new();
 
         scope.add_func("reverse_symbol", pure::reverse_symbol, eval::FuncType::Pure);
-        
+        scope.add_func("collapse_symbol", pure::collapse_symbol, eval::FuncType::Pure);
+        scope.add_func("explode_symbol", pure::explode_symbol, eval::FuncType::Pure);
+
         // GENERATED from the above
         // op!\(num \w+ (\w+)\W.+
         // scope.add_func("$1", pure::$1, eval::FuncType::Pure);

@@ -941,6 +941,94 @@ fn sink_pure_roman_validation() {
 ");
 }
 
+fn sink_pure_dynamic_subformula() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(inputfile 0 (arg 1390) (arg 0.9257))
+(inputfile 1 (arg 3490) (arg 1.2329))
+
+(normalize $e (div_f64 (sum_f64 (f64_from_string 1.0) $e) (f64_from_string 10.0)))
+
+
+(exec 0
+  (, (inputfile $i (arg $x) (arg $y)) (normalize
+        (product_f64 (i64_as_f64 (i64_from_string $x)) (f64_from_string $y))
+        $normalized
+    ))
+  (O (pure (result $i $res) $res (f64_to_string
+     $normalized
+  )))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] result $ $"), expr!(s, "[3] result _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(result 0 128.7723)\n(result 1 430.3821000000001)\n");
+}
+
+fn sink_pure_quote_collapse_symbol() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(mysym foo)
+
+(exec 0 (, (mysym $x))
+        (O (pure (myconcat $i) $i (collapse_symbol ('(_ $x _ bar)) )))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] myconcat $"), expr!(s, "[2] myconcat _1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(myconcat _foo_bar)\n");
+}
+
+fn sink_pure_explode_collapse_ident() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(mysym foo)
+
+(exec 0 (, (mysym $x))
+        (O (pure (myconcat $i) $i (collapse_symbol (explode_symbol $x)) ))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] myconcat $"), expr!(s, "[2] myconcat _1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(myconcat foo)\n");
+}
+
 fn formula_execution() {
     let mut s = Space::new();
 
@@ -4163,6 +4251,7 @@ fn main() {
     // formula_execution();
     // sink_pure_basic();
     // sink_pure_roman_validation();
+    // sink_pure_dynamic_subformula();
     // return;
 
     let args = Cli::parse();
@@ -4248,6 +4337,9 @@ fn main() {
             sink_pure_basic();
             sink_pure_basic_nested();
             sink_pure_roman_validation();
+            sink_pure_dynamic_subformula();
+            sink_pure_quote_collapse_symbol();
+            sink_pure_explode_collapse_ident();
 
             parse_csv();
             parse_json();

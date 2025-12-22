@@ -6,9 +6,9 @@ extern crate alloc;
 pub mod sink;
 pub mod source;
 
-pub use sink::{ExprSink, SinkItem};
-pub use source::{ExprSource, SourceItem};
-pub use mork_expr::Tag;
+pub use sink::{ExprSink};
+pub use source::{ExprSource};
+pub use mork_expr::{Tag, SourceItem};
 
 pub type FuncPtr = extern "C" fn(*mut ExprSource, *mut ExprSink) -> Result<(), EvalError>;
 

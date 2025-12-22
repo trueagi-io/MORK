@@ -1,14 +1,4 @@
-use mork_expr::{Tag, item_byte};
-
-pub enum SinkItem<'a> {
-    Tag(Tag),
-    Symbol(&'a[u8]),
-}
-impl<'a> core::convert::From<&'a [u8]> for SinkItem<'a> {
-    fn from(slice: &'a [u8]) -> Self {
-        SinkItem::Symbol(slice)
-    }
-}
+use mork_expr::{Tag, item_byte, SourceItem};
 
 #[repr(C)]
 pub struct ExprSink {
@@ -61,15 +51,15 @@ impl ExprSink {
         self.len += slice.len();
         Ok(())
     }
-    pub fn write(&mut self, item: SinkItem) -> Result<(), crate::EvalError> {
+    pub fn write(&mut self, item: SourceItem) -> Result<(), crate::EvalError> {
         match item {
-            SinkItem::Tag(Tag::SymbolSize(_)) => {
+            SourceItem::Tag(Tag::SymbolSize(_)) => {
                 panic!("sink uses WriteSymbol for symbols, gotten Tag::SymbolSize")
             }
-            SinkItem::Tag(tag) => {
+            SourceItem::Tag(tag) => {
                 self.push(item_byte(tag))?;
             }
-            SinkItem::Symbol(slice) => {
+            SourceItem::Symbol(slice) => {
                 debug_assert!(slice.len() < 64);
                 self.push(item_byte(Tag::SymbolSize(slice.len() as _)))?;
                 self.extend_from_slice(slice)?;

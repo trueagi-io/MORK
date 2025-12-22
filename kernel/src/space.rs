@@ -1005,7 +1005,7 @@ impl Space {
         Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
     }
 
-    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut mmaps: &mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>, btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(no_source: bool, mut mmaps: &mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>, btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         use crate::sources::{ASource, Resource, ResourceRequest, Source};
 
         let pat_newvars = pat_expr.newvars();
@@ -1019,7 +1019,7 @@ impl Space {
         let mut srcs: Vec<_> = vec![];
         let mut factors: Vec<_> = vec![];
         for e in pat_args[1..].iter() {
-            let mut src = ASource::new(e.subsexpr());
+            let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::new(e.subsexpr()) };
             factors.push(src.source(src.request().map(|request| {
                 match request {
                     ResourceRequest::BTM(prefix) => { Resource::BTM(btm.read_zipper_at_path(prefix)) }
@@ -1331,7 +1331,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(&mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_i(false, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1469,14 +1469,14 @@ impl Space {
         (touched, any_new)
     }
 
-    pub fn transform_multi_multi_io(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
+    pub fn transform_multi_multi_io(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr, no_source: bool, no_sink: bool) -> (usize, bool) {
         use crate::sinks::*;
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut tpl_args = Vec::with_capacity(64);
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
-        let mut sinks: Vec<_> = templates.iter().map(|e| ASink::new(*e)).collect();
+        let mut sinks: Vec<_> = templates.iter().map(|e| { if no_sink { ASink::compat(*e) } else { ASink::new(*e) } }).collect();
         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
             match sink.request().next().unwrap() {
                 WriteResourceRequest::BTM(p) => p,
@@ -1509,7 +1509,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(&mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1574,13 +1574,25 @@ impl Space {
             if let Tag::Arity(i) = byte_item(*tpl_expr.ptr) { if i == 0 { panic!("template expression can not be empty"); } } else { panic!("template must be an expression") }
             if *tpl_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { panic!("template functor can only be , or O") }
 
-            let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
-                (b',', b',') => { self.transform_multi_multi_(pat_expr, tpl_expr, rt) }
-                (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
-                (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
-                (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt) }
-                (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+            let res = if false {
+                match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
+                    (b',', b',') => { self.transform_multi_multi_(pat_expr, tpl_expr, rt) }
+                    (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
+                    (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
+                    (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
+                    (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+                }
+            } else {
+                match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
+                    (b',', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, true) }
+                    (b'I', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, true) }
+                    (b',', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, false) }
+                    (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
+                    (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+                }
             };
+            
+            
             trace!(target: "interpret", "(run, changed) = {:?}", res);
         }, _err => panic!("exec shape (exec <loc> <patterns> <templates>)"));
     }

@@ -24,6 +24,24 @@ pub trait Source {
     fn source<'trie, 'path, It : Iterator<Item=Resource<'trie, 'path>>>(&self, it: It) -> AFactor<'trie, ()> where 'path : 'trie;
 }
 
+struct CompatSource {
+    e: Expr
+}
+impl Source for CompatSource {
+    fn new(e: Expr) -> Self {
+        Self { e }
+    }
+
+    fn request(&self) -> impl Iterator<Item=ResourceRequest> {
+        std::iter::once(ResourceRequest::BTM([].as_slice()))
+    }
+
+    fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        let Resource::BTM(rz) = it.next().unwrap() else { unreachable!() };
+        AFactor::CompatSource(rz)
+    }
+}
+
 struct BTMSource {
     e: Expr
 }
@@ -143,14 +161,21 @@ impl Source for CmpSource {
 }
 
 
-pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource) }
+pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource), CompatSource(CompatSource) }
 
 #[derive(PolyZipper)]
 pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
+    CompatSource(ReadZipperUntracked<'trie, 'trie, V>),
     PosSource(PrefixZipper<'trie, ReadZipperUntracked<'trie, 'trie, V>>),
     ACTSource(PrefixZipper<'trie, ACTMmapZipper<'trie, V>>),
     CmpSource(PrefixZipper<'trie, DependentProductZipperG<'trie, ReadZipperUntracked<'trie, 'trie, V>,
         ReadZipperOwned<V>, V, (usize, PathMap<()>), for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<V>>)>>),
+}
+
+impl ASource {
+    pub fn compat(e: Expr) -> Self {
+        ASource::CompatSource(CompatSource::new(e))
+    }
 }
 
 impl Source for ASource {
@@ -172,6 +197,7 @@ impl Source for ASource {
                 ASource::PosSource(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::ACTSource(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::CmpSource(s) => { for i in s.request().into_iter() { yield i } }
+                ASource::CompatSource(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -181,6 +207,7 @@ impl Source for ASource {
             ASource::PosSource(s) => { s.source(it) }
             ASource::ACTSource(s) => { s.source(it) }
             ASource::CmpSource(s) => { s.source(it) }
+            ASource::CompatSource(s) => { s.source(it) }
         }
     }
 }

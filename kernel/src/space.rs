@@ -1036,10 +1036,18 @@ impl Space {
             srcs.push(src);
         }
 
-        let mut prz = ProductZipperG::new(factors.remove(0), &mut factors[..]);
-        prz.reserve_buffers(1 << 32, 32);
-
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        match factors.remove(0)  {
+            crate::sources::AFactor::CompatSource(primary) => {
+                let mut prz = ProductZipper::new(primary, &mut factors[..]);
+                prz.reserve_buffers(1 << 32, 32);
+                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)  
+            }
+            primary => {
+                let mut prz = ProductZipperG::new(primary, &mut factors[..]);
+                prz.reserve_buffers(1 << 32, 32);
+                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+            }
+        }
     }
 
     #[cfg(feature="no_search")]

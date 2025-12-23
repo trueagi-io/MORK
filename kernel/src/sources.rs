@@ -149,7 +149,7 @@ impl Source for CmpSource {
         static EQ_PREFIX: [u8; 4] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), b'=', b'='];
         static NE_PREFIX: [u8; 4] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), b'!', b'='];
         let Resource::BTM(rz) = it.next().unwrap() else { unreachable!() };
-        let map = rz.make_map().unwrap();
+        let map = rz.try_make_map().unwrap();
         let rz = DependentProductZipperG::new_enroll(rz, (self.cmp, map),
             CmpSource::policy as for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<()>>));
         let rz = PrefixZipper::new(

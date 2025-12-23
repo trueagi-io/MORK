@@ -26,9 +26,10 @@ itertools = "0.14.0"
 base64 = "0.22.1"
 
 [features]
-default = ["grounding"]
+default = ["grounding", "specialize_io"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]
 no_search = []
 grounding = []
+specialize_io = []

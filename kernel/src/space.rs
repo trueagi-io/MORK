@@ -1227,6 +1227,7 @@ impl Space {
     //     out
     // }
 
+    #[cfg(feature="specialize_io")]
     pub fn transform_multi_multi_(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
@@ -1307,6 +1308,7 @@ impl Space {
         (touched, any_new)
     }
 
+    #[cfg(feature="specialize_io")]
     pub fn transform_multi_multi_i(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
@@ -1386,7 +1388,7 @@ impl Space {
         (touched, any_new)
     }
 
-
+    #[cfg(feature="specialize_io")]
     pub fn transform_multi_multi_o(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         use crate::sinks::*;
         let mut buffer = Vec::with_capacity(1 << 32);
@@ -1583,24 +1585,22 @@ impl Space {
             if let Tag::Arity(i) = byte_item(*tpl_expr.ptr) { if i == 0 { panic!("template expression can not be empty"); } } else { panic!("template must be an expression") }
             if *tpl_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { panic!("template functor can only be , or O") }
 
-            let res = if false {
-                match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
-                    (b',', b',') => { self.transform_multi_multi_(pat_expr, tpl_expr, rt) }
-                    (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
-                    (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
-                    (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
-                    (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
-                }
-            } else {
-                match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
-                    (b',', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, true) }
-                    (b'I', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, true) }
-                    (b',', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, false) }
-                    (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
-                    (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
-                }
+            #[cfg(feature="specialize_io")]
+            let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
+                (b',', b',') => { self.transform_multi_multi_(pat_expr, tpl_expr, rt) }
+                (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
+                (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
+                (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
+                (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
             };
-
+            #[cfg(not(feature="specialize_io"))]
+            let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
+                (b',', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, true) }
+                (b'I', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, true) }
+                (b',', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, false) }
+                (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
+                (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+            };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
         }, _err => panic!("exec shape (exec <loc> <patterns> <templates>)"));

@@ -71,6 +71,29 @@ pub trait Sink {
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w;
 }
 
+pub struct CompatSink { e: Expr, changed: bool }
+
+impl Sink for CompatSink {
+    fn new(e: Expr) -> Self { CompatSink { e, changed: false } }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[..];
+        trace!(target: "sink", "+ (compat) requesting {}", serialize(p));
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        let mpath = &path[wz.root_prefix_path().len()..];
+        trace!(target: "sink", "+ (compat) at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "+ (compat) sinking '{}'", serialize(mpath));
+        wz.move_to_path(mpath);
+        self.changed |= wz.set_val(()).is_none();
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
+        trace!(target: "sink", "+ (compat) finalizing");
+        self.changed
+    }
+}
+
 pub struct AddSink { e: Expr, changed: bool }
 
 impl Sink for AddSink {
@@ -1190,7 +1213,14 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
-    PureSink(PureSink)
+    PureSink(PureSink),
+    CompatSink(CompatSink)
+}
+
+impl ASink {
+    pub fn compat(e: Expr) -> Self {
+        ASink::CompatSink(CompatSink::new(e))
+    }
 }
 
 impl Sink for ASink {
@@ -1241,6 +1271,7 @@ impl Sink for ASink {
                 ASink::WASMSink(s) => { for i in s.request().into_iter() { yield i } }
                 #[cfg(feature = "grounding")]
                 ASink::PureSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1256,6 +1287,7 @@ impl Sink for ASink {
             ASink::WASMSink(s) => { s.sink(it, path) }
             #[cfg(feature = "grounding")]
             ASink::PureSink(s) => { s.sink(it, path) }
+            ASink::CompatSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1271,6 +1303,7 @@ impl Sink for ASink {
             ASink::WASMSink(s) => { s.finalize(it) }
             #[cfg(feature = "grounding")]
             ASink::PureSink(s) => { s.finalize(it) }
+            ASink::CompatSink(s) => { s.finalize(it) }
         }
     }
 }

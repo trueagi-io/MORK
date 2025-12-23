@@ -23,6 +23,8 @@ use pathmap::PathMap;
 use mork_frontend::json_parser::Transcriber;
 use log::*;
 
+use crate::sources::AFactor;
+
 pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
@@ -1036,10 +1038,17 @@ impl Space {
             srcs.push(src);
         }
 
-        let mut prz = ProductZipperG::new(factors.remove(0), &mut factors[..]);
-        prz.reserve_buffers(1 << 32, 32);
-
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        //If all factors are concrete, we can use a concrete ProductZipper, otherwise use a generic ProductZipperG
+        if factors.iter().position(|factor| !factor.native_subtries() ).is_some() {
+            let mut prz = ProductZipperG::new(factors.remove(0), &mut factors);
+            prz.reserve_buffers(1 << 32, 32);
+            Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        } else {
+            let AFactor::PosSource(primary) = factors.remove(0) else { unreachable!() };
+            let mut prz = ProductZipper::new(primary, &mut factors);
+            prz.reserve_buffers(1 << 32, 32);
+            Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        }
     }
 
     #[cfg(feature="no_search")]
@@ -1051,7 +1060,6 @@ impl Space {
         let mut trace: Vec<(u8, u8)> = vec![];
         let mut candidate = 0;
 
-        
         while prz.to_next_val() {
             if prz.focus_factor() != prz.factor_count() - 1 { continue };
             let e = Expr { ptr: prz.origin_path().as_ptr().cast_mut() };

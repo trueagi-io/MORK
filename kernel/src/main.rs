@@ -11,7 +11,7 @@ use std::time::Instant;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::ops::Add;
 // use std::future::Future;
 // use std::task::Poll;
@@ -2467,6 +2467,31 @@ fn sink_head() {
     assert_eq!(res, "(1 x P)\n(2 x P)\n(3 x P)\n(1 y P)\n(2 y P)\n(3 y P)\n(1 x Q)\n")
 }
 
+fn sink_tail() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (tail 7 (cux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(3 x Q)\n(1 y Q)\n(3 y Q)\n(1 x R)\n(3 x R)\n(2 y R)\n(3 y R)\n")
+}
+
 fn sink_count_literal() {
     let mut s = Space::new();
 
@@ -2574,12 +2599,12 @@ fn sink_float_reduce() {
     let mut s = Space::new();
 
     const SPACE_EXPRS : &str = r#"
-(exec (1) 
-    (, (n $x)) 
-    (O  
-        (fmin (min $c) $c $x)  
-        (fmax (max $c) $c $x)  
-        (fsum (sum $c) $c $x)  
+(exec (1)
+    (, (n $x))
+    (O
+        (fmin (min $c) $c $x)
+        (fmax (max $c) $c $x)
+        (fsum (sum $c) $c $x)
         (fprod (prod $c) $c $x)
     )
 )
@@ -2686,7 +2711,7 @@ fn sink_float_reduce() {
     s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
     // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8_lossy_owned(v);
-    
+
     println!("result: {res}");
     assert_eq!(res, "(max 990.2)
 (min -889.2)
@@ -5674,6 +5699,95 @@ fn parse_csv() {
     assert_eq!(reconstruction, String::from_utf8(res).unwrap());
 }
 
+
+fn connectome_Floyd_Warshall_dimensionality() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+; setup initial distance matrix
+(exec (0 0) (, (connection $x $y $t $w)) (, (D $x $y 1) (DT $y $x 1) (neuron $x) (neuron $y) ))
+(exec (0 1) (, (neuron $x) (neuron $y)) (, (D $x $y Inf) (DT $y $x Inf) ))
+(exec (0 2) (, (D $x $y 1)) (O (- (D $x $y Inf)) (- (DT $y $x Inf)) ))
+(exec (0 3) (, (D $x $x $d)) (O (- (D $x $x $d)) (- (DT $x $x $d)) (+ (D $x $x 0)) (+ (DT $x $x 0)) ))
+
+; inplace update Floyd Warshall update "if dist[i][j] > dist[i][k] + dist[k][j] then dist[i][j] = dist[i][k] + dist[k][j]" with k meta-programmed
+(exec (1 0)
+ (, (neuron $k))
+ (, (exec (1 $k)
+    (, (neuron $i) (neuron $j) (D $i $j $old) (D $i $k $d) (DT $j $k $dt) (arith ($d + $dt = $via)) (arith ($via < $old)))
+    (O (- (D $i $j $old)) (- (DT $j $i $old)) (+ (D $i $j $via)) (+ (DT $j $i $via))))
+ )
+)
+
+; central node as node with max farness (with farness as row-sum over finite distances)
+(exec (2 0)
+  (, (neuron $i) (DT $i $j $d) (arith (finite $d)))
+  (O (count (farness-dist-cnt $i $d $c) $c $j)))
+(exec (2 1)
+  (, (farness-dist-cnt $i $d $c))
+  (O (pure (farness-product $i $p) $p (i64_to_string (product_i64 (i64_from_string $d) (i64_from_string $c))))))
+(exec (2 2)
+  (, (farness-product $i $p))
+  (O (sum (farness $i $s) $s $p)))
+(exec (2 3)
+  (, (farness $i $s))
+  (O (tail 1 (top-farness $s $i))))
+
+;
+(exec (3 0)
+  (, (top-farness $s $i) (farness-dist-cnt $i $d $c))
+  (, (top-d-c $d $c)))
+(exec (3 1)
+  (, (top-d-c $d $c) (arith ($d + 1 = $nd)) (top-d-c $nd $nc))
+  (O (pure (delta $d = $dr) $dr (f64_to_string (div_f64 (sub_f64 (ln_f64 (f64_from_string $nc)) (ln_f64 (f64_from_string $c)) )
+                                                        (sub_f64 (ln_f64 (f64_from_string $nd)) (ln_f64 (f64_from_string $d)) ))))))
+    "#;
+
+    let mut expr_buf = vec![];
+    // https://www.wormatlas.org/neuronalwiring.html
+    // N1: Neuron 1 name
+    // N2: Neuron 2 name
+    // Type: Type of synapse: S: Send or output (Neuron 1 pre-synaptic to Neuron 2); Sp: Send-poly (Neuron 1 is pre-synaptic to more than one postsynaptic partner.  Neuron 2 is just one of these post-synaptic neurons, see Figure 1 below.  In White et al, 1986, these polyadic synaptic connections were denoted by “m” in the tables of Appendix 1); R: Receive or input (Neuron 1 is post-synaptic to Neuron 2); Rp: Receive-poly (Neuron 1 is one of several post-synaptic partners of Neuron 2.  See Figure 1 and above); EJ: Electric junction; NMJ: Neuromuscular junction (only reconstructed NMJ's are represented).
+    // It must be noted that at polyadic synaptic sites, not all “send-poly” were faithfully labeled as such in White et al, 1986. Some pre-synaptic connections were labeled simply as “sends”. Reconciliation of chemical synapses did not previously distinguish between send from send-poly and receive from receive-poly. In this new reconciliation, the total number of send and send-poly is equal to the total number of receive and receive-poly (S+Sp=R+Rp). Every documented synapse is now listed in this Table, both with respect to the sending neuron and with respect to the receiving neuron(s).
+    // Nbr: Number of synapses between the given neuron pair.
+    std::fs::File::open("resources/NeuronConnectElegans.csv").unwrap().read_to_end(&mut expr_buf).unwrap();
+    s.load_csv(&expr_buf[..], expr!(s, "[5] $ $ $ $ $)"), expr!(s, "[5] connection _2 _3 _4 _5"), b',').unwrap();
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    let mut FIN: String = (0..=100).map(|x| format!("(arith (finite {}))\n", x)).collect();
+    s.add_all_sexpr(FIN.as_bytes()).unwrap();
+    let mut ADD: String = (0..=100).flat_map(|x| (0..100).map(move |y| format!("(arith ({} + {} = {}))\n", x, y, x+y))).collect();
+    s.add_all_sexpr(ADD.as_bytes()).unwrap();
+    let mut ORDER: String = (0..=100).flat_map(|x| (0..x).map(move |y| format!("(arith ({} < {}))\n", y, x))).collect();
+    s.add_all_sexpr(ORDER.as_bytes()).unwrap();
+    s.add_all_sexpr(b"(arith ($x < Inf))").unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[4] D $ $ $)"), expr!(s, "_3"),&mut v);
+    let k = v.as_slice().split(|x| *x == b'\n').filter(|x| x.len() > 0 && x != &[b'I', b'n', b'f']).map(|x| str::from_utf8(x).unwrap().parse::<u64>().unwrap()).max().unwrap();
+    assert_eq!(5, k); // diameter
+    v.clear();
+    s.dump_sexpr(expr!(s, "[2] neuron $)"), expr!(s, "_1"),&mut v);
+    assert_eq!(283, v.as_slice().into_iter().filter(|p| **p == b'\n').count()); // |N|
+    v.clear();
+    s.dump_sexpr(expr!(s, "[4] D $ $ $)"), expr!(s, "_1 _2"),&mut v);
+    assert_eq!(283*283, v.as_slice().into_iter().filter(|p| **p == b'\n').count());
+    v.clear();
+    s.dump_sexpr(expr!(s, "[3] top-farness $ $"), expr!(s, "[2] _2 _1"),&mut v);
+    assert_eq!("(VD08 925)\n", str::from_utf8(&v[..]).unwrap());
+
+    v.clear();
+    s.dump_sexpr(expr!(s, "[3] top-d-c $ $"), expr!(s, "[2] _1 _2"),&mut v);
+    println!("{}", str::from_utf8(&v[..]).unwrap());
+    v.clear();
+    s.dump_sexpr(expr!(s, "[4] delta $ = $"), expr!(s, "[2] _1 _2"),&mut v);
+    println!("delta {}", str::from_utf8(&v[..]).unwrap());
+}
+
 fn parse_json() {
     let json_input = r#"{"first_name": "John", "last_name": "Smith", "is_alive": true, "age": 27, "address": {"street_address": "21 2nd Street", "city": "New York", "state": "NY", "postal_code": "10021-3100"}, "phone_numbers": [{"type": "home", "number": "212 555-1234"}, {"type": "office", "number": "646 555-4567"}], "children": ["Catherine", "Thomas", "Trevor"], "spouse": null}"#;
 
@@ -5837,6 +5951,7 @@ fn main() {
             sink_unify();
             sink_anti_unify();
             sink_head();
+            sink_tail();
             sink_count_literal();
             sink_count_constant();
             sink_count();

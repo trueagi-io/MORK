@@ -177,11 +177,11 @@ impl Sink for AddSink {
 }
 
 // (U <expr>)
-pub struct USink { 
+pub struct USink {
     e               : Expr,
     buf             : Option<*mut u8>,
     tmp             : Option<*mut u8>,
-    conflict        : bool, 
+    conflict        : bool,
     tmp_expr_env    : Vec<(ExprEnv, ExprEnv)>,
     tmp_stack       : Vec<(u8, u8)>,
     tmp_assignments : Vec<(u8, u8)>,
@@ -189,15 +189,15 @@ pub struct USink {
 }
 impl Sink for USink {
     fn new(e: Expr) -> Self {
-        USink { 
-            e, 
-            buf: None, 
-            tmp: None, 
-            conflict: false , 
-            tmp_expr_env: Vec::new(), 
-            tmp_stack: 
-            Vec::new(), 
-            tmp_assignments: Vec::new(), 
+        USink {
+            e,
+            buf: None,
+            tmp: None,
+            conflict: false ,
+            tmp_expr_env: Vec::new(),
+            tmp_stack:
+            Vec::new(),
+            tmp_assignments: Vec::new(),
             last_len : usize::MAX
         }
     }
@@ -218,10 +218,10 @@ impl Sink for USink {
             let mut cursor = std::io::Cursor::new(unsafe { core::slice::from_raw_parts_mut(tmp, 1 << 32) });
 
             if !mork_expr::unifies_reuse_state(
-                eau, 
+                eau,
                 Expr{ ptr: path[3..].as_ptr().cast_mut() },
                 &mut cursor,
-                &mut self.tmp_expr_env, 
+                &mut self.tmp_expr_env,
                 &mut self.tmp_stack,
                 &mut self.tmp_assignments
             ) {
@@ -239,7 +239,7 @@ impl Sink for USink {
             unsafe { std::ptr::copy_nonoverlapping(path[3..].as_ptr(), self.buf.unwrap(), path[3..].len()) }
             self.last_len = path[3..].len();
         }
-            
+
 
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
@@ -371,48 +371,49 @@ impl Sink for RemoveSink {
     }
 }
 
-pub struct HeadSink { e: Expr, head: PathMap<()>, skip: usize, count: usize, max: usize, top: Vec<u8> }
-impl Sink for HeadSink {
+pub struct HeadTailSink<const head: bool> { e: Expr, extrema: PathMap<()>, skip: usize, count: usize, max: usize, extremum: Vec<u8> }
+impl <const head: bool> Sink for HeadTailSink<head> {
     fn new(e: Expr) -> Self {
         let mut ez = ExprZipper::new(e); ez.next(); ez.next();
         let max_s = ez.item().err().expect("cnt can not be an expression or variable");
         let max: usize = str::from_utf8(max_s).expect("string encoded numbers for now").parse().expect("a number");
         assert_ne!(max, 0);
-        HeadSink { e, head: PathMap::new(), skip: 1 + 1+4 + 1+max_s.len(), count: 0, max, top: vec![] }
+        Self { e, extrema: PathMap::new(), skip: 1 + 1+4 + 1+max_s.len(), count: 0, max, extremum: vec![] }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[self.skip..];
-        trace!(target: "sink", "head requesting {}", serialize(p));
+        trace!(target: "sink", "head/tail requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         let mpath = &path[self.skip+wz.root_prefix_path().len()..];
-        trace!(target: "sink", "head at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "head/tail at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
         if self.count == self.max {
-            if &self.top[..] <= mpath {
-                trace!(target: "sink", "head at max capacity ignoring '{}'", serialize(mpath));
+            if (if head { &self.extremum[..] <= mpath } else { &self.extremum[..] >= mpath }) {
+                trace!(target: "sink", "head/tail at max capacity ignoring '{}'", serialize(mpath));
                 // doesn't displace any path
             } else {
-                trace!(target: "sink", "head at max capacity replacing '{}' with '{}'", serialize(&self.top[..]), serialize(mpath));
-                assert!(self.head.insert(mpath, ()).is_none());
-                self.head.remove(&self.top[..]);
-                let mut rz = self.head.read_zipper();
-                rz.descend_last_path();
-                self.top.clear();
-                self.top.extend_from_slice(rz.path()); // yikes, throwing away our needless allocation
+                trace!(target: "sink", "head/tail at max capacity replacing '{}' with '{}'", serialize(&self.extremum[..]), serialize(mpath));
+                assert!(self.extrema.insert(mpath, ()).is_none());
+                self.extrema.remove(&self.extremum[..]);
+                let mut rz = self.extrema.read_zipper();
+                if head { rz.descend_last_path(); }
+                else { rz.to_next_val(); }
+                self.extremum.clear();
+                self.extremum.extend_from_slice(rz.path()); // yikes, throwing away our needless allocation
             }
         } else {
-            if &self.top[..] <= mpath {
-                if self.head.insert(mpath, ()).is_none() {
-                    trace!(target: "sink", "head adding new top at '{}'", serialize(mpath));
-                    self.top.clear();
-                    self.top.extend_from_slice(mpath);
+            if &self.extremum[..] <= mpath {
+                if self.extrema.insert(mpath, ()).is_none() {
+                    trace!(target: "sink", "head/tail adding new top at '{}'", serialize(mpath));
+                    self.extremum.clear();
+                    self.extremum.extend_from_slice(mpath);
                     self.count += 1;
                 }
             } else {
-                if self.head.insert(mpath, ()).is_none() {
-                    trace!(target: "sink", "head adding '{}'", serialize(mpath));
+                if self.extrema.insert(mpath, ()).is_none() {
+                    trace!(target: "sink", "head/tail adding '{}'", serialize(mpath));
                     self.count += 1;
                 }
             }
@@ -421,9 +422,9 @@ impl Sink for HeadSink {
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
-        trace!(target: "sink", "head finalizing by joining {} at '{}'", self.count, serialize(wz.origin_path()));
+        trace!(target: "sink", "head/tail finalizing by joining {} at '{}'", self.count, serialize(wz.origin_path()));
 
-        match wz.join_into(&self.head.read_zipper()) {
+        match wz.join_into(&self.extrema.read_zipper()) {
             AlgebraicStatus::Element => { true }
             AlgebraicStatus::Identity => { false }
             AlgebraicStatus::None => { true } // GOAT maybe not?
@@ -1224,7 +1225,7 @@ impl Sink for Z3Sink {
 }
 
 
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadTailSink<true>), TailSink(HeadTailSink<false>), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1258,7 +1259,10 @@ impl Sink for ASink {
             ASink::AUSink(AUSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
-            ASink::HeadSink(HeadSink::new(e))
+            ASink::HeadSink(HeadTailSink::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b'i' && *e.ptr.offset(5) == b'l' } {
+            ASink::TailSink(HeadTailSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
             *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'o' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(5) == b'n' && *e.ptr.offset(6) == b't' } {
             ASink::CountSink(CountSink::new(e))
@@ -1317,6 +1321,7 @@ impl Sink for ASink {
                 ASink::AUSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TailSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CountSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HashSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::SumSink(s) => { for i in s.request().into_iter() { yield i } }
@@ -1343,6 +1348,7 @@ impl Sink for ASink {
             ASink::AUSink(s) => { s.sink(it, path) }
             ASink::RemoveSink(s) => { s.sink(it, path) }
             ASink::HeadSink(s) => { s.sink(it, path) }
+            ASink::TailSink(s) => { s.sink(it, path) }
             ASink::CountSink(s) => { s.sink(it, path) }
             ASink::HashSink(s) => { s.sink(it, path) }
             ASink::SumSink(s) => { s.sink(it, path) }
@@ -1369,6 +1375,7 @@ impl Sink for ASink {
             ASink::AUSink(s) => { s.finalize(it) }
             ASink::RemoveSink(s) => { s.finalize(it) }
             ASink::HeadSink(s) => { s.finalize(it) }
+            ASink::TailSink(s) => { s.finalize(it) }
             ASink::CountSink(s) => { s.finalize(it) }
             ASink::HashSink(s) => { s.finalize(it) }
             ASink::SumSink(s) => { s.finalize(it) }

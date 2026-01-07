@@ -24,6 +24,7 @@ serde = { version = "1.0.225", features = ["derive"] }
 wasmtime = { version = "37.0.1", features = ["winch"], optional = true }
 itertools = "0.14.0"
 base64 = "0.22.1"
+hex = "0.4.3"
 
 [features]
 default = ["grounding", "specialize_io"]

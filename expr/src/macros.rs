@@ -165,116 +165,20 @@ macro_rules! destruct {
     };
 }
 
-impl TryFrom<Expr> for i32 {
-    type Error = String;
-    #[inline(always)]
-    fn try_from(value: Expr) -> Result<Self, Self::Error> {
-        let tag = unsafe { byte_item(*value.ptr) };
-        if tag != Tag::SymbolSize(4) {
-            return Err(format!("expected symbol of size 4, got: {tag:?}"));
-        }
-        Ok(unsafe { std::ptr::read_unaligned(value.ptr.add(1) as *const i32) }.swap_bytes())
-    }
+
+pub trait DeserializableExpr {
+    fn advanced(e: Expr) -> usize;
+    fn check(e: Expr) -> bool;
+    fn deserialize_unchecked(e: Expr) -> Self;
 }
 
-impl SerializableExpr for i32 {
-    fn size(&self) -> usize { core::mem::size_of::<Self>() + 1 }
-    fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
-        let size = core::mem::size_of::<Self>();
-        buf.write_all(&[item_byte(Tag::SymbolSize(size as u8))])?;
-        buf.write_all(&self.swap_bytes().to_le_bytes())
-    }
-}
-
-impl DeserializableExpr for i8 {
+impl DeserializableExpr for Expr {
     #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
+    fn advanced(e: Expr) -> usize { e.span().len() }
     #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(1)) }
-    }
+    fn check(e: Expr) -> bool { true }
     #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i8) }
-    }
-}
-
-
-impl DeserializableExpr for i16 {
-    #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
-    #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(2)) }
-    }
-    #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i16) }.swap_bytes()
-    }
-}
-
-impl DeserializableExpr for i32 {
-    #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
-    #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(4)) }
-    }
-    #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i32) }.swap_bytes()
-    }
-}
-
-impl DeserializableExpr for i64 {
-    #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
-    #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(8)) }
-    }
-    #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const i64) }.swap_bytes()
-    }
-}
-
-impl DeserializableExpr for f32 {
-    #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
-    #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(4)) }
-    }
-    #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { f32::from_be_bytes(std::ptr::read_unaligned(e.ptr.add(1) as *const [u8; 4])) }
-    }
-}
-
-impl DeserializableExpr for f64 {
-    #[inline(always)]
-    fn advanced(e: Expr) -> usize {
-        1 + core::mem::size_of::<Self>()
-    }
-    #[inline(always)]
-    fn check(e: Expr) -> bool {
-        unsafe { *e.ptr == item_byte(Tag::SymbolSize(8)) }
-    }
-    #[inline(always)]
-    fn deserialize_unchecked(e: Expr) -> Self {
-        unsafe { f64::from_be_bytes(std::ptr::read_unaligned(e.ptr.add(1) as *const [u8; 8])) }
-    }
+    fn deserialize_unchecked(e: Expr) -> Self { e }
 }
 
 impl DeserializableExpr for &str {
@@ -301,11 +205,42 @@ impl DeserializableExpr for &str {
     }
 }
 
-pub trait DeserializableExpr {
-    fn advanced(e: Expr) -> usize;
-    fn check(e: Expr) -> bool;
-    fn deserialize_unchecked(e: Expr) -> Self;
+macro_rules! impl_deserializable {
+    (be $t:ty) => {
+        impl DeserializableExpr for $t {
+            #[inline(always)]
+            fn advanced(e: Expr) -> usize { 1 + core::mem::size_of::<Self>() }
+            #[inline(always)]
+            fn check(e: Expr) -> bool { unsafe { *e.ptr == item_byte(Tag::SymbolSize(core::mem::size_of::<Self>() as _)) } }
+            #[inline(always)]
+            fn deserialize_unchecked(e: Expr) -> Self { unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const Self).swap_bytes() } }
+        }
+    };
+    ($t:ty) => {
+        impl DeserializableExpr for $t {
+            #[inline(always)]
+            fn advanced(e: Expr) -> usize { 1 + core::mem::size_of::<Self>() }
+            #[inline(always)]
+            fn check(e: Expr) -> bool { unsafe { *e.ptr == item_byte(Tag::SymbolSize(core::mem::size_of::<Self>() as _)) } }
+            #[inline(always)]
+            fn deserialize_unchecked(e: Expr) -> Self { unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const Self) } }
+        }
+    };
 }
+
+impl_deserializable!(be u8);
+impl_deserializable!(be u16);
+impl_deserializable!(be u32);
+impl_deserializable!(be u64);
+impl_deserializable!(be u128);
+impl_deserializable!(be i8);
+impl_deserializable!(be i16);
+impl_deserializable!(be i32);
+impl_deserializable!(be i64);
+impl_deserializable!(be i128);
+impl_deserializable!(be usize);
+impl_deserializable!(f32);
+impl_deserializable!(f64);
 
 /// A trait for types that can be serialized into a mork-bytestring expression.
 /// This is used by the `construct!` macro to handle different kinds of inputs.
@@ -360,6 +295,15 @@ impl SerializableExpr for &str {
         buf.write_all(&[item_byte(Tag::SymbolSize(bytes.len() as u8))])?;
         buf.write_all(bytes)?;
         Ok(())
+    }
+}
+
+impl SerializableExpr for i32 {
+    fn size(&self) -> usize { core::mem::size_of::<Self>() + 1 }
+    fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
+        let size = core::mem::size_of::<Self>();
+        buf.write_all(&[item_byte(Tag::SymbolSize(size as u8))])?;
+        buf.write_all(&self.swap_bytes().to_le_bytes())
     }
 }
 

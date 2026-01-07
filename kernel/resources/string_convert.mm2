@@ -1,0 +1,14 @@
+; example 1
+(double $x $conv
+   (+ $conv $conv)
+)
+
+(input $v)
+
+(exec 0
+  (, (input $x) (double $x (i32_from_string $x) $formula))
+;  (O (pure (res $y) $y $formula))
+  (, (macro-expanded $x $formula))
+)
+; after executing the above
+(macro-expanded $a (+ (i32_from_string $a) (i32_from_string $a)))

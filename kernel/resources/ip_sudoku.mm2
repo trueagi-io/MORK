@@ -1,0 +1,76 @@
+;     0  1  2  3
+;   +-----+-----+
+; 0 |  |  | 3|  |
+; 1 |  | 4|  |  |
+;   +-----+-----+
+; 2 |  |  | 2|  |
+; 3 |  |  |  | 1|
+;   +-----+-----+
+; each cell has a bitmask (bm)
+; no constraints 0b1111
+; fully constrained 0b0001 or 0b0010 ...
+; propagation loop:
+; 1. prop as long as there are changes when we do bm_to_update &= !bm_cell_in_region
+; 2. pick and store (backtrack) <-- without this
+(known (0 2) 3)
+(known (1 1) 4)
+(known (2 2) 2)
+(known (3 3) 1)
+(source cell)
+(source incomming)
+(region row)
+(region col)
+(region box)
+(dim 2)
+(pos 0) (pos 1) (pos 2) (pos 3)
+(val 1) (val 2) (val 3) (val 4)
+
+(exec (0 _) (, (dim $b) (pos $c) (pos $r))
+        (O (+ (row $r ($r $c)))
+           (+ (col $c ($r $c)))
+           (pure (box $c $co) $co ; (b*(i/b) + j/b), (b*(i%b) + j%b)
+             (tuple (i8_to_string (sum_i8 (product_i8 (i8_from_string $b) (div_i8 (i8_from_string $c) (i8_from_string $b)))  (div_i8 (i8_from_string $r) (i8_from_string $b))  ))
+                    (i8_to_string (sum_i8 (product_i8 (i8_from_string $b) (mod_i8 (i8_from_string $c) (i8_from_string $b)))  (mod_i8 (i8_from_string $r) (i8_from_string $b))  ))  )
+           )
+        )
+)
+
+(exec (1 _) (, (pos $c) (pos $r))
+        (O (pure (cell ($c $r) $iv) $iv
+             (i8_from_string 15))
+        )
+)
+
+(exec (2 _) (, (known $co $tv)) ; $tv=2, $v=4
+        (O (pure (incomming $co $v) $v
+             (u8_shr (i8_one) (sub_i32 (i32_from_string $tv) (i32_one)) ))
+        )
+)
+
+
+(exec (4 5) (, (region $region) (exec (4 $priority) $patterns $template))
+    (O
+        (+ (exec (0 _) (I (!= ($region $r $x) ($region $r $y))
+                          (BTM (cell $x $xv)))
+                       (O (pure (incomming $y $xvm) $xvm (ifnz (u32_eq (u8_count_ones $xv) (i32_one)) ; if fully constrained
+                                                          then (u8_andn (i8_from_string 15) $xv)))))) ; message is allowed options
+        (+ (exec (1 _) (, (cell $c $v)
+                          (source $src)
+                          ($src $c $i))
+                       (O (- ($src $c $i))
+                          (and (cell $c $nv) $nv $i))))  ;  (0b0111 /\ 0b0110) /\ (0b0110  /\ 0b1111)
+        (pure (exec (4 $new_priority) $patterns $template) $new_priority (i32_to_string (ifnz (i32_from_string $priority)
+                                                                                         then (sub_i32 (i32_from_string $priority) (i32_one)))))
+    )
+)
+
+(exec (1000 _) (, (cell $co $tv))
+        (O (pure (readout $co $v) $v
+             (i8_to_string $tv))
+        )
+)
+
+(readout (0 0) 1) ; 1
+(readout (0 1) 4) ; 3
+(readout (0 2) 2) ; 2
+(readout (0 3) 8) ; 4

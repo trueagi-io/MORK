@@ -297,6 +297,11 @@ impl Expr {
         }
     }
 
+    pub fn hash(self) -> u128 {
+        let s = unsafe { self.span().as_ref().unwrap() };
+        gxhash::gxhash128(s, 0)
+    }
+
     pub fn size(self) -> usize {
         traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 1, |_, _| 1, |_, x, y| x + y, |_, x| x)
     }

@@ -1010,7 +1010,7 @@ fn sink_pure_explode_collapse_ident() {
 (mysym foo)
 
 (exec 0 (, (mysym $x))
-        (O (pure (myconcat $i) $i (collapse_symbol (explode_symbol $x)) ))
+        (O (pure (result $i) $i (collapse_symbol (explode_symbol $x)) ))
 )
     "#;
 
@@ -1022,11 +1022,207 @@ fn sink_pure_explode_collapse_ident() {
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    s.dump_sexpr(expr!(s, "[2] myconcat $"), expr!(s, "[2] myconcat _1"), &mut v);
+    s.dump_sexpr(expr!(s, "[2] result $"), expr!(s, "[2] result _1"), &mut v);
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(myconcat foo)\n");
+    assert_eq!(res, "(result foo)\n");
+}
+
+fn sink_bass64url_ident() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(mysym foo)
+
+(exec 0 (, (mysym $x))
+        (O (pure (result $i) $i (decode_base64url (encode_base64url $x)) ))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] result $"), expr!(s, "[2] result _1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(result foo)\n");
+}
+
+fn sink_hex_ident() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(mysym foo)
+
+(exec 0 (, (mysym $x))
+        (O (pure (result $i) $i (decode_hex (encode_hex $x)) ))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] result $"), expr!(s, "[2] result _1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(result foo)\n");
+}
+
+fn sink_hash_expr() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(myexpr (foo $q $q (bar baz)))
+(myexpr symbols)
+
+(exec 0 (, (myexpr $x))
+        (O (pure (result $i) $i (encode_base64url (i128_as_i64 (hash_expr (' $x))))))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] result $"), expr!(s, "[2] result _1"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(result 45MpKkzURPU)\n(result YcLaBp-nAmo)\n");
+}
+
+fn sink_even_half() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(xs 0 10)
+(xs 1 11)
+(xs 2 12)
+(xs 3 13)
+(xs 4 14)
+
+(exec 0 (, (xs $i $v))
+        (O (pure (half $i $h) $h
+          (ifnz (u8_xnor (mod_i8 (i8_from_string $v) (i8_from_string 2)) (u8_zeros))
+           then (i8_to_string (div_i8 (i8_from_string $v) (i8_from_string 2))))
+        ))
+)
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] half $ $"), expr!(s, "[3] half _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    assert_eq!(res, "(half 0 5)\n(half 1 5)\n(half 2 6)\n(half 3 6)\n(half 4 7)\n");
+}
+
+fn ip_sudoku() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+;     0  1  2  3
+;   +-----+-----+
+; 0 |  |  | 3|  |
+; 1 |  | 4|  |  |
+;   +-----+-----+
+; 2 |  |  | 2|  |
+; 3 |  |  |  | 1|
+;   +-----+-----+
+(dim 2)
+(pos 0) (pos 1) (pos 2) (pos 3)
+(val 1) (val 2) (val 3) (val 4)
+(exec 0 (, (dim $b) (pos $c) (pos $r))
+        (O (+ (row $r ($r $c)))
+           (+ (col $c ($r $c)))
+           (pure (box $c $co) $co ; (b*(i/b) + j/b), (b*(i%b) + j%b)
+             (tuple (i8_to_string (sum_i8 (product_i8 (i8_from_string $b) (div_i8 (i8_from_string $c) (i8_from_string $b)))  (div_i8 (i8_from_string $r) (i8_from_string $b))  ))
+                    (i8_to_string (sum_i8 (product_i8 (i8_from_string $b) (mod_i8 (i8_from_string $c) (i8_from_string $b)))  (mod_i8 (i8_from_string $r) (i8_from_string $b))  ))  )
+           )
+        )
+)
+(known (0 2) 3)
+(known (1 1) 4)
+(known (2 2) 2)
+(known (3 3) 1)
+
+(exec 1 (, (pos $c) (pos $r))
+        (O (pure (cell ($c $r) $iv) $iv
+             (i8_from_string 15))
+        )
+)
+
+(exec 2 (, (known $co $tv))
+        (O (pure (incomming $co $v) $v
+             (u8_andn (i8_from_string 15) (i8_from_string $tv)))
+        )
+)
+
+(exec 3 (, (cell $c $v) (incomming $c $i))
+        (O (pure (cell $c $nv) $nv
+             (ifnz (u32_xnor (u8_count_ones $i) (i32_one))
+              then (u8_andn $v $i)))
+           (- (cell $c $v))
+        )
+)
+
+(exec 4 (, (row $r $x) (cell $x $xv) (row $r $y)) (, (incomming $y $xv)))
+(exec 4 (, (col $c $x) (cell $x $xv) (col $c $y)) (, (incomming $y $xv)))
+(exec 4 (, (box $b $x) (cell $x $xv) (box $b $y)) (, (incomming $y $xv)))
+
+(exec 5 (, (cell $c $v) (incomming $c $i))
+        (O (pure (cell $c $nv) $nv
+             (ifnz (u32_xnor (u8_count_ones $i) (i32_one))
+              then (u8_andn $v $i)))
+           (- (cell $c $v))
+        )
+)
+
+(exec 1000 (, (cell $co $tv))
+        (O (pure (readout $co $v) $v
+             (i8_to_string $tv))
+        )
+)
+
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(100);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[3] readout $ $"), expr!(s, "[3] result _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert_eq!(res, "(result 45MpKkzURPU)\n(result YcLaBp-nAmo)\n");
 }
 
 fn formula_execution() {
@@ -4340,6 +4536,10 @@ fn main() {
             sink_pure_dynamic_subformula();
             sink_pure_quote_collapse_symbol();
             sink_pure_explode_collapse_ident();
+            sink_bass64url_ident();
+            sink_hex_ident();
+            sink_hash_expr();
+            sink_even_half();
 
             parse_csv();
             parse_json();

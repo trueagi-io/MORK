@@ -3,7 +3,7 @@
 
 (myhex 0x48)
 (exec 0 (, (myhex $x))
-        (O (pure (myparsedhex $i) $i (i16_to_string (i8_as_i16 (i8_from_hex $x) ) )  ))
+        (O (pure (myparsedhex $i) $i (i16_to_string (i8_as_i16 (decode_hex $x) ) )  ))
 )
 
 (normalize $e (div_f64 (sum_f64 (f64_from_string 1.0) $e) (f64_from_string 10.0)))

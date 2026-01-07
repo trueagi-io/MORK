@@ -41,7 +41,7 @@ impl ExprSink {
         self.len += 1;
         Ok(())
     }
-    fn extend_from_slice(&mut self, slice: &[u8]) -> Result<(), crate::EvalError> {
+    pub fn extend_from_slice(&mut self, slice: &[u8]) -> Result<(), crate::EvalError> {
         if self.len + slice.len() > self.capacity {
             return Err(crate::EvalError::NotEnoughSpace);
         }

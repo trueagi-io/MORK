@@ -135,7 +135,9 @@ impl EvalScope {
             if top_frame.rest == 0 {
                 let prev_frame = parent_frames.last_mut().unwrap();
                 let mut data = core::mem::take(&mut top_frame.sink).finish();
+                let offset = prev_frame.sink.as_ref().len();
                 (top_frame.func)(&mut ExprSource::new(data.as_ptr()), &mut prev_frame.sink)?;
+                trace!(target: "eval", "{:?} ==> {:?}", mork_expr::serialize(&data[..]), mork_expr::serialize(&prev_frame.sink.as_ref()[offset..]));
                 let top = self.stack.pop().unwrap();
                 // return buffer to pool
                 self.return_alloc(data);

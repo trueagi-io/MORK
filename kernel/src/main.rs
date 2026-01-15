@@ -1,7 +1,7 @@
 use mork::{expr, prefix, sexpr};
 use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
-use mork_expr::{item_byte, serialize, Tag};
+use mork_expr::{item_byte, serialize, SourceItem, Tag};
 use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
 use std::collections::{BTreeSet, HashSet};
@@ -2589,6 +2589,76 @@ fn sink_count_double_repeated() {
     assert!(res.contains("count-2 4"));
 }
 
+fn sink_hash_spaces() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(set 1 (a b))
+(set 1 (a c))
+(set 1 ($x $x))
+(set 2 1)
+(set 2 2)
+(set 3 (my (nested expr)))
+
+(exec 0
+  (, (set $x $e))
+  (O (hash (space-hash $x $k) $k $e) ))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] all $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+    // assert!(res.contains("count-1 3"));
+    // assert!(res.contains("count-2 4"));
+}
+
+fn sink_hash_properties() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(set 1 (a b))
+(set 1 (a c))
+(set 1 ($x $x))
+(set 2 1)
+(set 2 2)
+(set 3 (my (nested expr)))
+
+(exec 0
+  (, (set $x $e))
+  (O (hash (space-hash $x $k) $k $e) ))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    use mork_expr::*;
+    let mut result = eval_ffi::ExprSink::new(vec![]);
+    result.write(SourceItem::Tag(Tag::Arity(2)));
+    result.write(SourceItem::Symbol(b"space-hash"));
+    result.write(SourceItem::Symbol(b"\xBB}4\xD3Z;\xD7\xEA\x8D\xB35nv\xB1\xA9y"));
+    s.dump_sexpr(result.expr(), result.expr(), &mut v);
+    assert!(v.len() != 0);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // let res = String::from_utf8(v).unwrap();
+    //
+    // println!("result: {res}");
+    // assert!(res.contains("count-1 3"));
+    // assert!(res.contains("count-2 4"));
+}
+
 fn sink_hexlife_symbolic() {
     let mut s = Space::new();
 
@@ -4448,6 +4518,7 @@ fn main() {
     // sink_pure_basic();
     // sink_pure_roman_validation();
     // sink_pure_dynamic_subformula();
+    // sink_hash_spaces();
     // return;
 
     let args = Cli::parse();

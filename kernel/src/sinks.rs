@@ -21,6 +21,7 @@ use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use mork_frontend::json_parser::Transcriber;
 use log::*;
+use pathmap::morphisms::Catamorphism;
 use pathmap::PathMap;
 use eval::EvalScope;
 use eval_ffi::ExprSource;
@@ -433,6 +434,103 @@ impl Sink for CountSink {
     }
 }
 
+pub struct HashSink { e: Expr, unique: PathMap<()> }
+impl Sink for HashSink {
+    fn new(e: Expr) -> Self {
+        Self { e, unique: PathMap::new() }
+    }
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[6..];
+        trace!(target: "sink", "hash requesting {}", serialize(p));
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        let mpath = &path[6+wz.root_prefix_path().len()..];
+        let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+        trace!(target: "sink", "hash at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "hash registering in ctx {:?}", serialize(mpath));
+        self.unique.insert(mpath, ());
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        wz.reset();
+        trace!(target: "sink", "hash finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
+
+        let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
+        let mut rooted_input = PathMap::new();
+        rooted_input.write_zipper_at_path(wz.root_prefix_path()).graft_map(_to_swap);
+
+        static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+        let mut prz = OneFactor::new(rooted_input.into_read_zipper(&[]));
+        let prz_ptr = (&prz) as *const OneFactor<_>;
+        let mut changed = false;
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+                let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
+                // if size != 16 { trace!(target: "sink", "hash guard not 16 bytes {size}"); continue }
+                prz.descend_to_byte(b);
+                debug_assert!(prz.path_exists());
+                if !prz.descend_first_k_path(size as _) { unreachable!() }
+                loop {
+                    let clen = prz.origin_path().len();
+
+                    let hash = prz.fork_read_zipper().hash();
+
+                    let cnt_str = hash.to_be_bytes();
+                    trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), hash);
+                    assert_eq!(prz.origin_path().len(), clen);
+
+                    let fixed_number = &prz.origin_path()[prz.origin_path().len()-(size as usize)..];
+                    if fixed_number == &cnt_str[..] {
+                        let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
+                        trace!(target: "sink", "fixed payload {}", serialize(fixed));
+                        wz.move_to_path(fixed);
+                        wz.set_val(());
+                        changed |= true;
+                    }
+
+                    if !prz.to_next_k_path(size as _) { break }
+                }
+                if !prz.ascend_byte() { unreachable!() }
+            }
+
+            if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
+                let ignored = &prz.path()[..prz.path().len()-1];
+                trace!(target: "sink", "ignored guard {}", serialize(ignored));
+                wz.move_to_path(ignored);
+                wz.set_val(());
+                changed |= true;
+                prz.ascend_byte();
+            }
+            if prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+                    let hash = prz.fork_read_zipper().hash();
+                    let cnt_str = hash.to_be_bytes();
+
+                    let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
+                    cntv.extend_from_slice(&cnt_str[..]);
+                    let varref = &prz.path()[..prz.path().len()-1];
+                    let ie = Expr { ptr: (&varref[0] as *const u8).cast_mut() };
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                    trace!(target: "sink", "hash ref guard '{}' var {:?} with '{}'", serialize(varref), k, serialize(&cntv[..]));
+                    let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: cntv.as_mut_ptr() }, &mut oz);
+                    unsafe { buffer.set_len(oz.loc) }
+                    trace!(target: "sink", "hash ref guard subs '{:?}'", serialize(&buffer[..oz.loc]));
+                    wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                    wz.set_val(());
+                    changed |= true
+                }
+                prz.ascend_byte();
+            }
+            true
+        });
+        changed
+    }
+}
+
+
 pub struct AndSink { e: Expr, unique: PathMap<()> }
 impl Sink for AndSink {
     fn new(e: Expr) -> Self {
@@ -761,7 +859,7 @@ impl Sink for PureSink {
 }
 
 
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -787,6 +885,9 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
             *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'o' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(5) == b'n' && *e.ptr.offset(6) == b't' } {
             ASink::CountSink(CountSink::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+            *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b's' && *e.ptr.offset(5) == b'h' } {
+            ASink::HashSink(HashSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
             return ASink::SumSink(SumSink::new(e));
@@ -820,6 +921,7 @@ impl Sink for ASink {
                 ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CountSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::HashSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::SumSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::AndSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::ACTSink(s) => { for i in s.request().into_iter() { yield i } }
@@ -837,6 +939,7 @@ impl Sink for ASink {
             ASink::RemoveSink(s) => { s.sink(it, path) }
             ASink::HeadSink(s) => { s.sink(it, path) }
             ASink::CountSink(s) => { s.sink(it, path) }
+            ASink::HashSink(s) => { s.sink(it, path) }
             ASink::SumSink(s) => { s.sink(it, path) }
             ASink::AndSink(s) => { s.sink(it, path) }
             ASink::ACTSink(s) => { s.sink(it, path) }
@@ -854,6 +957,7 @@ impl Sink for ASink {
             ASink::RemoveSink(s) => { s.finalize(it) }
             ASink::HeadSink(s) => { s.finalize(it) }
             ASink::CountSink(s) => { s.finalize(it) }
+            ASink::HashSink(s) => { s.finalize(it) }
             ASink::SumSink(s) => { s.finalize(it) }
             ASink::AndSink(s) => { s.finalize(it) }
             ASink::ACTSink(s) => { s.finalize(it) }

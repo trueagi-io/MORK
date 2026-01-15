@@ -1054,11 +1054,7 @@ impl Space {
 
     #[cfg(feature="no_search")]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
-        let mut scratch = Vec::with_capacity(1 << 32);
-
-        let mut assignments: Vec<(u8, u8)> = vec![];
-        let mut trace: Vec<(u8, u8)> = vec![];
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut candidate = 0;
 
         while prz.to_next_val() {
@@ -1087,19 +1083,9 @@ impl Space {
 
             match bindings {
                 Ok(bs) => {
-                    // bs.iter().for_each(|(v, ee)| trace!(target: "query_multi", "binding {:?} {}", *v, ee.show()));
-                    let (oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pat_expr), &bs, &mut ExprZipper::new(Expr{ ptr: scratch.as_mut_ptr() }), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
-                        assignments.clear();
-                        // println!("scratch {:?}", Expr { ptr: scratch.as_mut_ptr() });
-                        r
-                    };
-                    // println!("pre {:?} {:?} {}", (oi, ni), assignments, assignments.len());
 
                     unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                    if !effect(Err((bs, oi, ni, &assignments[..])), e) {
+                    if !effect(Err(bs), e) {
                         break
                     }
                 }

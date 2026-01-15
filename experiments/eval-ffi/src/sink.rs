@@ -16,6 +16,9 @@ impl Default for ExprSink {
 use alloc::vec::Vec;
 
 impl ExprSink {
+    pub fn expr(&self) -> mork_expr::Expr {
+        mork_expr::Expr{ ptr: self.ptr }
+    }
     #[cfg(feature = "std")]
     pub fn new(vec: Vec<u8>) -> Self {
         // let (ptr, len, capacity) = vec.into_raw_parts();

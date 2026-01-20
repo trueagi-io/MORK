@@ -4694,6 +4694,29 @@ fn main() {
                         _ => { unreachable!() }
                     }
                 }
+                ("json", "metta" | "act" | "paths") => {
+                    let mut s = Space::new();
+                    let f = std::fs::File::open(&input_path).unwrap();
+                    let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+                    s.load_json(&*mmapf);
+                    println!("done loading in memory");
+                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
+
+                    match output_format.as_str() {
+                        "metta" => {
+                            let f = std::fs::File::create(&some_output_path).unwrap();
+                            let mut w = std::io::BufWriter::new(f);
+                            s.dump_all_sexpr(&mut w).unwrap();
+                        }
+                        "act" => {
+                            s.backup_tree(some_output_path);
+                        }
+                        "paths" => {
+                            s.backup_paths(some_output_path);
+                        }
+                        _ => { unreachable!() }
+                    }
+                }
                 ("json", "upaths") => {
                     // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
                     json_upaths(input_path, some_output_path);

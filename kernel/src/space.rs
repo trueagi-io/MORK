@@ -909,7 +909,8 @@ impl Space {
     pub fn dump_sexpr<W : Write>(&self, pattern: Expr, template: Expr, w: &mut W) -> usize {
         let constant_template_prefix = unsafe { template.prefix().unwrap_or_else(|_| template.span()).as_ref().unwrap() };
 
-        let mut buffer = [0u8; 4096];
+        let mut buffer = Vec::with_capacity(1 << 32);
+        unsafe { buffer.set_len(1 << 32); }
         let mut pat = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b','];
         pat.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
 

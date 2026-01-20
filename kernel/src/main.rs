@@ -4480,6 +4480,8 @@ enum Commands {
         steps: usize,
         #[arg(long, default_value_t = 1)]
         instrumentation: usize,
+        #[arg(long)]
+        aux_path: Vec<String>,
         output_path: Option<String>,
     },
     #[command(arg_required_else_help = true)]
@@ -4488,6 +4490,10 @@ enum Commands {
         input_format: String,
         #[arg(default_missing_value = "metta")]
         output_format: String,
+        #[arg(default_missing_value = "$")]
+        pattern: String,
+        #[arg(default_missing_value = "_1")]
+        template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
         input_path: String,
@@ -4615,13 +4621,18 @@ fn main() {
             parse_csv();
             parse_json();
         }
-        Commands::Run { input_path, steps, instrumentation, output_path } => {
+        Commands::Run { input_path, steps, instrumentation, aux_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
             let f = std::fs::File::open(&input_path).unwrap();
             let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
             s.add_all_sexpr(&*mmapf);
+            for repeated_aux_path in &aux_path {
+                let f = std::fs::File::open(&repeated_aux_path).unwrap();
+                let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
+                s.add_all_sexpr(&*mmapf);
+            }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
@@ -4639,7 +4650,7 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, instrumentation, input_path, output_path } => {
+        Commands::Convert { input_format, output_format, pattern, template, instrumentation, input_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
 
@@ -4654,7 +4665,8 @@ fn main() {
                     let mut s = Space::new();
                     let f = std::fs::File::open(&input_path).unwrap();
                     let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                    s.add_all_sexpr(&*mmapf);
+                    if pattern == "$" && template == "_1" { s.add_all_sexpr(&*mmapf).unwrap(); }
+                    else { s.add_sexpr(&*mmapf, expr!(s, &*pattern), expr!(s, &*template)).unwrap(); }
                     println!("done loading in memory");
                     if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
 
@@ -4674,6 +4686,8 @@ fn main() {
                     }
                 }
                 ("paths", "metta" | "act" | "paths") => {
+                    assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
+                    assert_eq!(template, "_1"); // todo
                     let mut s = Space::new();
                     s.restore_paths(&input_path);
                     println!("done loading in memory");
@@ -4688,7 +4702,7 @@ fn main() {
                         "act" => {
                             s.backup_tree(some_output_path);
                         }
-                        "paths" => {
+                        "paths" => { // todo can be streamed without loading into memory
                             s.backup_paths(some_output_path);
                         }
                         _ => { unreachable!() }
@@ -4706,25 +4720,31 @@ fn main() {
                         "metta" => {
                             let f = std::fs::File::create(&some_output_path).unwrap();
                             let mut w = std::io::BufWriter::new(f);
-                            s.dump_all_sexpr(&mut w).unwrap();
+                            s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
                         }
                         "act" => {
-                            s.backup_tree(some_output_path);
+                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
+                            assert_eq!(template, "_1"); // todo
+                            s.backup_tree(some_output_path).unwrap();
                         }
                         "paths" => {
-                            s.backup_paths(some_output_path);
+                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
+                            assert_eq!(template, "_1"); // todo
+                            s.backup_paths(some_output_path).unwrap();
                         }
                         _ => { unreachable!() }
                     }
                 }
                 ("json", "upaths") => {
+                    assert_eq!(pattern, "$");
+                    assert_eq!(template, "_1");
                     // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
                     json_upaths(input_path, some_output_path);
                 }
-                ("jsonl", "upaths") => {
-                    #[cfg(all(feature = "nightly"))]
-                    jsonl_upaths(input_path, some_output_path);
-                }
+                // ("jsonl", "upaths") => {
+                //     #[cfg(all(feature = "nightly"))]
+                //     jsonl_upaths(input_path, some_output_path);
+                // }
                 (_, _) => { panic!("unsupported conversion") }
             }
         }

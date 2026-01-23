@@ -25,17 +25,20 @@ use pathmap::morphisms::Catamorphism;
 use pathmap::PathMap;
 use eval::EvalScope;
 use eval_ffi::ExprSource;
+use mork_expr::macros::SerializableExpr;
 use crate::pure;
 use crate::space::ACT_PATH;
 
 pub(crate) enum WriteResourceRequest {
     BTM(&'static [u8]),
-    ACT(&'static str)
+    ACT(&'static str),
+    Z3(&'static str),
 }
 
 pub(crate) enum WriteResource<'w, 'a, 'k> {
     BTM(&'w mut WriteZipperTracked<'a, 'k, ()>),
-    ACT(())
+    ACT(()),
+    Z3(subprocess::Popen)
 }
 
 // trait JoinLattice  {
@@ -858,12 +861,43 @@ impl Sink for PureSink {
     }
 }
 
+// (z3 <instance> <declaration or assertion>)
+#[cfg(feature = "z3")]
+pub struct Z3Sink { e: Expr, buffer: Vec<u8> }
+#[cfg(feature = "z3")]
+impl Sink for Z3Sink {
+    fn new(e: Expr) -> Self {
+        Z3Sink { e, buffer: vec![] }
+    }
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+        destruct!(self.e, ("z3" {instance: &str} {decl: Expr}), {
+            trace!(target: "sinks", "z3 requesting instance {instance}");
+            return std::iter::once(WriteResourceRequest::Z3(instance));
+        }, _err => { unreachable!() });
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        trace!(target: "sink", "z3 at raw '{}'", serialize(path));
+        let e = Expr { ptr: path.as_ptr().cast_mut() };
+        e.serialize(&mut self.buffer, |e| std::str::from_utf8(e).unwrap());
+        self.buffer.push(b'\n');
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        trace!(target: "sink", "z3 writing buffer {}", std::str::from_utf8(&self.buffer[..]).unwrap());
+        let WriteResource::Z3(ref mut p) = it.next().unwrap() else { unreachable!() };
+        let mut stdin = p.stdin.as_mut().unwrap();
+        stdin.write(&self.buffer[..]).unwrap();
+        true
+    }
+}
+
 
 pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
     PureSink(PureSink),
+    #[cfg(feature = "z3")]
+    Z3Sink(Z3Sink),
     CompatSink(CompatSink)
 }
 
@@ -909,6 +943,12 @@ impl Sink for ASink {
             return ASink::PureSink(PureSink::new(e));
             #[cfg(not(feature = "grounding"))]
             panic!("MORK was not built with the grounding feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) &&
+            *e.ptr.offset(2) == b'z' && *e.ptr.offset(3) == b'3'} {
+            #[cfg(feature = "z3")]
+            return ASink::Z3Sink(Z3Sink::new(e));
+            #[cfg(not(feature = "z3"))]
+            panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
         } else {
             panic!("unrecognized sink")
         }
@@ -929,6 +969,8 @@ impl Sink for ASink {
                 ASink::WASMSink(s) => { for i in s.request().into_iter() { yield i } }
                 #[cfg(feature = "grounding")]
                 ASink::PureSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "z3")]
+                ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
@@ -947,6 +989,8 @@ impl Sink for ASink {
             ASink::WASMSink(s) => { s.sink(it, path) }
             #[cfg(feature = "grounding")]
             ASink::PureSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "z3")]
+            ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
         }
     }
@@ -965,6 +1009,8 @@ impl Sink for ASink {
             ASink::WASMSink(s) => { s.finalize(it) }
             #[cfg(feature = "grounding")]
             ASink::PureSink(s) => { s.finalize(it) }
+            #[cfg(feature = "z3")]
+            ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
         }
     }

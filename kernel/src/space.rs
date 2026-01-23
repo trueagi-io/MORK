@@ -35,7 +35,8 @@ pub static ACT_PATH: &'static str = "/dev/shm/";
 pub struct Space {
     pub btm: PathMap<()>,
     pub sm: SharedMappingHandle,
-    pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>
+    pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>,
+    pub z3s: HashMap<&'static str, subprocess::Popen>,
 }
 
 pub(crate) const SIZES: [u64; 4] = {
@@ -433,7 +434,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new() }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new() }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1387,7 +1388,8 @@ impl Space {
         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
             match sink.request().next().unwrap() {
                 WriteResourceRequest::BTM(p) => p,
-                WriteResourceRequest::ACT(_) => unreachable!()
+                WriteResourceRequest::ACT(_) => unreachable!(),
+                WriteResourceRequest::Z3(_) => unreachable!()
             }
         ).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
@@ -1478,7 +1480,8 @@ impl Space {
         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
             match sink.request().next().unwrap() {
                 WriteResourceRequest::BTM(p) => p,
-                WriteResourceRequest::ACT(_) => unreachable!()
+                WriteResourceRequest::ACT(_) => unreachable!(),
+                WriteResourceRequest::Z3(_) => unreachable!(),
             }
         ).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);

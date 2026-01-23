@@ -2779,6 +2779,38 @@ fn bench_sink_hexlife_axial() {
     // assert_eq!(res, "stupid\n")
 }
 
+fn sink_z3_basic() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+
+(z3-declare (declare-const a Int))
+(z3-declare (declare-const b Int))
+
+(z3-assert (> a 0))
+(z3-assert (< b 0))
+
+(exec 0 (, (z3-declare $s))
+        (O (z3 ins $s))
+)
+
+
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_sexpr(expr!(s, "[3] alive $ $"), expr!(s, "[3] alive _1 _2"), &mut v);
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8(v).unwrap();
+
+    println!("result: {res}");
+}
+
 fn sink_wasm_add() {
     let mut s = Space::new();
 
@@ -4525,6 +4557,7 @@ fn main() {
     // sink_pure_roman_validation();
     // sink_pure_dynamic_subformula();
     // sink_hash_spaces();
+    // sink_z3_basic();
     // return;
 
     let args = Cli::parse();

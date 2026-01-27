@@ -100,7 +100,6 @@ impl Sink for CompatSink {
 }
 
 pub struct AddSink { e: Expr, changed: bool }
-
 impl Sink for AddSink {
     fn new(e: Expr) -> Self { AddSink { e, changed: false } }
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
@@ -119,6 +118,51 @@ impl Sink for AddSink {
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "+ finalizing");
         self.changed
+    }
+}
+
+// (AU <expr>)
+pub struct AUSink { e: Expr, buf: Option<Box<[u8]>>, tmp: Option<Box<[u8]>>, last: usize }
+impl Sink for AUSink {
+    fn new(e: Expr) -> Self {
+        AUSink { e, buf: None, tmp: None, last: usize::MAX }
+    }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[4..];
+        trace!(target: "sink", "AU requesting {}", serialize(p));
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        // we could be way more parsimonious not anti-unifying the prefix over and over again
+        // let mpath = &path[4+wz.root_prefix_path().len()..];
+        trace!(target: "sink", "AU new expr '{}'", serialize(&path[4..]));
+        if let Some(mut e) = self.buf.as_mut() {
+            let mut tmp = self.tmp.as_mut().unwrap();
+            let eau = Expr{ ptr: (*e).as_mut_ptr() };
+            let mut wz = ExprZipper::new(Expr{ ptr: (*tmp).as_mut_ptr() });
+            eau.anti_unify(Expr{ ptr: path[4..].as_ptr().cast_mut() }, &mut wz).unwrap();
+            std::mem::swap(&mut self.buf, &mut self.tmp);
+            self.last = wz.loc;
+        } else {
+            self.buf = Some(path[4..].to_vec().into_boxed_slice());
+            self.tmp = self.buf.clone();
+        }
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        trace!(target: "sink", "AU finalizing");
+        match self.buf.take() {
+            None => {
+                trace!(target: "sink", "AU empty");
+                false
+            }
+            Some(buf) => {
+                trace!(target: "sink", "AU anti-unified expression {}", serialize(&buf[..self.last]));
+                let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+                wz.move_to_path(&buf[wz.root_prefix_path().len()..self.last]);
+                wz.set_val(());
+                true
+            }
+        }
     }
 }
 
@@ -898,6 +942,7 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     PureSink(PureSink),
     #[cfg(feature = "z3")]
     Z3Sink(Z3Sink),
+    AUSink(AUSink),
     CompatSink(CompatSink)
 }
 
@@ -913,6 +958,8 @@ impl Sink for ASink {
             ASink::RemoveSink(RemoveSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(1)) && *e.ptr.offset(2) == b'+' } {
             ASink::AddSink(AddSink::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && *e.ptr.offset(2) == b'A' && *e.ptr.offset(3) == b'U' } {
+            ASink::AUSink(AUSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
             ASink::HeadSink(HeadSink::new(e))
@@ -958,6 +1005,7 @@ impl Sink for ASink {
         gen move {
             match self {
                 ASink::AddSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::AUSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::RemoveSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::HeadSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CountSink(s) => { for i in s.request().into_iter() { yield i } }
@@ -978,6 +1026,7 @@ impl Sink for ASink {
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         match self {
             ASink::AddSink(s) => { s.sink(it, path) }
+            ASink::AUSink(s) => { s.sink(it, path) }
             ASink::RemoveSink(s) => { s.sink(it, path) }
             ASink::HeadSink(s) => { s.sink(it, path) }
             ASink::CountSink(s) => { s.sink(it, path) }
@@ -998,6 +1047,7 @@ impl Sink for ASink {
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
         match self {
             ASink::AddSink(s) => { s.finalize(it) }
+            ASink::AUSink(s) => { s.finalize(it) }
             ASink::RemoveSink(s) => { s.finalize(it) }
             ASink::HeadSink(s) => { s.finalize(it) }
             ASink::CountSink(s) => { s.finalize(it) }

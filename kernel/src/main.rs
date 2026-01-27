@@ -2305,6 +2305,38 @@ fn sink_odd_even_sort() {
     assert_eq!(res, "A\nB\nC\nD\nE\n");
 }
 
+fn sink_anti_unify() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(set 0 (a a))
+(set 0 (b b))
+
+(set 1 (foo a $x $x $y $y (bar baz) (expr) (one) ))
+(set 1 (foo a $x $x $y $y (bar baz) E (one two) ))
+(set 1 (foo b $x $x $y $z (bar baz) E (one two three) ))
+
+
+(exec 0 (, (set 0 $e)) (O (AU (out 0 $e))))
+(exec 0 (, (set 1 $e)) (O (AU (out 1 $e))))
+
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] out $ $"), expr!(s, "[2] _1 _2"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "(0 ($a $a))\n(1 (foo $a $b $b $c $d (bar baz) $e $f))\n")
+}
+
 fn sink_head() {
     let mut s = Space::new();
 
@@ -4712,6 +4744,7 @@ fn main() {
             sink_odd_even_sort();
             sink_add_remove();
             sink_add_remove_var();
+            sink_anti_unify();
             sink_head();
             sink_count_literal();
             sink_count_constant();

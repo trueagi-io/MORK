@@ -288,6 +288,13 @@ impl Expr {
         }
     }
 
+    pub fn arity(self) -> Option<u8> {
+        unsafe {
+            if let Tag::Arity(n) = byte_item(*self.ptr) { Some(n) }
+            else { None }
+        }
+    }
+
     pub fn span(self) -> *const [u8] {
         if self.ptr.is_null() { slice_from_raw_parts(null(), 0) }
         else {
@@ -2055,7 +2062,7 @@ pub type AuVar = u8;
 
 #[derive(Debug)]
 pub enum AntiUnificationFailure {
-    TooManyVars,      // > 256 distinct disagreement classes
+    TooManyVars,      // > 64 distinct disagreement classes
     MaxDepth(usize),  // guard against pathological inputs
 }
 
@@ -2079,7 +2086,7 @@ impl PartialEq for RelExprEnv {
         traverseh!((), (), bool, self.0.subsexpr(), true,
                         |b: &mut bool, o| {
                             *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
-                                Tag::NewVar => { vo += 1; vs == vo }
+                                Tag::NewVar => { let eq = vs == vo; vo += 1; eq }
                                 Tag::VarRef(j) => { vs == j }
                                 _ => { false }
                             };
@@ -2088,7 +2095,7 @@ impl PartialEq for RelExprEnv {
                         },
                         |b: &mut bool, o, r| {
                             *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
-                                Tag::NewVar => { vo += 1; r == vo }
+                                Tag::NewVar => { let eq = r == vo; vo += 1; eq }
                                 Tag::VarRef(j) => { r == j }
                                 _ => { false }
                             };
@@ -2118,10 +2125,10 @@ impl std::hash::Hash for RelExprEnv {
     fn hash<H: Hasher>(&self, state: &mut H) {
         let mut v = self.0.v;
         traverseh!((), (), (), self.0.subsexpr(), (),
-                        |_, o| { state.write_u8(v); v += 1; },
-                        |_, o, r| { state.write_u8(r); },
-                        |_, o, s| { state.write(s); },
-                        |_, o, a| { state.write_u8(a); },
+                        |_, o| { state.write_u8(0); state.write_u8(v); v += 1; },
+                        |_, o, r| { state.write_u8(0); state.write_u8(r); },
+                        |_, o, s| { state.write_u8(1); state.write(s); },
+                        |_, o, a| { state.write_u8(2); state.write_u8(a); },
                         |_, o, x, y| {},
                         |_, _, _| {});
     }
@@ -2132,7 +2139,7 @@ impl From<ExprEnv> for RelExprEnv {
 }
 
 struct AuState {
-    next_var: u16,
+    next_var: u8,
     // key: (left_subterm, right_subterm)  value: output var id
     memo: HashMap<(RelExprEnv, RelExprEnv), AuVar>,
     left:  BTreeMap<AuVar, ExprEnv>,
@@ -2150,14 +2157,12 @@ fn decomposable(lhs: &ExprEnv, rhs: &ExprEnv) -> bool {
     }
 
     unsafe {
-        let lt = byte_item(*lhs.base.ptr.add(lhs.offset as usize));
-        let rt = byte_item(*rhs.base.ptr.add(rhs.offset as usize));
-        match (lt, rt) {
-            // For structured nodes, require same arity and same functor prefix.
-            (Tag::Arity(a), Tag::Arity(b)) => a == b && lhs.same_functor(rhs),
-            // For symbols, require same symbol (same_functor uses prefix equality logic you already have).
-            (Tag::SymbolSize(_), Tag::SymbolSize(_)) => lhs.same_functor(rhs),
-            _ => false,
+        if let (Some(s1), Some(s2)) = (lhs.subsexpr().symbol(), rhs.subsexpr().symbol()) {
+            s1.as_ref() == s2.as_ref()
+        } else if let (Some(a1), Some(a2)) = (lhs.subsexpr().arity(), rhs.subsexpr().arity()) {
+            a1 == a2
+        } else {
+            false
         }
     }
 }
@@ -2176,11 +2181,13 @@ fn anti_unify_apply(
     let mut rargs: Vec<ExprEnv> = Vec::new();
 
     while let Some((lhs, rhs)) = stack.pop() {
+        if PRINT_DEBUG { println!("{} AU {}", lhs.show(), rhs.show()); }
         if stack.len() > AU_MAX_DEPTH {
             return Err(AntiUnificationFailure::MaxDepth(stack.len()));
         }
 
         if decomposable(&lhs, &rhs) {
+            if PRINT_DEBUG { println!("decompose/agree"); }
             unsafe {
                 match byte_item(*lhs.base.ptr.add(lhs.offset as usize)) {
                     Tag::Arity(k) => {
@@ -2215,18 +2222,26 @@ fn anti_unify_apply(
                 }
             }
         } else {
+            if PRINT_DEBUG { println!("var/disagree"); }
             // Disagreement case: introduce/reuse a generalization variable.
             let key = (RelExprEnv::from(lhs), RelExprEnv::from(rhs));
 
             if let Some(&v) = st.memo.get(&key) {
+                if PRINT_DEBUG { println!("did find re-use ({}, {}) = {}", lhs.show(), rhs.show(), v); }
                 oz.write_var_ref(v);
                 oz.loc += 1;
             } else {
-                if st.next_var >= 256 {
+                if st.next_var >= 64 {
                     return Err(AntiUnificationFailure::TooManyVars);
                 }
                 let v: AuVar = st.next_var as AuVar;
                 st.next_var += 1;
+
+                if PRINT_DEBUG {
+                    println!("did not find re-use, inserting ({}, {}) = {}", lhs.show(), rhs.show(), v);
+                    // println!("did not find re-use {:?} {:?}", lhs, rhs);
+                    // println!("did not find re-use in {:?}", st.memo);
+                }
 
                 st.memo.insert(key, v);
                 st.left.insert(v, lhs);
@@ -2669,6 +2684,19 @@ mod tests {
             println!("rhs {}", rhs.0.show());
             assert_ne!(lhs, rhs);
             assert_ne!({ let mut hx = GxHasher::with_seed(0); lhs.hash(&mut hx); hx.finish() },
+                       { let mut hx = GxHasher::with_seed(0); rhs.hash(&mut hx); hx.finish() });
+        }
+        {
+            //  l- r-
+            // ($x $x)
+            let mut ev = parse!(r"[2] $ _1");
+            let e = Expr { ptr: ev.as_mut_ptr() };
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 0, offset: 1, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset: 2, base: e});
+            println!("lhs {}", lhs.0.show());
+            println!("rhs {}", rhs.0.show());
+            assert_eq!(lhs, rhs);
+            assert_eq!({ let mut hx = GxHasher::with_seed(0); lhs.hash(&mut hx); hx.finish() },
                        { let mut hx = GxHasher::with_seed(0); rhs.hash(&mut hx); hx.finish() });
         }
     }

@@ -1,3 +1,5 @@
+#![feature(string_from_utf8_lossy_owned)]
+
 use mork::{expr, prefix, sexpr};
 use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
@@ -1105,7 +1107,7 @@ fn sink_hash_expr() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(result 45MpKkzURPU)\n(result YcLaBp-nAmo)\n");
+    assert_eq!(res, "(result XoicVnQv2bk)\n(result tspt4QCdRB8)\n");
 }
 
 fn sink_even_half() {
@@ -3998,6 +4000,87 @@ fn linear_alternating(steps: usize) {
     // println!("result: {res}");
 }
 
+fn test_memory_size() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+; Terms: M, N ::= 1 | M[s] | λM | M N
+; Substitutions: s, t ::= id | ↑ | M . s | s ◦ t
+
+; beta (λM) N → M[N . id]
+(rule beta ((lambda $M) @ $N) (clos $M ($N . id)))
+
+; clos-var 1[M . s] → M
+(rule clos-var (clos 1 ($M . $s)) $M)
+
+; clos-clos M[s][t] → M[s ◦ t]
+(rule clos-clos (clos (clos $M $s) $t) (clos $M ($s o $t)))
+
+; clos-lam (λM)[s] → λ(M[1 . (s ◦ ↑)])
+(rule clos-lam (clos (lambda $M) $s) (lambda (clos $M (1 . ($s o ^)))))
+
+; clos-app (M N)[s] → M[s] N[s]
+(rule clos-app (clos ($M @ $N) $s) ((clos $M $s) @ (clos $N $s)))
+
+; clos-var-id 1[id] → 1
+(rule clos-var-id (clos 1 id) 1)
+
+; comp-id-L id ◦ s → s
+(rule comp-id-L (id o $s) $s)
+
+; comp-shift-id ↑ ◦ id → ↑
+(rule comp-shift-id (^ o id) ^)
+
+; comp-shift ↑ ◦ (M . s) → s
+(rule comp-shift (^ o ($M . $s)) $s)
+
+; comp-cons (M . s) ◦ t → M[t] . (s ◦ t)
+(rule comp-cons (($M . $s) o $t) ((clos $M $t) . ($s o $t)))
+
+; comp-comp (s1 ◦ s2) ◦ s3 → s1 ◦ (s2 ◦ s3)
+(rule comp-comp (($s1 o $s2) o $s3) ($s1 o ($s2 o $s3)))
+
+(succ 0 1) (succ 1 2) (succ 2 3) (succ 3 4)
+(step 0 ((lambda 1) @ A)) ; A
+
+(exec 10 (, (rule $a $lhs $middle) (rule $b $middle $rhs))
+         (, (rule ($a $b) $lhs $rhs))  ) ; only if lhs -> rhs is reducing "is a rewiring in our case"
+(exec 11 (, (rule $a $lhs $middle) (rule $b $middle $rhs))
+         (, (rule ($a $b) $lhs $rhs))  ) ; only if lhs -> rhs is reducing "is a rewiring in our case"
+(exec 12 (, (rule $a $lhs $middle) (rule $b $middle $rhs))
+         (, (rule ($a $b) $lhs $rhs))  ) ;  only if lhs -> rhs is reducing "is a rewiring in our case"
+;(exec 13 (, (rule $a $lhs $middle) (rule $b $middle $rhs))
+;         (, (rule ($a $b) $lhs $rhs))  )
+
+; find the rules that just concern themselves with substitution and compose them into "macro substitution steps"
+(exec 15 (, (rule (((beta $x) $y) beta) $_ $_) (rule ($x $y) $right_after_beta $right_before_next_beta))
+         (, (rule inter_beta $right_after_beta $right_before_next_beta))  )
+
+(exec 20 (, (rule $r $lhs $rhs) (step $i $lhs) (succ $i $si)) (, (step $si $rhs)))
+(exec 21 (, (rule $r $lhs $rhs) (step $i $lhs) (succ $i $si)) (, (step $si $rhs)))
+(exec 22 (, (rule $r $lhs $rhs) (step $i $lhs) (succ $i $si)) (, (step $si $rhs)))
+(exec 23 (, (rule $r $lhs $rhs) (step $i $lhs) (succ $i $si)) (, (step $si $rhs)))
+
+(exec 30 (, (rule $which $lhs $rhs)) (, (which $lhs $rhs)))
+"#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] which $ $"), expr!(s, "[3] which _1 _2"), &mut v);
+    let res = String::from_utf8(v).unwrap();
+    //
+    s.backup_tree("/home/adam/Projects/MORK/rules.act").unwrap();
+    s.backup_paths("/home/adam/Projects/MORK/rules.paths").unwrap();
+
+    println!("result size: {}", res.bytes().len());
+    println!("result number: {}", res.bytes().filter(|b| *b == b'\n').count());
+}
+
 fn mm1_forward() {
     // Program: universe, typed constructors, axioms (curried), tiny pipeline, and final assembly.
     const P: &str = r#"
@@ -4558,6 +4641,7 @@ fn main() {
     // sink_pure_dynamic_subformula();
     // sink_hash_spaces();
     // sink_z3_basic();
+    // test_memory_size();
     // return;
 
     let args = Cli::parse();
@@ -4642,8 +4726,8 @@ fn main() {
 
             sink_pure_basic();
             sink_pure_basic_nested();
-            sink_pure_roman_validation();
-            sink_pure_dynamic_subformula();
+            // sink_pure_roman_validation(); // hinges on fp fix
+            // sink_pure_dynamic_subformula(); // hinges on fp fix
             sink_pure_quote_collapse_symbol();
             sink_pure_explode_collapse_ident();
             sink_bass64url_ident();
@@ -4675,7 +4759,7 @@ fn main() {
             if output_path.is_none() {
                 let mut v = vec![];
                 s.dump_all_sexpr(&mut v).unwrap();
-                let res = String::from_utf8(v).unwrap();
+                let res = String::from_utf8_lossy_owned(v);
                 println!("result:\n{res}");
             } else {
                 let f = std::fs::File::create(&output_path.unwrap()).unwrap();

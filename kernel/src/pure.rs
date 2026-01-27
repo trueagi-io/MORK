@@ -103,7 +103,8 @@ macro_rules! op {
             let x = expr.consume::<$t>()?;
             let mut buf = [0u8; 64];
             let mut cur = std::io::Cursor::new(&mut buf[..]);
-            write!(&mut cur, "{}", x).unwrap();
+            debug_assert!(format!("{:?}", x).len() <= 64, "too long {}", x);
+            write!(&mut cur, "{:?}", x).unwrap();
             let pos = cur.position() as usize;
             sink.write(SourceItem::Symbol(&buf[..pos]))?;
             Ok(())
@@ -598,7 +599,8 @@ op!(num nulary neginf_f64() => f64::NEG_INFINITY);
 op!(num nulary e_f64() => std::f64::consts::E);
 op!(num nulary pi_f64() => std::f64::consts::PI);
 op!(num nulary tau_f64() => std::f64::consts::TAU);
-op!(num nulary phi_f64() => std::f64::consts::PHI);
+// op!(num nulary phi_f64() => std::f64::consts::PHI); // pre https://github.com/rust-lang/rust/pull/151164
+op!(num nulary phi_f64() => std::f64::consts::GOLDEN_RATIO);
 op!(num unary to_radians_f64(x: f64) => x.to_radians());
 op!(num unary to_degrees_f64(x: f64) => x.to_degrees());
 op!(num unary sin_f64(x: f64) => x.sin());
@@ -655,7 +657,7 @@ op!(num nulary neginf_f32() => f32::NEG_INFINITY);
 op!(num nulary e_f32() => std::f32::consts::E);
 op!(num nulary pi_f32() => std::f32::consts::PI);
 op!(num nulary tau_f32() => std::f32::consts::TAU);
-op!(num nulary phi_f32() => std::f32::consts::PHI);
+op!(num nulary phi_f32() => std::f32::consts::GOLDEN_RATIO);
 op!(num unary to_radians_f32(x: f32) => x.to_radians());
 op!(num unary to_degrees_f32(x: f32) => x.to_degrees());
 op!(num unary sin_f32(x: f32) => x.sin());

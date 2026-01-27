@@ -25,14 +25,14 @@ wasmtime = { version = "37.0.1", features = ["winch"], optional = true }
 itertools = "0.14.0"
 base64 = "0.22.1"
 hex = "0.4.3"
-subprocess = { version = "0.2.13", optional = true }
+subprocess = { version = "0.2.13" }
 
 [features]
 default = ["grounding", "specialize_io"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]
-z3 = ["dep:subprocess"]
+z3 = []
 no_search = []
 grounding = []
 specialize_io = []

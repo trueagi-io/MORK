@@ -9,6 +9,7 @@ use std::mem::MaybeUninit;
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::str::Utf8Error;
 use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;

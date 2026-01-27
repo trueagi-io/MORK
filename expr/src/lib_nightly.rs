@@ -1,28 +1,65 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::io::Write;
 use std::ops::{Coroutine, CoroutineState};
 use std::ptr::slice_from_raw_parts;
 use crate::{byte_item, item_byte, traverseh, Expr, ExprEnv, ExprVar, ExprZipper, Tag, APPLY_DEPTH, PRINT_DEBUG};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SourceItem<'a> {
     Tag(Tag),
     Symbol(&'a[u8]),
 }
 
-pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem, Yield=(), Return=std::io::Result<Infallible>> {
+pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem, Yield=(), Return=std::io::Result<usize>> {
     #[coroutine] move |mut i: SourceItem| {
+        let mut stack: smallvec::SmallVec<[u8; 64]> = smallvec::SmallVec::new();
+        let mut j = 0;
         loop {
             match i {
-                SourceItem::Tag(Tag::SymbolSize(_)) => { panic!("sink uses Err(&[u8]) for symbols, gotten Tag::SymbolSize") }
                 SourceItem::Tag(tag) => {
-                    target.write_all(&[item_byte(tag)])?;
+                    match tag {
+                        Tag::NewVar => {
+                            target.write_all(&[item_byte(tag)])?;
+                            j += 1;
+                        }
+                        Tag::VarRef(_) => {
+                            target.write_all(&[item_byte(tag)])?;
+                            j += 1;
+                        }
+                        Tag::SymbolSize(_) => { panic!("sink uses Err(&[u8]) for symbols, gotten Tag::SymbolSize") }
+                        Tag::Arity(a) => {
+                            target.write_all(&[item_byte(tag)])?;
+                            j += 1;
+                            stack.push(a);
+                            i = yield ();
+                            continue;
+                        }
+                    }
                 }
                 SourceItem::Symbol(slice) => {
                     let l = slice.len();
                     debug_assert!(l < 64);
+                    j += 1 + l;
                     target.write_all(&[item_byte(Tag::SymbolSize(l as _))])?;
                     target.write_all(slice)?;
+                }
+            }
+
+            'popping: loop {
+                match stack.last_mut() {
+                    None => { return Ok(j) }
+                    Some(k) => {
+                        *k = *k - 1;
+                        if *k != 0 {
+                            break 'popping
+                        }
+                    }
+                }
+
+                match stack.pop() {
+                    Some(_) => { },
+                    None => break 'popping
                 }
             }
             i = yield ();
@@ -72,7 +109,7 @@ pub fn item_source<'a>(e: Expr) -> impl Coroutine<(), Yield=SourceItem<'a>, Retu
 
 
 #[inline(never)]
-pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<Infallible>>>(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bindings: &BTreeMap<ExprVar, ExprEnv>, es: &mut std::pin::Pin<&mut OS>, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
+pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bindings: &BTreeMap<ExprVar, ExprEnv>, es: &mut std::pin::Pin<&mut OS>, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
     let depth = stack.len();
     if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
     if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, e); }
@@ -213,5 +250,23 @@ mod tests {
                 CoroutineState::Complete(c) => { println!("{c:?}"); assert_eq!(c, 15); break }
             }
         }
+    }
+
+    #[test]
+    fn sink_saturate() {
+        let mut v = vec![];
+        let mut snk = item_sink(&mut v);
+        for x in [SourceItem::Tag(Tag::Arity(2)), SourceItem::Symbol(&b"foo"[..])].into_iter() {
+            std::pin::pin!(&mut snk).resume(x);
+        };
+        match std::pin::pin!(&mut snk).resume(SourceItem::Symbol(&b"bar"[..])) {
+            CoroutineState::Yielded(_) => unreachable!(), // we can't sink in more, our expression is complete
+            CoroutineState::Complete(Err(_)) => unreachable!(), // we can always write into our sink
+            CoroutineState::Complete(Ok(written)) => { assert_eq!(written, 9) }, // written 1 + 1+3 + 1+3 bytes
+        }
+        drop(snk);
+        let e = Expr{ ptr: v.as_mut_ptr() };
+        assert_eq!(format!("{:?}", e), "(foo bar)");
+        println!("e {:?}", e);
     }
 }

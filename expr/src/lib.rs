@@ -14,8 +14,11 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
-use std::collections::BTreeMap;
-use std::hash::Hasher;
+use std::collections::{BTreeMap, HashMap};
+use std::collections::hash_map::Entry;
+use std::hash::{Hash, Hasher};
+use std::ops::{Coroutine, CoroutineState};
+use std::pin::pin;
 use smallvec::SmallVec;
 
 pub mod macros;
@@ -83,7 +86,7 @@ pub struct Breadcrumb {
     seen: u8,
 }
 
-#[derive(PartialEq, Copy, Clone, Debug)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug)]
 #[repr(C, u8)]
 pub enum Tag {
     NewVar, // $
@@ -643,6 +646,58 @@ impl Expr {
         }
     }
 
+    /// First-order syntactic anti-unification (least general generalization).
+    ///
+    /// Writes the generalization into `o`.
+    /// Returns substitutions mapping each introduced generalization var to the original subterms.
+    pub fn anti_unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), AntiUnificationFailure> {
+        let mut st = AuState {
+            next_var: 0,
+            memo: HashMap::new(),
+            left: BTreeMap::new(),
+            right: BTreeMap::new(),
+        };
+
+        anti_unify_apply(ExprEnv::new(0, self), ExprEnv::new(1, other), o, &mut st)?;
+
+        Ok(())
+    }
+
+    // fn anti_unify<W : std::io::Write>(self, other: Expr, w: &mut W) {
+    //     let mut se = item_source(self);
+    //     let mut oe = item_source(other);
+    //     let mut re = item_sink(w);
+    //
+    //     let mut differences: HashMap<(ExprEnv, ExprEnv), u8> = HashMap::new();
+    //     let mut nvars = 0;
+    //     loop {
+    //         match (pin!(&mut se).resume(()), pin!(&mut oe).resume(()))  {
+    //             (CoroutineState::Yielded(si), CoroutineState::Yielded(oi)) => {
+    //                 match (si, oi) {
+    //                     (SourceItem::Symbol(ss), SourceItem::Symbol(os)) => {
+    //                         if ss == os { pin!(&mut re).resume(si); }
+    //                         else {
+    //                             unreachable!()
+    //                             // match differences.entry(ss) {
+    //                             //     Entry::Occupied(oe) => {
+    //                             //         pin!(&mut re).resume(SourceItem::Tag(Tag::VarRef(oe.get().0)));
+    //                             //     }
+    //                             //     Entry::Vacant(ve) => {
+    //                             //         ve.insert((nvars, os));
+    //                             //         nvars += 1;
+    //                             //         pin!(&mut re).resume(SourceItem::Tag(Tag::NewVar));
+    //                             //     }
+    //                             // }
+    //                         }
+    //                     }
+    //                     _ => unreachable!()
+    //                 }
+    //             }
+    //             _ => unreachable!()
+    //         }
+    //     }
+    // }
+
     #[inline(never)]
     pub fn unifiable(self, other: Expr) -> bool {
         let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
@@ -655,14 +710,6 @@ impl Expr {
 
         match unify(s) {
             Ok(bindings) => {
-                /*println!("{:?}", bindings.iter().map(|(k, v)| {
-                    let ov = vec![0u8; 512];
-                    let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-                    // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                    println!("binding {:?} +{} {}", *k, v.v, v.show());
-                    // println!("output {:?}", o);
-                    (*k, v.subsexpr())
-                }).collect::<Vec<_>>());*/
                 let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                 let mut stack: Vec<(u8, u8)> = vec![];
                 let mut assignments: Vec<(u8, u8)> = vec![];
@@ -1100,6 +1147,29 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, 
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: Option<&'static str>) -> () {
         self.out.write_all(")".as_bytes());
         if let Some(end) = acc { self.out.write_all(end.as_bytes()); }
+    }
+}
+
+struct HashTraversal<H : Hasher, F : for <'b> Fn(&'b [u8], &'b mut H), G : for <'b> Fn(u8, bool, &'b mut H)> { hasher: H, map_symbol: F, map_variable: G, n: u8, o: i8 }
+impl <H : Hasher, F : for <'b> Fn(&'b [u8], &'b mut H), G : for <'b> Fn(u8, bool, &'b mut H)> Traversal<(), ()> for HashTraversal<H, F, G> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () {
+        (self.map_variable)(self.n, true, &mut self.hasher);
+        self.n += 1;
+    }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {
+        (self.map_variable)((i as i8 + self.o) as u8, true, &mut self.hasher);
+    }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
+        (self.map_symbol)(s, &mut self.hasher);
+    }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {
+        self.hasher.write_u8(a);
+    }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {
+        ()
+    }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {
+        ()
     }
 }
 
@@ -1976,5 +2046,630 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
         Ok(bindings)
     } else {
         unreachable!()
+    }
+}
+
+
+// Generalization vars in the output are numbered by first occurrence (0..).
+pub type AuVar = u8;
+
+#[derive(Debug)]
+pub enum AntiUnificationFailure {
+    TooManyVars,      // > 256 distinct disagreement classes
+    MaxDepth(usize),  // guard against pathological inputs
+}
+
+pub struct AntiUnifyResult {
+    /// For each generalization variable `i`, the (left) subterm it abstracts.
+    pub left:  BTreeMap<AuVar, ExprEnv>,
+    /// For each generalization variable `i`, the (right) subterm it abstracts.
+    pub right: BTreeMap<AuVar, ExprEnv>,
+}
+
+/// Assumed to exist (as you said): Hash/Eq compares subexpressions using *absolute* vars
+/// (so `NewVar` occurrences and `VarRef` occurrences compare as the same variable identity).
+#[derive(Clone, Copy, Debug)]
+pub struct RelExprEnv(ExprEnv);
+
+impl PartialEq for RelExprEnv {
+    fn eq(&self, other: &Self) -> bool {
+        let mut vs = self.0.v;
+        let mut vo = other.0.v;
+        unsafe {
+        traverseh!((), (), bool, self.0.subsexpr(), true,
+                        |b: &mut bool, o| {
+                            *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
+                                Tag::NewVar => { vo += 1; vs == vo }
+                                Tag::VarRef(j) => { vs == j }
+                                _ => { false }
+                            };
+                            // println!("$ {:?}", b);
+                            vs += 1;
+                        },
+                        |b: &mut bool, o, r| {
+                            *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
+                                Tag::NewVar => { vo += 1; r == vo }
+                                Tag::VarRef(j) => { r == j }
+                                _ => { false }
+                            };
+                            // println!("_{} {:?}", r as usize + 1, b);
+                        },
+                        |b: &mut bool, o, s: &[u8]| {
+                            let oss = byte_item(*other.0.base.ptr.add(other.0.offset as usize + o));
+                            *b &= oss == Tag::SymbolSize(s.len() as _);
+                            if !*b { return };
+                            let Tag::SymbolSize(ss) = oss else { unreachable!() };
+                            *b &= slice_from_raw_parts(other.0.base.ptr.add(other.0.offset as usize + o + 1), ss as usize).as_ref().unwrap() == s;
+                            // println!("'{}' {:?}", std::str::from_utf8(s).unwrap(), b);
+                        },
+                        |b: &mut bool, o, a| {
+                            *b &= *other.0.base.ptr.add(other.0.offset as usize + o) == item_byte(Tag::Arity(a));
+                            // println!("[{}] {}", a as usize, b);
+                        },
+                        |_, o, x, y| {},
+                        |_, _, _| {}).0
+        }
+    }
+}
+
+impl Eq for RelExprEnv {}
+
+impl std::hash::Hash for RelExprEnv {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut v = self.0.v;
+        traverseh!((), (), (), self.0.subsexpr(), (),
+                        |_, o| { state.write_u8(v); v += 1; },
+                        |_, o, r| { state.write_u8(r); },
+                        |_, o, s| { state.write(s); },
+                        |_, o, a| { state.write_u8(a); },
+                        |_, o, x, y| {},
+                        |_, _, _| {});
+    }
+}
+
+impl From<ExprEnv> for RelExprEnv {
+    fn from(e: ExprEnv) -> Self { RelExprEnv(e) }
+}
+
+struct AuState {
+    next_var: u16,
+    // key: (left_subterm, right_subterm)  value: output var id
+    memo: HashMap<(RelExprEnv, RelExprEnv), AuVar>,
+    left:  BTreeMap<AuVar, ExprEnv>,
+    right: BTreeMap<AuVar, ExprEnv>,
+}
+
+const AU_MAX_DEPTH: usize = 1000;
+
+#[inline(always)]
+fn decomposable(lhs: &ExprEnv, rhs: &ExprEnv) -> bool {
+    // Variables are treated as atoms (disagreement => generalized var),
+    // and repetition is handled by memoizing disagreement pairs.
+    if lhs.var_opt().is_some() || rhs.var_opt().is_some() {
+        return false;
+    }
+
+    unsafe {
+        let lt = byte_item(*lhs.base.ptr.add(lhs.offset as usize));
+        let rt = byte_item(*rhs.base.ptr.add(rhs.offset as usize));
+        match (lt, rt) {
+            // For structured nodes, require same arity and same functor prefix.
+            (Tag::Arity(a), Tag::Arity(b)) => a == b && lhs.same_functor(rhs),
+            // For symbols, require same symbol (same_functor uses prefix equality logic you already have).
+            (Tag::SymbolSize(_), Tag::SymbolSize(_)) => lhs.same_functor(rhs),
+            _ => false,
+        }
+    }
+}
+
+#[inline(never)]
+fn anti_unify_apply(
+    lhs0: ExprEnv,
+    rhs0: ExprEnv,
+    oz: &mut ExprZipper,
+    st: &mut AuState,
+) -> Result<(), AntiUnificationFailure> {
+    let mut stack: Vec<(ExprEnv, ExprEnv)> = vec![(lhs0, rhs0)];
+
+    // Scratch buffers to avoid repeated allocations while decomposing arity nodes.
+    let mut largs: Vec<ExprEnv> = Vec::new();
+    let mut rargs: Vec<ExprEnv> = Vec::new();
+
+    while let Some((lhs, rhs)) = stack.pop() {
+        if stack.len() > AU_MAX_DEPTH {
+            return Err(AntiUnificationFailure::MaxDepth(stack.len()));
+        }
+
+        if decomposable(&lhs, &rhs) {
+            unsafe {
+                match byte_item(*lhs.base.ptr.add(lhs.offset as usize)) {
+                    Tag::Arity(k) => {
+                        oz.write_arity(k);
+                        oz.loc += 1;
+
+                        largs.clear();
+                        rargs.clear();
+                        lhs.args(&mut largs);
+                        rhs.args(&mut rargs);
+                        debug_assert_eq!(largs.len(), rargs.len());
+
+                        // Preorder: push children reversed so they pop in-order.
+                        for i in (0..largs.len()).rev() {
+                            stack.push((largs[i], rargs[i]));
+                        }
+                    }
+
+                    Tag::SymbolSize(_) => {
+                        // ExprZipper::item() returns Err(&[u8]) for symbol bytes in your codepath.
+                        let mut ez = ExprZipper::new(lhs.subsexpr());
+                        match ez.item() {
+                            Err(sym) => {
+                                oz.write_symbol(sym);
+                                oz.loc += 1 + sym.len();
+                            }
+                            Ok(_) => unreachable!("expected symbol bytes at a SymbolSize root"),
+                        }
+                    }
+
+                    Tag::NewVar | Tag::VarRef(_) => unreachable!("decomposable() excludes vars"),
+                }
+            }
+        } else {
+            // Disagreement case: introduce/reuse a generalization variable.
+            let key = (RelExprEnv::from(lhs), RelExprEnv::from(rhs));
+
+            if let Some(&v) = st.memo.get(&key) {
+                oz.write_var_ref(v);
+                oz.loc += 1;
+            } else {
+                if st.next_var >= 256 {
+                    return Err(AntiUnificationFailure::TooManyVars);
+                }
+                let v: AuVar = st.next_var as AuVar;
+                st.next_var += 1;
+
+                st.memo.insert(key, v);
+                st.left.insert(v, lhs);
+                st.right.insert(v, rhs);
+
+                oz.write_new_var();
+                oz.loc += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+mod tests {
+    use crate::gxhash::GxHasher;
+    use super::*;
+    #[test]
+    fn test_unify() {
+        {
+            let mut tv = parse!(r"[3] [2] f [2] f a [3] h [2] f [2] f a [2] f a [2] f [2] f a"); // ((f $x) (h $y (f a)) $y)
+            let t = Expr { ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!(r"[3] $ [3] h _1 $ [2] f _2"); // ($z (h $z $w) (f $w))
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[3] [2] f $ [3] h $ [2] f a _2"); // ((f $x) (h $y (f a)) $y)
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", t));
+        }
+        {
+            let mut tv = parse!(r"[4] $ _1 _1 _1"); // $i $i $i $i
+            let t = Expr { ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!(r"[4] $ $ _1 _2"); // $a $b $a $b
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[4] $ $ _2 _1"); // $x $y $y $x
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", t));
+        }
+        {
+            let mut tv = parse!(r"[8] $ _1 _1 _1 _1 _1 _1 _1"); // $i $i $i $i $i $i $i $i
+            let t = Expr { ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!(r"[8] $ $ $ $ _3 _2 _3 _4"); // $a $b $c $d $c $b $c $d
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[8] $ $ $ $ _4 _1 _2 _3"); // $x $y $z $w $w $x $y $z
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", t));
+        }
+        {
+            let mut tv = parse!("[2] [2] flip [3] = $ [3] T _1 [4] a _1 $ $ [2] axiom [3] = [3] T _1 [4] a _1 _2 _3 _1");
+            //                   ((flip (= $ (T _1 (a _1 $ _1)))) (axiom (= (T _1 (a _1 _2 _1)) _1)))
+            let t = Expr { ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!("[2] $ [2] axiom [3] = [3] T $ [4] a _2 $ $ _2");
+            //                   ($res (axiom (= (T $x (a $x $y $z)) $x)))
+            //                    result   input-data
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] [2] flip [3] = $ $ [2] axiom [3] = _2 _1");
+            //                   ((flip (= $l $r)) (axiom (= $r $l))
+            //                    template          pattern
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", t));
+        }
+        {
+            let mut srcv = parse!(r"[2] axiom [3] = [3] T $ [3] * $ _2 [3] T _1 [3] R [4] a _1 $ $ [3] * _2 _2");
+            let src = Expr { ptr: srcv.as_mut_ptr() };
+            let mut patv = parse!("[2] axiom [3] = _2 _1");
+            let pat = Expr { ptr: patv.as_mut_ptr() };
+
+            let mut templv = parse!("[2] flip [3] = $ $");
+            let templ = Expr { ptr: templv.as_mut_ptr() };
+
+            let mut rv = parse!(r"[2] flip [3] = [3] T $ [3] R [4] a _1 $ $ [3] * $ _4 [3] T _1 [3] * _4 _4");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            match src.transformed(templ, pat) {
+                Ok(e) => { assert_eq!(format!("{:?}", e), format!("{:?}", r)); }
+                Err(e) => { panic!("{:?}", e); }
+            }
+        }
+        // println!("================");
+        {
+            // let mut tv = parse!("");
+            // let t = Expr{ ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!("[3] [3] [3] [3] [3] [3] a * $ * $ * $ * $ * $ = [3] _5 * [3] _4 * [3] _3 * [3] _2 * [3] _1 * a");
+            //                   ($res (axiom (= (T $x (a $x $y $z)) $x)))
+            //                    result   input-data
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[3] $ = _1");
+            //                   ((flip (= $l $r)) (axiom (= $r $l))
+            //                    template          pattern
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            println!("{:?}", to);
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] * [3] / 1 $ [3] * _1 $ $ _1 [3] \\ _1 1 [3] * _2 [3] * [3] * _3 _1 [3] \\ _1 1");
+            //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] * [3] / 1 $ [3] * _1 $ $ _1 [3] \\ _1 1 [3] * _2 [3] * [3] * _3 _1 [3] \\ _1 1");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", x));
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ $ _1 [3] \\ _1 [3] * _2 [3] * _3 _1");
+            //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _2 (* (* _3 _1) (\ _1 1)))))
+            //                   (axiom (= (* (* (* (* (/ 1 $) (* _1 $)) $) _1) (\ _1 1)) (* _1 (* (* _1 _1) (\ _1 1)))))  <- gotten
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] / 1 $ $ _1 [3] K $ $ [3] \\ _1 [3] * _2 [3] * _1 [3] K _3 _4");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            println!("{:?}", to);
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 _3 [3] * _4 _3");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ [3] / 1 $ $ _3 [3] \\ _3 [3] * [3] K _1 [3] T _2 [3] / 1 _3 [3] * _4 _3");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            // occurs
+            assert!(matches!(x.unify(y, &mut ExprZipper::new(to)), Err(UnificationFailure::Occurs(_, _))));
+        }
+        {
+            // [2] axiom [3] = [3] * [3] * $ [3] \ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 _2 _2 _2 _2
+            // [2] axiom [3] = [3] * [3] * $ [3] \ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4 [3] \ _2 1 _2 _2 _2
+
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * $ [3] \\ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4   _2            _2 _2 _2");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * $ [3] \\ $ 1 [3] K $ $ [4] L [3] / [3] * _1 [3] K _3 [3] T _4   [3] \\ _2 1   _2 _2 _2");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(matches!(x.unify(y, &mut ExprZipper::new(to)), Err(UnificationFailure::Occurs((1, 1), _))));
+        }
+        {
+            let mut tv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ _1 _1 [4] L $ [4] L _1 _1 _1 [3] * _1 _1 [3] * [3] * _1 _1 [3] * [4] L [3] T _1 [3] * _1 _1 _1 _1 _2");
+            let t = Expr { ptr: tv.as_mut_ptr() };
+
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 [4] L $ [4] L _1 _1 _2 [3] * _2 _1 [3] * [3] * _2 _1 [3] * [4] L [3] T _1 [3] * _1 _2 _1 _2 _3");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 [4] L $ [4] L _1 _1 _2 [3] * _2 _1 [3] * [3] * _2 _1 [3] * [4] L [3] T _1 [3] * _2 _1 _1 _2 _3");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            assert_eq!(format!("{:?}", to), format!("{:?}", t));
+        }
+        {
+            //
+            //
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ _1 _2 [3] * _2 [3] * _1 [3] * _2 _1");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ _1 $ [3] * [3] * _1 _1 _2 [3] * [3] * _1 [3] * _1 _2 [3] * _1 [3] * _1 _2");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ $ [3] K _2 _1 [3] T [3] * [3] * _2 _1 _3 [3] K _2 _1");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * $ $ $ [3] K _1 [4] L _2 [3] * _2 _1 _3 [3] T [3] * [3] * _2 _1 _3 [3] K _1 _2");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            // LHS (axiom (= (* (* (* (K $ $) $) $) (a _2 _1 (K _4 _3       ))) (* (* (K _1 (L _2 _4 _3)) _4) (T _3 _4))))
+            // RHS (axiom (= (* (* (* (K $ $) $) $) (a _1 _4 (K _3 (T _2 _4)))) (* (* (K _1 (L _2 _4 _3)) _4) (T _3 _4))))
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ $ $ [4] a _2 _1 [3] K _4 _3 [3] * [3] * [3] K _1 [4] L _2 _4 _3 _4 [3] T _3 _4");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * [3] * [3] K $ $ $ $ [4] a _1 _4 [3] K _3 [3] T _2 _4 [3] * [3] * [3] K _1 [4] L _2 _4 _3 _4 [3] T _3 _4");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * $ [3] * $ _2 _2 [3] * _1 [3] * [3] * _2 _2 _2");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * $ [3] * $ [3] \\ $ 1 [3] \\ [3] \\ _3 1 1 [3] * [3] / 1 _3 [3] * [3] * _3 _1 _2");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            let mut xv = parse!("[2] axiom [3] = [3] * [3] * $ [3] T $ $ _3 [3] * [3] * _1 _2 [3] T _3 _2");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!("[2] axiom [3] = [3] * [3] * $ [3] T $ $ [3] T [3] T _2 _3 $ [3] * [3] * _1 _2 [3] T _2 [3] T _4 _3");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            let mut xv = parse!(r"[2] axiom [3] = [3] * [3] K $ [3] * [3] \ $ [3] \ _2 $ [3] / $ 1 [3] T [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] * _3 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] axiom [3] = [3] * [3] K $ [3] * [3] \ $ [3] \ _2 $ [3] / $ 1 [3] T [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] * _3 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3 [3] T _1 [3] \ _2 [3] \ _2 [3] \ [3] \ _4 [3] \ _2 [3] \ _2 _3 [3] \ _2 [3] \ _2 _3");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // x.serialize2()
+            // println!("{}", )
+
+            let tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.leak().as_mut_ptr() };
+
+            println!("{:?}", x.unify(y, &mut ExprZipper::new(to)));
+        }
+        {
+            let mut xv = parse!(r"[4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2 [4] exec PC0 $ $ [3] , [2] petri _3 [4] exec PC0 _4 _5");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[4] exec PC0 [4] , [2] petri [4] ? [2] add $ [2] [2] S $ $ [4] ? [2] add $ [2] _2 _3 [3] ! _1 [2] S _4 [2] petri [3] ! [2] add result [2] [2] S Z [2] S Z [4] exec PC0 [4] , [2] petri [4] ? $ $ $ [2] petri [3] ! _5 _6 [4] exec PC0 $ $ [3] , [2] petri _7 [4] exec PC0 _8 _9 [3] , $ $");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+
+            // (exec PC0 (, (petri (? (add result) ((S Z) (S Z)) (? (add $) (Z (S Z)) (! result (S _1)))))
+            //              (petri (! (add result) ((S Z) (S Z))))
+            //              (exec PC0 (, (petri (? $ $ $)) (petri (! _2 _3)) (exec PC0 $ $)) (, (petri _4) (exec PC0 _5 _6))))
+            //           (, (petri (? (add _1) (Z (S Z)) (! result (S _1))))
+            //              (exec PC0 (, (petri (? _2 _3 _4)) (petri (! _2 _3)) (exec PC0 _5 _6)) (, (petri _4) (exec PC0 _5 _6)))))
+
+            let tov = vec![0u8; 512];
+            let to = Expr{ ptr: tov.leak().as_mut_ptr() };
+
+            assert!(x.unify(y, &mut ExprZipper::new(to)).is_ok());
+            let mut oz = ExprZipper::new(to);
+            oz.next_child(); oz.next_child(); oz.next_child(); oz.next_child();
+            oz.next_descendant(-1, 0); oz.next_descendant(-1, 0);
+            let t0 = oz.subexpr();
+            t0.unbind(&mut ExprZipper::new(t0));
+            // not tested
+            oz.next_descendant(-2, 0);
+            let t1 = oz.subexpr();
+            t1.unbind(&mut ExprZipper::new(t1));
+            // reflective call equal to input
+            assert_eq!(format!("{:?}", t1), format!("{:?}", x));
+        }
+    }
+
+    #[test]
+    fn test_anti_unify() {
+        {
+            let mut xv = parse!(r"[2] a a");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] a a");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] a a");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+        {
+            let mut xv = parse!(r"[2] a a");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] a b");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] a $");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+        {
+            let mut xv = parse!(r"[2] a a");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] b b");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] $ _1");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+        {
+            let mut xv = parse!(r"[2] a a");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] $ _1");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] $ _1");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+        {
+            let mut xv = parse!(r"[2] $ _1");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] $ _1");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] $ _1");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+        {
+            let mut xv = parse!(r"[2] $ $");
+            let x = Expr { ptr: xv.as_mut_ptr() };
+            let mut yv = parse!(r"[2] $ _1");
+            let y = Expr { ptr: yv.as_mut_ptr() };
+            let mut rv = parse!(r"[2] $ $");
+            let r = Expr { ptr: rv.as_mut_ptr() };
+
+            let mut tov = vec![0u8; 512];
+            let to = Expr { ptr: tov.as_mut_ptr() };
+
+            x.anti_unify(y, &mut ExprZipper::new(to));
+            println!("{:?}", to);
+            assert_eq!(format!("{:?}", to), format!("{:?}", r));
+        }
+    }
+
+    #[test]
+    fn rel_eq() {
+        {
+            //       lhs---- rhs----
+            // (F $_ ($x $x) ($x $x))
+            let mut ev = parse!(r"[4] F $ [2] $ _2 [2] _2 _2");
+            let e = Expr { ptr: ev.as_mut_ptr() };
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, base: e});
+            println!("lhs {}", lhs.0.show());
+            println!("rhs {}", rhs.0.show());
+            assert_eq!(lhs, rhs);
+            assert_eq!({ let mut hx = GxHasher::with_seed(0); lhs.hash(&mut hx); hx.finish() },
+                       { let mut hx = GxHasher::with_seed(0); rhs.hash(&mut hx); hx.finish() });
+        }
+        {
+            //       lhs---- rhs----
+            // (F $_ ($x $x) ($y $x))
+            let mut ev = parse!(r"[4] F $ [2] $ _2 [2] $ _2");
+            let e = Expr { ptr: ev.as_mut_ptr() };
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, base: e});
+            println!("lhs {}", lhs.0.show());
+            println!("rhs {}", rhs.0.show());
+            assert_ne!(lhs, rhs);
+            assert_ne!({ let mut hx = GxHasher::with_seed(0); lhs.hash(&mut hx); hx.finish() },
+                       { let mut hx = GxHasher::with_seed(0); rhs.hash(&mut hx); hx.finish() });
+        }
     }
 }

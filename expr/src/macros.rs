@@ -216,14 +216,14 @@ macro_rules! impl_deserializable {
             fn deserialize_unchecked(e: Expr) -> Self { unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const Self).swap_bytes() } }
         }
     };
-    ($t:ty) => {
+    ($t:ty as be $sb:ty) => {
         impl DeserializableExpr for $t {
             #[inline(always)]
             fn advanced(e: Expr) -> usize { 1 + core::mem::size_of::<Self>() }
             #[inline(always)]
             fn check(e: Expr) -> bool { unsafe { *e.ptr == item_byte(Tag::SymbolSize(core::mem::size_of::<Self>() as _)) } }
             #[inline(always)]
-            fn deserialize_unchecked(e: Expr) -> Self { unsafe { std::ptr::read_unaligned(e.ptr.add(1) as *const Self) } }
+            fn deserialize_unchecked(e: Expr) -> Self { unsafe { std::mem::transmute::<_, $t>(std::ptr::read_unaligned(e.ptr.add(1) as *const $sb).swap_bytes()) } }
         }
     };
 }
@@ -239,8 +239,8 @@ impl_deserializable!(be i32);
 impl_deserializable!(be i64);
 impl_deserializable!(be i128);
 impl_deserializable!(be usize);
-impl_deserializable!(f32);
-impl_deserializable!(f64);
+impl_deserializable!(f32 as be u32);
+impl_deserializable!(f64 as be u64);
 
 /// A trait for types that can be serialized into a mork-bytestring expression.
 /// This is used by the `construct!` macro to handle different kinds of inputs.

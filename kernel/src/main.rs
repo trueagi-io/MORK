@@ -4759,8 +4759,8 @@ fn main() {
 
             sink_pure_basic();
             sink_pure_basic_nested();
-            // sink_pure_roman_validation(); // hinges on fp fix
-            // sink_pure_dynamic_subformula(); // hinges on fp fix
+            sink_pure_roman_validation();
+            sink_pure_dynamic_subformula();
             sink_pure_quote_collapse_symbol();
             sink_pure_explode_collapse_ident();
             sink_bass64url_ident();

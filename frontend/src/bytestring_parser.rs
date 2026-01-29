@@ -82,7 +82,7 @@ pub trait Parser {
     use ParserError::*;
     while it.has_next() {
       match it.peek()? {
-        b';' => { while it.next()? != b'\n' {} }
+        b';' => { while it.has_next() && it.next()? != b'\n' {} }
         c if isWhitespace(c) => { it.next()?; }
         b'$' => {
           let id = {

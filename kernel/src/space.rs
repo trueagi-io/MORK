@@ -38,6 +38,7 @@ pub struct Space {
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<&'static str, subprocess::Popen>,
+    last_merkleize: Instant
 }
 
 pub(crate) const SIZES: [u64; 4] = {
@@ -435,7 +436,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new() }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now() }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1566,6 +1567,11 @@ impl Space {
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) {
+        #[cfg(feature = "periodic_merkleize")]
+        if self.last_merkleize.elapsed().as_secs() > 10 {
+            self.btm.merkleize();
+            self.last_merkleize = Instant::now()
+        }
         debug!(target: "interpret", "interpreting {:?}", serialize(unsafe { rt.span().as_ref().unwrap() }));
         #[cfg(debug_assertions)]
         { let mut rz = self.btm.read_zipper(); while rz.to_next_val() { trace!(target: "interpret", "on space {:?}", serialize(unsafe { rz.path() })); }; drop(rz); }

@@ -122,10 +122,10 @@ impl Sink for AddSink {
 }
 
 // (U <expr>)
-pub struct USink { e: Expr, buf: Option<*mut u8>, tmp: Option<*mut u8>, last: usize }
+pub struct USink { e: Expr, buf: Option<*mut u8>, tmp: Option<*mut u8>, last: usize, conflict: bool }
 impl Sink for USink {
     fn new(e: Expr) -> Self {
-        USink { e, buf: None, tmp: None, last: usize::MAX }
+        USink { e, buf: None, tmp: None, last: usize::MAX, conflict: false }
     }
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
@@ -136,11 +136,15 @@ impl Sink for USink {
         // we could be way more parsimonious not unifying the prefix over and over again
         // let mpath = &path[3+wz.root_prefix_path().len()..];
         trace!(target: "sink", "U new expr '{}'", serialize(&path[3..]));
+        if self.conflict { return }
         if let Some(e) = self.buf {
             let mut tmp = self.tmp.unwrap();
             let eau = Expr{ ptr: e };
             let mut wz = ExprZipper::new(Expr{ ptr: tmp });
-            eau.unify(Expr{ ptr: path[3..].as_ptr().cast_mut() }, &mut wz).unwrap();
+            let Ok(_) = eau.unify(Expr{ ptr: path[3..].as_ptr().cast_mut() }, &mut wz) else {
+                self.conflict = true;
+                return;
+            };
             std::mem::swap(&mut self.buf, &mut self.tmp);
             self.last = wz.loc;
         } else {
@@ -151,6 +155,10 @@ impl Sink for USink {
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "U finalizing");
+        if self.conflict {
+            trace!(target: "sink", "U conflict");
+            return false;
+        }
         match self.buf.take() {
             None => {
                 trace!(target: "sink", "U empty");

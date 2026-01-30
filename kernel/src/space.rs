@@ -999,7 +999,11 @@ impl Space {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
-        if n_factors <= 1 { return 0 }
+        debug_assert!(n_factors > 0);
+        if n_factors == 1 {
+            effect(Err(BTreeMap::new()), pat_expr);
+            return 1;
+        }
         let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
@@ -1017,7 +1021,11 @@ impl Space {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi_i", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
-        if n_factors <= 1 { return 0 }
+        debug_assert!(n_factors > 0);
+        if n_factors == 1 {
+            effect(Err(BTreeMap::new()), pat_expr);
+            return 1;
+        }
         let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
@@ -1333,8 +1341,8 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(false, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
-            trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+        let touched = Self::query_multi_i(false, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, _loc| {
+            // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
@@ -1348,7 +1356,8 @@ impl Space {
                         let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                         let mut void = std::io::sink();
                         let mut snk = mork_expr::item_sink(&mut void);
-                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);                        trace.clear();
+                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
+                        trace.clear();
                         assignments.clear();
                         r
                     };

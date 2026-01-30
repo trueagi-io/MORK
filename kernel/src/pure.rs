@@ -815,6 +815,8 @@ pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> 
 
 // (ifnz <symbol> then <nonzero expr>)
 // (ifnz <symbol> then <nonzero expr> else <zero expr>)
+// The condition <symbol> may be of any length (<symbol> is always len >= 1), 
+//   but all bytes in the <symbol> must be b'\0' in order for the condition to be considered `false`
 pub extern "C" fn ifnz(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };

@@ -998,10 +998,10 @@ impl Space {
     pub fn query_multi<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
-        let mut pat_args = vec![];
+        let n_factors = pat_expr.arity().unwrap() as usize;
+        if n_factors <= 1 { return 0 }
+        let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
-
-        if pat_args.len() <= 1 { return 0 }
 
         let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
             btm.read_zipper()
@@ -1016,14 +1016,15 @@ impl Space {
 
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi_i", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
-        let mut pat_args = vec![]; // todo use arity tag to prepare vec (or even stackalloc?)
+        let n_factors = pat_expr.arity().unwrap() as usize;
+        if n_factors <= 1 { return 0 }
+        let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
-        if pat_args.len() <= 1 { return 0 }
         let mmaps_ptr = mmaps as *mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>;
 
-        let mut srcs: Vec<_> = vec![];
-        let mut factors: Vec<_> = vec![];
+        let mut srcs: Vec<_> = Vec::with_capacity(n_factors);
+        let mut factors: Vec<_> = Vec::with_capacity(n_factors);
         for e in pat_args[1..].iter() {
             let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::new(e.subsexpr()) };
             factors.push(src.source(src.request().map(|request| {
@@ -1043,7 +1044,7 @@ impl Space {
         }
 
         match factors.remove(0)  {
-            crate::sources::AFactor::CompatSource(primary) => {
+            AFactor::CompatSource(primary) => {
                 let mut prz = ProductZipper::new(primary, &mut factors[..]);
                 prz.reserve_buffers(1 << 32, 32);
                 Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
@@ -1566,7 +1567,7 @@ impl Space {
     
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
-    pub fn interpret(&mut self, rt: Expr) {
+    pub fn interpret(&mut self, rt: Expr) -> Result<(), &'static str> {
         #[cfg(feature = "periodic_merkleize")]
         if self.last_merkleize.elapsed().as_secs() > 10 {
             self.btm.merkleize();
@@ -1576,11 +1577,11 @@ impl Space {
         #[cfg(debug_assertions)]
         { let mut rz = self.btm.read_zipper(); while rz.to_next_val() { trace!(target: "interpret", "on space {:?}", serialize(unsafe { rz.path() })); }; drop(rz); }
         destruct!(rt, ("exec" loc pat_expr tpl_expr), unsafe {
-            if let Tag::Arity(i) = byte_item(*pat_expr.ptr) { if i == 0 { panic!("pattern expression can not be empty"); } } else { panic!("pattern must be an expression, not {:?}", pat_expr) }
-            if *pat_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { panic!("pattern functor can only be , or I") }
+            if let Tag::Arity(i) = byte_item(*pat_expr.ptr) { if i == 0 { return Err("pattern expression can not be empty"); } } else { return Err("pattern must be an expression, not a symbol or variables") }
+            if *pat_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { return Err("pattern functor can only be , or I") }
 
-            if let Tag::Arity(i) = byte_item(*tpl_expr.ptr) { if i == 0 { panic!("template expression can not be empty"); } } else { panic!("template must be an expression") }
-            if *tpl_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { panic!("template functor can only be , or O") }
+            if let Tag::Arity(i) = byte_item(*tpl_expr.ptr) { if i == 0 { return Err("template expression can not be empty"); } } else { return Err("template must be an expression, not a symbol or variables") }
+            if *tpl_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { return Err("template functor can only be , or O") }
 
             #[cfg(feature="specialize_io")]
             let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
@@ -1588,7 +1589,7 @@ impl Space {
                 (b'I', b',') => { self.transform_multi_multi_i(pat_expr, tpl_expr, rt) }
                 (b',', b'O') => { self.transform_multi_multi_o(pat_expr, tpl_expr, rt) }
                 (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
-                (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+                (_, _) => { return Err("pattern functor can only be , or I and template functor can only be , or O") }
             };
             #[cfg(not(feature="specialize_io"))]
             let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
@@ -1596,27 +1597,28 @@ impl Space {
                 (b'I', b',') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, true) }
                 (b',', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, true, false) }
                 (b'I', b'O') => { self.transform_multi_multi_io(pat_expr, tpl_expr, rt, false, false) }
-                (_, _) => { panic!("pattern functor can only be , or I and template functor can only be , or O") }
+                (_, _) => { return Err("pattern functor can only be , or I and template functor can only be , or O") }
             };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
-        }, _err => panic!("exec shape (exec <loc> <patterns> <templates>)"));
+            Ok(())
+        }, _err => return Err("exec shape (exec <loc> <patterns> <templates>)"))
     }
 
     pub fn metta_calculus(&mut self, steps: usize) -> usize {
         let mut done = 0;
-        let prefix_e = expr!(self, "[4] exec $ $ $");
-        let prefix = unsafe { prefix_e.prefix().unwrap().as_ref().unwrap() };
+        const PREFIX: [u8; 6] = const { [item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(4)), b'e', b'x', b'e', b'c' ] };
 
         while {
-            let mut rz = self.btm.read_zipper_at_borrowed_path(prefix);
+            let mut rz = self.btm.read_zipper_at_borrowed_path(&PREFIX[..]);
             if rz.to_next_val() {
                 // cannot be here `rz` conflicts potentially with zippers(rz.path())
-                let mut x: Box<[u8]> = rz.origin_path().into(); // should use local buffer
-                drop(rz);
+                let mut x: Vec<u8> = rz.into_path(); // should use local buffer
                 self.btm.remove(&x[..]);
                 // println!("expr {:?}", Expr{ ptr: x.as_mut_ptr() });
-                self.interpret(Expr{ ptr: x.as_mut_ptr() });
+                if let Err(e) = self.interpret(Expr{ ptr: x.as_mut_ptr() }) {
+                    debug!(target: "interpret", "not interpreting: {}", e);
+                }
                 done < steps
             } else {
                 false

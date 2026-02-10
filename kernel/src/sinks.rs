@@ -1,4 +1,5 @@
 use std::io::{BufRead, Read, Write};
+use std::marker::PhantomData;
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -13,6 +14,7 @@ use std::sync::LazyLock;
 use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
+use futures::sink::Buffer;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
@@ -961,6 +963,172 @@ impl Sink for PureSink {
     }
 }
 
+
+
+trait ReduceSink<T> {
+    const OP_NAME : &'static [u8];
+    fn from_expr(e : Expr)->Option<T>;
+    fn to_expr(t:T, out : &mut [u8]);
+
+    // op must be a commutative semigroup with T
+    fn op(left : T, right : T)->T;
+    #[cfg(debug_assertions)]
+    fn dbg_op(left : &T, right : &T)->T;
+}
+
+
+// this makes the min for a floating point string
+struct MinFloat;
+impl ReduceSink<f64> for MinFloat {
+    const OP_NAME : &'static [u8] = &*b"MinFloat";
+    fn op(left:f64, right:f64)->f64 {
+        left.min(right)
+    }
+    #[cfg(debug_assertions)]
+    fn dbg_op(left : &f64, right : &f64)->f64 {
+        left.min(*right)
+    }
+    fn from_expr(e : Expr)->Option<f64> {
+        str::from_utf8(unsafe { &*e.symbol()? } ).ok()?.parse().ok()
+    }
+    fn to_expr(t:f64, mut out : &mut [u8]) {
+        core::assert!(out.len() <= 63);
+        core::assert!(!out.is_empty());
+        write!(out, "{}", t).unwrap();
+    }
+}
+
+
+// Reduce 
+struct Reduce<T, Ops : ReduceSink<T> >{
+    e     : Expr,
+    t     : core::marker::PhantomData<T>,
+    ops   : core::marker::PhantomData<Ops>,
+    acc   : Option<T>,
+    /// if the convertion fails at any point, nothing is written out.
+    fail  : bool,
+}
+// We require `T : PartialEq` to debug assert that the operation is commutative. We require `T : Any, Ops : Any` for clear error messages.
+// The syntax will be `(<OP_NAME> <OUT_TEMPLATE> <BINDING> <IN_PAT>)`
+impl<T , Ops> Sink for Reduce<T, Ops> where T : PartialEq + Any, Ops : ReduceSink<T> + Any {
+    fn new(e: Expr) -> Self {
+        const {
+            let mut i = Ops::OP_NAME.len();
+            core::assert!(i < 63);
+
+            loop {
+                i -= 1;
+                let c = Ops::OP_NAME[i];
+                core::assert!(!(c.is_ascii_whitespace() || c == b'(' || c == b')' ||  c == b'\"' || c == b'\'' || c == b';' ));
+                if i == 0 {break}
+            }
+        }
+
+        Reduce { e, t : core::marker::PhantomData, ops : core::marker::PhantomData , acc : None , fail : false }
+    }
+
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+
+        let mut ez = ExprZipper::new(self.e);
+        #[cfg(debug_assertions)] { let Tag::Arity(s) = ez.tag() else { unreachable!() }; core::assert_eq!(4, s)  }
+        core::assert!(ez.next());
+
+        #[cfg(debug_assertions)] { let Tag::SymbolSize(s) = ez.tag() else { unreachable!() }; core::assert_eq!(Ops::OP_NAME.len(), s as usize)  }
+        core::assert!(ez.next());
+
+        let e = ez.subexpr();
+
+
+        let p = unsafe { e.prefix().unwrap_or_else(|x| { e.span().as_ref().unwrap() }).as_ref().unwrap() };
+        trace!(target: "sink", "{} requesting {}", core::any::type_name::<Self>(), serialize( unsafe { self.e.span().as_ref().unwrap() }));
+
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        if self.fail{ return; }
+
+        let Some(right) = Ops::from_expr(Expr { ptr: path as *const [u8] as *const u8 as *mut u8 }) else { self.fail = true; return; };
+        self.acc = Some(match self.acc.take() {
+            Some(left) => { 
+                #[cfg(debug_assertions)]{
+                    let lr = Ops::dbg_op(&left,&right);
+                    let rl = Ops::dbg_op(&right,&left);
+                    core::debug_assert!( lr == rl , "Sink implementation is unlawful : {}", core::any::type_name::<Self>());
+
+                }
+                let out = Ops::op(left, right);
+                out
+            }
+            None => right,
+        });
+    }
+
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else {unreachable!()};
+        wz.reset();
+
+        // unify (<OP_NAME> <OUT_TEMPLATE> <BINDING> <IN_PAT>)
+        //       (<OP_NAME> $t             <ACC>     $p      )
+        // write $t
+        
+        // This buffer holds two expressions!
+        const BUF_SIZE : usize = 4096;
+        let mut buffer = [0_u8; BUF_SIZE];
+        let buf_ptr = &raw mut buffer as *mut u8;
+        let e = Expr{ ptr: buf_ptr };
+        let mut ez = ExprZipper::new(e);
+        core::assert!(ez.write_arity(4));
+        core::assert!(ez.write_symbol(Ops::OP_NAME));
+        core::assert!(ez.write_new_var());
+        let acc_pos =  ez.subexpr().ptr;
+        
+        Ops::to_expr(
+            self.acc.take().unwrap(),
+            unsafe { core::slice::from_raw_parts_mut(acc_pos, BUF_SIZE - acc_pos.byte_offset_from_unsigned(buf_ptr)) }
+        );
+
+        core::assert!(ez.next_child()); // move past the expr we just wrote
+        core::assert!(ez.write_new_var()); // finish the end of the expression
+        core::assert!(ez.reset()); // we need to get back to a previous sibling
+
+        core::assert!(ez.next()); // arity
+        core::assert!(ez.next()); // op name
+        core::assert!(ez.next()); // template new_var
+
+        // increment all var_refs in accumulator and ther is a guaranteed leading new_var
+        while ez.next() {
+            if let Tag::VarRef(n) = ez.tag() {
+                if n == 63 {return false;};
+                core::assert!( ez.write_var_ref(n+1) ) 
+            }
+        }
+
+        let end  = ez.subexpr();
+        let mut end_ez = ExprZipper::new(end);
+        let out = unsafe { core::slice::from_raw_parts_mut(end.ptr, BUF_SIZE - end.ptr.byte_offset_from_unsigned(buf_ptr)) };
+
+
+        let Ok(_) = self.e.unify(e, &mut end_ez) else {return false;};
+        
+        core::assert!(end_ez.reset());
+        core::assert!(end_ez.next()); // arity
+        core::assert!(end_ez.next()); // op name
+
+        let template = end_ez.subexpr();
+
+        core::debug_assert_eq!(wz.path().len(), 0);
+        let dif = wz.origin_path().len();
+
+        core::debug_assert_eq!(wz.origin_path(), unsafe { &template.span().as_ref().unwrap()[..dif] });               
+
+        wz.descend_to( unsafe { &template.span().as_ref().unwrap()[dif..] } );
+        wz.set_val(());
+
+        true
+    }
+}
+
 // (z3 <instance> <declaration or assertion>)
 #[cfg(feature = "z3")]
 pub struct Z3Sink { e: Expr, buffer: Vec<u8> }
@@ -1000,7 +1168,9 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     Z3Sink(Z3Sink),
     AUSink(AUSink),
     USink(USink),
-    CompatSink(CompatSink)
+    CompatSink(CompatSink),
+
+    MinFloat(Reduce<f64, MinFloat>),
 }
 
 impl ASink {
@@ -1022,6 +1192,16 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
             ASink::HeadSink(HeadSink::new(e))
+
+
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4))
+                        && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(MinFloat::OP_NAME.len() as u8)) 
+                        && core::slice::from_raw_parts(e.ptr.offset(1), MinFloat::OP_NAME.len()) == MinFloat::OP_NAME
+                  }
+        {
+            Self::MinFloat(Reduce::new(e))
+
+
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
             *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'o' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(5) == b'n' && *e.ptr.offset(6) == b't' } {
             ASink::CountSink(CountSink::new(e))
@@ -1127,3 +1307,6 @@ impl Sink for ASink {
         }
     }
 }
+
+
+

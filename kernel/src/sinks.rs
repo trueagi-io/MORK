@@ -1260,6 +1260,7 @@ impl Sink for ASink {
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::MinFloat(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1282,6 +1283,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
+            ASink::MinFloat(s) => { s.sink(it, path) }
         }
     }
 
@@ -1304,6 +1306,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
+            ASink::MinFloat(s) => { s.finalize(it) }
         }
     }
 }

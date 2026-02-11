@@ -1542,7 +1542,7 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
     max_write   : usize
 ) -> usize
     where
-    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath
+    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperInfallibleSubtries<()> + ZipperAbsolutePath
 {
     // let max_write   : usize = 10;
     let mut buffer = [0u8; 4096];
@@ -1702,7 +1702,7 @@ pub(crate) fn query_multi_impl<'s, E, RZ, F>
 ) -> usize
 where
     E: ExprTrait,
-    RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    RZ: ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperInfallibleSubtries<()> + ZipperAbsolutePath,
     F: FnMut(Result<&[ExprEnv], (BTreeMap<(u8, u8), ExprEnv>, u8, u8, &[(u8, u8)])>, Expr) -> bool,
 {
         let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
@@ -1862,7 +1862,7 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
 ) -> (usize, bool)
     where
     E: ExprTrait,
-    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperAbsolutePath,
+    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperInfallibleSubtries<()> + ZipperAbsolutePath,
     WZ : ZipperMoving + ZipperWriting<()>
 {
         let mut buffer = Vec::with_capacity(1 << 32);

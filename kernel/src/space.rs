@@ -160,6 +160,11 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                 Tag::VarRef(i) => {
                     // let addition = if e.n == 0 && references[i as usize] != u32::MAX {
                     let addition = if e.n == 0 {
+                        if i as usize >= references.len() {
+                            trace!(target: "coref trans", "i {i} #references {}", references.len());
+                            stack.push(e);
+                            return;
+                        }
                         trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());

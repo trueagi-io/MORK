@@ -692,7 +692,8 @@ fn func_type_unification() {
 (a (: $a A))
 (b (: f (-> A)))
 (exec 0 (, (a (: ($f) A))
-           (b (: $f (-> A))) ) (, (c OK)))
+           (b (: $f (-> A))))
+        (, (c OK)))
     "#;
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
@@ -707,6 +708,30 @@ fn func_type_unification() {
 
     println!("result: {res}");
     assert!(res.contains("(c OK)\n"));
+}
+
+fn issue_43() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(data (0 1))
+(l $a $a)
+(((. $a) $a) lp 0 1)
+(exec 2 (, (((. (lp $a)) $a) lp 0 1)) (, T))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert!(!res.contains("\nT\n"));
 }
 
 fn top_level_match() {
@@ -2969,10 +2994,11 @@ fn bench_sink_odd_even_sort(elements: usize) {
 
 
 fn logic_query() {
+    // return;
     let mut s = Space::new();
 
     const SPACE_EXPRS: &str = r#"
-(exec 0 (, (axiom $x) (axiom $x)) (, (combined $x)))
+; (exec 0 (, (axiom $x) (axiom $x)) (, (combined $x)))
 (exec 0 (, (axiom (= $lhs $rhs)) (axiom (= $rhs $lhs))) (, (reversed $lhs $rhs)))
     "#;
 
@@ -2982,16 +3008,19 @@ fn logic_query() {
 (= (R $x (L $x $y $z) $w) $x)
 (= (R $x (R $x $y $z) $w) $x)
 (= (R $x (L $x $y $z) $x) (L $x (L $x $y $z) $x))
+
 (= (L $x $y (\ $y $z)) (L $x $y $z))
 (= (L $x $y (* $z $y)) (L $x $y $z))
 (= (L $x $y (\ $z 1)) (L $x $z $y))
 (= (L $x $y (\ $z $y)) (L $x $z $y))
 (= (L $x 1 (\ $y 1)) (L $x $y 1))
+
 (= (T $x (L $x $y $z)) $x)
 (= (T $x (R $x $y $z)) $x)
 (= (T $x (a $x $y $z)) $x)
 (= (T $x (\ (a $x $y $z) $w)) (T $x $w))
 (= (T $x (* $y $y)) (T $x (\ (a $x $z $w) (* $y $y))))
+
 (= (R (/ 1 $x) $x (\ $x 1)) (\ $x 1))
 (= (\ $x 1) (/ 1 (L $x $x (\ $x 1))))
 (= (L $x $x $x) (* (K $x (\ $x 1)) $x))
@@ -3427,6 +3456,618 @@ fn bench_cm0(to_copy: usize) {
 
     println!("result: {res}");
 }*/
+
+const ROCKET_KRIPKE_MODEL: &str = r#"
+(t 1 1) (t 1 2) (t 1 5) (t 1 6)
+(t 2 2) (t 2 3) (t 2 6)
+(t 3 3) (t 3 4)
+(t 4 4) (t 4 1)
+(t 5 5) (t 5 6) (t 5 1) (t 5 2)
+(t 6 6) (t 6 2) (t 6 7)
+(t 7 7) (t 7 8) (t 7 11) (t 7 12)
+(t 8 8) (t 8 5) (t 8 12)
+(t 9 9) (t 9 10)
+(t 10 10) (t 10 11)
+(t 11 11) (t 11 7) (t 11 8) (t 11 12)
+(t 12 12) (t 12 8) (t 12 9)
+
+(eval 1 roL) (eval 1 nofuel) (eval 1 caL)
+(eval 2 roL) (eval 2 fuelOK) (eval 2 caL)
+(eval 3 roP) (eval 3 nofuel) (eval 3 caL)
+(eval 4 roP) (eval 4 fuelOK) (eval 4 caL)
+(eval 5 roL) (eval 5 nofuel) (eval 5 caR)
+(eval 6 roL) (eval 6 fuelOK) (eval 6 caR)
+(eval 7 roP) (eval 7 nofuel) (eval 7 caR)
+(eval 8 roP) (eval 8 fuelOK) (eval 8 caR)
+(eval 9 roL) (eval 9 nofuel) (eval 9 caP)
+(eval 10 roL) (eval 10 fuelOK) (eval 10 caP)
+(eval 11 roP) (eval 11 nofuel) (eval 11 caP)
+(eval 12 roP) (eval 12 fuelOK) (eval 12 caP)
+"#;
+
+fn ctl() {
+    let mut s = Space::new();
+
+    const FULL: &str = r#"
+;==========================================================
+;                   CTL MODEL CHECKING
+;==========================================================
+; By Anneline Daggelinckx
+
+
+; Overview of the code
+; 1. Arithmetic Operations                                  (data)
+; 2. Preprocessing: build a dependency graph of todos       (exec (0 ...))
+; 3. Unfold derived CTL operators into basic-operator todos (exec (1 ...))
+; 4. Generate execution statements from todos using CTL operator algorithms    (exec (2 ...))
+; 5. CTL operator model-checking algorithms                 (data)
+
+
+;----------------------------------------------------------
+; 1. ARITHMETIC OPERATIONS
+;----------------------------------------------------------
+
+(succ 0 1) (succ 1 2) (succ 2 3) (succ 3 4) (succ 4 5) (succ 5 6) (succ 6 7) (succ 7 8) (succ 8 9) (succ 9 10) (succ 10 11)
+(succ 11 12) (succ 12 13) (succ 13 14) (succ 14 15) (succ 15 16) (succ 16 17) (succ 17 18) (succ 18 19) (succ 19 20)
+
+
+(arith (1 - 0 = 1)) (arith (1 - 1 = 0))
+(arith (2 - 0 = 2)) (arith (2 - 1 = 1)) (arith (2 - 2 = 0))
+(arith (3 - 0 = 3)) (arith (3 - 1 = 2)) (arith (3 - 2 = 1)) (arith (3 - 3 = 0))
+(arith (4 - 0 = 4)) (arith (4 - 1 = 3)) (arith (4 - 2 = 2)) (arith (4 - 3 = 1)) (arith (4 - 4 = 0))
+(arith (5 - 0 = 5)) (arith (5 - 1 = 4)) (arith (5 - 2 = 3)) (arith (5 - 3 = 2)) (arith (5 - 4 = 1)) (arith (5 - 5 = 0))
+(arith (6 - 0 = 6)) (arith (6 - 1 = 5)) (arith (6 - 2 = 4)) (arith (6 - 3 = 3)) (arith (6 - 4 = 2)) (arith (6 - 5 = 1)) (arith (6 - 6 = 0))
+(arith (7 - 0 = 7)) (arith (7 - 1 = 6)) (arith (7 - 2 = 5)) (arith (7 - 3 = 4)) (arith (7 - 4 = 3)) (arith (7 - 5 = 2)) (arith (7 - 6 = 1)) (arith (7 - 7 = 0))
+(arith (8 - 0 = 8)) (arith (8 - 1 = 7)) (arith (8 - 2 = 6)) (arith (8 - 3 = 5)) (arith (8 - 4 = 4)) (arith (8 - 5 = 3)) (arith (8 - 6 = 2)) (arith (8 - 7 = 1)) (arith (8 - 8 = 0))
+(arith (9 - 0 = 9)) (arith (9 - 1 = 8)) (arith (9 - 2 = 7)) (arith (9 - 3 = 6)) (arith (9 - 4 = 5)) (arith (9 - 5 = 4)) (arith (9 - 6 = 3)) (arith (9 - 7 = 2)) (arith (9 - 8 = 1)) (arith (9 - 9 = 0))
+(arith (10 - 0 = 10)) (arith (10 - 1 = 9)) (arith (10 - 2 = 8)) (arith (10 - 3 = 7)) (arith (10 - 4 = 6)) (arith (10 - 5 = 5)) (arith (10 - 6 = 4)) (arith (10 - 7 = 3)) (arith (10 - 8 = 2)) (arith (10 - 9 = 1)) (arith (10 - 10 = 0))
+
+
+;----------------------------------------------------------
+; 2. PREPROCESSING
+; Number each layer of the CTL formula so we can work inside → outside.
+; Example: model check ((fuelOK) EU (~caR))
+;   (todo (0 0) (caR))
+;   (todo (1 0) (fuelOK))
+;   (todo (1 0) (~(caR)))
+;   (todo (2 0) ((fuelOK) EU (~(caR))))
+;----------------------------------------------------------
+; 2.0 Initialize dependency graph               (wanted ...)
+; 2.1 Expand dependency graph iteratively       (wanted ...)
+; 2.2 Count the number of layers of the dependency graph    (total ...)
+; 2.3 Turn the dependency graph upside down because we want to work inside → outside (todo ...)
+;----------------------------------------------------------
+
+
+; initialize dependency graph
+; (to_check ((fuelOK) EU (~(caR)))) -> (wanted 1 ((fuelOK) EU (~(caR))))
+(exec (0 0 0 0) (, (to_check $f)) (, (wanted 1 $f)))
+
+; (wanted 1 ((fuelOK) EU (~(caR))))
+;          |
+;          v
+; (wanted 1 ((fuelOK) EU (~(caR))))
+; (wanted 2 (fuelOK)) (wanted 2 (~(caR)))
+; (wanted 3 (caR))
+(exec (0 1 0 1)     ; iterative exec statement
+	(, (exec (0 1 0 $d) $ps $ts) (succ $d $e) (wanted $d $_))
+	(,
+		(exec (0 1 0 0) (, (wanted $d ($o $x))) (, (wanted $e $x)))
+		(exec (0 1 0 0) (, (wanted $d ($x $o $y))) (, (wanted $e $x) (wanted $e $y)))
+		(exec (0 1 0 $e) $ps $ts)
+	)
+)
+
+; count the number of layers such that we can use it to turn the graph upside down
+(exec (0 2 0 0)
+	(, (wanted $i $_))
+	(O (count (total $c) $c $i))
+)
+
+; Re-index layers so evaluation proceeds inside → outside
+; Use tuples such that we can insert todos when unfolding derived operators
+; (wanted 1 ((fuelOK) EU (~(caR))))
+; (wanted 2 (fuelOK)) (wanted 2 (~(caR)))
+; (wanted 3 (caR))
+;           |
+;           v
+; (todo (0 0) (caR))
+; (todo (1 0) (fuelOK)) (todo (1 0) (~(caR)))
+; (todo (2 0) ((fuelOK) EU (~(caR))))
+(exec (0 3 0 0)
+	(, (wanted $i $p) (total $t) (arith ($t - $i = $j)))
+	(O (+ (todo ($j 0) $p)) (- (wanted $i $p)) (- (total $t)))
+)
+
+
+;----------------------------------------------------------
+; 3. UNFOLD DERIVED CTL OPERATORS INTO BASIC OPERATORS
+; Example:
+;   (todo (5 0) (AX(p)))
+;           |
+;           v
+;   (todo (5 0) (~p))
+;   (todo (5 1) (EX(~p)))
+;   (todo (5 2) (~(EX(~p))))
+;   (todo (5 3) (AX(p)))
+;----------------------------------------------------------
+
+; p -> q ≡ (~p) v q
+(exec (1 0 0 0)
+    (,
+        (todo ($x1 $x2) ($p -> $q))
+        (succ $x2 $x21)
+		(succ $x21 $x22)
+		(succ $x22 $x23)
+    )
+    (O
+        (+ (todo ($x1 $x21) (~ $p)))
+        (+ (todo ($x1 $x22) ((~ $p) v $q)))
+        (- (todo ($x1 $x2) ($p -> $q)))
+        (+ (todo ($x1 $x23) ($p -> $q)))
+    )
+)
+
+; EF(p) ≡ E[true U p]
+(exec (1 0 0 0) (, (todo ($x1 0) (EF $p)))
+	(O
+		(+ (todo ($x1 0) ((true) EU $p)))
+		(- (todo ($x1 0) (EF $p)))
+		(+ (todo ($x1 1) (EF $p)))
+	)
+)
+
+; AX(p) ≡ ~(EX(~p))
+(exec (1 0 0 0)
+	(,
+		(todo ($x1 $x2) (AX $p))
+		(succ $x2 $x21)
+		(succ $x21 $x22)
+		(succ $x22 $x23)
+	)
+	(O
+		(- (todo ($x1 $x2) (AX $p)))
+		(+ (todo ($x1 $x2) (~ $p)))
+		(+ (todo ($x1 $x21) (EX(~ $p))))
+		(+ (todo ($x1 $x22) (~ (EX(~ $p)))))
+		(+ (todo ($x1 $x23) (AX $p)))
+	)
+)
+
+
+; AF(p) ≡ ~(EG(~p))
+(exec (1 0 0 0)
+	(,
+		(todo ($x1 $x2) (AF $p))
+		(succ $x2 $x21)
+		(succ $x21 $x22)
+		(succ $x22 $x23)
+	)
+	(O
+		(- (todo ($x1 $x2) (AF $p)))
+		(+ (todo ($x1 $x2) (~ $p)))
+		(+ (todo ($x1 $x21) (EG(~ $p))))
+		(+ (todo ($x1 $x22) (~ (EG(~ $p)))))
+		(+ (todo ($x1 $x23) (AF $p)))
+	)
+)
+
+; AG(p) ≡ ~E[trueU~p]
+(exec (1 0 0 0)
+	(,
+		(todo ($x1 $x2) (AG $p))
+		(succ $x2 $x21)
+		(succ $x21 $x22)
+		(succ $x22 $x23)
+	)
+	(O
+		(- (todo ($x1 $x2) (AG $p)))
+		(+ (todo ($x1 $x2) (~ $p)))
+		(+ (todo ($x1 $x21) ((true) EU (~ $p))))
+		(+ (todo ($x1 $x22) (~ ((true) EU (~ $p)))))
+		(+ (todo ($x1 $x23) (AG $p)))
+	)
+)
+
+
+; A[pUq] ≡ ~E[~qU((~p)&(~q))]&(~EG(~q))
+(exec (1 0 0 0)
+	(,
+		(todo ($x1 $x2) ($p AU $q))
+		(succ $x2 $x21)
+		(succ $x21 $x22)
+		(succ $x22 $x23)
+		(succ $x23 $x24)
+		(succ $x24 $x25)
+	)
+	(O
+		(- (todo ($x1 $x2) ($p AU $q)))
+		(+ (todo ($x1 $x2) (~ $p)))
+		(+ (todo ($x1 $x2) (~ $q)))
+		(+ (todo ($x1 $x21) ((~ $p)&(~ $q))))
+		(+ (todo ($x1 $x21) (EG(~ $q))))
+		(+ (todo ($x1 $x22) ((~q) EU ((~ p)&(~ q)))))
+		(+ (todo ($x1 $x22) (~ (EG(~ $q)))))
+		(+ (todo ($x1 $x23) (~ ((~$q) EU ((~ $p)&(~ $q))))))
+		(+ (todo ($x1 $x24) ((~ ((~$q) EU ((~ $p)&(~ $q)))) & (~ (EG(~ $q))))))
+		(+ (todo ($x1 $x25) ($p AU $q)))
+	)
+)
+
+;----------------------------------------------------------
+; 4. TURN TODOS INTO EXEC STATEMENTS
+; Generate execution statements from todos using the (check ...) statements from section 5
+;----------------------------------------------------------
+
+; in all states true is true
+(exec (2 0 0 0) (, (eval $s $_)) (, (true (true) $s)))
+
+; propositions
+(exec (2 0 0 0)
+	(, (todo ($x1 $x2) ($p)) ((check ($p) ($x1 $x2)) $ps $ts))
+	(O (+ (exec (3 $x1 $x2 0) $ps $ts)) (- (todo ($x1 $x2) ($p))))
+)
+
+; unary operators
+(exec (2 0 0 0)
+	(, (todo ($x1 $x2) ($o $p)) ((check ($o $p) ($x1 $x2)) $ps $ts))
+	(O (+ (exec (3 $x1 $x2 0) $ps $ts)) (- (todo ($x1 $x2) ($o $p))))
+)
+
+; binary operators
+(exec (2 0 0 0)
+	(, (todo ($x1 $x2) ($p1 $o $p2)) ((check ($p1 $o $p2) ($x1 $x2)) $ps $ts))
+	(O (+ (exec (3 $x1 $x2 0) $ps $ts)) (- (todo ($x1 $x2) ($p1 $o $p2))))
+)
+
+
+;----------------------------------------------------------
+; 5. CTL OPERATOR MODEL-CHECKING ALGORITHMS
+;----------------------------------------------------------
+; 5.1 Basic operators
+; 5.2 Derived operators
+;----------------------------------------------------------
+
+
+;-- BASIC OPERATORS --------------------------------------
+
+; PROPOSITION
+; Sat(p)={s∣p∈eval(s)}
+
+((check ($p) $x)
+	(, (eval $s $p))
+	(, (true ($p) $s))
+)
+
+; NEGATION
+; Sat(~ψ)=S∖Sat(ψ)
+
+((check (~ $p) ($x1 $x2))
+	(, (eval $s1 $_))
+	(O
+		(+ (true (~ $p) $s1))
+		(+ (exec (0 0 0 0)      ; Ensure removal of invalidated states takes priority
+			(, (true $p $s2))
+			(O (- (true (~ $p) $s2))))
+		)
+	)
+)
+
+
+; CONJUNCTION
+; Sat(ψ1&ψ2)=Sat(ψ1)∩Sat(ψ2)
+
+((check ($p1 & $p2) $x)
+	(, (true $p1 $s) (true $p2 $s))
+	(, (true ($p1 & $p2) $s))
+)
+
+
+; DISJUNCTION
+; (this is strictly speaking not a basic operator, but easy to define)
+((check ($p1 v $p2) ($x1 $x2))
+	(, (true $p1 $s1) (true $p2 $s2))
+	(, (true ($p1 v $p2) $s1) (true ($p1 v $p2) $s2))
+)
+
+
+; EX
+; Sat(EXψ)={s1∣∃s2:(s1,s2)∈R&s2∈Sat(ψ)}
+
+((check (EX $p) $x)
+	(, (t $s1 $s2) (true $p $s2))
+	(, (true (EX $p) $s1))
+)
+
+
+; EU
+; Least fixpoint computation:
+;   W0 = Sat(p2)
+;   W(i+1) = Wi ∪ { s | s ∈ Sat(p1) ∧ ∃s' ∈ Wi : (s,s') ∈ R }
+; Stops when no new states are added.
+
+
+; iteration stop criterion -> no new states added!
+
+((check ($p1 EU $p2) ($x1 $x2))
+	(, (true $p2 $t))
+	(,
+		(true ($p1 EU $p2) $t)
+		(new ($p1 EU $p2) $t)
+		(exec (3 $x1 $x2 1)
+			(,
+				(exec (3 $x1 $x2 1) $ps $ts)
+				(true $p1 $s) (t $s $sp) (true ($p1 EU $p2) $sp)
+				(true ($p1 EU $p2) $v) (new ($p1 EU $p2) $_))
+			(O
+				(+ (true ($p1 EU $p2) $s))
+				(+ (new ($p1 EU $p2) $s))
+				(- (new ($p1 EU $p2) $v))
+				(+ (exec (3 $x1 $x2 1) $ps $ts))
+			)
+		)
+	)
+)
+
+
+; EG
+; W0=Sat(ψ)
+; W(i+1)={s∈Wi∣∃s′∈Wi:(s,s′)∈R}
+
+((check (EG $p) ($x1 $x2))
+	(, $_)
+	(,
+		(WIP (EG $p))
+        (exec (3 $x1 0 0) (, (true $p $s)) (, (temp Z (EG $p) $s)))
+		(exec (3 $x1 1 Z)
+            (, (exec (3 $x1 1 $l) $ps $ts) (temp $l (EG $p) $s) (temp $l (EG $p) $t) (t $s $t) (WIP (EG $p)))
+            (,
+                (temp (S $l) (EG $p) $s)
+                (exec (3 $x1 0 1) (, (temp (S $l) (EG $p) $s1)) (O (hash (h (S $l) (EG $p) $h) $h $s1)))
+                (exec (3 $x1 0 2) (, (temp $l (EG $p) $s2)) (O (hash (h $l (EG $p) $h) $h $s2)))
+                (exec (3 $x1 0 3) (, (h (S $l) (EG $p) $h1) (h $l (EG $p) $h1)) (O (- (WIP (EG $p)))
+                                    (+ (exec (3 0 0 0) (, (temp $l (EG $p) $s5)) (, (true (EG $p) $s5))))
+                                    (+ (exec (3 0 0 1) (, (h $x (EG $p) $y) (temp $m (EG $p) $v)) (O (- (h $x (EG $p) $y)) (- (temp $m (EG $p) $v)))))))
+                (exec (3 $x1 1 (S $l)) $ps $ts)
+            )
+        )
+	)
+)
+
+
+
+;-- Derived operators -------------------------------------
+; p -> q ≡ ~p v q
+((check ($p -> $q) ($x1 $x2))
+	(, (true ((~ $p) v $q) $s))
+	(, (true ($p -> $q) $s))
+)
+
+
+; EFp≡E[true U p]
+((check (EF $p) ($x1 $x2))
+	(, (true ((true) EU $p) $s))
+	(, (true (EF $p) $s))
+)
+
+; -> AX(p)≡~(EX(~p))
+((check (AX $p) ($x1 $x2))
+	(, (true (~ (EX(~ $p))) $s))
+	(, (true (AX $p) $s))
+)
+
+
+; -> AFp≡~(EG(~p))
+((check (AF $p) ($x1 $x2))
+	(, (true (~ (EG(~ $p))) $s))
+	(, (true (AF $p) $s))
+)
+
+; -> AGp≡~E[trueU~p]
+((check (AG $p) ($x1 $x2))
+	(, (true (~ ((true) EU (~ $p))) $s))
+	(, (true (AG $p) $s))
+)
+
+
+; A[p1Up2]≡ ~E[~p2U(~p1&~p2)]&~EG~p2
+((check ($p AU $q) ($x1 $x2))
+	(, (true ((~ ((~$q) EU ((~ $p)&(~ $q)))) & (~ (EG(~ $q)))) $s))
+	(, (true ($p AU $q) $s))
+)
+    "#;
+
+    const ROCKET_TESTS: &str = r#"
+(to_check (caR))
+(solution (caR) 5)
+(solution (caR) 6)
+(solution (caR) 7)
+(solution (caR) 8)
+
+(to_check (~(caR)))			; 1, 2, 3, 4, 9, 10, 11, 12
+(solution (~(caR)) 1)
+(solution (~(caR)) 2)
+(solution (~(caR)) 3)
+(solution (~(caR)) 4)
+(solution (~(caR)) 9)
+(solution (~(caR)) 10)
+(solution (~(caR)) 11)
+(solution (~(caR)) 12)
+
+(to_check (~(nevertrue)))		; all
+(solution (~(nevertrue)) 1)
+(solution (~(nevertrue)) 2)
+(solution (~(nevertrue)) 3)
+(solution (~(nevertrue)) 4)
+(solution (~(nevertrue)) 5)
+(solution (~(nevertrue)) 6)
+(solution (~(nevertrue)) 7)
+(solution (~(nevertrue)) 8)
+(solution (~(nevertrue)) 9)
+(solution (~(nevertrue)) 10)
+(solution (~(nevertrue)) 11)
+(solution (~(nevertrue)) 12)
+
+
+(to_check ((caR) & (fuelOK)))		; 6, 8
+(solution ((caR) & (fuelOK)) 6)
+(solution ((caR) & (fuelOK)) 8)
+
+
+(to_check (EX(caR)))			; 1, 2, 5, 6, 7, 8, 11, 12
+(solution (EX(caR)) 1)
+(solution (EX(caR)) 2)
+(solution (EX(caR)) 5)
+(solution (EX(caR)) 6)
+(solution (EX(caR)) 7)
+(solution (EX(caR)) 8)
+(solution (EX(caR)) 11)
+(solution (EX(caR)) 12)
+
+(to_check ((fuelOK) EU (caR)))		; 2, 5, 6, 7, 8, 12
+(solution ((fuelOK) EU (caR)) 2)
+(solution ((fuelOK) EU (caR)) 5)
+(solution ((fuelOK) EU (caR)) 6)
+(solution ((fuelOK) EU (caR)) 7)
+(solution ((fuelOK) EU (caR)) 8)
+(solution ((fuelOK) EU (caR)) 12)
+
+(to_check ((caR) EU (caL)))		; 1, 2, 3, 4, 5, 6, 7, 8
+(solution ((caR) EU (caL)) 1)
+(solution ((caR) EU (caL)) 2)
+(solution ((caR) EU (caL)) 3)
+(solution ((caR) EU (caL)) 4)
+(solution ((caR) EU (caL)) 5)
+(solution ((caR) EU (caL)) 6)
+(solution ((caR) EU (caL)) 7)
+(solution ((caR) EU (caL)) 8)
+
+
+(to_check (EG(fuelOK)))		; 2, 4, 6, 8, 10, 12
+(solution (EG(fuelOK)) 2)
+(solution (EG(fuelOK)) 4)
+(solution (EG(fuelOK)) 6)
+(solution (EG(fuelOK)) 8)
+(solution (EG(fuelOK)) 10)
+(solution (EG(fuelOK)) 12)
+
+
+(to_check (EF(caR)))			; all
+(solution (EF(caR)) 1)
+(solution (EF(caR)) 2)
+(solution (EF(caR)) 3)
+(solution (EF(caR)) 4)
+(solution (EF(caR)) 5)
+(solution (EF(caR)) 6)
+(solution (EF(caR)) 7)
+(solution (EF(caR)) 8)
+(solution (EF(caR)) 9)
+(solution (EF(caR)) 10)
+(solution (EF(caR)) 11)
+(solution (EF(caR)) 12)
+
+(to_check (AX(roL)))			; 1, 5, 9
+(solution (AX(roL)) 1)
+(solution (AX(roL)) 5)
+(solution (AX(roL)) 9)
+
+(to_check (AF(caR)))			; 5, 6, 7, 8
+(solution (AF(caR)) 5)
+(solution (AF(caR)) 6)
+(solution (AF(caR)) 7)
+(solution (AF(caR)) 8)
+
+(to_check (AG((roL) v (caL))))	; none
+
+(to_check (AG((roL) v (roP))))	; all
+(solution (AG((roL) v (roP))) 1)
+(solution (AG((roL) v (roP))) 2)
+(solution (AG((roL) v (roP))) 3)
+(solution (AG((roL) v (roP))) 4)
+(solution (AG((roL) v (roP))) 5)
+(solution (AG((roL) v (roP))) 6)
+(solution (AG((roL) v (roP))) 7)
+(solution (AG((roL) v (roP))) 8)
+(solution (AG((roL) v (roP))) 9)
+(solution (AG((roL) v (roP))) 10)
+(solution (AG((roL) v (roP))) 11)
+(solution (AG((roL) v (roP))) 12)
+
+
+(to_check ((roL) -> (caL)))         ; 1, 2, 3, 4, 7, 8, 11, 12
+(solution ((roL) -> (caL)) 1)
+(solution ((roL) -> (caL)) 2)
+(solution ((roL) -> (caL)) 3)
+(solution ((roL) -> (caL)) 4)
+(solution ((roL) -> (caL)) 7)
+(solution ((roL) -> (caL)) 8)
+(solution ((roL) -> (caL)) 11)
+(solution ((roL) -> (caL)) 12)
+
+
+; checks whether each EG is handled independently!
+(to_check ((EG(roL)) & (EG(caR))))
+(solution ((EG (roL)) & (EG (caR))) 5)
+(solution ((EG (roL)) & (EG (caR))) 6)
+
+
+
+(to_check ((fuelOK) EU ((caR) & (EX(caP)))))    ; 2, 6, 7, 8, 12
+(solution ((fuelOK) EU ((caR) & (EX(caP)))) 2)
+(solution ((fuelOK) EU ((caR) & (EX(caP)))) 6)
+(solution ((fuelOK) EU ((caR) & (EX(caP)))) 7)
+(solution ((fuelOK) EU ((caR) & (EX(caP)))) 8)
+(solution ((fuelOK) EU ((caR) & (EX(caP)))) 12)
+
+
+(to_check (AG((caR) -> (AF(caP)))))         ; none
+
+(to_check (AG((~(fuelOK)) -> (EF(fuelOK))))) ; all
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 1)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 2)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 3)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 4)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 5)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 6)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 7)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 8)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 9)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 10)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 11)
+(solution (AG((~(fuelOK)) -> (EF(fuelOK)))) 12)
+
+
+(exec (6 0 0 0)
+	(, (to_check $p1) (true $p1 $s1))
+	(O (+ (MISTAKE $p1 $s1)))
+)
+
+(exec (6 0 0 0)
+	(, (to_check $p1) (solution $p1 $s1))
+	(O (+ (MISTAKE $p1 $s1)))
+)
+
+(exec (6 1 0 0)
+	(, (to_check $p) (true $p $s) (solution $p $s))
+	(O (- (MISTAKE $p $s)))
+)
+    "#;
+
+    s.add_all_sexpr(ROCKET_KRIPKE_MODEL.as_bytes()).unwrap();
+    s.add_all_sexpr(FULL.as_bytes()).unwrap();
+    s.add_all_sexpr(ROCKET_TESTS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    // println!("result: {res}");
+    assert!(!res.contains("MISTAKE\n"));
+}
 
 fn lens_aunt() {
     let mut s = Space::new();
@@ -4684,30 +5325,6 @@ enum Commands {
 fn main() {
     env_logger::init();
 
-    // pddl_ts("/home/adam/Projects/ThesisPython/cache/gripper-strips/transition_systems/");
-    // stv_roman();
-    // mm1_forward();
-    // mm2_bc();
-    // sink_add_remove();
-    // bench_cm0(50);
-    // tile_puzzle();
-    // sink_odd_even_sort();
-    // cross_join();
-    // cross_join_dict();
-    // process_calculus_source_sink_bench(100, 20, 20);
-    // source_cmp_rel();
-    // sink_act_readback();
-    // bench_sink_hexlife_axial();
-    // bench_pattern_mining_lensy();
-    // formula_execution();
-    // sink_pure_basic();
-    // sink_pure_roman_validation();
-    // sink_pure_dynamic_subformula();
-    // sink_hash_spaces();
-    // sink_z3_basic();
-    // test_memory_size();
-    // return;
-
     let args = Cli::parse();
 
     match args.command {
@@ -4757,11 +5374,13 @@ fn main() {
             large_statement();
 
             process_calculus_reverse();
-            logic_query();
+            issue_43();
+            // logic_query(); // possibly faulty test
             meta_ana();
             meta_ana_exec();
             pattern_mining();
 
+            ctl();
             bc0();
 
             source_space_two_bipolar_equal_crossed();

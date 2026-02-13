@@ -3033,24 +3033,27 @@ fn logic_query() {
 
     assert_eq!(s.btm.val_count(), 79);
 }
-
+const PROJECT_PATH: &str = env!("CARGO_MANIFEST_DIR");
 fn bench_logic_query() {
     use std::io::Read;
     let mut s = Space::new();
 
     let mut expr_buf = vec![];
-    std::fs::File::open("resources/big.metta").unwrap().read_to_end(&mut expr_buf).unwrap();
+    std::fs::File::open(format!("{PROJECT_PATH}/resources/big.metta")).unwrap().read_to_end(&mut expr_buf).unwrap();
     s.add_all_sexpr(&expr_buf[..]).unwrap();
+    let axiom_count = s.btm.val_count();
 
     let mut t0 = Instant::now();
     s.add_all_sexpr(b"(exec 0 (, (axiom $x) (axiom $x)) (, (combined $x)))").unwrap();
     s.metta_calculus(1);
-    println!("combined elapsed {} ms size {}", t0.elapsed().as_millis(), s.btm.val_count());
+    println!("combined elapsed {} ms size {}",
+        t0.elapsed().as_millis(), s.btm.val_count() - axiom_count);
 
     let mut t1 = Instant::now();
     s.add_all_sexpr(b"(exec 0 (, (axiom (= $lhs $rhs)) (axiom (= $rhs $lhs))) (, (reversed $lhs $rhs)))").unwrap();
     s.metta_calculus(1);
-    println!("reversed elapsed {} ms size {}", t1.elapsed().as_millis(), s.btm.val_count());
+    println!("reversed elapsed {} ms size {}",
+        t1.elapsed().as_millis(), s.btm.val_count() - axiom_count);
     
     // yikes, this is much slower than the old bidirectional transition in `server`?
     // combined elapsed 236156 ms size 1677208
@@ -3061,9 +3064,9 @@ fn bench_logic_query_act() {
     use std::io::Read;
     let mut s = Space::new();
 
-    let mut expr_buf = vec![];
-    std::fs::File::open("resources/big.act").unwrap().read_to_end(&mut expr_buf).unwrap();
-    std::fs::copy("resources/big.act", format!("{}big.act", ACT_PATH));
+    // let mut expr_buf = vec![];
+    // std::fs::File::open(format!("{PROJECT_PATH}/resources/big.act")).unwrap().read_to_end(&mut expr_buf).unwrap();
+    std::fs::copy(format!("{PROJECT_PATH}/resources/big.act"), format!("{}big.act", ACT_PATH));
 
     let mut t0 = Instant::now();
     s.add_all_sexpr(b"(exec 0 (I (ACT big (axiom $x)) (ACT big (axiom $x))) (, (combined $x)))").unwrap();

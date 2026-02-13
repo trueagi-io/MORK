@@ -515,7 +515,7 @@ class MORK:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if "time" in self.finalization: print(f"{self.ns.format("*")} time {monotonic() - self.t0:.6f} s")
+        if "time" in self.finalization: print(f"{self.ns.format('*')} time {monotonic() - self.t0:.6f} s")
         if "clear" in self.finalization: self.clear().block()
         if "spin_down" in self.finalization:
             try: self.spin_down()
@@ -595,7 +595,7 @@ class ManagedMORK(MORK):
             raise RuntimeError(f"Can't connect to running server, and no server binary found at path: {binary_path}")
 
         print("Starting server from binary")
-        bin_hash = b32encode(abs(hash(binary_path)).to_bytes(8)).decode("ascii")
+        bin_hash = b32encode(abs(hash(binary_path)).to_bytes(8, "big")).decode("ascii")
         print("bin hash", bin_hash)
         stdout_path = f"/tmp/.mork_server_stdout_{bin_hash}.log"
         server_stdout = FileIO(stdout_path, "w+")

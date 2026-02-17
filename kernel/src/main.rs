@@ -2606,8 +2606,62 @@ fn sink_act_readback() {
         let res = String::from_utf8_lossy_owned(v);
 
         println!("result: {res}");
-        // assert_eq!(res, "18\n")
+        assert_eq!(res.bytes().filter(|b| *b == b'\n').count(), 18)
     }
+}
+
+fn sink_act_mixed_readback() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (+ (cux $z $y $x)) (ACT sink_act_mixed_readback (cuux $z $y $x)) (+ (cuuux $z $y $x))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    {
+        let mut s = Space::new();
+        s.restore_tree(format!("{}sink_act_mixed_readback.act", ACT_PATH));
+        let mut v = vec![];
+        s.dump_all_sexpr(&mut v).unwrap();
+        let res = String::from_utf8_lossy_owned(v);
+
+        println!("result: {res}");
+        assert_eq!(res.bytes().filter(|b| *b == b'\n').count(), 18)
+    }
+}
+
+fn source_sink_act_readback() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (+ (cux $z $y $x)) (ACT source_sink_act_readback (cuux $z $y $x))))
+(exec 1 (I (ACT source_sink_act_readback (cuux $x $y $z))) (, (cuux $x $y $z)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[4] cuux $ $ $"), expr!(s, "[4] cuux _1 _2 _3"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res.bytes().filter(|b| *b == b'\n').count(), 18)
 }
 
 fn sink_count_double() {
@@ -5425,6 +5479,10 @@ fn main() {
 
             parse_csv();
             parse_json();
+
+            sink_act_readback();
+            sink_act_mixed_readback();
+            source_sink_act_readback();
         }
         Commands::Run { input_path, steps, instrumentation, aux_path, output_path } => {
             #[cfg(debug_assertions)]

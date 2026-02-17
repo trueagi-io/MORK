@@ -1,6 +1,7 @@
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::fs::File;
@@ -29,16 +30,57 @@ use mork_expr::macros::SerializableExpr;
 use crate::pure;
 use crate::space::ACT_PATH;
 
+#[derive(Eq, PartialEq, Debug)]
 pub(crate) enum WriteResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
     Z3(&'static str),
 }
 
+impl WriteResourceRequest {
+    pub(crate) fn pjoin(&self, other: &Self) -> Option<Self> {
+        match self {
+            WriteResourceRequest::BTM(s) => {
+                match other {
+                    WriteResourceRequest::BTM(o) => {
+                        Some(WriteResourceRequest::BTM(&s[..pathmap::utils::find_prefix_overlap(s, o)]))
+                    }
+                    _ => { None }
+                }
+            }
+            WriteResourceRequest::ACT(s) => {
+                match other {
+                    WriteResourceRequest::ACT(o) if s == o => { Some(WriteResourceRequest::ACT(s)) }
+                    _ => { None }
+                }
+            }
+            WriteResourceRequest::Z3(_) => { unreachable!() }
+        }
+    }
+}
+
+impl PartialOrd for WriteResourceRequest {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self {
+            WriteResourceRequest::BTM(s) => {
+                if let WriteResourceRequest::BTM(o) = other {
+                    s.partial_cmp(o)
+                } else { None }
+            }
+            WriteResourceRequest::ACT(s) => {
+                if let WriteResourceRequest::ACT(o) = other {
+                    if s == o { Some(Ordering::Equal) } else { None }
+                } else { None }
+            }
+            WriteResourceRequest::Z3(_) => { unreachable!() }
+        }
+    }
+}
+
 pub(crate) enum WriteResource<'w, 'a, 'k> {
     BTM(&'w mut WriteZipperTracked<'a, 'k, ()>),
     ACT(()),
-    Z3(subprocess::Popen)
+    Z3(&'w mut subprocess::Popen)
 }
 
 // trait JoinLattice  {
@@ -234,8 +276,8 @@ impl Sink for ACTSink {
         std::iter::once(WriteResourceRequest::ACT(self.file))
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        trace!(target: "sink", "ACT sinking '{}'", serialize(path));
-        self.tmp.insert(path, ());
+        trace!(target: "sink", "ACT sinking '{}'", serialize(&path[1+1+3+self.file.len()..]));
+        self.tmp.insert(&path[1+1+3+1+self.file.len()..], ());
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "ACT finalizing");

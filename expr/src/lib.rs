@@ -390,6 +390,15 @@ impl Expr {
         }
     }
 
+    pub fn prefix_non_proper(self) -> *const [u8] {
+        use ControlFlow::*;
+        match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
+            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a) {
+            Break(offset) => { slice_from_raw_parts(self.ptr, offset) } // proper prefix
+            Continue(offset) => { slice_from_raw_parts(self.ptr, offset - 1) } // full expr
+        }
+    }
+
     pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
         use ControlFlow::*;
         match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,

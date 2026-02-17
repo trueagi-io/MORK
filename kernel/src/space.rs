@@ -38,7 +38,8 @@ pub struct Space {
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<&'static str, subprocess::Popen>,
-    last_merkleize: Instant
+    pub last_merkleize: Instant,
+    pub timing: bool
 }
 
 pub(crate) const SIZES: [u64; 4] = {
@@ -441,7 +442,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now() }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1596,7 +1597,6 @@ impl Space {
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) -> Result<(), &'static str> {
-        let start = Instant::now();
         #[cfg(feature = "periodic_merkleize")]
         if self.last_merkleize.elapsed().as_secs() > 10 {
             self.btm.merkleize();
@@ -1630,17 +1630,12 @@ impl Space {
             };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
-            let s = start.elapsed().as_nanos().to_string();
-            let s_ref = s.as_str();
-            let buf = mork_expr::construct!("timing" rt s_ref).unwrap();
-            self.btm.insert(&buf[..], ());
-            // println!("inserted {}", serialize(&buf[..]));
             Ok(())
         }, _err => return Err("exec shape (exec <loc> <patterns> <templates>)"))
     }
 
     pub fn metta_calculus(&mut self, steps: usize) -> usize {
-        let mut done = 0;
+        let mut done: usize = 0;
         const PREFIX: [u8; 6] = const { [item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(4)), b'e', b'x', b'e', b'c' ] };
 
         while {
@@ -1649,9 +1644,19 @@ impl Space {
                 // cannot be here `rz` conflicts potentially with zippers(rz.path())
                 let mut x: Vec<u8> = rz.into_path(); // should use local buffer
                 self.btm.remove(&x[..]);
-                // println!("expr {:?}", Expr{ ptr: x.as_mut_ptr() });
-                if let Err(e) = self.interpret(Expr{ ptr: x.as_mut_ptr() }) {
+                let mut xe = Expr{ ptr: x.as_mut_ptr() };
+                let start = Instant::now();
+                if let Err(e) = self.interpret(xe) {
                     debug!(target: "interpret", "not interpreting: {}", e);
+                }
+                if self.timing {
+                    let start_string = start.elapsed().as_nanos().to_string();
+                    let start_str = start_string.as_str();
+                    let done_string = done.to_string();
+                    let done_str = done_string.as_str();
+                    let buf = mork_expr::construct!("timing" xe done_str start_str).unwrap();
+                    self.btm.insert(&buf[..], ());
+                    trace!(target: "interpret", "interpret took {} ns", start_str);
                 }
                 done < steps
             } else {

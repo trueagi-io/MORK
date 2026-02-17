@@ -4771,7 +4771,11 @@ fn bench_taxi_lts() {
 ; (in-taxi)
 ; (destination $loc)
 ; (adjacent $x1 $y1 $x2 $y2)
-
+(prepend $x (, $a) (, $x $a))
+(prepend $x (, $a $b) (, $x $a $b))
+(prepend $x (, $a $b $c) (, $x $a $b $c))
+(prepend $x (, $a $b $c $d) (, $x $a $b $c $d))
+(prepend $x (, $a $b $c $d $e) (, $x $a $b $c $d $e))
 
 ; " ".join([f"(direction northoff ({x} {y + 1}) ({x} {y}))" for x in range(5) for y in range(4)])
 (direction northoff (0 1) (0 0)) (direction northoff (0 2) (0 1)) (direction northoff (0 3) (0 2)) (direction northoff (0 4) (0 3)) (direction northoff (1 1) (1 0)) (direction northoff (1 2) (1 1)) (direction northoff (1 3) (1 2)) (direction northoff (1 4) (1 3)) (direction northoff (2 1) (2 0)) (direction northoff (2 2) (2 1)) (direction northoff (2 3) (2 2)) (direction northoff (2 4) (2 3)) (direction northoff (3 1) (3 0)) (direction northoff (3 2) (3 1)) (direction northoff (3 3) (3 2)) (direction northoff (3 4) (3 3)) (direction northoff (4 1) (4 0)) (direction northoff (4 2) (4 1)) (direction northoff (4 3) (4 2)) (direction northoff (4 4) (4 3))
@@ -4879,17 +4883,19 @@ fn bench_taxi_lts() {
 ; make an edge from old to new labeled by action
 ; step 6
 ; clean up our mess
-
-(exec 9 (, (pre $a $s $q) (exec 9 $ps $ts) (new $s))
-        (,
-           (exec 0 $q (, (action $a applies to $s)))
+(any new)
+(exec 9 (, (exec 9 $ps $ts) (any new))
+        (, (exec 0 (, (any new)) (O (- (any new))))
+           (exec 0 (, (pre $a $s $q) (prepend (new $s) $q $q_) )
+                   (, (exec 0 $q_ (, (action $a applies to $s)))))
            (exec 1 (, (action $a applies to $s) (state $s $prop)) (, (temp ($s act $a) $prop)))
            (exec 2 (, (temp ($s act $a) $_) (pos-eff $a $pe)) (, (temp ($s act $a) $pe)))
            (exec 2 (, (temp ($s act $a) $_) (neg-eff $a $ne)) (O (- (temp ($s act $a) $ne))))
            (exec 3 (, (temp ($s act $a) $prop)) (O (hash (hash ($s act $a) $h) $h $prop)))
            (exec 4 (, (hash ($s act $a) $h)) (, (t $s $a $h)))
            (exec 5 (, (hash ($s act $a) $h)) (, (new $h)))
-           (exec 6 (, (state $t $_)) (O (- (new $t))))
+           (exec 6 (, (new $t) (state $t $_)) (O (- (new $t))))
+           (exec 7 (, (new $h)) (, (any new)))
            (exec 7 (, (hash ($s act $a) $h) (temp ($s act $a) $prop)) (, (state $h $prop)))
            (exec 8 (, (temp ($s act $a) $prop)) (O (- (temp ($s act $a) $prop))))
            (exec 8 (, (hash ($s act $a) $h)) (O (- (hash ($s act $a) $h))))
@@ -4899,23 +4905,24 @@ fn bench_taxi_lts() {
 
 
 (exec 10 (, (state $h $prop)) (O (count (TOTAL $c) $c $h)))
-(exec 11 (, (timing (exec $p $ps $ts) $t)) (O (sum (time $p $s) $s $t)))
 "#;
-
+    // (exec 11 (, (timing (exec $p $ps $ts) $i $t)) (O (sum (time $p $s) $s $t)))
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
 
     let mut t0 = Instant::now();
+    // s.timing = true;
     let steps = s.metta_calculus(1000000000000000);
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
     // s.dump_all_sexpr(&mut v).unwrap();
-    // s.dump_sexpr(expr!(s, "[3] timing $ $"), expr!(s, "[3] timing _1 _2"), &mut v);
     s.dump_sexpr(expr!(s, "[3] time $ $"), expr!(s, "[3] time _1 _2"), &mut v);
+    s.dump_sexpr(expr!(s, "[2] TOTAL $"), expr!(s, "[2] TOTAL _1"), &mut v);
     let res = String::from_utf8_lossy_owned(v);
 
     println!("result: {res}");
+    assert!(res.contains("(TOTAL 504)"));
 }
 
 fn test_memory_size() {
@@ -5513,6 +5520,8 @@ enum Commands {
         steps: usize,
         #[arg(long, default_value_t = 1)]
         instrumentation: usize,
+        #[arg(long, default_value_t = false)]
+        timing: bool,
         #[arg(long)]
         aux_path: Vec<String>,
         output_path: Option<String>,
@@ -5538,9 +5547,6 @@ enum Commands {
 fn main() {
     env_logger::init();
 
-    // bench_taxi_lts();
-    // return;
-
     let args = Cli::parse();
 
     match args.command {
@@ -5548,9 +5554,9 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("default") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states"]) }
-            if selected.remove("all") { selected.extend(&["counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states"]) }
-            if selected.remove("sinks") { selected.extend(&["odd_even_sort"]) }
+            if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states"]) }
+            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states"]) }
+            if selected.remove("sinks") { selected.extend(&["taxi_lts", "odd_even_sort"]) }
 
             for b in selected {
                 println!("=== benchmarking {} ===", b);
@@ -5567,6 +5573,7 @@ fn main() {
                     "logic_query_act" => { bench_logic_query_act() }
                     "flybase" => { bench_flybase() }
                     "tile_puzzle_states" => { bench_tile_puzzle_states() }
+                    "taxi_lts" => { bench_taxi_lts() }
                     s => { println!("bench not known: {s}") }
                 }
             }
@@ -5643,10 +5650,11 @@ fn main() {
             sink_act_mixed_readback();
             source_sink_act_readback();
         }
-        Commands::Run { input_path, steps, instrumentation, aux_path, output_path } => {
+        Commands::Run { input_path, steps, instrumentation, timing, aux_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
+            s.timing = timing;
             let f = std::fs::File::open(&input_path).unwrap();
             let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
             s.add_all_sexpr(&*mmapf);

@@ -4762,6 +4762,162 @@ fn linear_alternating(steps: usize) {
     // println!("result: {res}");
 }
 
+fn bench_taxi_lts() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+; (taxi-at $x $y)
+; (at-passenger $loc)
+; (in-taxi)
+; (destination $loc)
+; (adjacent $x1 $y1 $x2 $y2)
+
+
+; " ".join([f"(direction northoff ({x} {y + 1}) ({x} {y}))" for x in range(5) for y in range(4)])
+(direction northoff (0 1) (0 0)) (direction northoff (0 2) (0 1)) (direction northoff (0 3) (0 2)) (direction northoff (0 4) (0 3)) (direction northoff (1 1) (1 0)) (direction northoff (1 2) (1 1)) (direction northoff (1 3) (1 2)) (direction northoff (1 4) (1 3)) (direction northoff (2 1) (2 0)) (direction northoff (2 2) (2 1)) (direction northoff (2 3) (2 2)) (direction northoff (2 4) (2 3)) (direction northoff (3 1) (3 0)) (direction northoff (3 2) (3 1)) (direction northoff (3 3) (3 2)) (direction northoff (3 4) (3 3)) (direction northoff (4 1) (4 0)) (direction northoff (4 2) (4 1)) (direction northoff (4 3) (4 2)) (direction northoff (4 4) (4 3))
+
+; " ".join([f"(direction southoff ({x} {y}) ({x} {y + 1}))" for x in range(5) for y in range(4)])
+(direction southoff (0 0) (0 1)) (direction southoff (0 1) (0 2)) (direction southoff (0 2) (0 3)) (direction southoff (0 3) (0 4)) (direction southoff (1 0) (1 1)) (direction southoff (1 1) (1 2)) (direction southoff (1 2) (1 3)) (direction southoff (1 3) (1 4)) (direction southoff (2 0) (2 1)) (direction southoff (2 1) (2 2)) (direction southoff (2 2) (2 3)) (direction southoff (2 3) (2 4)) (direction southoff (3 0) (3 1)) (direction southoff (3 1) (3 2)) (direction southoff (3 2) (3 3)) (direction southoff (3 3) (3 4)) (direction southoff (4 0) (4 1)) (direction southoff (4 1) (4 2)) (direction southoff (4 2) (4 3)) (direction southoff (4 3) (4 4))
+
+; " ".join([f"(direction eastoff ({x} {y}) ({x + 1} {y}))" for x in range(4) for y in range(5)])
+(direction westoff (1 0) (0 0)) (direction westoff (1 1) (0 1)) (direction westoff (1 2) (0 2)) (direction westoff (1 3) (0 3)) (direction westoff (1 4) (0 4)) (direction westoff (2 0) (1 0)) (direction westoff (2 1) (1 1)) (direction westoff (2 2) (1 2)) (direction westoff (2 3) (1 3)) (direction westoff (2 4) (1 4)) (direction westoff (3 0) (2 0)) (direction westoff (3 1) (2 1)) (direction westoff (3 2) (2 2)) (direction westoff (3 3) (2 3)) (direction westoff (3 4) (2 4)) (direction westoff (4 0) (3 0)) (direction westoff (4 1) (3 1)) (direction westoff (4 2) (3 2)) (direction westoff (4 3) (3 3)) (direction westoff (4 4) (3 4))
+
+; " ".join([f"(direction westoff ({x + 1} {y}) ({x} {y}))" for x in range(4) for y in range(5)])
+(direction eastoff (0 0) (1 0)) (direction eastoff (0 1) (1 1)) (direction eastoff (0 2) (1 2)) (direction eastoff (0 3) (1 3)) (direction eastoff (0 4) (1 4)) (direction eastoff (1 0) (2 0)) (direction eastoff (1 1) (2 1)) (direction eastoff (1 2) (2 2)) (direction eastoff (1 3) (2 3)) (direction eastoff (1 4) (2 4)) (direction eastoff (2 0) (3 0)) (direction eastoff (2 1) (3 1)) (direction eastoff (2 2) (3 2)) (direction eastoff (2 3) (3 3)) (direction eastoff (2 4) (3 4)) (direction eastoff (3 0) (4 0)) (direction eastoff (3 1) (4 1)) (direction eastoff (3 2) (4 2)) (direction eastoff (3 3) (4 3)) (direction eastoff (3 4) (4 4))
+
+(loc R (0 0))
+(loc G (4 0))
+(loc Y (0 4))
+(loc B (3 4))
+;   0 1 2 3 4
+;  +---------+
+;0 |R: | : :G|
+;1 | : | : : |
+;2 | : : : : |
+;3 | | : | : |
+;4 |Y| : |B: |
+;  +---------+
+
+
+(wall (0 3) (1 3))
+(wall (0 4) (1 4))
+(wall (1 0) (2 0))
+(wall (1 1) (2 1))
+(wall (2 3) (3 3))
+(wall (2 4) (3 4))
+
+
+(pre (north $l1 $l2) $s (, (state $s (taxi-at $l1))
+                           (direction northoff $l1 $l2)))
+(pos-eff (north $l1 $l2) (taxi-at $l2))
+(neg-eff (north $l1 $l2) (taxi-at $l1))
+
+(pre (south $l1 $l2) $s (, (state $s (taxi-at $l1))
+                           (direction southoff $l1 $l2)))
+(pos-eff (south $l1 $l2) (taxi-at $l2))
+(neg-eff (south $l1 $l2) (taxi-at $l1))
+
+(pre (east $l1 $l2) $s (, (state $s (taxi-at $l1))
+                           (direction eastoff $l1 $l2)))
+(pos-eff (east $l1 $l2) (taxi-at $l2))
+(neg-eff (east $l1 $l2) (taxi-at $l1))
+
+(pre (west $l1 $l2) $s (, (state $s (taxi-at $l1))
+                           (direction westoff $l1 $l2)))
+(pos-eff (west $l1 $l2) (taxi-at $l2))
+(neg-eff (west $l1 $l2) (taxi-at $l1))
+
+(pre (pick-up $l) $s (, (state $s (taxi-at $l)) (state $s (passenger-at $l))))
+(pos-eff (pick-up $l) (in-taxi))
+(neg-eff (pick-up $l) (passenger-at $l))
+
+(pre (drop-off $l) $s (, (state $s (taxi-at $l)) (state $s (in-taxi)) (loc $c $l)))
+(pos-eff (drop-off $l) (passenger-at $l))
+(neg-eff (drop-off $l) (in-taxi))
+
+(state (init A) (taxi-at (0 0)))
+(state (init A) (passenger-at (4 0)))
+(state (init A) (destination R))
+
+(state (init B) (taxi-at (0 0)))
+(state (init B) (passenger-at (4 0)))
+(state (init B) (destination G))
+
+(state (init C) (taxi-at (0 0)))
+(state (init C) (passenger-at (4 0)))
+(state (init C) (destination Y))
+
+(state (init D) (taxi-at (0 0)))
+(state (init D) (passenger-at (4 0)))
+(state (init D) (destination B))
+
+
+
+(exec 0 (, (wall $l1 $l2) (direction $d $l1 $l2)) (O (- (direction $d $l1 $l2))))
+(exec 0 (, (wall $l2 $l1) (direction $d $l1 $l2)) (O (- (direction $d $l1 $l2))))
+
+
+
+(exec 0 (, (state (init $n) $prop)) (O (hash (hash (init $n) $h) $h $prop)))
+(exec 1 (, (hash (init $n) $h) (state (init $n) $prop)) (, (state $h $prop) (new $h)))
+
+
+
+; step 0
+; our state space contains: (state $s $prop1) (state $s $prop2)
+; and match precondition (pre $a $s0 (, (state $s0 $prop1) (state $s0 $prop2)))
+; step 1
+; (action $a applies to $s)
+; define new (temporary) state (temp ($s act $a) $prop)  (with same properties)
+; step 2
+; remove all positive effects, and add all negative effects
+; step 3
+; calculate the hash of our new states' properties (hash ($s act $a) $h)
+; step 4
+; make a new state identified by the hash, with the properties of the temporary state
+; step 5
+; make an edge from old to new labeled by action
+; step 6
+; clean up our mess
+
+(exec 9 (, (pre $a $s $q) (exec 9 $ps $ts) (new $s))
+        (,
+           (exec 0 $q (, (action $a applies to $s)))
+           (exec 1 (, (action $a applies to $s) (state $s $prop)) (, (temp ($s act $a) $prop)))
+           (exec 2 (, (temp ($s act $a) $_) (pos-eff $a $pe)) (, (temp ($s act $a) $pe)))
+           (exec 2 (, (temp ($s act $a) $_) (neg-eff $a $ne)) (O (- (temp ($s act $a) $ne))))
+           (exec 3 (, (temp ($s act $a) $prop)) (O (hash (hash ($s act $a) $h) $h $prop)))
+           (exec 4 (, (hash ($s act $a) $h)) (, (t $s $a $h)))
+           (exec 5 (, (hash ($s act $a) $h)) (, (new $h)))
+           (exec 6 (, (state $t $_)) (O (- (new $t))))
+           (exec 7 (, (hash ($s act $a) $h) (temp ($s act $a) $prop)) (, (state $h $prop)))
+           (exec 8 (, (temp ($s act $a) $prop)) (O (- (temp ($s act $a) $prop))))
+           (exec 8 (, (hash ($s act $a) $h)) (O (- (hash ($s act $a) $h))))
+           (exec 8 (, (action $a applies to $s)) (O (- (action $a applies to $s))))
+           (exec 9 $ps $ts)
+    ))
+
+
+(exec 10 (, (state $h $prop)) (O (count (TOTAL $c) $c $h)))
+(exec 11 (, (timing (exec $p $ps $ts) $t)) (O (sum (time $p $s) $s $t)))
+"#;
+
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v).unwrap();
+    // s.dump_sexpr(expr!(s, "[3] timing $ $"), expr!(s, "[3] timing _1 _2"), &mut v);
+    s.dump_sexpr(expr!(s, "[3] time $ $"), expr!(s, "[3] time _1 _2"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+}
+
 fn test_memory_size() {
     let mut s = Space::new();
 
@@ -5381,6 +5537,9 @@ enum Commands {
 
 fn main() {
     env_logger::init();
+
+    // bench_taxi_lts();
+    // return;
 
     let args = Cli::parse();
 

@@ -276,7 +276,7 @@ impl Sink for ACTSink {
         std::iter::once(WriteResourceRequest::ACT(self.file))
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        trace!(target: "sink", "ACT sinking '{}'", serialize(&path[1+1+3+self.file.len()..]));
+        trace!(target: "sink", "ACT sinking '{}'", serialize(&path[1+1+3+1+self.file.len()..]));
         self.tmp.insert(&path[1+1+3+1+self.file.len()..], ());
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {

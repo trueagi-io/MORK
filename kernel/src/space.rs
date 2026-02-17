@@ -949,7 +949,7 @@ impl Space {
                     unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
                 }
                 #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+                unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
             }, |i, intro| { Expr::VARNAMES[i as usize] });
             w.write(&[b'\n']).map_err(|x| x.to_string()).unwrap();
 
@@ -1596,6 +1596,7 @@ impl Space {
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) -> Result<(), &'static str> {
+        let start = Instant::now();
         #[cfg(feature = "periodic_merkleize")]
         if self.last_merkleize.elapsed().as_secs() > 10 {
             self.btm.merkleize();
@@ -1629,6 +1630,11 @@ impl Space {
             };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
+            let s = start.elapsed().as_nanos().to_string();
+            let s_ref = s.as_str();
+            let buf = mork_expr::construct!("timing" rt s_ref).unwrap();
+            self.btm.insert(&buf[..], ());
+            // println!("inserted {}", serialize(&buf[..]));
             Ok(())
         }, _err => return Err("exec shape (exec <loc> <patterns> <templates>)"))
     }

@@ -927,7 +927,7 @@ impl Sink for Reduce {
             self.e.ptr.add(Expr{ptr:self.e.ptr.add(1/* arity tag */)}.span().len() + 1 /* arity tag again */) 
         }}; // I cannot fail to get this arity 8 guarantees this.
 
-        let p = unsafe { self.out_template.prefix().unwrap_or_else(|x| { out_template.span() }).as_ref().unwrap() };
+        let p = unsafe { out_template.prefix().unwrap_or_else(|x| { out_template.span() }).as_ref().unwrap() };
         trace!(target: "sink", "reduce requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -976,7 +976,7 @@ impl Sink for Reduce {
         wr_wz.reset();
         let prefix_len = wr_wz.root_prefix_path().len();
 
-        let Self { scope, e, out_template, skip, accumulator } = self;
+        let Self { scope, e, skip, accumulator } = self;
 
 
         let mut ops_rz = accumulator.read_zipper();

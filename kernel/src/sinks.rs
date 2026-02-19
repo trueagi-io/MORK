@@ -877,7 +877,6 @@ struct Reduce {
     scope     : eval::EvalScope,
 
     e            : Expr,
-    out_template : Expr, // need this for prefix reservation.
     skip         : bool,
 
     /// Having the nested Pathmaps makes it easier to separate the concern of what values were bound by a source.
@@ -900,10 +899,6 @@ impl Sink for Reduce {
         let mut skip = false;
         if e.arity() != Some(8) { skip = false };
 
-        let null = Expr{ ptr : core::ptr::null_mut() };
-        let out_template = Expr{ptr : unsafe { 
-            e.ptr.add(Expr{ptr:e.ptr.add(1/* arity tag */)}.span().len() + 1 /* arity tag again */) 
-        }}; // I cannot fail to get this arity 8 guarantees this.
         destruct!(
             e,
             ("reduce" _template _out _in 
@@ -913,24 +908,26 @@ impl Sink for Reduce {
             ),
             {   Reduce {
                     e,
-                    scope: eval::EvalScope::new(),
-                    skip         : false,
-                    out_template,  
+                    skip        : false,
+                    scope       : eval::EvalScope::new(),
                     accumulator : PathMap::new(),
                 }
             },
             err => return Reduce { 
                 e,
-                skip : true,
-                scope: eval::EvalScope::new(),
-                out_template,
+                skip        : true,
+                scope       : eval::EvalScope::new(),
                 accumulator : PathMap::new(),
             }
         )
     }
 
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = unsafe { self.out_template.prefix().unwrap_or_else(|x| { self.out_template.span() }).as_ref().unwrap() };
+        let out_template = Expr{ptr : unsafe { 
+            self.e.ptr.add(Expr{ptr:self.e.ptr.add(1/* arity tag */)}.span().len() + 1 /* arity tag again */) 
+        }}; // I cannot fail to get this arity 8 guarantees this.
+
+        let p = unsafe { self.out_template.prefix().unwrap_or_else(|x| { out_template.span() }).as_ref().unwrap() };
         trace!(target: "sink", "reduce requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -938,15 +935,15 @@ impl Sink for Reduce {
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         if self.skip {return;}
         
+        let path_as_ptr = path as *const[u8] as *const u8 as *mut u8;
         // The tempory pathmap is organized by operation, then arguments.
         destruct!(
-            Expr{ ptr : path as *const[u8] as *const u8 as *mut u8 },
-            ("reduce" _template _out _in 
+            Expr{ ptr : path_as_ptr },
+            ("reduce" template out in_ 
              _with ("In"  _In)
                    ("Op"  _Op)
                    ("Out" _Out)
             ),
-            
             {
                 // We only support single eval operators
                 if [_In,_Op,_Out].map(|e| unsafe { mork_expr::byte_item(*e.ptr) }).into_iter().any(|b|!matches!(b, mork_expr::Tag::SymbolSize(_)))
@@ -954,22 +951,17 @@ impl Sink for Reduce {
                     return;
                 }
 
-                let path_as_ptr = path as *const[u8] as *const u8 as *mut u8;
                 let mut wz = self.accumulator.write_zipper();
                 
                 // add arity byte
                 wz.descend_to_byte(mork_expr::item_byte(mork_expr::Tag::Arity(4)));
 
                 // index by operations
-                wz.descend_to(unsafe { 
-                    &(Expr{ptr : path_as_ptr}).span().as_ref().unwrap()[_with.ptr.byte_offset_from_unsigned(path_as_ptr)..]
-                });
+                wz.descend_to(unsafe { &path[_with.ptr.byte_offset_from_unsigned(path_as_ptr)..]});
 
-                wz.descend_to(unsafe { _in.span().as_ref().unwrap() });
-                
-                let mut wz_template =          wz.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe { _template.span().as_ref().unwrap() });
-                let mut wz_out      = wz_template.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe {      _out.span().as_ref().unwrap() });
-                let mut wz_in       =      wz_out.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe {       _in.span().as_ref().unwrap() });
+                let mut wz_template =          wz.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe { core::ptr::slice_from_raw_parts(template.ptr,  out.ptr.byte_offset_from_unsigned(template.ptr)).as_ref().unwrap() });
+                let mut wz_out      = wz_template.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe { core::ptr::slice_from_raw_parts(     out.ptr,   in_.ptr.byte_offset_from_unsigned(     out.ptr)).as_ref().unwrap() });
+                let mut wz_in       =      wz_out.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe { core::ptr::slice_from_raw_parts(      in_.ptr, _with.ptr.byte_offset_from_unsigned(      in_.ptr)).as_ref().unwrap() });
                 *wz_in.get_val_or_set_mut(0) += 1; // this should guarantee that the count of a value is always at least 1.
 
             },
@@ -1027,7 +1019,7 @@ impl Sink for Reduce {
                 if !ops_rz.to_next_val() { break 'err_cleanup; /* if we are here we are done, we skip cleanup on error */}
     
                 let ops = Expr{ptr:ops_rz.path() as *const[u8] as *const u8 as *mut u8};
-                let [_in, _op, _out] : [Expr; 3]  = destruct!(
+                let [in_name, op_name, out_name] : [Expr; 3]  = destruct!(
                     ops,
                     ("with" ("In"  _In)
                             ("Op"  _Op)
@@ -1039,29 +1031,29 @@ impl Sink for Reduce {
                 // put the names of each operation into the buffers
                 // we the lengths with the arity when truncating on iterations, 
                 let [buf_in_name_len,buf_op_name_len,buf_out_name_len] =
-                [ (&mut buffer_in,  _in)
-                , (&mut buffer_op,  _op)
-                , (&mut buffer_out, _out)
+                [ (&mut buffer_in,  in_name)
+                , (&mut buffer_op,  op_name)
+                , (&mut buffer_out, out_name)
                 ].map(
                     |(mut buf, op_name)| {
                         buf.truncate(1); // keep arity
                         buf.extend_from_slice(unsafe { op_name.span().as_ref().unwrap() });
                         buf.len()
                     }
-                );
-                
+                );             
 
                 let mut template_rz = ops_rz.val().expect(NEXT_STEP_GUARANTEE).read_zipper();
                 'template : while template_rz.to_next_val() {
-                    let template_expr = Expr{ptr : template_rz.path() as *const [u8] as *const u8 as *mut u8 };
-                    let set_template = |mut buf : &mut Vec<u8>| {
-                        buf.truncate(1); // keep arity
-                        buf.extend_from_slice(unsafe { template_expr.span().as_ref().unwrap() });
-                    };
-                    set_template(&mut buffer_template_original);
-                    set_template(&mut buffer_template_computed);
-                    let buf_template_len = buffer_template_original.len();
-                
+                    let template_path = template_rz.path();
+                    
+                    // keep arity
+                    buffer_template_original.truncate(1);
+                    buffer_template_computed.truncate(1);
+                    // append template
+                    buffer_template_original.extend_from_slice(template_path);
+                    buffer_template_computed.extend_from_slice(template_path);
+                    // need this for truncation
+                    let buf_template_len = buffer_template_original.len();                
 
                     let mut out_rz = template_rz.val().expect(NEXT_STEP_GUARANTEE).read_zipper();
                    'out : while out_rz.to_next_val() {                

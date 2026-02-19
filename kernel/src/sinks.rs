@@ -1,3 +1,4 @@
+use core::f64;
 use std::io::{BufRead, Read, Write};
 use std::{mem, process, ptr};
 use std::any::Any;
@@ -853,6 +854,125 @@ impl Sink for SumSink {
     }
 }
 
+
+
+
+
+pub struct MinSink { e: Expr, unique: PathMap<()> }
+impl Sink for MinSink {
+    fn new(e: Expr) -> Self {
+        MinSink { e, unique: PathMap::new() }
+    }
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
+        trace!(target: "sink", "min requesting {}", serialize(p));
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        let mpath = &path[5+wz.root_prefix_path().len()..];
+        let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
+        trace!(target: "sink", "min at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "min registering in ctx {:?}", serialize(mpath));
+        self.unique.insert(mpath, ());
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        wz.reset();
+        trace!(target: "sink", "min finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
+
+        let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
+        let mut rooted_input = PathMap::new();
+        rooted_input.write_zipper_at_path(wz.root_prefix_path()).graft_map(_to_swap);
+
+        static v: &'static [u8] = &[item_byte(Tag::NewVar)];
+        let mut prz = OneFactor::new(rooted_input.into_read_zipper(&[]));
+        let prz_ptr = (&prz) as *const OneFactor<_>;
+        let mut changed = false;
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+
+            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+                let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
+                prz.descend_to_byte(b);
+                debug_assert!(prz.path_exists());
+                if !prz.descend_first_k_path(size as _) { unreachable!() }
+                loop {
+                    let mut total = f64::MAX;
+                    let clen = prz.origin_path().len();
+
+                    let mut rz = prz.fork_read_zipper();
+                    while rz.to_next_val() {
+                        let p = rz.origin_path();
+                        trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
+                        total = total.min(str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                    }
+                    let min_str = total.to_string();
+                    trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), total);
+                    assert_eq!(prz.origin_path().len(), clen);
+
+                    let fixed_number = &prz.origin_path()[prz.origin_path().len()-(size as usize)..];
+                    if fixed_number == min_str.as_bytes() {
+                        let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
+                        trace!(target: "sink", "fixed payload {}", serialize(fixed));
+                        wz.move_to_path(fixed);
+                        wz.set_val(());
+                        changed |= true;
+                    }
+
+                    if !prz.to_next_k_path(size as _) { break }
+                }
+                if !prz.ascend_byte() { unreachable!() }
+            }
+
+            if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
+                let ignored = &prz.path()[..prz.path().len()-1];
+                trace!(target: "sink", "ignored guard {}", serialize(ignored));
+                wz.move_to_path(ignored);
+                wz.set_val(());
+                changed |= true;
+                prz.ascend_byte();
+            }
+            if prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+                    let mut total = f64::MAX;
+                    let clen = prz.path().len();
+                    let mut rz = prz.fork_read_zipper();
+                    while rz.to_next_val() {
+                        let p = rz.origin_path();
+                        trace!(target: "sink", "path {:?}", serialize(p));
+                        trace!(target: "sink", "path {:?}", serialize(&p[clen+1..]));
+                        total = total.min(str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                    }
+                    let min_str = total.to_string();
+
+                    let mut cntv = vec![item_byte(Tag::SymbolSize(min_str.len() as _))];
+                    cntv.extend_from_slice(min_str.as_bytes());
+                    let varref = &prz.path()[..prz.path().len()-1];
+                    let ie = Expr { ptr: (&varref[0] as *const u8).cast_mut() };
+                    let mut oz = ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() });
+                    trace!(target: "sink", "ref guard '{}' var {:?} with '{}'", serialize(varref), k, serialize(&cntv[..]));
+                    let os = ie.substitute_one_de_bruijn(k, Expr{ ptr: cntv.as_mut_ptr() }, &mut oz);
+                    unsafe { buffer.set_len(oz.loc) }
+                    trace!(target: "sink", "ref guard subs '{:?}'", serialize(&buffer[..oz.loc]));
+                    wz.move_to_path(&buffer[wz.root_prefix_path().len()..oz.loc]);
+                    wz.set_val(());
+                    changed |= true
+                }
+                prz.ascend_byte();
+            }
+            true
+        });
+        changed
+    }
+}
+
+
+
+
+
+
+
 /// Reduce has multi-set semantics, only accepts with ground results (values output from the `Out` operation).
 ///
 /// `In`  applys on all input values.  
@@ -873,7 +993,7 @@ impl Sink for SumSink {
 /// )
 /// ```
 /// an example of a valid reduce triple is `(In f64_from_string) (Op sum_f64) (Out f64_to_string)`
-struct Reduce {
+struct ReduceSink {
     scope     : eval::EvalScope,
 
     e            : Expr,
@@ -894,10 +1014,9 @@ struct Reduce {
     accumulator : PathMap<PathMap<PathMap<PathMap<usize>>>>,
 }
 
-impl Sink for Reduce {
+impl Sink for ReduceSink {
     fn new(e: Expr) -> Self {
-        let mut skip = false;
-        if e.arity() != Some(8) { skip = false };
+        core::debug_assert!(matches!(e.arity(), Some(8)));
 
         destruct!(
             e,
@@ -906,14 +1025,14 @@ impl Sink for Reduce {
                     ("Op"  _Op)
                     ("Out" _Out)
             ),
-            {   Reduce {
+            {   ReduceSink {
                     e,
                     skip        : false,
                     scope       : eval::EvalScope::new(),
                     accumulator : PathMap::new(),
                 }
             },
-            err => return Reduce { 
+            err => return ReduceSink { 
                 e,
                 skip        : true,
                 scope       : eval::EvalScope::new(),
@@ -1307,7 +1426,8 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     Z3Sink(Z3Sink),
     AUSink(AUSink),
     USink(USink),
-    CompatSink(CompatSink)
+    CompatSink(CompatSink),
+    MinSink(MinSink),
 }
 
 impl ASink {
@@ -1338,6 +1458,9 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
             return ASink::SumSink(SumSink::new(e));
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+            *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'i' && *e.ptr.offset(4) == b'n' } {
+            return ASink::MinSink(MinSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'a' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b'd' } {
             return ASink::AndSink(AndSink::new(e));
@@ -1387,6 +1510,7 @@ impl Sink for ASink {
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::MinSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1409,6 +1533,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
+            ASink::MinSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1431,6 +1556,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
+            ASink::MinSink(s) => { s.finalize(it) }
         }
     }
 }

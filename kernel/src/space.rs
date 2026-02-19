@@ -23,7 +23,8 @@ use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::PathMap;
 use mork_frontend::json_parser::Transcriber;
 use log::*;
-
+use subprocess::{Popen, PopenConfig, Redirection};
+use subprocess::unix::PopenExt;
 use crate::sources::AFactor;
 
 pub static mut transitions: usize = 0;
@@ -37,7 +38,7 @@ pub struct Space {
     pub btm: PathMap<()>,
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>,
-    pub z3s: HashMap<&'static str, subprocess::Popen>,
+    pub z3s: HashMap<&'static str, Box<subprocess::Popen>>,
     pub last_merkleize: Instant,
     pub timing: bool
 }
@@ -1410,6 +1411,8 @@ impl Space {
         let mut template_resources: Vec<_> = Vec::with_capacity(64);
         let mut outstanding_wzs = Vec::with_capacity(64);
         let mut outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
+
+        let mut z3s_ptr = ((&self.z3s) as *const HashMap<&str, Box<Popen>>).cast_mut();
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
@@ -1423,7 +1426,15 @@ impl Space {
                     WriteResourceRequest::ACT(f) => {
                         template_resources.push(WriteResource::ACT(()))
                     }
-                    WriteResourceRequest::Z3(_) => {}
+                    WriteResourceRequest::Z3(f) => unsafe {
+                        let mut cfg = PopenConfig::default();
+                        cfg.stdin = Redirection::Pipe;
+                        if !z3s_ptr.as_mut().unwrap().contains_key(f) {
+                            z3s_ptr.as_mut().unwrap().insert(f, Box::new(Popen::create(&["python", "resources/fake_cli.py", "-in", "-smt2"], cfg).unwrap()));
+                        }
+                        let instance = unsafe { z3s_ptr.as_mut().unwrap().get_mut(f).unwrap().as_mut() };
+                        template_resources.push(WriteResource::Z3(instance))
+                    }
                 }
             }
         });
@@ -1715,5 +1726,14 @@ impl Space {
         // counters.print_list_node_stats();
         // println!("#symbols {}", self.sm.symbol_count());
         process::exit(0);
+    }
+}
+
+impl Drop for Space {
+    fn drop(&mut self) {
+        for (_, z3) in self.z3s.iter_mut() {
+            // z3.terminate();
+            drop(z3.stdin.take())
+        }
     }
 }

@@ -2932,13 +2932,13 @@ fn sink_z3_basic() {
 (z3-declare (declare-const a Int))
 (z3-declare (declare-const b Int))
 
-(z3-assert (> a 0))
-(z3-assert (< b 0))
+(z3-assert (assert (> a 0)))
+(z3-assert (assert (< b 0)))
 
 (exec 0 (, (z3-declare $s))
-        (O (z3 ins $s))
-)
-
+        (O (z3 ins $s)))
+(exec 1 (, (z3-assert $s))
+        (O (z3 ins $s)))
 
     "#;
 
@@ -5547,6 +5547,8 @@ enum Commands {
 fn main() {
     env_logger::init();
 
+    sink_z3_basic();
+    return;
     let args = Cli::parse();
 
     match args.command {

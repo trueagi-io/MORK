@@ -54,7 +54,12 @@ impl WriteResourceRequest {
                     _ => { None }
                 }
             }
-            WriteResourceRequest::Z3(_) => { unreachable!() }
+            WriteResourceRequest::Z3(s) => {
+                match other {
+                    WriteResourceRequest::Z3(o) if s == o => { Some(WriteResourceRequest::Z3(s)) }
+                    _ => { None }
+                }
+            }
         }
     }
 }
@@ -72,7 +77,11 @@ impl PartialOrd for WriteResourceRequest {
                     if s == o { Some(Ordering::Equal) } else { None }
                 } else { None }
             }
-            WriteResourceRequest::Z3(_) => { unreachable!() }
+            WriteResourceRequest::Z3(s) => {
+                if let WriteResourceRequest::Z3(o) = other {
+                    if s == o { Some(Ordering::Equal) } else { None }
+                } else { None }
+            }
         }
     }
 }
@@ -1005,29 +1014,31 @@ impl Sink for PureSink {
 
 // (z3 <instance> <declaration or assertion>)
 #[cfg(feature = "z3")]
-pub struct Z3Sink { e: Expr, buffer: Vec<u8> }
+pub struct Z3Sink { e: Expr, buffer: Vec<u8>, ins: &'static str }
 #[cfg(feature = "z3")]
 impl Sink for Z3Sink {
     fn new(e: Expr) -> Self {
-        Z3Sink { e, buffer: vec![] }
+        destruct!(e, ("z3" {instance: &str} {decl: Expr}), {
+            trace!(target: "sinks", "z3 requesting instance {instance}");
+            Z3Sink { e, buffer: vec![], ins: instance }
+        }, _err => { unreachable!() })
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        destruct!(self.e, ("z3" {instance: &str} {decl: Expr}), {
-            trace!(target: "sinks", "z3 requesting instance {instance}");
-            return std::iter::once(WriteResourceRequest::Z3(instance));
-        }, _err => { unreachable!() });
+        return std::iter::once(WriteResourceRequest::Z3(self.ins));
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        trace!(target: "sink", "z3 at raw '{}'", serialize(path));
-        let e = Expr { ptr: path.as_ptr().cast_mut() };
+        let spath = &path[1+1+2+1+self.ins.bytes().len()..];
+        trace!(target: "sink", "z3 sinking '{}'", serialize(spath));
+        let e = Expr { ptr: spath.as_ptr().cast_mut() };
         e.serialize(&mut self.buffer, |e| std::str::from_utf8(e).unwrap());
         self.buffer.push(b'\n');
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
-        trace!(target: "sink", "z3 writing buffer {}", std::str::from_utf8(&self.buffer[..]).unwrap());
+        trace!(target: "sink", "z3 writing buffer {:?}", std::str::from_utf8(&self.buffer[..]).unwrap());
         let WriteResource::Z3(ref mut p) = it.next().unwrap() else { unreachable!() };
         let mut stdin = p.stdin.as_mut().unwrap();
         stdin.write(&self.buffer[..]).unwrap();
+        stdin.flush().unwrap();
         true
     }
 }

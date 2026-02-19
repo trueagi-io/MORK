@@ -854,14 +854,29 @@ impl Sink for SumSink {
     }
 }
 
-
-
-
-
-pub struct MinSink { e: Expr, unique: PathMap<()> }
-impl Sink for MinSink {
+#[repr(usize)]
+enum FloatReduction {
+    Sum,
+    Min,
+    Max,
+    /// Count
+    Cnt,
+    _TotalReductions,
+}
+impl FloatReduction {
+    const ACC_OP : [(f64, fn(&mut f64,f64)); FloatReduction::_TotalReductions as usize] = 
+    {   let mut out : [(f64, fn(&mut f64,f64)); FloatReduction::_TotalReductions as usize] = [ (0.0, |x,y|panic!());FloatReduction::_TotalReductions as usize];
+        out[Self::Sum as usize] = (0.0_f64  , std::ops::AddAssign::add_assign );
+        out[Self::Min as usize] = (f64::MAX , |x,y| *x= f64::min(*x, y)       );
+        out[Self::Max as usize] = (f64::MIN , |x,y| *x= f64::max(*x, y)       );
+        out[Self::Cnt as usize] = (0.0_f64  , |x,y| *x += 1.0                 );
+        out
+    };
+}
+pub struct FloatReductionSink<const REDUCTION : usize> { e: Expr, unique: PathMap<()> }
+impl<const REDUCTION : usize> Sink for FloatReductionSink<REDUCTION> {
     fn new(e: Expr) -> Self {
-        MinSink { e, unique: PathMap::new() }
+        Self { e, unique: PathMap::new() }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
@@ -898,14 +913,14 @@ impl Sink for MinSink {
                 debug_assert!(prz.path_exists());
                 if !prz.descend_first_k_path(size as _) { unreachable!() }
                 loop {
-                    let mut total = f64::MAX;
+                    let mut total = FloatReduction::ACC_OP[REDUCTION].0;
                     let clen = prz.origin_path().len();
 
                     let mut rz = prz.fork_read_zipper();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
-                        total = total.min(str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        FloatReduction::ACC_OP[REDUCTION].1(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
                     }
                     let min_str = total.to_string();
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), total);
@@ -935,14 +950,14 @@ impl Sink for MinSink {
             }
             if prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
-                    let mut total = f64::MAX;
+                    let mut total = FloatReduction::ACC_OP[REDUCTION].0;
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
                         trace!(target: "sink", "path {:?}", serialize(&p[clen+1..]));
-                        total = total.min(str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        FloatReduction::ACC_OP[REDUCTION].1(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
                     }
                     let min_str = total.to_string();
 
@@ -966,6 +981,10 @@ impl Sink for MinSink {
         changed
     }
 }
+
+
+
+
 
 
 
@@ -1427,7 +1446,9 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     AUSink(AUSink),
     USink(USink),
     CompatSink(CompatSink),
-    MinSink(MinSink),
+    MinSink(FloatReductionSink<{FloatReduction::Min as usize}>),
+    MaxSink(FloatReductionSink<{FloatReduction::Max as usize}>),
+    CntSink(FloatReductionSink<{FloatReduction::Cnt as usize}>),
 }
 
 impl ASink {
@@ -1460,7 +1481,13 @@ impl Sink for ASink {
             return ASink::SumSink(SumSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'i' && *e.ptr.offset(4) == b'n' } {
-            return ASink::MinSink(MinSink::new(e));
+            return ASink::MinSink(FloatReductionSink::new(e));
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+            *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b'x' } {
+            return ASink::MaxSink(FloatReductionSink::new(e));
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+            *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b't' } {
+            return ASink::CntSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'a' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b'd' } {
             return ASink::AndSink(AndSink::new(e));
@@ -1511,6 +1538,8 @@ impl Sink for ASink {
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::MinSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::MaxSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::CntSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1534,6 +1563,8 @@ impl Sink for ASink {
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
             ASink::MinSink(s) => { s.sink(it, path) }
+            ASink::MaxSink(s) => { s.sink(it, path) }
+            ASink::CntSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1557,6 +1588,8 @@ impl Sink for ASink {
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
             ASink::MinSink(s) => { s.finalize(it) }
+            ASink::MaxSink(s) => { s.finalize(it) }
+            ASink::CntSink(s) => { s.finalize(it) }
         }
     }
 }

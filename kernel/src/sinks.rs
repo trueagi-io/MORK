@@ -1,5 +1,6 @@
 use core::f64;
 use std::io::{BufRead, Read, Write};
+use std::marker::PhantomData;
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -7,7 +8,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::hint::unreachable_unchecked;
 use std::mem::MaybeUninit;
-use std::ops::{Coroutine, CoroutineState};
+use std::ops::{AddAssign, Coroutine, CoroutineState};
 use std::pin::Pin;
 use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::LazyLock;
@@ -854,49 +855,61 @@ impl Sink for SumSink {
     }
 }
 
-#[repr(usize)]
-enum FloatReduction {
-    Sum,
-    Min,
-    Max,
-    /// Count
-    Cnt,
-    _TotalReductions,
+
+struct Sum;
+struct Min;
+struct Max;
+struct Cnt;
+
+trait FloatReduction {
+    const NAME : &'static str;
+    const ACC  : f64;
+    fn op(acc  : &mut f64, new : f64);
 }
-#[derive(Clone, Copy)]
-struct InstFloatOp {name : &'static str, acc : f64, op : fn(&mut f64,f64)}
-impl FloatReduction {
-    const NAME_ACC_OP : [InstFloatOp; FloatReduction::_TotalReductions as usize] = 
-    {   let mut out : [InstFloatOp; FloatReduction::_TotalReductions as usize] = [ InstFloatOp{name : "unimplemented", acc : 0.0, op : |x,y|panic!()};FloatReduction::_TotalReductions as usize];
-        out[Self::Sum as usize] = InstFloatOp{name : "sum", acc : 0.0_f64  , op : std::ops::AddAssign::add_assign };
-        out[Self::Min as usize] = InstFloatOp{name : "min", acc : f64::MAX , op : |x,y| *x= f64::min(*x, y)       };
-        out[Self::Max as usize] = InstFloatOp{name : "max", acc : f64::MIN , op : |x,y| *x= f64::max(*x, y)       };
-        out[Self::Cnt as usize] = InstFloatOp{name : "cnt", acc : 0.0_f64  , op : |x,y| *x += 1.0                 };
-        out
-    };
+impl FloatReduction for Sum {
+    const NAME : &'static str= "sum";
+    const ACC  : f64 = 0.0;
+    fn op(acc : &mut f64, new : f64) { acc.add_assign(new); }
 }
-pub struct FloatReductionSink<const REDUCTION : usize> { e: Expr, unique: PathMap<()> }
-impl<const REDUCTION : usize> Sink for FloatReductionSink<REDUCTION> {
+impl FloatReduction for Min {
+    const NAME : &'static str= "min";
+    const ACC  : f64 = f64::MAX;
+    fn op(acc : &mut f64, new : f64) { *acc = (*acc).min(new) }
+}
+impl FloatReduction for Max {
+    const NAME : &'static str= "max";
+    const ACC  : f64 = f64::MIN;
+    fn op(acc : &mut f64, new : f64) { *acc = (*acc).max(new) }
+}
+impl FloatReduction for Cnt {
+    const NAME : &'static str= "cnt";
+    const ACC  : f64 = 0.0;
+    fn op(acc : &mut f64, new : f64) { acc.add_assign(1.0); }
+}
+
+
+pub struct FloatReductionSink<Reduction> { e: Expr, unique: PathMap<()>, boo : PhantomData<Reduction> }
+impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
     fn new(e: Expr) -> Self {
-        Self { e, unique: PathMap::new() }
+        Self { e, unique: PathMap::new(), boo : PhantomData }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
-        trace!(target: "sink", "{} requesting {}", FloatReduction::NAME_ACC_OP[REDUCTION].name, serialize(p));
+        trace!(target: "sink", "{} requesting {}", Reduction::NAME, serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         let mpath = &path[5+wz.root_prefix_path().len()..];
         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
-        trace!(target: "sink", "{} at '{}' sinking raw '{}'", FloatReduction::NAME_ACC_OP[REDUCTION].name, serialize(wz.root_prefix_path()), serialize(path));
-        trace!(target: "sink", "{} registering in ctx {:?}", FloatReduction::NAME_ACC_OP[REDUCTION].name, serialize(mpath));
+        trace!(target: "sink", "{} at '{}' sinking raw '{}'", Reduction::NAME, serialize(wz.root_prefix_path()), serialize(path));
+        trace!(target: "sink", "{} registering in ctx {:?}", Reduction::NAME, serialize(mpath));
         self.unique.insert(mpath, ());
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
-        trace!(target: "sink", "{} finalizing by reducing {} at '{}'", FloatReduction::NAME_ACC_OP[REDUCTION].name, self.unique.val_count(), serialize(wz.origin_path()));
+        trace!(target: "sink", "{} finalizing by reducing {} at '{}'", Reduction::NAME, self.unique.val_count(), serialize(wz.origin_path()));
 
         let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
         let mut rooted_input = PathMap::new();
@@ -915,14 +928,14 @@ impl<const REDUCTION : usize> Sink for FloatReductionSink<REDUCTION> {
                 debug_assert!(prz.path_exists());
                 if !prz.descend_first_k_path(size as _) { unreachable!() }
                 loop {
-                    let mut total = FloatReduction::NAME_ACC_OP[REDUCTION].acc;
+                    let mut total = Reduction::ACC;
                     let clen = prz.origin_path().len();
 
                     let mut rz = prz.fork_read_zipper();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
-                        (const{FloatReduction::NAME_ACC_OP[REDUCTION].op})(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
                     }
                     let min_str = total.to_string();
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), total);
@@ -952,14 +965,14 @@ impl<const REDUCTION : usize> Sink for FloatReductionSink<REDUCTION> {
             }
             if prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
-                    let mut total = FloatReduction::NAME_ACC_OP[REDUCTION].acc;
+                    let mut total = Reduction::ACC;
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
                         trace!(target: "sink", "path {:?}", serialize(&p[clen+1..]));
-                        (const{FloatReduction::NAME_ACC_OP[REDUCTION].op})(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
                     }
                     let min_str = total.to_string();
 
@@ -1438,7 +1451,7 @@ impl Sink for Z3Sink {
 }
 
 
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(FloatReductionSink<Sum>), AndSink(AndSink), ACTSink(ACTSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1448,9 +1461,9 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     AUSink(AUSink),
     USink(USink),
     CompatSink(CompatSink),
-    MinSink(FloatReductionSink<{FloatReduction::Min as usize}>),
-    MaxSink(FloatReductionSink<{FloatReduction::Max as usize}>),
-    CntSink(FloatReductionSink<{FloatReduction::Cnt as usize}>),
+    MinSink(FloatReductionSink<Min>),
+    MaxSink(FloatReductionSink<Max>),
+    CntSink(FloatReductionSink<Cnt>),
 }
 
 impl ASink {
@@ -1480,7 +1493,7 @@ impl Sink for ASink {
             ASink::HashSink(HashSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
-            return ASink::SumSink(SumSink::new(e));
+            return ASink::SumSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'i' && *e.ptr.offset(4) == b'n' } {
             return ASink::MinSink(FloatReductionSink::new(e));

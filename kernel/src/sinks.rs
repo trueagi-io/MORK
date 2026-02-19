@@ -1,5 +1,4 @@
 use std::io::{BufRead, Read, Write};
-use std::marker::PhantomData;
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -14,7 +13,6 @@ use std::sync::LazyLock;
 use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
-use futures::sink::Buffer;
 use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
@@ -26,9 +24,9 @@ use log::*;
 use pathmap::morphisms::Catamorphism;
 use pathmap::PathMap;
 use eval::EvalScope;
-use eval_ffi::ExprSource;
+use eval_ffi::{ExprSink, ExprSource};
 use mork_expr::macros::SerializableExpr;
-use crate::pure;
+use crate::{expr, pure};
 use crate::space::ACT_PATH;
 
 pub(crate) enum WriteResourceRequest {
@@ -855,6 +853,321 @@ impl Sink for SumSink {
     }
 }
 
+/// Reduce has multi-set semantics, only accepts with ground results (values output from the `Out` operation).
+///
+/// `In`  applys on all input values.  
+/// 
+/// `Op`  applys on all all pairs of b.
+/// 
+/// `Out` applys _only_ after the reductions with Op finishes.
+/// 
+/// 
+/// ```ignore
+/// ; syntax
+/// (Reduce 
+/// $OutTemplate $out $in 
+///       ; the operations must be just the single names from pure/eval
+///  with (In  $eval_unary_op_in)  ; In  : a     -> b
+///       (Op  $eval_binary_op)    ; Op  : b * b -> b
+///       (Out $eval_unary_op_out) ; Out : b     -> c
+/// )
+/// ```
+/// an example of a valid reduce triple is `(In f64_from_string) (Op sum_f64) (Out f64_to_string)`
+struct Reduce {
+    scope     : eval::EvalScope,
+
+    e            : Expr,
+    out_template : Expr, // need this for prefix reservation.
+    skip         : bool,
+
+    /// Having the nested Pathmaps makes it easier to separate the concern of what values were bound by a source.
+    /// the outer pathmap is the index that dictates what reduce will be applied
+    /// the middle one on what template,
+    /// the one before last is the out value,
+    /// the innermost pathmap is the values that will be reduced for that index.
+    /// The order here matters! it preserves the variables in the exprs.
+    /// the usize is required to encode multiset behavior 
+    
+    // (Remy) this code is sub optimal, but I want get a version that works done first.
+    // a plain Pathmap<usize> would be enough normally.
+    // I would need to check branching points as I acend and decent and compare them to locations I found along the way with a stack.
+    // It's very doable, but heavy in numerics.
+    accumulator : PathMap<PathMap<PathMap<PathMap<usize>>>>,
+}
+
+impl Sink for Reduce {
+    fn new(e: Expr) -> Self {
+        let mut skip = false;
+        if e.arity() != Some(8) { skip = false };
+
+        let null = Expr{ ptr : core::ptr::null_mut() };
+        let out_template = Expr{ptr : unsafe { 
+            e.ptr.add(Expr{ptr:e.ptr.add(1/* arity tag */)}.span().len() + 1 /* arity tag again */) 
+        }}; // I cannot fail to get this arity 8 guarantees this.
+        destruct!(
+            e,
+            ("reduce" _template _out _in 
+             "with" ("In"  _In)
+                    ("Op"  _Op)
+                    ("Out" _Out)
+            ),
+            {   Reduce {
+                    e,
+                    scope: eval::EvalScope::new(),
+                    skip         : false,
+                    out_template,  
+                    accumulator : PathMap::new(),
+                }
+            },
+            err => return Reduce { 
+                e,
+                skip : true,
+                scope: eval::EvalScope::new(),
+                out_template,
+                accumulator : PathMap::new(),
+            }
+        )
+    }
+
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+        let p = unsafe { self.out_template.prefix().unwrap_or_else(|x| { self.out_template.span() }).as_ref().unwrap() };
+        trace!(target: "sink", "reduce requesting {}", serialize(p));
+        std::iter::once(WriteResourceRequest::BTM(p))
+    }
+
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        if self.skip {return;}
+        
+        // The tempory pathmap is organized by operation, then arguments.
+        destruct!(
+            Expr{ ptr : path as *const[u8] as *const u8 as *mut u8 },
+            ("reduce" _template _out _in 
+             _with ("In"  _In)
+                   ("Op"  _Op)
+                   ("Out" _Out)
+            ),
+            
+            {
+                // We only support single eval operators
+                if [_In,_Op,_Out].map(|e| unsafe { mork_expr::byte_item(*e.ptr) }).into_iter().any(|b|!matches!(b, mork_expr::Tag::SymbolSize(_)))
+                {   self.skip = true;
+                    return;
+                }
+
+                let path_as_ptr = path as *const[u8] as *const u8 as *mut u8;
+                let mut wz = self.accumulator.write_zipper();
+                
+                // add arity byte
+                wz.descend_to_byte(mork_expr::item_byte(mork_expr::Tag::Arity(4)));
+
+                // index by operations
+                wz.descend_to(unsafe { 
+                    &(Expr{ptr : path_as_ptr}).span().as_ref().unwrap()[_with.ptr.byte_offset_from_unsigned(path_as_ptr)..]
+                });
+
+                wz.descend_to(unsafe { _in.span().as_ref().unwrap() });
+                
+                let mut wz_template =          wz.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe { _template.span().as_ref().unwrap() });
+                let mut wz_out      = wz_template.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe {      _out.span().as_ref().unwrap() });
+                let mut wz_in       =      wz_out.get_val_or_set_mut(PathMap::new()).write_zipper_at_path(unsafe {       _in.span().as_ref().unwrap() });
+                *wz_in.get_val_or_set_mut(0) += 1; // this should guarantee that the count of a value is always at least 1.
+
+            },
+            err => { self.skip = false; return}
+        );
+    }
+
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        if self.skip { return false; }
+        
+        let WriteResource::BTM(mut wr_wz) = it.next().unwrap() else {unreachable!()};
+        wr_wz.reset();
+        let prefix_len = wr_wz.root_prefix_path().len();
+
+        let Self { scope, e, out_template, skip, accumulator } = self;
+
+
+        let mut ops_rz = accumulator.read_zipper();
+
+
+        let [ mut buffer_in
+            , mut buffer_op
+            , mut buffer_out
+            , mut buffer_template_original
+            , mut buffer_template_computed 
+            ] = 
+            [ 2 /* unary op */
+            , 3 /* binary op*/
+            , 2 /* unary op */
+
+            , 2 /* pair */
+            , 2 /* pair */
+            ].map(|b|Vec::from([mork_expr::item_byte(mork_expr::Tag::Arity(b))]));
+
+
+        const UNIFICATION_BUFFER_SIZE : usize = 1 << 28;
+        let mut unification_buffer = Vec::with_capacity(UNIFICATION_BUFFER_SIZE); // thats a 256 mib buffer
+        // ! CAUTION !
+        // This section is subtly unsafe, we need to have an __arity 2__ at the beginning of the allocation.
+        // This is required, because if we do `ExprZipper::reset(&mut self)`, reset expects the zipper to point to an already 
+        // initialized Expr, and reads the first byte to prepare a stack. Although it isn't strictly needed, putting the first byte makes 
+        // refactoring the code mildy safer, it means `ExprZipper::reset(&mut self)` can happen before or after applying unification, 
+        // while still having a valid zipper stack.
+        // the alternative is reallocating the zipper stack every unification.
+        unification_buffer.push(mork_expr::item_byte(mork_expr::Tag::Arity(2 /* pair */)));
+        let unification_expr = Expr{ptr : unification_buffer.as_mut_ptr()};
+        let mut unification_zipper = ExprZipper::new(unification_expr);
+
+        
+        const NEXT_STEP_GUARANTEE : &'static str = "to_next_step should guarantee that there is a value";
+
+        'err_cleanup : {
+            // we break here when there was a user error, falling through to cleanup
+            'ops : loop {
+                if !ops_rz.to_next_val() { break 'err_cleanup; /* if we are here we are done, we skip cleanup on error */}
+    
+                let ops = Expr{ptr:ops_rz.path() as *const[u8] as *const u8 as *mut u8};
+                let [_in, _op, _out] : [Expr; 3]  = destruct!(
+                    ops,
+                    ("with" ("In"  _In)
+                            ("Op"  _Op)
+                            ("Out" _Out)),
+                    [_In, _Op, _Out],
+                    err => unreachable!("Implementation of finalize() and sink() are out of sync.")
+                );
+                
+                // put the names of each operation into the buffers
+                // we the lengths with the arity when truncating on iterations, 
+                let [buf_in_name_len,buf_op_name_len,buf_out_name_len] =
+                [ (&mut buffer_in,  _in)
+                , (&mut buffer_op,  _op)
+                , (&mut buffer_out, _out)
+                ].map(
+                    |(mut buf, op_name)| {
+                        buf.truncate(1); // keep arity
+                        buf.extend_from_slice(unsafe { op_name.span().as_ref().unwrap() });
+                        buf.len()
+                    }
+                );
+                
+
+                let mut template_rz = ops_rz.val().expect(NEXT_STEP_GUARANTEE).read_zipper();
+                'template : while template_rz.to_next_val() {
+                    let template_expr = Expr{ptr : template_rz.path() as *const [u8] as *const u8 as *mut u8 };
+                    let set_template = |mut buf : &mut Vec<u8>| {
+                        buf.truncate(1); // keep arity
+                        buf.extend_from_slice(unsafe { template_expr.span().as_ref().unwrap() });
+                    };
+                    set_template(&mut buffer_template_original);
+                    set_template(&mut buffer_template_computed);
+                    let buf_template_len = buffer_template_original.len();
+                
+
+                    let mut out_rz = template_rz.val().expect(NEXT_STEP_GUARANTEE).read_zipper();
+                   'out : while out_rz.to_next_val() {                
+    
+                        let mut in_rz = out_rz.val().expect(NEXT_STEP_GUARANTEE).read_zipper();    
+    
+                        // if we got to this point, there must be at least one value
+                        core::assert!(in_rz.to_next_val());
+
+                        // any branch as at least one value, we acquire and get it's multiplicity
+                        let mut first_val = |in_rz: &ReadZipperUntracked<'_, '_, usize>, scope : &mut EvalScope| {
+                            let mut n = *in_rz.get_val().unwrap();
+                            buffer_in.truncate(buf_in_name_len);
+                            buffer_in.extend_from_slice(in_rz.path());
+                            let e_src = ExprSource::new(buffer_in.as_ptr());                    
+                            let maybe_val = scope.eval(e_src);
+                            (maybe_val, n-1)
+                        };
+                        let (Ok(val), n) = first_val(&in_rz, scope) else { break 'ops; };
+    
+                        
+                        let mut acc = val.clone();
+    
+                        let mut update_acc = |val:&_, n, scope : &mut EvalScope| 'update : {
+                            for _ in 0..n {
+                                buffer_op.truncate(buf_op_name_len);
+                                buffer_op.extend_from_slice(&acc);
+                                buffer_op.extend_from_slice(&val);
+                                
+                                let e_src    = ExprSource::new(buffer_op.as_ptr());
+                                let Ok(next) = scope.eval(e_src) else { break 'update false;};
+                                scope.return_alloc(core::mem::replace(&mut acc, next));
+                            }
+                            break 'update true;
+                        };
+                        
+                        // it's n-1 the first time, because we need to construct the accumulator from the first one
+                        if !update_acc(&val, n-1, scope) { break 'ops; }
+                        scope.return_alloc(val);              
+                        
+                        // now we repeat, but we have an accumulator
+                        '_in : while in_rz.to_next_val() {
+                            let (Ok(val), n) = first_val(&in_rz, scope) else {break 'ops};
+                            if !update_acc(&val,n, scope) { break 'ops; }
+                            scope.return_alloc(val);
+                        }
+
+                        // we now have the full accumulator
+                        // we now apply the out operation
+                        buffer_out.truncate(buf_out_name_len);
+                        buffer_out.extend_from_slice(&acc);
+                        let e_src = ExprSource::new(buffer_out.as_ptr());
+                        let Ok(mut result) = scope.eval(e_src) else { break 'ops };                        
+                        scope.return_alloc(acc);
+
+                        // this should happen anyways when running eval, but just to be sure...
+                        if !(Expr{ptr : result.as_mut_ptr()}.is_ground()) {break 'ops; }
+
+                        // keep the template
+                        buffer_template_original.truncate(buf_template_len);
+                        buffer_template_computed.truncate(buf_template_len);
+
+                        // concat the out value pattern, and the out result
+                        buffer_template_original.extend_from_slice(out_rz.path());
+                        buffer_template_computed.extend_from_slice(&result);
+
+                        // unify
+                        unification_zipper.reset();
+                        let Ok(_) = Expr::unify(
+                                Expr{ptr : buffer_template_original.as_mut_ptr()},
+                                Expr{ptr : buffer_template_computed.as_mut_ptr()},
+                                &mut unification_zipper,
+                            ) else {
+                            // we are only filtering, it's not a user error
+                            // try the template again with other out filters
+                            scope.return_alloc(result); break 'out; 
+                        };
+
+                        // Success! We add to the output.
+                        wr_wz.reset();
+                        wr_wz.move_to_path(&unification_buffer[prefix_len..unification_zipper.loc]);
+                        wr_wz.set_val(());
+
+
+                        scope.return_alloc(result);
+                    }
+                }
+    
+            }
+            
+
+            // cleanup in case of an error
+            wr_wz.reset();
+            wr_wz.remove_branches(true);
+            wr_wz.remove_val(true);
+            return false;
+        }        
+
+        true
+    }
+}
+
+
+
+
+
 // (pure (result $x) $x (f32_from_string 0.2))
 #[cfg(feature = "grounding")]
 pub struct PureSink { e: Expr, unique: PathMap<()> , scope: EvalScope }
@@ -963,172 +1276,6 @@ impl Sink for PureSink {
     }
 }
 
-
-
-trait ReduceSink<T> {
-    const OP_NAME : &'static [u8];
-    fn from_expr(e : Expr)->Option<T>;
-    fn to_expr(t:T, out : &mut [u8]);
-
-    // op must be a commutative semigroup with T
-    fn op(left : T, right : T)->T;
-    #[cfg(debug_assertions)]
-    fn dbg_op(left : &T, right : &T)->T;
-}
-
-
-// this makes the min for a floating point string
-struct MinFloat;
-impl ReduceSink<f64> for MinFloat {
-    const OP_NAME : &'static [u8] = &*b"MinFloat";
-    fn op(left:f64, right:f64)->f64 {
-        left.min(right)
-    }
-    #[cfg(debug_assertions)]
-    fn dbg_op(left : &f64, right : &f64)->f64 {
-        left.min(*right)
-    }
-    fn from_expr(e : Expr)->Option<f64> {
-        str::from_utf8(unsafe { &*e.symbol()? } ).ok()?.parse().ok()
-    }
-    fn to_expr(t:f64, mut out : &mut [u8]) {
-        core::assert!(out.len() <= 63);
-        core::assert!(!out.is_empty());
-        write!(out, "{}", t).unwrap();
-    }
-}
-
-
-// Reduce 
-struct Reduce<T, Ops : ReduceSink<T> >{
-    e     : Expr,
-    t     : core::marker::PhantomData<T>,
-    ops   : core::marker::PhantomData<Ops>,
-    acc   : Option<T>,
-    /// if the convertion fails at any point, nothing is written out.
-    fail  : bool,
-}
-// We require `T : PartialEq` to debug assert that the operation is commutative. We require `T : Any, Ops : Any` for clear error messages.
-// The syntax will be `(<OP_NAME> <OUT_TEMPLATE> <BINDING> <IN_PAT>)`
-impl<T , Ops> Sink for Reduce<T, Ops> where T : PartialEq + Any, Ops : ReduceSink<T> + Any {
-    fn new(e: Expr) -> Self {
-        const {
-            let mut i = Ops::OP_NAME.len();
-            core::assert!(i < 63);
-
-            loop {
-                i -= 1;
-                let c = Ops::OP_NAME[i];
-                core::assert!(!(c.is_ascii_whitespace() || c == b'(' || c == b')' ||  c == b'\"' || c == b'\'' || c == b';' ));
-                if i == 0 {break}
-            }
-        }
-
-        Reduce { e, t : core::marker::PhantomData, ops : core::marker::PhantomData , acc : None , fail : false }
-    }
-
-    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-
-        let mut ez = ExprZipper::new(self.e);
-        #[cfg(debug_assertions)] { let Tag::Arity(s) = ez.tag() else { unreachable!() }; core::assert_eq!(4, s)  }
-        core::assert!(ez.next());
-
-        #[cfg(debug_assertions)] { let Tag::SymbolSize(s) = ez.tag() else { unreachable!() }; core::assert_eq!(Ops::OP_NAME.len(), s as usize)  }
-        core::assert!(ez.next());
-
-        let e = ez.subexpr();
-
-
-        let p = unsafe { e.prefix().unwrap_or_else(|x| { e.span().as_ref().unwrap() }).as_ref().unwrap() };
-        trace!(target: "sink", "{} requesting {}", core::any::type_name::<Self>(), serialize( unsafe { self.e.span().as_ref().unwrap() }));
-
-        std::iter::once(WriteResourceRequest::BTM(p))
-    }
-
-    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        if self.fail{ return; }
-
-        let Some(right) = Ops::from_expr(Expr { ptr: path as *const [u8] as *const u8 as *mut u8 }) else { self.fail = true; return; };
-        self.acc = Some(match self.acc.take() {
-            Some(left) => { 
-                #[cfg(debug_assertions)]{
-                    let lr = Ops::dbg_op(&left,&right);
-                    let rl = Ops::dbg_op(&right,&left);
-                    core::debug_assert!( lr == rl , "Sink implementation is unlawful : {}", core::any::type_name::<Self>());
-
-                }
-                let out = Ops::op(left, right);
-                out
-            }
-            None => right,
-        });
-    }
-
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
-        let WriteResource::BTM(wz) = it.next().unwrap() else {unreachable!()};
-        wz.reset();
-
-        // unify (<OP_NAME> <OUT_TEMPLATE> <BINDING> <IN_PAT>)
-        //       (<OP_NAME> $t             <ACC>     $p      )
-        // write $t
-        
-        // This buffer holds two expressions!
-        const BUF_SIZE : usize = 4096;
-        let mut buffer = [0_u8; BUF_SIZE];
-        let buf_ptr = &raw mut buffer as *mut u8;
-        let e = Expr{ ptr: buf_ptr };
-        let mut ez = ExprZipper::new(e);
-        core::assert!(ez.write_arity(4));
-        core::assert!(ez.write_symbol(Ops::OP_NAME));
-        core::assert!(ez.write_new_var());
-        let acc_pos =  ez.subexpr().ptr;
-        
-        Ops::to_expr(
-            self.acc.take().unwrap(),
-            unsafe { core::slice::from_raw_parts_mut(acc_pos, BUF_SIZE - acc_pos.byte_offset_from_unsigned(buf_ptr)) }
-        );
-
-        core::assert!(ez.next_child()); // move past the expr we just wrote
-        core::assert!(ez.write_new_var()); // finish the end of the expression
-        core::assert!(ez.reset()); // we need to get back to a previous sibling
-
-        core::assert!(ez.next()); // arity
-        core::assert!(ez.next()); // op name
-        core::assert!(ez.next()); // template new_var
-
-        // increment all var_refs in accumulator and ther is a guaranteed leading new_var
-        while ez.next() {
-            if let Tag::VarRef(n) = ez.tag() {
-                if n == 63 {return false;};
-                core::assert!( ez.write_var_ref(n+1) ) 
-            }
-        }
-
-        let end  = ez.subexpr();
-        let mut end_ez = ExprZipper::new(end);
-        let out = unsafe { core::slice::from_raw_parts_mut(end.ptr, BUF_SIZE - end.ptr.byte_offset_from_unsigned(buf_ptr)) };
-
-
-        let Ok(_) = self.e.unify(e, &mut end_ez) else {return false;};
-        
-        core::assert!(end_ez.reset());
-        core::assert!(end_ez.next()); // arity
-        core::assert!(end_ez.next()); // op name
-
-        let template = end_ez.subexpr();
-
-        core::debug_assert_eq!(wz.path().len(), 0);
-        let dif = wz.origin_path().len();
-
-        core::debug_assert_eq!(wz.origin_path(), unsafe { &template.span().as_ref().unwrap()[..dif] });               
-
-        wz.descend_to( unsafe { &template.span().as_ref().unwrap()[dif..] } );
-        wz.set_val(());
-
-        true
-    }
-}
-
 // (z3 <instance> <declaration or assertion>)
 #[cfg(feature = "z3")]
 pub struct Z3Sink { e: Expr, buffer: Vec<u8> }
@@ -1168,9 +1315,7 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     Z3Sink(Z3Sink),
     AUSink(AUSink),
     USink(USink),
-    CompatSink(CompatSink),
-
-    MinFloat(Reduce<f64, MinFloat>),
+    CompatSink(CompatSink)
 }
 
 impl ASink {
@@ -1192,16 +1337,6 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'h' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'd' } {
             ASink::HeadSink(HeadSink::new(e))
-
-
-        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4))
-                        && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(MinFloat::OP_NAME.len() as u8)) 
-                        && core::slice::from_raw_parts(e.ptr.offset(1), MinFloat::OP_NAME.len()) == MinFloat::OP_NAME
-                  }
-        {
-            Self::MinFloat(Reduce::new(e))
-
-
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
             *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'o' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(5) == b'n' && *e.ptr.offset(6) == b't' } {
             ASink::CountSink(CountSink::new(e))
@@ -1260,7 +1395,6 @@ impl Sink for ASink {
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
-                ASink::MinFloat(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1283,7 +1417,6 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
-            ASink::MinFloat(s) => { s.sink(it, path) }
         }
     }
 
@@ -1306,10 +1439,6 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
-            ASink::MinFloat(s) => { s.finalize(it) }
         }
     }
 }
-
-
-

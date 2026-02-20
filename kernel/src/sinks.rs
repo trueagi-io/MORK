@@ -8,7 +8,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::hint::unreachable_unchecked;
 use std::mem::MaybeUninit;
-use std::ops::{AddAssign, Coroutine, CoroutineState};
+use std::ops::{AddAssign, Coroutine, CoroutineState, MulAssign};
 use std::pin::Pin;
 use std::ptr::{addr_of, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::LazyLock;
@@ -859,7 +859,7 @@ impl Sink for SumSink {
 struct Sum;
 struct Min;
 struct Max;
-struct Cnt;
+struct Prd;
 
 trait FloatReduction {
     const NAME : &'static str;
@@ -881,10 +881,10 @@ impl FloatReduction for Max {
     const ACC  : f64 = f64::MIN;
     fn op(acc : &mut f64, new : f64) { *acc = (*acc).max(new) }
 }
-impl FloatReduction for Cnt {
-    const NAME : &'static str= "cnt";
-    const ACC  : f64 = 0.0;
-    fn op(acc : &mut f64, new : f64) { acc.add_assign(1.0); }
+impl FloatReduction for Prd {
+    const NAME : &'static str= "max";
+    const ACC  : f64 = 1.0;
+    fn op(acc : &mut f64, new : f64) { acc.mul_assign(new) }
 }
 
 
@@ -1463,7 +1463,7 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     CompatSink(CompatSink),
     MinSink(FloatReductionSink<Min>),
     MaxSink(FloatReductionSink<Max>),
-    CntSink(FloatReductionSink<Cnt>),
+    PrdSink(FloatReductionSink<Prd>),
 }
 
 impl ASink {
@@ -1501,8 +1501,8 @@ impl Sink for ASink {
             *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b'x' } {
             return ASink::MaxSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
-            *e.ptr.offset(2) == b'c' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b't' } {
-            return ASink::CntSink(FloatReductionSink::new(e));
+            *e.ptr.offset(2) == b'p' && *e.ptr.offset(3) == b'r' && *e.ptr.offset(4) == b'd' } {
+            return ASink::PrdSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'a' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b'd' } {
             return ASink::AndSink(AndSink::new(e));
@@ -1554,7 +1554,7 @@ impl Sink for ASink {
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::MinSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::MaxSink(s) => { for i in s.request().into_iter() { yield i } }
-                ASink::CntSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::PrdSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1579,7 +1579,7 @@ impl Sink for ASink {
             ASink::CompatSink(s) => { s.sink(it, path) }
             ASink::MinSink(s) => { s.sink(it, path) }
             ASink::MaxSink(s) => { s.sink(it, path) }
-            ASink::CntSink(s) => { s.sink(it, path) }
+            ASink::PrdSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1604,7 +1604,7 @@ impl Sink for ASink {
             ASink::CompatSink(s) => { s.finalize(it) }
             ASink::MinSink(s) => { s.finalize(it) }
             ASink::MaxSink(s) => { s.finalize(it) }
-            ASink::CntSink(s) => { s.finalize(it) }
+            ASink::PrdSink(s) => { s.finalize(it) }
         }
     }
 }

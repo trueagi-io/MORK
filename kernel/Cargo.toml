@@ -28,7 +28,7 @@ hex = "0.4.3"
 subprocess = { version = "0.2.13" }
 
 [features]
-default = ["grounding", "specialize_io"]
+default = ["grounding", "specialize_io", "exec_timing"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]
@@ -37,3 +37,4 @@ no_search = []
 grounding = []
 specialize_io = []
 periodic_merkleize = []
+exec_timing = []

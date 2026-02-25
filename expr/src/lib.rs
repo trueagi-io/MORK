@@ -390,6 +390,15 @@ impl Expr {
         }
     }
 
+    pub fn prefix_non_proper(self) -> *const [u8] {
+        use ControlFlow::*;
+        match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
+            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a) {
+            Break(offset) => { slice_from_raw_parts(self.ptr, offset) } // proper prefix
+            Continue(offset) => { slice_from_raw_parts(self.ptr, offset - 1) } // full expr
+        }
+    }
+
     pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
         use ControlFlow::*;
         match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
@@ -1997,6 +2006,9 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
         }};
     }
 
+    // let mut largs = vec![];
+    // let mut rargs = vec![];
+
     'popping: while let Some((xpop, ypop)) = stack.pop() {
         if PRINT_DEBUG {
             println!("step {iterations}");
@@ -2035,6 +2047,21 @@ pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, Exp
                     if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
                 }
+
+                // if dt1.same_functor(&dt2) {
+                //     largs.clear();
+                //     rargs.clear();
+                //     dt1.args(&mut largs);
+                //     dt2.args(&mut rargs);
+                //     debug_assert_eq!(largs.len(), rargs.len());
+                //
+                //     // Preorder: push children reversed so they pop in-order.
+                //     for i in (0..largs.len()).rev() {
+                //         step!(push largs[i], rargs[i]);
+                //     }
+                // } else {
+                //     return Err(UnificationFailure::Difference(dt1, dt2));
+                // }
             }
             (Some(vx), ov) => {
                 if let Some(sv) = ov { if vx == sv { continue 'popping } }

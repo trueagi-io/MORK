@@ -813,6 +813,18 @@ pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> 
     Ok(())
 }
 
+// pub extern "C" fn nth_expr(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+//     let expr = unsafe { &mut *expr };
+//     let sink = unsafe { &mut *sink };
+//     let items = expr.consume_head_check(b"nth_expr")?;
+//     if items != 1 { return Err(EvalError::from("only takes one argument (an expression)")) }
+//     let SourceItem::Tag(Tag::Arity(k)) = expr.read() else { return Err(EvalError::from("arguments needs to be an expression")) };
+//     for i in 0..symbol.len() {
+//         sink.write(SourceItem::Symbol(&symbol[i..i+1]))?;
+//     }
+//     Ok(())
+// }
+
 // (ifnz <symbol> then <nonzero expr>)
 // (ifnz <symbol> then <nonzero expr> else <zero expr>)
 // The condition <symbol> may be of any length (<symbol> is always len >= 1), 

@@ -307,6 +307,15 @@ impl SerializableExpr for i32 {
     }
 }
 
+impl SerializableExpr for usize {
+    fn size(&self) -> usize { core::mem::size_of::<Self>() + 1 }
+    fn serialize<W: std::io::Write>(&self, buf: &mut W) -> Result<(), std::io::Error> {
+        let size = core::mem::size_of::<Self>();
+        buf.write_all(&[item_byte(Tag::SymbolSize(size as u8))])?;
+        buf.write_all(&self.swap_bytes().to_le_bytes())
+    }
+}
+
 /// A macro to construct a mork-bytestring expression from a pattern.
 /// The pattern can include:
 /// - Symbols, represented as string/byte literals, e.g. `"eq?"` or `b"eq?"`.

@@ -14,18 +14,19 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct};
+use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct, OwnedSourceItem};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use pathmap::arena_compact::ArenaCompactTree;
-use pathmap::PathMap;
+use pathmap::{zipper, PathMap};
 use mork_frontend::json_parser::Transcriber;
 use log::*;
 use subprocess::{Popen, PopenConfig, Redirection};
 use subprocess::unix::PopenExt;
-use crate::sources::AFactor;
+use crate::sinks::{WriteResource, WriteResourceRequest};
+use crate::sources::{AFactor, Resource, ResourceRequest};
 
 pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
@@ -37,8 +38,8 @@ pub static ACT_PATH: &'static str = "/dev/shm/";
 pub struct Space {
     pub btm: PathMap<()>,
     pub sm: SharedMappingHandle,
-    pub mmaps: HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>,
-    pub z3s: HashMap<&'static str, Box<subprocess::Popen>>,
+    pub mmaps: HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
+    pub z3s: HashMap<OwnedSourceItem, Box<Popen>>,
     pub last_merkleize: Instant,
     pub timing: bool
 }
@@ -55,7 +56,7 @@ pub(crate) const SIZES: [u64; 4] = {
 };
 pub(crate) const ARITIES: [u64; 4] = {
     let mut ret = [0u64; 4];
-    let mut arity = 1;
+    let mut arity = 0;
     while arity < 64 {
         let k = item_byte(Tag::Arity(arity));
         ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
@@ -1022,7 +1023,93 @@ impl Space {
         Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
     }
 
-    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(no_source: bool, mut mmaps: &mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>, btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    #[inline]
+    unsafe fn read_handler<'trie, 'path>(btm: *const PathMap<()>,
+                    mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
+                    z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
+                    request: ResourceRequest) -> Resource<'trie, 'path> {
+        match request {
+            ResourceRequest::BTM(prefix) => {
+                Resource::BTM(btm.as_ref().unwrap().read_zipper_at_path(prefix))
+            }
+            ResourceRequest::ACT(name) => {
+                let act = mmaps.as_mut().unwrap().entry(OwnedSourceItem::from(name)).or_insert_with(|| {
+                    trace!(target: "query_multi_i", "open new ACT {}", name);
+                    ArenaCompactTree::open_mmap(format!("{ACT_PATH}{name}.act")).unwrap()
+                });
+                trace!(target: "query_multi_i", "taking RZ of {}", name);
+                Resource::ACT(act.read_zipper())
+            }
+            ResourceRequest::Z3(instance) => {
+                trace!(target: "query_multi_i", "getting z3 instance");
+                let mut z3 = z3s.as_mut().unwrap().get_mut(&OwnedSourceItem::from(instance)).unwrap_or_else(|| panic!("non existent z3 {}", instance));
+                z3.stdin.as_mut().expect("access to z3 stdin").write_all("(check-sat)\n".as_bytes()).expect("written all");
+                z3.stdin.as_mut().expect("access to z3 stdin").write_all("(get-model)\n".as_bytes()).expect("written all");
+                z3.stdin.as_mut().expect("access to z3 stdin").flush().expect("flushed all");
+                trace!(target: "query_multi_i", "z3 ran (check-sat) and (get-model)");
+                let mut v = String::new();
+                let mut reader = std::io::BufReader::new(z3.stdout.as_mut().expect("access to z3 stdout"));
+                reader.read_line(&mut v).unwrap();
+                if &v == "sat\n" {
+                    v.clear();
+                    let mut last = 0;
+                    while &v.as_bytes()[last..] != b")\n" {
+                        last = v.as_bytes().len();
+                        reader.read_line(&mut v).unwrap();
+                    }
+                    trace!(target: "query_multi_i", "z3 read '{}'", &v[1..last]);
+                    let mut s = Space::new();
+                    s.add_all_sexpr(&v.as_bytes()[1..last]);
+                    // let mut v_ = Vec::new();
+                    // s.dump_all_sexpr(&mut v_);
+                    // trace!(target: "query_multi_i", "z3 read '{}'", std::str::from_utf8(&v_[..]).unwrap());
+                    let btm = std::mem::take(&mut s.btm);
+                    let rz = btm.into_read_zipper(&[]);
+                    Resource::Z3(rz)
+                } else {
+                    trace!(target: "query_multi_i", "z3 problem not sat: {}", v);
+                    Resource::Z3(PathMap::new().into_read_zipper(&[]))
+                }
+            }
+        }
+    }
+
+    #[inline]
+    unsafe fn write_handler<'w, 'a, 'k>(zh_wzs: (*mut ZipperHead<'w, 'a, ()>, *mut Vec<WriteZipperTracked<'a, 'k, ()>>),
+                mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
+                z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
+                request: &WriteResourceRequest) -> WriteResource<'w, 'a, 'k> where 'w : 'a {
+        match *request {
+            WriteResourceRequest::BTM(p) => {
+                let zh = zh_wzs.0.as_mut().unwrap();
+                let wzs = zh_wzs.1.as_mut::<'w>().unwrap();
+                wzs.push(zh.write_zipper_at_exclusive_path_unchecked(p));
+                WriteResource::BTM(wzs.last_mut().unwrap())
+            }
+            WriteResourceRequest::ACT(f) => {
+                WriteResource::ACT(())
+            }
+            WriteResourceRequest::Z3(f) => {
+                let mut cfg = PopenConfig::default();
+                cfg.stdin = Redirection::Pipe;
+                cfg.stdout = Redirection::Pipe;
+                trace!(target: "transform", "retrieving z3 instance");
+                let instance = z3s.as_mut().unwrap().entry(OwnedSourceItem::from(f)).or_insert_with(|| {
+                    trace!(target: "transform", "creating new z3 popen");
+                    // let bpopen = Box::new(Popen::create(&["python", "resources/fake_cli.py", "-in", "-smt2"], cfg).unwrap());
+                    let bpopen = Box::new(Popen::create(&["z3", "-in", "-smt2"], cfg).expect("z3: command not found"));
+                    trace!(target: "transform", "created new z3 popen");
+                    bpopen
+                }).as_mut();
+                WriteResource::Z3(instance)
+            }
+        }
+    }
+
+    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(no_source: bool,
+            mmaps: &mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
+            z3s: &mut HashMap<OwnedSourceItem, Box<Popen>>,
+            btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         use crate::sources::{ASource, Resource, ResourceRequest, Source};
 
         let pat_newvars = pat_expr.newvars();
@@ -1036,25 +1123,12 @@ impl Space {
         let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
-        let mmaps_ptr = mmaps as *mut HashMap<&'static str, ArenaCompactTree<memmap2::Mmap>>;
-
+        trace!(target: "query_multi_i", "z3s {:?}", z3s.keys().collect::<Vec<_>>());
         let mut srcs: Vec<_> = Vec::with_capacity(n_factors);
         let mut factors: Vec<_> = Vec::with_capacity(n_factors);
         for e in pat_args[1..].iter() {
             let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::new(e.subsexpr()) };
-            factors.push(src.source(src.request().map(|request| {
-                match request {
-                    ResourceRequest::BTM(prefix) => { Resource::BTM(btm.read_zipper_at_path(prefix)) }
-                    ResourceRequest::ACT(name) => {
-                        let act = unsafe { mmaps_ptr.as_mut().unwrap() }.entry(name).or_insert_with(|| {
-                            trace!(target: "query_multi_i", "open new ACT {}", name);
-                            ArenaCompactTree::open_mmap(format!("{ACT_PATH}{name}.act")).unwrap()
-                        });
-                        trace!(target: "query_multi_i", "taking RZ of {}", name);
-                        Resource::ACT(act.read_zipper())
-                    }
-                }
-            })));
+            factors.push(src.source(src.request().map(|request| unsafe { Self::read_handler(btm, mmaps, z3s, request) })));
             srcs.push(src);
         }
 
@@ -1344,7 +1418,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(false, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, _loc| {
+        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| {
             // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1407,35 +1481,17 @@ impl Space {
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
         let mut zh = self.btm.zipper_head();
+        let zh_ptr = ((&zh) as *const ZipperHead<()>).cast_mut();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_resources: Vec<_> = Vec::with_capacity(64);
         let mut outstanding_wzs = Vec::with_capacity(64);
-        let mut outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
-
-        let mut z3s_ptr = ((&self.z3s) as *const HashMap<&str, Box<Popen>>).cast_mut();
-        template_prefixes.iter().enumerate().for_each(|(i, x)| {
+        let outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
+        let acts_ptr = ((&self.mmaps) as *const HashMap<OwnedSourceItem, _>).cast_mut();
+        let z3s_ptr = ((&self.z3s) as *const HashMap<OwnedSourceItem, Box<Popen>>).cast_mut();
+        template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                match *x {
-                    WriteResourceRequest::BTM(p) => {
-                        unsafe { outstanding_wzs_ptr.as_mut().unwrap().push(zh.write_zipper_at_exclusive_path_unchecked(p)) };
-                        template_resources.push(
-                            WriteResource::BTM(unsafe { outstanding_wzs_ptr.as_mut().unwrap().last_mut().unwrap() })
-                        )
-                    }
-                    WriteResourceRequest::ACT(f) => {
-                        template_resources.push(WriteResource::ACT(()))
-                    }
-                    WriteResourceRequest::Z3(f) => unsafe {
-                        let mut cfg = PopenConfig::default();
-                        cfg.stdin = Redirection::Pipe;
-                        if !z3s_ptr.as_mut().unwrap().contains_key(f) {
-                            z3s_ptr.as_mut().unwrap().insert(f, Box::new(Popen::create(&["python", "resources/fake_cli.py", "-in", "-smt2"], cfg).unwrap()));
-                        }
-                        let instance = unsafe { z3s_ptr.as_mut().unwrap().get_mut(f).unwrap().as_mut() };
-                        template_resources.push(WriteResource::Z3(instance))
-                    }
-                }
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1518,25 +1574,17 @@ impl Space {
         let mut placements = subsumption.clone();
         let mut read_copy = self.btm.clone();
         let mut zh = self.btm.zipper_head();
+        let zh_ptr = ((&zh) as *const ZipperHead<()>).cast_mut();
         read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
         let mut template_resources: Vec<_> = Vec::with_capacity(64);
         let mut outstanding_wzs = Vec::with_capacity(64);
-        let mut outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
-        template_prefixes.iter().enumerate().for_each(|(i, x)| {
+        let outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
+        let acts_ptr = ((&self.mmaps) as *const HashMap<OwnedSourceItem, _>).cast_mut();
+        let z3s_ptr = ((&self.z3s) as *const HashMap<OwnedSourceItem, Box<Popen>>).cast_mut();
+        template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                match *x {
-                    WriteResourceRequest::BTM(p) => {
-                        unsafe { outstanding_wzs_ptr.as_mut().unwrap().push(zh.write_zipper_at_exclusive_path_unchecked(p)) };
-                        template_resources.push(
-                            WriteResource::BTM(unsafe { outstanding_wzs_ptr.as_mut().unwrap().last_mut().unwrap() })
-                        )
-                    }
-                    WriteResourceRequest::ACT(f) => {
-                        template_resources.push(WriteResource::ACT(()))
-                    }
-                    WriteResourceRequest::Z3(_) => {}
-                }
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1553,7 +1601,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {

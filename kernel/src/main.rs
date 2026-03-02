@@ -2940,6 +2940,8 @@ fn sink_z3_basic() {
 (exec 1 (, (z3-assert $s))
         (O (z3 ins $s)))
 
+(exec 2 (I (z3 ins (define-fun a $_ Int $v)))
+        (, (out $v)))
     "#;
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
@@ -2949,11 +2951,50 @@ fn sink_z3_basic() {
     println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
 
     let mut v = vec![];
-    // s.dump_sexpr(expr!(s, "[3] alive $ $"), expr!(s, "[3] alive _1 _2"), &mut v);
-    s.dump_all_sexpr(&mut v).unwrap();
+    s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
     let res = String::from_utf8_lossy_owned(v);
 
     println!("result: {res}");
+    assert_eq!(res, "1\n");
+}
+
+fn sink_z3_basic_multi() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+
+(z3-declare (declare-const a Int))
+(z3-declare (declare-const b Int))
+
+(z3-assert (assert (> a 0)))
+(z3-assert (assert (< b 0)))
+
+(exec 0 (, (z3-declare $s))
+        (O (z3 ins $s)))
+(exec 1 (, (z3-assert $s))
+        (O (z3 ins $s)))
+
+(exec 2 (I (z3 ins (define-fun a $_ Int $v)))
+        (O (z3 ins (assert (not (= a $v))))))
+
+(exec 3 (I (z3 ins (define-fun a $_ Int $v)))
+        (, (out $v)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "_1"), &mut v);
+    // s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "2\n");
 }
 
 fn sink_wasm_add() {
@@ -5547,8 +5588,6 @@ enum Commands {
 fn main() {
     env_logger::init();
 
-    sink_z3_basic();
-    return;
     let args = Cli::parse();
 
     match args.command {
@@ -5648,9 +5687,17 @@ fn main() {
             parse_csv();
             parse_json();
 
+            #[cfg(target_os = "linux")]
             sink_act_readback();
+            #[cfg(target_os = "linux")]
             sink_act_mixed_readback();
+            #[cfg(target_os = "linux")]
             source_sink_act_readback();
+
+            #[cfg(feature = "z3")]
+            sink_z3_basic();
+            #[cfg(feature = "z3")]
+            sink_z3_basic_multi();
         }
         Commands::Run { input_path, steps, instrumentation, timing, aux_path, output_path } => {
             #[cfg(debug_assertions)]

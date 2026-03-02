@@ -43,6 +43,8 @@ impl WriteResourceRequest {
             WriteResourceRequest::BTM(s) => {
                 match other {
                     WriteResourceRequest::BTM(o) => {
+                        // be tightened to only happen when one strictly subsumes the other?
+                        // no: partial compare checks for inclusion (or a/\b == a)
                         Some(WriteResourceRequest::BTM(&s[..pathmap::utils::find_prefix_overlap(s, o)]))
                     }
                     _ => { None }
@@ -1019,7 +1021,7 @@ pub struct Z3Sink { e: Expr, buffer: Vec<u8>, ins: &'static str }
 impl Sink for Z3Sink {
     fn new(e: Expr) -> Self {
         destruct!(e, ("z3" {instance: &str} {decl: Expr}), {
-            trace!(target: "sinks", "z3 requesting instance {instance}");
+            trace!(target: "sink", "z3 requesting instance {instance}");
             Z3Sink { e, buffer: vec![], ins: instance }
         }, _err => { unreachable!() })
     }

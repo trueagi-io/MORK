@@ -4,15 +4,18 @@ use pathmap::PathMap;
 use pathmap::zipper::*;
 use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
 use mork_expr::macros::SerializableExpr;
+use crate::sinks::{ASink, Z3Sink};
 
 pub(crate) enum ResourceRequest {
     BTM(&'static [u8]),
-    ACT(&'static str)
+    ACT(&'static str),
+    Z3(&'static str)
 }
 
 pub(crate) enum Resource<'trie, 'path> {
     BTM(ReadZipperUntracked<'trie, 'path, ()>),
-    ACT(ACTMmapZipper<'trie, ()>)
+    ACT(ACTMmapZipper<'trie, ()>),
+    Z3(ReadZipperOwned<()>)
 }
 
 pub trait Source {
@@ -88,9 +91,40 @@ impl Source for ACTSource {
         prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
         prefix.push(item_byte(Tag::SymbolSize( (self.act.size() as u8) - 1)));
         prefix.extend_from_slice(self.act.as_bytes());
-        trace!(target: "source", "prefix {}", serialize(&prefix[..]));
+        trace!(target: "source", "act prefix {}", serialize(&prefix[..]));
         let rz = PrefixZipper::new(prefix, rz);
         AFactor::ACTSource(rz)
+    }
+}
+
+#[cfg(feature = "z3")]
+struct Z3Source {
+    e: Expr,
+    ins: &'static str
+}
+#[cfg(feature = "z3")]
+impl Source for Z3Source {
+    fn new(e: Expr) -> Self {
+        destruct!(e, ("z3" {instance: &str} se), {
+            return Z3Source{ e, ins: instance }
+        }, _err => { panic!("z3 not the right shape {:?}", e) });
+    }
+
+    fn request(&self) -> impl Iterator<Item=ResourceRequest> {
+        std::iter::once(ResourceRequest::Z3(self.ins))
+    }
+
+    fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        // prefix: '[3] z3 <instance name>'
+        static CONSTANT_PREFIX: [u8; 4] = [item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(2)), b'z', b'3'];
+        let Resource::Z3(rz) = it.next().unwrap() else { unreachable!() };
+        let mut prefix = vec![];
+        prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
+        prefix.push(item_byte(Tag::SymbolSize( (self.ins.size() as u8) - 1)));
+        prefix.extend_from_slice(self.ins.as_bytes());
+        trace!(target: "source", "z3 prefix {}", serialize(&prefix[..]));
+        let rz = PrefixZipper::new(prefix, rz);
+        AFactor::Z3Source(rz)
     }
 }
 
@@ -161,7 +195,10 @@ impl Source for CmpSource {
 }
 
 
-pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource), CompatSource(CompatSource) }
+pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource), CompatSource(CompatSource),
+    #[cfg(feature = "z3")]
+    Z3Source(Z3Source)
+}
 
 #[derive(PolyZipper)]
 pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
@@ -170,6 +207,8 @@ pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
     ACTSource(PrefixZipper<'trie, ACTMmapZipper<'trie, V>>),
     CmpSource(PrefixZipper<'trie, DependentProductZipperG<'trie, ReadZipperUntracked<'trie, 'trie, V>,
         ReadZipperOwned<V>, V, (usize, PathMap<()>), for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<V>>)>>),
+    #[cfg(feature = "z3")]
+    Z3Source(PrefixZipper<'trie, ReadZipperOwned<V>>),
 }
 
 impl ASource {
@@ -184,6 +223,11 @@ impl Source for ASource {
             ASource::PosSource(BTMSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) && *e.ptr.offset(2) == b'A' && *e.ptr.offset(3) == b'C' && *e.ptr.offset(4) == b'T' } {
             ASource::ACTSource(ACTSource::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && *e.ptr.offset(2) == b'z' && *e.ptr.offset(3) == b'3' } {
+            #[cfg(feature = "z3")]
+            return ASource::Z3Source(Z3Source::new(e));
+            #[cfg(not(feature = "z3"))]
+            panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && (*e.ptr.offset(2) == b'=' || *e.ptr.offset(2) == b'!') && *e.ptr.offset(3) == b'=' } {
             ASource::CmpSource(CmpSource::new(e))
         } else {
@@ -198,6 +242,8 @@ impl Source for ASource {
                 ASource::ACTSource(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::CmpSource(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::CompatSource(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "z3")]
+                ASource::Z3Source(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -208,6 +254,8 @@ impl Source for ASource {
             ASource::ACTSource(s) => { s.source(it) }
             ASource::CmpSource(s) => { s.source(it) }
             ASource::CompatSource(s) => { s.source(it) }
+            #[cfg(feature = "z3")]
+            ASource::Z3Source(s) => { s.source(it) }
         }
     }
 }

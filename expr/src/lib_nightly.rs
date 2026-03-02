@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::fmt::{Debug, Formatter};
+use std::hash::Hasher;
 use std::io::Write;
 use std::ops::{Coroutine, CoroutineState};
 use std::ptr::slice_from_raw_parts;
@@ -9,6 +11,60 @@ use crate::{byte_item, item_byte, traverseh, Expr, ExprEnv, ExprVar, ExprZipper,
 pub enum SourceItem<'a> {
     Tag(Tag),
     Symbol(&'a[u8]),
+}
+
+pub struct OwnedSourceItem([u8; 64]);
+
+impl OwnedSourceItem {
+    fn size(&self) -> usize {
+        match byte_item(self.0[0]) {
+            Tag::NewVar => { 1 }
+            Tag::VarRef(_) => { 1 }
+            Tag::SymbolSize(s) => { 1 + s as usize }
+            Tag::Arity(_) => { 1 }
+        }
+    }
+}
+
+impl PartialEq<Self> for OwnedSourceItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.0[0] == other.0[0] && {
+            match byte_item(self.0[0]) {
+                Tag::NewVar => { true }
+                Tag::VarRef(_) => { true }
+                Tag::SymbolSize(s) => { self.0[1..(s as usize)+1] == other.0[1..(s as usize)+1] }
+                Tag::Arity(_) => { true }
+            }
+        }
+    }
+}
+
+impl Eq for OwnedSourceItem {}
+
+impl std::hash::Hash for OwnedSourceItem {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u8(self.0[0]);
+        if let Tag::SymbolSize(s) = byte_item(self.0[0]) {
+            state.write(&self.0[1..(s as usize)+1])
+        }
+    }
+}
+
+impl <'a> From<&'a str> for OwnedSourceItem {
+    fn from(value: &'a str) -> Self {
+        let vb = value.as_bytes();
+        assert!(vb.len() < 64);
+        let mut i = OwnedSourceItem([0; 64]);
+        i.0[0] = item_byte(Tag::SymbolSize(vb.len() as u8));
+        i.0[1..1+vb.len()].copy_from_slice(value.as_bytes());
+        i
+    }
+}
+
+impl Debug for OwnedSourceItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(crate::serialize(&self.0[..self.size()]).as_str())
+    }
 }
 
 pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem, Yield=(), Return=std::io::Result<usize>> {
@@ -31,9 +87,11 @@ pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem
                         Tag::Arity(a) => {
                             target.write_all(&[item_byte(tag)])?;
                             j += 1;
-                            stack.push(a);
-                            i = yield ();
-                            continue;
+                            if a > 0 {
+                                stack.push(a);
+                                i = yield ();
+                                continue;
+                            }
                         }
                     }
                 }
@@ -83,8 +141,10 @@ pub fn item_source<'a>(e: Expr) -> impl Coroutine<(), Yield=SourceItem<'a>, Retu
                 Tag::Arity(a) => {
                     yield SourceItem::Tag(Tag::Arity(a));
                     j += 1;
-                    stack.push(a);
-                    continue 'putting;
+                    if a > 0 {
+                        stack.push(a);
+                        continue 'putting;
+                    }
                 }
             };
 

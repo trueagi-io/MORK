@@ -308,30 +308,6 @@
 )
 
 ; We want to find the minimum Total Gini Impurity.
-; We take the difference of all impurities at a given path, saving only values where the difference is zero or positive.
-; We keep positive differences, and zero differences.
-; A positive zero will be a floating point value of all zero bytes, so it can be used in the second `ifnz`
-;   (exec (STEP (1 7))
-;       (, 
-;           (predict $prediction)
-;           (distinct $x $y)
-;           ((ctx $ctx) (total_gini_impurity $prediction $x) $i)
-;           ((ctx $ctx) (total_gini_impurity $prediction $y) $j)
-;       )
-;       (O
-;           (pure 
-;               ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $sig)
-;               $sig
-;               (ifnz (sum_f64 (f64_from_string 1.0) (signum_f64 (sub_f64 (f64_from_string $i) (f64_from_string $j) )) )
-;                then (ifnz (sub_f64 (f64_from_string $i) (f64_from_string $j) )
-;                      then 1 
-;                      else 0
-;                     )
-;               )
-;           )
-;       )
-;   )
-
 (exec (STEP (1 7))
     (, 
         (predict $prediction)
@@ -340,40 +316,6 @@
     (O  (min ((ctx $ctx) total_gini_impurity_choice $prediction min $y) $y $i)
     )
 )
-
-
-
-; (DEBUG) remove total_gini_impurity
-; (exec (STEP (1 8)) (, ((ctx $ctx) (total_gini_impurity $prediction $x) $i)) (O (- ((ctx $ctx) (total_gini_impurity $prediction $x) $i) )) )
-
-
-
-
-
-
-; ; here we remove transitive cases with the greater values.
-; (exec (STEP (1 9))
-;     (,  
-;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($z - $x)) 1)
-;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) 1)
-;     )
-;     (O 
-;         (- ((ctx $ctx) (total_gini_impurity_dif $prediction ($z - $x)) 1))   
-;     )
-; )
-; 
-; ; take minimums to get nodes    
-; (exec (STEP (1 10))
-;     (,  
-;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s)
-;     )
-;     (O  
-;         (- ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s))
-; 
-;         (+ ((ctx $ctx) total_gini_impurity_choice $prediction $y))
-;     )
-; )
-
 
 (exec (STEP (1 10))
     (, ((ctx $ctx) total_gini_impurity_choice $prediction min $i)

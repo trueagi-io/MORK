@@ -1,0 +1,606 @@
+; Remy Clarke, Decision Tree Learning experiment.
+
+;  make gini_impurity constructor
+;  make total_gini_impurity constructor
+;  distinct table
+;  order table
+;  build paths
+;  cleanup
+;  remove leaf non-predict
+;  make counts
+;  cleanup
+;  make count triples execs
+;  construct and cleanup counts
+;  make total_gini_impurity values
+;  make differences
+;  cleanup total_gini_impurity values
+;  remove transitive greater
+;  take min
+;  make choice leaves
+;  cleanup difs
+;  make chains
+;  make chain leaves
+;  remove extraneous leaves
+;  clean choices
+;  Keep predictive paths
+;  cleanup
+;  apply arbitrary order to keep only required leaves
+;  gather leaves for final tree
+;  Build final tree bottom up
+;  cleanup
+; 
+;  collect ids for prediction
+;  find longest paths in decision tree that conforms to values in each record
+;  derive prediction of property
+
+
+; sections marked (DEBUG) should not affect the final values we are trying to compute
+
+(YES_NO YES 1)
+(YES_NO NO  0)
+
+(NOT_YES_NO YES NO)
+(NOT_YES_NO NO YES)
+
+; this is the property we are trying to predict.
+(predict loves_cool_as_ice)
+
+; these are the properties we will corelate with the property we want to predict.
+(not-predict loves_soda      )
+(not-predict overweight      )
+(not-predict loves_popcorn   )
+(not-predict born_before_1990)
+
+; generate a table of distinct properties then remove any values in the table that have duplicates
+(exec ((MACRO_EXPAND 1))
+    (, (predict     $p  )
+       (not-predict $np0)
+       (not-predict $np1)
+    )
+    (, (distinct $p   $np0)
+       (distinct $np0 $p  )
+       (distinct $np0 $np1)
+
+       (exec ((MACRO_EXPAND)) (, (distinct $x $x) )  (O (- (distinct $x $x)))  )
+    )
+)
+
+
+; Our data as records.
+; the column names come originally from a video of Josh Starmer ( StatQuest with Josh Starmer : https://youtu.be/_L39rN6gz7Y ).
+; The example has been modified to only deal boolean properties.
+(columns  id  ( loves_popcorn loves_soda born_before_1990 overweight loves_cool_as_ice))
+(data      0  (             1          1                1          0                 0))
+(data      1  (             1          0                1          0                 0))
+(data      2  (             0          1                1          0                 1))
+(data      3  (             0          1                0          1                 1))
+(data      4  (             1          1                0          1                 1))
+(data      5  (             1          0                0          0                 0))
+(data      6  (             0          0                0          1                 0))
+
+(data      7  (             0          0                1          1                 1))
+(data      8  (             0          1                1          1                 1))
+(data      9  (             0          1                1          1                 0))
+(data     10  (             1          1                1          1                 0))
+(data     11  (             1          0                1          1                 0))
+(data     12  (             1          0                1          1                 1))
+(data     13  (             0          0                1          1                 0))
+(data     14  (             1          1                1          0                 0))
+
+
+; We explode the records into their individual properties. this version is hardcoded for our dataset
+(exec (0)
+    (, (data $id ( $loves_popcorn $loves_soda $born_before_1990 $overweight $loves_cool_as_ice))  )
+    (,
+       ( (ctx .) born_before_1990  (id $id) $born_before_1990  )
+       ( (ctx .) loves_popcorn     (id $id) $loves_popcorn     )
+       ( (ctx .) loves_soda        (id $id) $loves_soda        )
+       ( (ctx .) loves_cool_as_ice (id $id) $loves_cool_as_ice )
+       ( (ctx .) overweight        (id $id) $overweight        )
+    )
+)
+; we want to save the column id and val properties for later
+(exec (1) 
+    (,  ((ctx $ctx) $prop (id $id) $v)  )
+    (,  (col-id-val $prop (id $id) $v)  )
+)
+
+
+; the order here is arbitrary, we need this later to remove trees that give equivalent results
+(order loves_cool_as_ice loves_soda)
+(order loves_soda overweight)
+(order overweight loves_popcorn)
+(order loves_popcorn born_before_1990)
+
+
+(exec ((MACRO_EXPAND 4))
+    (, (order $x $y)         )
+    (, (order-state ($x $y)) )
+)
+(exec ((MACRO_EXPAND 5))
+    (,
+        (order-state ($x $y))
+        (order $y $z)
+
+        (exec ((MACRO_EXPAND 5)) $t $p)
+    )
+    (O
+        (- (order-state ($x $y)))
+        (+ (order-state ($x $z)))
+        (+ (order $x $z))
+        
+        (+ (exec ((MACRO_EXPAND 5)) $t $p))
+    )
+)
+
+
+; Generate definitions to calculate the Gini Impurity.
+; Basic types to remind/ensure that the untyped bytes are threaded correctly for the pure sink.
+
+;   fn gini_impurity([yes,no]:[usize;2])->f64{
+;       let population = (yes + no) as f64;
+;       1.0 - (yes as f64 / population).powi(2) - (no as f64 / population).powi(2)
+;   }
+
+(: population (-> (i32  i32) i32))
+(  population (-> ($yes $no) (sum_i32 $yes $no)))
+(: fract-pop-square (-> (i32    i32 ) f64))
+(  fract-pop-square (-> ($fract $pop) (powi_f64 (div_f64 (i32_as_f64 $fract) (i32_as_f64 $pop)) (i32_from_string 2))))
+
+(type_check gini_impurity
+    (,  (: population (-> ($yes_t  $no_t) $pop_t))
+        (: fract-pop-square (-> ($yes_t $pop_t) f64))
+        (: fract-pop-square (-> ($no_t  $pop_t) f64))
+    )
+    (,  (: gini_impurity (-> (i32 i32)  f64))
+        (type_witness gini_impurity)
+    )
+)
+(mk_gini_impurity
+    (,  (  type_witness gini_impurity )
+        
+        (  population (-> ($yes    $no  ) $pop  ))
+        (  fract-pop-square (-> ($yes   $pop  ) $y ))
+        (  fract-pop-square (-> ($no    $pop  ) $n ))
+    )
+    (,  (  gini_impurity (-> ($yes   $no  )  (sub_f64 (sub_f64 (f64_from_string 1.0) $y) $n)))
+    )
+)
+
+;   fn total_gini_impurity([l@[yesl,nol],r@[yesr,nor]]: [[usize;2];2])->f64 {
+;       let popl      = (yesl+nol ) as f64;
+;       let popr      = (yesr+nor ) as f64;
+;       let total_pop = popl+popr;
+;
+;       (popl/total_pop) * gini_impurity(l) + (popr/total_pop) * gini_impurity(r)
+;   }
+
+(type_check total_gini_impurity 
+    (, (: population    (-> $pop_in_t i32 ))
+       (: gini_impurity (-> $pop_in_t f64 ))
+    )
+    (, (: total_gini_impurity (-> ($pop_in_t $pop_in_t) f64))
+       (type_witness total_gini_impurity)
+    )
+)
+(mk_total_gini_impurity
+    (, (  type_witness total_gini_impurity )
+       
+       (  population (-> $yes_no_l     $popl      ))
+       (  population (-> $yes_no_r     $popr      ))
+       (  population (-> ($popl $popr) $total_pop ))
+    
+       (  gini_impurity (-> $yes_no_l $impurityl ))
+       (  gini_impurity (-> $yes_no_r $impurityr ))
+    )
+    (, (  total_gini_impurity (-> ($yes_no_l $yes_no_r)
+                                                        (sum_f64 (product_f64 (div_f64 (i32_as_f64 $popl) (i32_as_f64 $total_pop)) $impurityl)
+                                                                 (product_f64 (div_f64 (i32_as_f64 $popr) (i32_as_f64 $total_pop)) $impurityr)))
+       )
+    )
+)
+; macro generate Gini Impurity then Total Gini Impurity
+
+(exec ((MACRO_EXPAND 0)) (, (type_check gini_impurity $p $t) )        (, (exec (((NOW))) $p $t) ) )
+(exec ((MACRO_EXPAND 1)) (, (type_check total_gini_impurity $p $t) )  (, (exec (((NOW))) $p $t) ) )
+(exec ((MACRO_EXPAND 2)) (, (mk_gini_impurity $p $t)  )               (, (exec (((NOW))) $p $t) ) )
+(exec ((MACRO_EXPAND 3)) (, (mk_total_gini_impurity $p $t) )          (, (exec (((NOW))) $p $t) ) )
+(new-ctx .)
+
+; build all paths that are made of non-predict properties
+(exec (STEP (0 1))
+    (,
+        (not-predict $prop0) 
+        (new-ctx $ctx)
+
+        (distinct $prop0 $prop1)
+
+        ((ctx $ctx) $prop0 (id $idx) $val0)  
+        ((ctx $ctx) $prop1 (id $idx) $val1)  
+        (exec (STEP (0 1)) $pattern $template)
+    )
+    (O
+        (+ (new-ctx ($ctx ($prop0 $val0))))
+        (- (new-ctx $ctx))
+
+        (+ ((ctx ($ctx ($prop0 $val0))) $prop1 (id $idx) $val1))
+        (- ((ctx ($ctx ($prop0 $val0))) $prop0 (id $idx) $val0))
+        
+        (+ (exec (STEP (0 1)) $pattern $template))
+    )
+)
+(exec (STEP (0 8)) (, (new-ctx $ctx) ) (O (- (new-ctx $ctx)) ) )
+
+; remove paths that don't end in prediction
+(exec (STEP (0 9))
+    (,  (not-predict $np)
+        ((ctx $ctx) $np (id $idx) $v)
+    )
+    (O  (-  ((ctx $ctx) $np (id $idx) $v)  ) )
+)
+
+
+; create counts split
+(exec (STEP (1 2))
+    (, 
+       (YES_NO $YN $yn_val)
+       ((ctx $ctx) $col (id $id) $yn_val)
+
+       ((ctx $ctx) $col (id $id) $all)
+    )
+    (O
+        (count ((ctx $ctx) $col (count $YN) $c_one)    $c_one ((ctx $ctx) $col (id $id) $yn_val))
+        (count ((ctx $ctx) $col (count YES_NO) $c_all) $c_all ((ctx $ctx) $col (id $id) $all))
+    )
+)
+
+; (DEBUG) remove id vals paths
+(exec (STEP (1 3)) (, ((ctx $ctx) $col (id $id) $all) ) (O (-  ((ctx $ctx) $col (id $id) $all) ))  )
+
+; consolidate counts
+; we need to generate 0 counts, without making duplicates
+; then remove the split counts
+(exec (STEP (1 4))
+    (,
+        ((ctx $ctx) $col (count YES_NO) $c_all_)
+        ((ctx $ctx) $col (count $YN) $c_one_)
+        (NOT_YES_NO $YN $NOT_YN)
+    )
+    (O  (pure ((ctx $ctx) $col (count $NOT_YN) $c_n_yn)
+              $c_n_yn
+              (i32_to_string (sub_i32 (i32_from_string $c_all_) (i32_from_string $c_one_)))
+        )
+    )
+)
+(exec (STEP (1 5))
+    (, 
+        ((ctx $ctx) $col (count YES   )  $yes   )
+        ((ctx $ctx) $col (count NO    )  $no    )
+        ((ctx $ctx) $col (count YES_NO)  $yes_no)
+
+    )
+    (O
+        (- ((ctx $ctx) $col (count YES   )  $yes   ) )
+        (- ((ctx $ctx) $col (count NO    )  $no    ) )
+        (- ((ctx $ctx) $col (count YES_NO)  $yes_no) )
+        (+ ((ctx $ctx) $col (count YES_NO_ALL)  ($yes $no $yes_no)) )
+    )
+)
+
+; generate the total gini_impurity values for candidate nodes
+(exec (STEP (1 6))
+    (,          
+        (not-predict $np)
+        (predict     $p)
+        
+        ((ctx ($ctx ($np 0))) $p (count YES_NO_ALL) ($y_0 $n_0 $_0))
+        ((ctx ($ctx ($np 1))) $p (count YES_NO_ALL) ($y_1 $n_1 $_1))
+
+        (  total_gini_impurity (-> 
+                (   ((i32_from_string $y_0) (i32_from_string $n_0))
+                    ((i32_from_string $y_1) (i32_from_string $n_1))
+                )
+                $total_gini_impurity
+            )
+        )
+    )
+    (O (pure ((ctx $ctx) (total_gini_impurity $p $np) $out) $out (f64_to_string $total_gini_impurity) ) )
+)
+
+; We want to find the minimum Total Gini Impurity.
+; We take the difference of all impurities at a given path, saving only values where the difference is zero or positive.
+; We keep positive differences, and zero differences.
+; A positive zero will be a floating point value of all zero bytes, so it can be used in the second `ifnz`
+;   (exec (STEP (1 7))
+;       (, 
+;           (predict $prediction)
+;           (distinct $x $y)
+;           ((ctx $ctx) (total_gini_impurity $prediction $x) $i)
+;           ((ctx $ctx) (total_gini_impurity $prediction $y) $j)
+;       )
+;       (O
+;           (pure 
+;               ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $sig)
+;               $sig
+;               (ifnz (sum_f64 (f64_from_string 1.0) (signum_f64 (sub_f64 (f64_from_string $i) (f64_from_string $j) )) )
+;                then (ifnz (sub_f64 (f64_from_string $i) (f64_from_string $j) )
+;                      then 1 
+;                      else 0
+;                     )
+;               )
+;           )
+;       )
+;   )
+
+(exec (STEP (1 7))
+    (, 
+        (predict $prediction)
+        ((ctx $ctx) (total_gini_impurity $prediction $x) $i)
+    )
+    (O  (min ((ctx $ctx) total_gini_impurity_choice $prediction min $y) $y $i)
+    )
+)
+
+
+
+; (DEBUG) remove total_gini_impurity
+; (exec (STEP (1 8)) (, ((ctx $ctx) (total_gini_impurity $prediction $x) $i)) (O (- ((ctx $ctx) (total_gini_impurity $prediction $x) $i) )) )
+
+
+
+
+
+
+; ; here we remove transitive cases with the greater values.
+; (exec (STEP (1 9))
+;     (,  
+;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($z - $x)) 1)
+;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) 1)
+;     )
+;     (O 
+;         (- ((ctx $ctx) (total_gini_impurity_dif $prediction ($z - $x)) 1))   
+;     )
+; )
+; 
+; ; take minimums to get nodes    
+; (exec (STEP (1 10))
+;     (,  
+;         ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s)
+;     )
+;     (O  
+;         (- ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s))
+; 
+;         (+ ((ctx $ctx) total_gini_impurity_choice $prediction $y))
+;     )
+; )
+
+
+(exec (STEP (1 10))
+    (, ((ctx $ctx) total_gini_impurity_choice $prediction min $i)
+       ((ctx $ctx) (total_gini_impurity $prediction $col) $i)
+    )
+    (O
+       (-  ((ctx $ctx) total_gini_impurity_choice $prediction min $i)   )
+       (+  ((ctx $ctx) total_gini_impurity_choice $prediction $col)     )
+    )
+)
+; add leaves
+(exec (STEP (1 11))
+    (, ((ctx $ctx) total_gini_impurity_choice $prediction $col)
+    )
+    (,
+       ((ctx ($ctx ($col 0))) total_gini_impurity_choice $prediction $prediction)
+       ((ctx ($ctx ($col 1))) total_gini_impurity_choice $prediction $prediction)
+
+    )
+)
+
+
+; (DEBUG) remove difs
+; (exec (STEP (1 12)) (, ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s) ) (O (- ((ctx $ctx) (total_gini_impurity_dif $prediction ($x - $y)) $s)  )) )
+(exec (STEP (1 12)) (, ((ctx $ctx) total_gini_impurity_choice $prediction min $i) ) (O (- ((ctx $ctx) total_gini_impurity_choice $prediction min $i) )) )
+(exec (STEP (1 12)) (, ((ctx $ctx) (total_gini_impurity $prediction $x) $i)) (O (- ((ctx $ctx) (total_gini_impurity $prediction $x) $i) )) )
+
+; We collect paths that are connected to the root breadth first.
+; create choice chains
+(ctx-state (. .))
+(exec (STEP (1 14))
+    (,
+        (ctx-state ($_ctx $ctx)) 
+        ((ctx $ctx)                    total_gini_impurity_choice $prediction $choice)
+        ((ctx ($ctx ($choice $c_val))) total_gini_impurity_choice $prediction $_c    )
+        (exec (STEP (1 14)) $p $t)
+    )
+    (O
+        (- (ctx-state ($_ctx $ctx))       )
+        (+ (ctx-state ($ctx ($ctx ($choice $c_val)))) )
+
+        (+ ((ctx $ctx) total_gini_impurity_choice_chain $prediction $choice ))
+        (+ (exec (STEP (1 14)) $p $t) )
+    )
+)
+
+; leaves don't chain forwards so we need to add them to the end of a chain
+; add possible leaves
+(exec (STEP (1 15))
+    (,
+        (predict $prediction)
+        ((ctx $ctx)                      total_gini_impurity_choice_chain $prediction $choice)
+        ((ctx ($ctx  ($choice $c_val)))  total_gini_impurity_choice      $prediction $choice1)
+    )
+    (, 
+        ((ctx ($ctx ($choice $c_val)))   total_gini_impurity_choice_chain $prediction $choice1)
+
+        (exec ((REMOVE_EXTRANEOUS))
+            (, 
+                (not-predict $np)
+                ((ctx ($ctx ($choice $c_val))) total_gini_impurity_choice_chain $prediction $np)
+                ((ctx ($ctx ($choice $c_val))) total_gini_impurity_choice_chain $prediction $prediction)
+            )
+            (O
+                (- ((ctx ($ctx ($choice $c_val))) total_gini_impurity_choice_chain $prediction $prediction) )
+            )
+        )
+    )
+)
+
+; (DEBUG) remove total_gini_impurity_choice
+(exec (STEP (1 16)) (, ((ctx $ctx) total_gini_impurity_choice $prediction $choice1) ) (O (- ((ctx $ctx) total_gini_impurity_choice $prediction $choice1) )) )
+
+; We only keep paths that lead to the prediction.
+(exec (STEP (1 17))
+    (, 
+       (predict $prediction)
+       ((ctx $ctx)               total_gini_impurity_choice_chain $prediction $choice  )
+       ((ctx ($ctx ($choice 0))) total_gini_impurity_choice_chain $prediction $choice_n)
+       ((ctx ($ctx ($choice 1))) total_gini_impurity_choice_chain $prediction $choice_y)
+
+       ((ctx ($ctx ($choice 0))) $prediction (count YES_NO_ALL) ($ny $nn $nyna))
+       ((ctx ($ctx ($choice 1))) $prediction (count YES_NO_ALL) ($yy $yn $yyna))
+    )
+    (O 
+        (pure ((Predict $prediction) (ctx ($ctx ($choice 1))) -> $choice_y | $out_y)
+            $out_y
+            (tuple YES (f64_to_string (div_f64 (f64_from_string $yy) (f64_from_string $yyna)))
+                   NO  (f64_to_string (div_f64 (f64_from_string $yn) (f64_from_string $yyna)))
+            )   
+        )
+
+        (pure ((Predict $prediction) (ctx ($ctx ($choice 0))) -> $choice_n | $out_n)
+            $out_n
+            (tuple YES (f64_to_string (div_f64 (f64_from_string $ny) (f64_from_string $nyna)))
+                   NO  (f64_to_string (div_f64 (f64_from_string $nn) (f64_from_string $nyna)))
+            )   
+        )
+    )
+)
+
+; (DEBUG) remove total_gini_impurity_choice_chain
+; (exec (STEP (1 18)) (, ((ctx $ctx) total_gini_impurity_choice_chain $prediction $choice) ) (O (- ((ctx $ctx) total_gini_impurity_choice_chain $prediction $choice) ))  )
+
+; (DEBUG) remove (count YES_NO_ALL)
+(exec (STEP (1 19)) (, ((ctx $ctx) $prediction (count YES_NO_ALL) ($y $n $yna)) ) (O (- ((ctx $ctx) $prediction (count YES_NO_ALL) ($y $n $yna)) ))  )
+
+;  Comment the following block to have a decision forest, uncomment for a decision tree
+   ; Some leaves are just as likely as others. If we want a unique tree, we will have to decide on what branches to keep.
+   ; Arbitrary take the least in the `order` to remove redundant branches
+   (exec (STEP (1 20))
+       (, 
+           (predict $prediction)
+   
+           (order $choice $choice_)
+           
+           ((Predict $prediction) (ctx ($ctx ($choice 1))) -> $prediction | (YES $yp NO $np))
+           ((Predict $prediction) (ctx ($ctx ($choice 0))) -> $prediction | (YES $yp_ NO $np_))
+           
+           ((Predict $prediction) (ctx ($ctx ($choice_ 1))) -> $prediction | (YES $yp NO $np))
+           ((Predict $prediction) (ctx ($ctx ($choice_ 0))) -> $prediction | (YES $yp_ NO $np_))
+       )
+       (O
+           (-  ((Predict $prediction) (ctx ($ctx ($choice_ 1))) -> $prediction | (YES $yp NO $np))  )
+           (-  ((Predict $prediction) (ctx ($ctx ($choice_ 0))) -> $prediction | (YES $yp_ NO $np_))  )
+       )
+   )
+
+
+; Gather final leaves for our Decision tree.
+(exec (STEP (1 21))
+    (,
+        (predict $prediction)
+        ((Predict $prediction) (ctx $ctx) -> $prediction | (YES $yp NO $np))
+    )
+    (,
+
+        (Final-ctx-state $prediction (ctx $ctx) -> $prediction)
+        (Final (Predict $prediction) (ctx $ctx) -> $prediction | (YES $yp NO $np))
+    )
+)
+; Build tree bottom up from leaves.
+(exec (STEP (1 22))
+    (,
+        (predict $predict)
+        
+        (Final-ctx-state $prediction (ctx ($ctx ($choice $v))) -> $then)
+        
+        ((Predict $prediction) (ctx ($ctx ($choice $v))) -> $then | (YES $yp NO $np))
+
+        (exec (STEP (1 22)) $t $p)
+    )
+    (O
+        
+        (- (Final-ctx-state $prediction (ctx ($ctx ($choice $v))) -> $then ) )
+        (+ (Final-ctx-state $prediction (ctx $ctx) -> $choice) )
+
+        (+  (Final (Predict $prediction) (ctx ($ctx ($choice $v))) -> $then | (YES $yp NO $np))  )
+        (+  (exec (STEP (1 22)) $t $p)  )
+    )
+)
+
+; We have our Decision Tree done
+
+
+; (DEBUG) remove Predict
+(exec (STEP (1 23)) (, ((Predict $prediction) (ctx $ctx) -> $then | (YES $yp NO $np))) (O (-  ((Predict $prediction) (ctx $ctx) -> $then | (YES $yp NO $np))  ))  )
+
+
+; Let's now test out tree against the original dataset as a heuristic.
+
+; collect up the ids to records
+(exec (STEP (1 24))  (,  (col-id-val $prop $id $val)  )  (,  (records-to-predict (ctx .) $id)  ) )
+
+; Associate a unique path in the decision tree with an id that is in agreement.
+(exec (STEP (2 0))
+    (, 
+       (predict $prediction)
+       (not-predict $prop)
+       (records-to-predict (ctx $ctx) $id)
+       
+       (col-id-val $prop $id $val)
+
+       (Final (Predict $prediction) (ctx ($ctx ($prop $val))) -> $then | (YES $yp NO $np))
+    
+      (exec (STEP (2 0)) $p $t)
+    )
+    (O 
+        (+ (records-to-predict (ctx ($ctx ($prop $val))) $id)  )
+        (- (records-to-predict (ctx $ctx) $id)  )
+
+        (+  (exec (STEP (2 0)) $p $t)  )
+    )
+)
+
+; Look up our predicted chance of the property being YES or NO
+(exec (STEP (2 1))
+    (,  
+        (predict $prediction)
+        (records-to-predict (ctx $ctx) (id $id))
+        (Final (Predict $prediction) (ctx $ctx) -> $prediction | (YES $yp NO $np))
+
+        (col-id-val $prediction (id $id) $val)
+
+        (YES_NO $YN $val)
+    )
+    (O
+        (pure
+            (Predict Original Dataset (Prediction $prediction) (id $id) (Guess $guess) (Actual $YN) (trail $ctx))
+            $guess
+            (   ifnz (sum_f64 (f64_from_string 1.0) (signum_f64 (sub_f64 (f64_from_string $yp) (f64_from_string $np))))
+                then (tuple YES (f64_to_string (product_f64 (f64_from_string $yp) (f64_from_string 100.0))) %)
+                else (tuple NO  (f64_to_string (product_f64 (f64_from_string $np) (f64_from_string 100.0))) %)
+            )
+        )
+    )
+)
+
+
+
+; Final thoughts : This version after getting the model right was relatively straightforward.
+;                  Once I realized I could construct the program as concatenated batch imperative programs it became easier.
+;                  This however is unlikely to be optimal.
+;                  I think if one were to revisit this program they would try to turn this into a top down
+;                     algorithm and construct a minimal set of paths on the way down.
+;                  We can think of this as a computational front .
+;                  A lot of excess computation is not directly affecting the final result.
+;                  I initially tried programming it in this way but had enough orthogonal issues that I decided to
+;                     simplify and finish the project.
+

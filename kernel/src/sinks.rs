@@ -912,7 +912,7 @@ impl Sink for SumSink {
 struct Sum;
 struct Min;
 struct Max;
-struct Prd;
+struct Prod;
 
 trait FloatReduction {
     const NAME : &'static str;
@@ -920,22 +920,22 @@ trait FloatReduction {
     fn op(acc  : &mut f64, new : f64);
 }
 impl FloatReduction for Sum {
-    const NAME : &'static str= "sum";
+    const NAME : &'static str= "fsum";
     const ACC  : f64 = 0.0;
     fn op(acc : &mut f64, new : f64) { acc.add_assign(new); }
 }
 impl FloatReduction for Min {
-    const NAME : &'static str= "min";
+    const NAME : &'static str= "fmin";
     const ACC  : f64 = f64::MAX;
     fn op(acc : &mut f64, new : f64) { *acc = (*acc).min(new) }
 }
 impl FloatReduction for Max {
-    const NAME : &'static str= "max";
+    const NAME : &'static str= "fmax";
     const ACC  : f64 = f64::MIN;
     fn op(acc : &mut f64, new : f64) { *acc = (*acc).max(new) }
 }
-impl FloatReduction for Prd {
-    const NAME : &'static str= "max";
+impl FloatReduction for Prod {
+    const NAME : &'static str= "fprod";
     const ACC  : f64 = 1.0;
     fn op(acc : &mut f64, new : f64) { acc.mul_assign(new) }
 }
@@ -947,13 +947,13 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         Self { e, unique: PathMap::new(), boo : PhantomData }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
+        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[2+Reduction::NAME.len()..];
         trace!(target: "sink", "{} requesting {}", Reduction::NAME, serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
-        let mpath = &path[5+wz.root_prefix_path().len()..];
+        let mpath = &path[2+Reduction::NAME.len()+wz.root_prefix_path().len()..];
         let ctx = unsafe { Expr { ptr: mpath.as_ptr().cast_mut() } };
         trace!(target: "sink", "{} at '{}' sinking raw '{}'", Reduction::NAME, serialize(wz.root_prefix_path()), serialize(path));
         trace!(target: "sink", "{} registering in ctx {:?}", Reduction::NAME, serialize(mpath));
@@ -1191,7 +1191,7 @@ impl Sink for Z3Sink {
 }
 
 
-pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(FloatReductionSink<Sum>), AndSink(AndSink), ACTSink(ACTSink),
+pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1201,9 +1201,10 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
     AUSink(AUSink),
     USink(USink),
     CompatSink(CompatSink),
-    MinSink(FloatReductionSink<Min>),
-    MaxSink(FloatReductionSink<Max>),
-    PrdSink(FloatReductionSink<Prd>),
+    FSumSink(FloatReductionSink<Sum>),
+    FMinSink(FloatReductionSink<Min>),
+    FMaxSink(FloatReductionSink<Max>),
+    FProdSink(FloatReductionSink<Prod>),
 }
 
 impl ASink {
@@ -1233,16 +1234,19 @@ impl Sink for ASink {
             ASink::HashSink(HashSink::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
-            return ASink::SumSink(FloatReductionSink::new(e));
+            return ASink::SumSink(SumSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
-            *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'i' && *e.ptr.offset(4) == b'n' } {
-            return ASink::MinSink(FloatReductionSink::new(e));
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b's' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(4) == b'm' } {
+            return ASink::FSumSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
-            *e.ptr.offset(2) == b'm' && *e.ptr.offset(3) == b'a' && *e.ptr.offset(4) == b'x' } {
-            return ASink::MaxSink(FloatReductionSink::new(e));
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'm' && *e.ptr.offset(4) == b'i' && *e.ptr.offset(5) == b'n' } {
+            return ASink::FMinSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
-            *e.ptr.offset(2) == b'p' && *e.ptr.offset(3) == b'r' && *e.ptr.offset(4) == b'd' } {
-            return ASink::PrdSink(FloatReductionSink::new(e));
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'm' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'x' } {
+            return ASink::FMaxSink(FloatReductionSink::new(e));
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'p' && *e.ptr.offset(4) == b'r' && *e.ptr.offset(5) == b'o' && *e.ptr.offset(6) == b'd' } {
+            return ASink::FProdSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b'a' && *e.ptr.offset(3) == b'n' && *e.ptr.offset(4) == b'd' } {
             return ASink::AndSink(AndSink::new(e));
@@ -1292,9 +1296,10 @@ impl Sink for ASink {
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
-                ASink::MinSink(s) => { for i in s.request().into_iter() { yield i } }
-                ASink::MaxSink(s) => { for i in s.request().into_iter() { yield i } }
-                ASink::PrdSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::FSumSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::FMaxSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::FProdSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1317,9 +1322,10 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
-            ASink::MinSink(s) => { s.sink(it, path) }
-            ASink::MaxSink(s) => { s.sink(it, path) }
-            ASink::PrdSink(s) => { s.sink(it, path) }
+            ASink::FSumSink(s) => { s.sink(it, path) }
+            ASink::FMinSink(s) => { s.sink(it, path) }
+            ASink::FMaxSink(s) => { s.sink(it, path) }
+            ASink::FProdSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1342,9 +1348,10 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
-            ASink::MinSink(s) => { s.finalize(it) }
-            ASink::MaxSink(s) => { s.finalize(it) }
-            ASink::PrdSink(s) => { s.finalize(it) }
+            ASink::FSumSink(s) => { s.finalize(it) }
+            ASink::FMinSink(s) => { s.finalize(it) }
+            ASink::FMaxSink(s) => { s.finalize(it) }
+            ASink::FProdSink(s) => { s.finalize(it) }
         }
     }
 }

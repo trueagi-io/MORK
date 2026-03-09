@@ -1185,7 +1185,17 @@ impl Space {
                     }
                 }
                 Err(failed) => {
-                    trace!(target: "query_multi_ref", "U failed {:?}", failed)
+                    match failed {
+                        UnificationFailure::Occurs(v, e) => {
+                            trace!(target: "query_multi", "U {:?} occurs in {}", v, e.show())
+                        }
+                        UnificationFailure::Difference(lhs, rhs) => {
+                            trace!(target: "query_multi", "U {} differs from {}", lhs.show(), rhs.show())
+                        }
+                        UnificationFailure::MaxIter(iter) => {
+                            trace!(target: "query_multi", "U reached max iter {}", iter)
+                        }
+                    }
                 }
             }
 
@@ -1238,7 +1248,17 @@ impl Space {
                                 }
                             }
                             Err(failed) => {
-                                trace!(target: "query_multi", "U failed {:?}", failed)
+                                match failed {
+                                    UnificationFailure::Occurs(v, e) => {
+                                        trace!(target: "query_multi", "U {:?} occurs in {}", v, e.show())
+                                    }
+                                    UnificationFailure::Difference(lhs, rhs) => {
+                                        trace!(target: "query_multi", "U {} differs from {}", lhs.show(), rhs.show())
+                                    }
+                                    UnificationFailure::MaxIter(iter) => {
+                                        trace!(target: "query_multi", "U reached max iter {}", iter)
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -1665,6 +1685,7 @@ impl Space {
         #[cfg(debug_assertions)]
         { let mut rz = self.btm.read_zipper(); while rz.to_next_val() { trace!(target: "interpret", "on space {:?}", serialize(unsafe { rz.path() })); }; drop(rz); }
         destruct!(rt, ("exec" loc pat_expr tpl_expr), unsafe {
+            debug_assert!(loc.variables() == 0);
             if let Tag::Arity(i) = byte_item(*pat_expr.ptr) { if i == 0 { return Err("pattern expression can not be empty"); } } else { return Err("pattern must be an expression, not a symbol or variables") }
             if *pat_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { return Err("pattern functor can only be , or I") }
 

@@ -355,6 +355,54 @@ fn process_calculus_reverse() {
     assert_eq!(res, "(S (S (S (S Z))))\n");
 }
 
+fn variable_priority() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(A Z)
+(exec $p
+      (, (A $x))
+      (, (B $x)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert!(res.contains("(B Z)\n"));
+}
+
+fn variables_in_priority() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(A Z)
+(exec (0 $p)
+      (, (A $x))
+      (, (B $x)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert!(res.contains("(B Z)\n"));
+}
+
 fn lookup() {
     let mut s = Space::new();
 
@@ -5622,6 +5670,8 @@ fn main() {
         Commands::Test { .. } => {
             #[cfg(not(debug_assertions))]
             println!("WARNING running in release or -O3, if unintentional, build without --release and with the alternative .cargo rustflags");
+            // variables_in_priority();
+            // variable_priority();
             lookup();
             positive();
             negative();

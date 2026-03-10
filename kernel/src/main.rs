@@ -2569,7 +2569,7 @@ fn sink_count_constant() {
     assert_eq!(res, "stupid\n")
 }
 
-#[test]
+
 fn sink_float_reduce() {
     let mut s = Space::new();
 
@@ -5858,6 +5858,7 @@ fn main() {
             sink_hex_ident();
             sink_hash_expr();
             sink_even_half();
+            sink_float_reduce();
 
             parse_csv();
             parse_json();

@@ -1235,16 +1235,16 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
             return ASink::SumSink(SumSink::new(e));
-        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
-            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b's' && *e.ptr.offset(4) == b'u' && *e.ptr.offset(4) == b'm' } {
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b's'&& *e.ptr.offset(4) == b'u'&& *e.ptr.offset(5) == b'm' } {
             return ASink::FSumSink(FloatReductionSink::new(e));
-        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'm' && *e.ptr.offset(4) == b'i' && *e.ptr.offset(5) == b'n' } {
             return ASink::FMinSink(FloatReductionSink::new(e));
-        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'm' && *e.ptr.offset(4) == b'a' && *e.ptr.offset(5) == b'x' } {
             return ASink::FMaxSink(FloatReductionSink::new(e));
-        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(5)) &&
             *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b'p' && *e.ptr.offset(4) == b'r' && *e.ptr.offset(5) == b'o' && *e.ptr.offset(6) == b'd' } {
             return ASink::FProdSink(FloatReductionSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&

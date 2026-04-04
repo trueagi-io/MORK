@@ -168,8 +168,14 @@ pub extern "C" fn tensor_get(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
 
     let mut indices: Vec<usize> = Vec::new();
     for _ in 0..(items - 1) {
-        let idx = expr.consume::<u32>()?;
-        indices.push(idx as usize);
+        let SourceItem::Symbol(idx_bytes) = expr.read() else {
+            return Err(EvalError::from("tensor_get: index must be a symbol"))
+        };
+        let idx = std::str::from_utf8(idx_bytes)
+            .map_err(|_| EvalError::from("tensor_get: index not utf8"))?
+            .parse::<usize>()
+            .map_err(|_| EvalError::from("tensor_get: index not a number"))?;
+        indices.push(idx);
     }
 
     let store = unsafe { tensor_store_from_context(expr) };
@@ -357,5 +363,26 @@ mod tests {
         assert_eq!(c.get(&[0, 1]), Some(22.0));
         assert_eq!(c.get(&[1, 0]), Some(43.0));
         assert_eq!(c.get(&[1, 1]), Some(50.0));
+
+        // Phase 2: test tensor_get directly through EvalScope
+        {
+            use eval_ffi::ExprSource;
+            let mut scope = eval::EvalScope::new();
+            crate::sparse::register(&mut scope);
+            scope.context = (&s.tensors as *const HashMap<Vec<u8>, SparseTensorF64>).cast_mut().cast();
+
+            // Build expression: (tensor_get C 0 0)
+            let expr_bytes = mork_expr::construct!("tensor_get" "C" "0" "0").unwrap();
+            let result = scope.eval(ExprSource::new(expr_bytes.as_ptr())).unwrap();
+            // Result is SymbolSize(8) + 8 bytes of f64
+            assert_eq!(result.len(), 9, "tensor_get should return 9 bytes (tag + f64)");
+            let val = f64::from_be_bytes(result[1..9].try_into().unwrap());
+            assert!((val - 19.0).abs() < 1e-10, "tensor_get C 0 0 = {} expected 19.0", val);
+
+            let expr_bytes = mork_expr::construct!("tensor_get" "C" "1" "1").unwrap();
+            let result = scope.eval(ExprSource::new(expr_bytes.as_ptr())).unwrap();
+            let val = f64::from_be_bytes(result[1..9].try_into().unwrap());
+            assert!((val - 50.0).abs() < 1e-10, "tensor_get C 1 1 = {} expected 50.0", val);
+        }
     }
 }

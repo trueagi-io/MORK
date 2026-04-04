@@ -37,6 +37,8 @@ pub struct EvalScope {
     /// These are used to create ExprSinks for stack frames.
     /// This avoids repeated allocations during evaluation.
     alloc_pool: Vec<Vec<u8>>,
+    /// Opaque context pointer propagated to ExprSource for pure functions.
+    pub context: *mut (),
 }
 
 macro_rules! alloc {
@@ -59,6 +61,7 @@ impl EvalScope {
             stack: Vec::new(),
             alloc_pool: Vec::new(),
             expr: ExprSource::new(core::ptr::null()),
+            context: core::ptr::null_mut(),
         }
     }
     pub fn add_func(&mut self, name: &str, func: FuncPtr, ty: FuncType) {
@@ -136,7 +139,9 @@ impl EvalScope {
                 let prev_frame = parent_frames.last_mut().unwrap();
                 let mut data = core::mem::take(&mut top_frame.sink).finish();
                 let offset = prev_frame.sink.as_ref().len();
-                (top_frame.func)(&mut ExprSource::new(data.as_ptr()), &mut prev_frame.sink)?;
+                let mut src = ExprSource::new(data.as_ptr());
+                src.context = self.context;
+                (top_frame.func)(&mut src, &mut prev_frame.sink)?;
                 trace!(target: "eval", "{:?} ==> {:?}", mork_expr::serialize(&data[..]), mork_expr::serialize(&prev_frame.sink.as_ref()[offset..]));
                 let top = self.stack.pop().unwrap();
                 // return buffer to pool

@@ -8,6 +8,7 @@ members = [
     "experiments/eval",
     "experiments/eval-ffi",
     "experiments/eval-examples",
+    "einsum-dyn/",
 ]
 
 default-members = ["kernel/"]

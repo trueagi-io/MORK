@@ -26,6 +26,8 @@ itertools = "0.14.0"
 base64 = "0.22.1"
 hex = "0.4.3"
 subprocess = { version = "0.2.13" }
+einsum-dyn = { path = "../einsum-dyn" }
+num-traits = "0.2"
 
 [features]
 default = ["grounding", "specialize_io"]

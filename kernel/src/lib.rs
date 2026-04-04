@@ -8,3 +8,4 @@ pub mod space;
 mod sources;
 mod sinks;
 mod pure;
+pub mod sparse;

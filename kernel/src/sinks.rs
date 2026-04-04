@@ -37,6 +37,7 @@ pub(crate) enum WriteResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
     Z3(&'static str),
+    TensorStore,
 }
 
 impl WriteResourceRequest {
@@ -64,6 +65,12 @@ impl WriteResourceRequest {
                     _ => { None }
                 }
             }
+            WriteResourceRequest::TensorStore => {
+                match other {
+                    WriteResourceRequest::TensorStore => { Some(WriteResourceRequest::TensorStore) }
+                    _ => { None }
+                }
+            }
         }
     }
 }
@@ -86,6 +93,11 @@ impl PartialOrd for WriteResourceRequest {
                     if s == o { Some(Ordering::Equal) } else { None }
                 } else { None }
             }
+            WriteResourceRequest::TensorStore => {
+                if let WriteResourceRequest::TensorStore = other {
+                    Some(Ordering::Equal)
+                } else { None }
+            }
         }
     }
 }
@@ -93,7 +105,8 @@ impl PartialOrd for WriteResourceRequest {
 pub(crate) enum WriteResource<'w, 'a, 'k> {
     BTM(&'w mut WriteZipperTracked<'a, 'k, ()>),
     ACT(()),
-    Z3(&'w mut subprocess::Popen)
+    Z3(&'w mut subprocess::Popen),
+    TensorStore(&'w mut std::collections::HashMap<Vec<u8>, crate::sparse::SparseTensorF64>),
 }
 
 // trait JoinLattice  {
@@ -1058,6 +1071,7 @@ impl Sink for PureSink {
     fn new(e: Expr) -> Self {
         let mut scope = EvalScope::new();
         pure::register(&mut scope);
+        crate::sparse::register(&mut scope);
         PureSink { e, unique: PathMap::new(), scope }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
@@ -1191,7 +1205,268 @@ impl Sink for Z3Sink {
 }
 
 
+// ============================================================================
+// Tensor sinks — all tensor I/O goes through WriteResource::TensorStore
+// ============================================================================
+
+/// Helper: parse symbol args from an expression path, skipping a known header.
+fn parse_symbol_args<'a>(path: &'a [u8], header_size: usize) -> Vec<&'a [u8]> {
+    let rest = &path[header_size..];
+    let mut pos = 0;
+    let mut args = Vec::new();
+    while pos < rest.len() {
+        match byte_item(rest[pos]) {
+            Tag::SymbolSize(len) => {
+                let len = len as usize;
+                pos += 1;
+                if pos + len <= rest.len() {
+                    args.push(&rest[pos..pos+len]);
+                }
+                pos += len;
+            }
+            _ => { pos += 1; }
+        }
+    }
+    args
+}
+
+/// TensorCollectSink — accumulates (indices, value) tuples into a named SparseTensorF64.
+/// Syntax: (tensor_collect name $i0 $i1 ... $val)
+pub struct TensorCollectSink {
+    e: Expr,
+    name: Vec<u8>,
+    rank: usize,
+    entries: Vec<(Vec<usize>, f64)>,
+}
+
+impl TensorCollectSink {
+    const HEADER_SIZE: usize = 16; // Arity(N) + SymbolSize(14) + "tensor_collect"
+}
+
+impl Sink for TensorCollectSink {
+    fn new(e: Expr) -> Self {
+        let arity = unsafe {
+            if let Tag::Arity(a) = byte_item(*e.ptr) { a as usize } else { panic!("tensor_collect: expected arity") }
+        };
+        let rank = arity.saturating_sub(3);
+        let name = unsafe {
+            let name_tag = *e.ptr.add(Self::HEADER_SIZE);
+            if let Tag::SymbolSize(len) = byte_item(name_tag) {
+                std::slice::from_raw_parts(e.ptr.add(Self::HEADER_SIZE + 1), len as usize).to_vec()
+            } else {
+                panic!("tensor_collect: second arg must be a symbol (tensor name)")
+            }
+        };
+        TensorCollectSink { e, name, rank, entries: Vec::new() }
+    }
+
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::TensorStore)
+    }
+
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
+        // Parse args after header + name
+        let name_len = self.name.len();
+        let args = parse_symbol_args(path, Self::HEADER_SIZE + 1 + name_len);
+
+        if args.len() >= self.rank + 1 {
+            let mut indices = Vec::with_capacity(self.rank);
+            for i in 0..self.rank {
+                if let Ok(s) = std::str::from_utf8(args[i]) {
+                    if let Ok(idx) = s.parse::<usize>() {
+                        indices.push(idx);
+                    } else { return; }
+                } else { return; }
+            }
+            if let Ok(s) = std::str::from_utf8(args[self.rank]) {
+                if let Ok(val) = s.parse::<f64>() {
+                    self.entries.push((indices, val));
+                }
+            }
+        }
+    }
+
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
+        if self.entries.is_empty() { return false; }
+        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
+
+        let mut tensor = crate::sparse::SparseTensorF64::new(self.rank);
+        for (indices, value) in self.entries.drain(..) {
+            tensor.set(&indices, value);
+        }
+        store.insert(self.name.clone(), tensor);
+        true
+    }
+}
+
+/// TensorEinsumSink — runs einsum on named tensors.
+/// Syntax: (tensor_einsum "spec" input1 input2 ... output)
+/// Variables are bound from pattern matching; actual values arrive in sink().
+pub struct TensorEinsumSink {
+    e: Expr,
+    spec: Vec<u8>,
+    input_names: Vec<Vec<u8>>,
+    output_name: Vec<u8>,
+    parsed: bool,
+}
+
+impl TensorEinsumSink {
+    // "tensor_einsum" is 13 chars → header = Arity + SymbolSize(13) + "tensor_einsum" = 15
+    const HEADER_SIZE: usize = 15;
+}
+
+impl Sink for TensorEinsumSink {
+    fn new(e: Expr) -> Self {
+        let span = unsafe { e.span().as_ref().unwrap() };
+        let args = parse_symbol_args(span, Self::HEADER_SIZE);
+        let spec = args.first().map(|a| a.to_vec()).unwrap_or_default();
+        let mut names: Vec<Vec<u8>> = args.get(1..).unwrap_or(&[]).iter().map(|a| a.to_vec()).collect();
+        let output_name = names.pop().unwrap_or_default();
+        TensorEinsumSink { e, spec, input_names: names, output_name, parsed: !args.is_empty() }
+    }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::TensorStore)
+    }
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, _path: &[u8]) where 'a: 'w, 'k: 'w {}
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
+        if !self.parsed { return false; }
+        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
+        // Strip quotes from spec if present (MORK parser includes them)
+        let spec_bytes = if self.spec.starts_with(b"\"") && self.spec.ends_with(b"\"") {
+            &self.spec[1..self.spec.len()-1]
+        } else {
+            &self.spec[..]
+        };
+        let spec_str = match std::str::from_utf8(spec_bytes) {
+            Ok(s) => s,
+            Err(_) => { log::error!(target: "tensor", "tensor_einsum: invalid spec"); return false; }
+        };
+
+        let inputs: Vec<&crate::sparse::SparseTensorF64> = self.input_names.iter()
+            .filter_map(|name| store.get(name))
+            .collect();
+        if inputs.len() != self.input_names.len() {
+            log::error!(target: "tensor", "tensor_einsum: missing input tensor(s)");
+            return false;
+        }
+
+        // Parse spec to determine output shape
+        let arrow = match spec_str.find("->") {
+            Some(a) => a,
+            None => { log::error!(target: "tensor", "tensor_einsum: spec missing '->'"); return false; }
+        };
+        let output_spec = &spec_str[arrow+2..];
+        let input_specs: Vec<&str> = spec_str[..arrow].split(',').collect();
+
+        let mut dim_map = std::collections::HashMap::new();
+        for (i, ispec) in input_specs.iter().enumerate() {
+            if let Some(inp) = inputs.get(i) {
+                for (axis, ch) in ispec.bytes().enumerate() {
+                    let d = inp.dims.get(axis).copied().unwrap_or(0);
+                    dim_map.entry(ch).or_insert(d);
+                }
+            }
+        }
+        let out_dims: Vec<usize> = output_spec.bytes()
+            .map(|ch| dim_map.get(&ch).copied().unwrap_or(1))
+            .collect();
+
+        let mut output = crate::sparse::SparseTensorF64::with_dims(out_dims);
+        let dyn_inputs: Vec<&dyn einsum_dyn::NDIndex<f64>> = inputs.iter()
+            .map(|t| *t as &dyn einsum_dyn::NDIndex<f64>)
+            .collect();
+        let mut dyn_out: &mut dyn einsum_dyn::NDIndex<f64> = &mut output;
+        if let Err(e) = einsum_dyn::sparse::einsum_vm_oneshot_dyn(spec_str, &dyn_inputs, &mut [dyn_out]) {
+            log::error!(target: "tensor", "tensor_einsum failed: {}", e);
+            return false;
+        }
+        store.insert(self.output_name.clone(), output);
+        true
+    }
+}
+
+/// TensorBinopSink — element-wise add or mul on named tensors.
+/// Syntax: (tensor_add A B C) or (tensor_mul A B C)
+pub struct TensorBinopSink {
+    e: Expr,
+    op: TensorBinop,
+    header_size: usize,
+    a_name: Vec<u8>,
+    b_name: Vec<u8>,
+    c_name: Vec<u8>,
+    parsed: bool,
+}
+
+enum TensorBinop { Add, Mul }
+
+impl TensorBinopSink {
+    fn new_with_op(e: Expr, op: TensorBinop, header_size: usize) -> Self {
+        TensorBinopSink { e, op, header_size, a_name: Vec::new(), b_name: Vec::new(), c_name: Vec::new(), parsed: false }
+    }
+}
+
+impl Sink for TensorBinopSink {
+    fn new(e: Expr) -> Self { panic!("use new_with_op") }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::TensorStore)
+    }
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
+        if self.parsed { return; }
+        let args = parse_symbol_args(path, self.header_size);
+        self.a_name = args.first().map(|a| a.to_vec()).unwrap_or_default();
+        self.b_name = args.get(1).map(|a| a.to_vec()).unwrap_or_default();
+        self.c_name = args.get(2).map(|a| a.to_vec()).unwrap_or_default();
+        self.parsed = true;
+    }
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
+        if !self.parsed { return false; }
+        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
+        let (a, b) = match (store.get(&self.a_name), store.get(&self.b_name)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => { log::error!(target: "tensor", "tensor binop: missing input"); return false; }
+        };
+        let c = match self.op {
+            TensorBinop::Add => a.add(b),
+            TensorBinop::Mul => a.mul(b),
+        };
+        store.insert(self.c_name.clone(), c);
+        true
+    }
+}
+
+/// TensorFreeSink — removes a named tensor.
+/// Syntax: (tensor_free A)
+pub struct TensorFreeSink {
+    e: Expr,
+    name: Vec<u8>,
+    parsed: bool,
+}
+
+impl Sink for TensorFreeSink {
+    fn new(e: Expr) -> Self {
+        TensorFreeSink { e, name: Vec::new(), parsed: false }
+    }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::TensorStore)
+    }
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
+        if self.parsed { return; }
+        // "tensor_free" is 11 chars → header = 13
+        let args = parse_symbol_args(path, 13);
+        self.name = args.first().map(|a| a.to_vec()).unwrap_or_default();
+        self.parsed = true;
+    }
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
+        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
+        store.remove(&self.name).is_some()
+    }
+}
+
 pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+    TensorCollectSink(TensorCollectSink),
+    TensorEinsumSink(TensorEinsumSink),
+    TensorBinopSink(TensorBinopSink),
+    TensorFreeSink(TensorFreeSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1210,6 +1485,14 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadSink), C
 impl ASink {
     pub fn compat(e: Expr) -> Self {
         ASink::CompatSink(CompatSink::new(e))
+    }
+    /// Set an opaque context pointer on any PureSink's EvalScope.
+    /// This allows pure functions to access external state (e.g. tensor store).
+    pub fn set_context(&mut self, ctx: *mut ()) {
+        #[cfg(feature = "grounding")]
+        if let ASink::PureSink(s) = self {
+            s.scope.context = ctx;
+        }
     }
 }
 
@@ -1271,6 +1554,35 @@ impl Sink for ASink {
             return ASink::Z3Sink(Z3Sink::new(e));
             #[cfg(not(feature = "z3"))]
             panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr.offset(1) == item_byte(Tag::SymbolSize(14)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'_' && *e.ptr.offset(9) == b'c' &&
+            *e.ptr.offset(10) == b'o' && *e.ptr.offset(11) == b'l' && *e.ptr.offset(12) == b'l' && *e.ptr.offset(13) == b'e' &&
+            *e.ptr.offset(14) == b'c' && *e.ptr.offset(15) == b't' } {
+            return ASink::TensorCollectSink(TensorCollectSink::new(e));
+        } else if unsafe { *e.ptr.offset(1) == item_byte(Tag::SymbolSize(13)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'_' && *e.ptr.offset(9) == b'e' &&
+            *e.ptr.offset(10) == b'i' && *e.ptr.offset(11) == b'n' && *e.ptr.offset(12) == b's' && *e.ptr.offset(13) == b'u' &&
+            *e.ptr.offset(14) == b'm' } {
+            return ASink::TensorEinsumSink(TensorEinsumSink::new(e));
+        } else if unsafe { *e.ptr.offset(1) == item_byte(Tag::SymbolSize(10)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'_' && *e.ptr.offset(9) == b'a' &&
+            *e.ptr.offset(10) == b'd' && *e.ptr.offset(11) == b'd' } {
+            // "tensor_add" = 10 chars, header = 12
+            return ASink::TensorBinopSink(TensorBinopSink::new_with_op(e, TensorBinop::Add, 12));
+        } else if unsafe { *e.ptr.offset(1) == item_byte(Tag::SymbolSize(10)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'_' && *e.ptr.offset(9) == b'm' &&
+            *e.ptr.offset(10) == b'u' && *e.ptr.offset(11) == b'l' } {
+            // "tensor_mul" = 10 chars, header = 12
+            return ASink::TensorBinopSink(TensorBinopSink::new_with_op(e, TensorBinop::Mul, 12));
+        } else if unsafe { *e.ptr.offset(1) == item_byte(Tag::SymbolSize(11)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'_' && *e.ptr.offset(9) == b'f' &&
+            *e.ptr.offset(10) == b'r' && *e.ptr.offset(11) == b'e' && *e.ptr.offset(12) == b'e' } {
+            return ASink::TensorFreeSink(TensorFreeSink::new(e));
         } else {
             panic!("unrecognized sink")
         }
@@ -1300,6 +1612,10 @@ impl Sink for ASink {
                 ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMaxSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FProdSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TensorCollectSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TensorEinsumSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TensorBinopSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TensorFreeSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1326,6 +1642,10 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.sink(it, path) }
             ASink::FMaxSink(s) => { s.sink(it, path) }
             ASink::FProdSink(s) => { s.sink(it, path) }
+            ASink::TensorCollectSink(s) => { s.sink(it, path) }
+            ASink::TensorEinsumSink(s) => { s.sink(it, path) }
+            ASink::TensorBinopSink(s) => { s.sink(it, path) }
+            ASink::TensorFreeSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1352,6 +1672,10 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.finalize(it) }
             ASink::FMaxSink(s) => { s.finalize(it) }
             ASink::FProdSink(s) => { s.finalize(it) }
+            ASink::TensorCollectSink(s) => { s.finalize(it) }
+            ASink::TensorEinsumSink(s) => { s.finalize(it) }
+            ASink::TensorBinopSink(s) => { s.finalize(it) }
+            ASink::TensorFreeSink(s) => { s.finalize(it) }
         }
     }
 }

@@ -8,6 +8,9 @@ pub struct ExprSource {
     pub ptr: *const u8,
     // len: usize,
     pub position: usize,
+    /// Opaque context pointer. Pure functions can use this to access
+    /// extra state (e.g. tensor store) passed in by the eval scope.
+    pub context: *mut (),
 }
 
 #[cfg(feature = "std")]
@@ -71,7 +74,7 @@ impl ExprSource {
     }
     pub fn new(ptr: *const u8) -> Self {
         // let len = vec.len();
-        Self { ptr, position: 0 }
+        Self { ptr, position: 0, context: core::ptr::null_mut() }
     }
     pub fn read(&mut self) -> SourceItem {
         let byte = unsafe { *self.ptr.add(self.position) };

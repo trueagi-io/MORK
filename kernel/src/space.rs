@@ -40,6 +40,7 @@ pub struct Space {
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<OwnedSourceItem, Box<Popen>>,
+    pub tensors: HashMap<Vec<u8>, crate::sparse::SparseTensorF64>,
     pub last_merkleize: Instant,
     pub timing: bool
 }
@@ -444,7 +445,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), tensors: HashMap::new(), last_merkleize: Instant::now(), timing: false }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1078,6 +1079,7 @@ impl Space {
     unsafe fn write_handler<'w, 'a, 'k>(zh_wzs: (*mut ZipperHead<'w, 'a, ()>, *mut Vec<WriteZipperTracked<'a, 'k, ()>>),
                 mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
                 z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
+                tensors: *mut HashMap<Vec<u8>, crate::sparse::SparseTensorF64>,
                 request: &WriteResourceRequest) -> WriteResource<'w, 'a, 'k> where 'w : 'a {
         match *request {
             WriteResourceRequest::BTM(p) => {
@@ -1102,6 +1104,9 @@ impl Space {
                     bpopen
                 }).as_mut();
                 WriteResource::Z3(instance)
+            }
+            WriteResourceRequest::TensorStore => {
+                WriteResource::TensorStore(tensors.as_mut().unwrap())
             }
         }
     }
@@ -1488,6 +1493,7 @@ impl Space {
     #[cfg(feature="specialize_io")]
     pub fn transform_multi_multi_o(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         use crate::sinks::*;
+        let tensors_ptr = (&self.tensors as *const HashMap<Vec<u8>, crate::sparse::SparseTensorF64>).cast_mut();
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut tpl_args = Vec::with_capacity(64);
@@ -1511,7 +1517,7 @@ impl Space {
         template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, tensors_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1523,7 +1529,7 @@ impl Space {
 
         let mut assignments: Vec<(u8, u8)> = vec![];
         let mut trace: Vec<(u8, u8)> = vec![];
-        
+
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
@@ -1569,6 +1575,7 @@ impl Space {
         });
 
         for (i, s) in sinks.iter_mut().enumerate() {
+            s.set_context(tensors_ptr.cast());
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
             any_new |= s.finalize(std::iter::once(wz));
         }
@@ -1581,6 +1588,8 @@ impl Space {
 
     pub fn transform_multi_multi_io(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr, no_source: bool, no_sink: bool) -> (usize, bool) {
         use crate::sinks::*;
+        // Set tensor store pointer for sinks/pure functions that need it
+        let tensors_ptr = (&self.tensors as *const HashMap<Vec<u8>, crate::sparse::SparseTensorF64>).cast_mut();
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut tpl_args = Vec::with_capacity(64);
@@ -1604,7 +1613,7 @@ impl Space {
         template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, tensors_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1663,6 +1672,7 @@ impl Space {
         });
 
         for (i, s) in sinks.iter_mut().enumerate() {
+            s.set_context(tensors_ptr.cast());
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
             any_new |= s.finalize(std::iter::once(wz));
         }
@@ -1672,7 +1682,7 @@ impl Space {
 
         (touched, any_new)
     }
-    
+
     // (exec <loc> (, <src1> <src2> <srcn>)
     //             (, <dst1> <dst2> <dstm>))
     pub fn interpret(&mut self, rt: Expr) -> Result<(), &'static str> {

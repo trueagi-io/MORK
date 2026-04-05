@@ -1742,6 +1742,20 @@ impl<'a> DerivedPrefix<'a> {
 
 // wrapper for [`mork_bytestring::Expr::prefix`] to make the interface more straight-forward
 fn derive_prefix_from_expr_slice(expr_slice : &[u8]) -> DerivedPrefix<'_>{
+    if expr_slice.is_empty() {
+        return DerivedPrefix::TillConst {
+            full: expr_slice,
+            till_last_constant: expr_slice,
+        };
+    }
+
+    if expr_slice == [mork_bytestring::Tag::Arity(0).byte()] {
+        return DerivedPrefix::TillConst {
+            full: expr_slice,
+            till_last_constant: expr_slice,
+        };
+    }
+
     unsafe {
       match (mork_bytestring::Expr{
           ptr : expr_slice.as_ptr() as *mut _
@@ -1770,6 +1784,10 @@ fn prefix_assertions() {
 
     prefix_to_var!(e1 : expr ; pe1 : prefix ; "a");
     core::assert_eq!{e1, pe1.till_constant_to_full()};
+
+    prefix_to_var!(e0 : expr ; pe0 : prefix ; "()");
+    core::assert_eq!{e0, pe0.till_constant_to_full()};
+    core::assert_eq!{e0, pe0.till_constant_to_till_last_constant()};
 
     prefix_to_var!(e2 : expr; pe2 : prefix; "$a");
     core::assert_ne!{e2, pe2.till_constant_to_full()};

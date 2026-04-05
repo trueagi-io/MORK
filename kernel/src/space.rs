@@ -1461,11 +1461,12 @@ where
     rz.move_to_path(focus_token);
     rz.descend_until();
 
+    let mut res = vec![];
+
     let cm = rz.child_mask();
     let mut it = cm.iter();
 
-    let mut res = vec![];
-
+    //This loop is the general case to visit all subtries below a branch
     while let Some(b) = it.next() {
         rz.descend_to_byte(b);
 
@@ -1482,6 +1483,16 @@ where
             res.push((v, e));
         }
         rz.ascend_byte();
+    }
+
+    //This is a special case when there is only one concrete atom below the pattern
+    if res.len() == 0 && rz.path().len() > 0 {
+        let mut rzc = rz.fork_read_zipper();
+        rzc.to_next_val();
+        let e = OwnedExpr::from(rzc.origin_path());
+        if e.borrow().unifiable(pattern) {
+            res.push((vec![], e)); //No point in returning a token, since no further exploration from this point is fruitful
+        }
     }
 
     res

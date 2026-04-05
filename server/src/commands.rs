@@ -1757,17 +1757,22 @@ fn derive_prefix_from_expr_slice(expr_slice : &[u8]) -> DerivedPrefix<'_>{
     }
 
     unsafe {
-      match (mork_bytestring::Expr{
-          ptr : expr_slice.as_ptr() as *mut _
-      })
-      .prefix()
-      {
-        Ok(pre) => DerivedPrefix::TillVar(&*pre),
-        Err(till_last) => DerivedPrefix::TillConst {
-            full               : expr_slice, 
-            till_last_constant : &*till_last,
-        },
-      }
+        match std::panic::catch_unwind(|| {
+            (mork_bytestring::Expr{
+                ptr : expr_slice.as_ptr() as *mut _
+            })
+            .prefix()
+        }) {
+            Ok(Ok(pre)) => DerivedPrefix::TillVar(&*pre),
+            Ok(Err(till_last)) => DerivedPrefix::TillConst {
+                full               : expr_slice,
+                till_last_constant : &*till_last,
+            },
+            Err(_) => DerivedPrefix::TillConst {
+                full: expr_slice,
+                till_last_constant: &expr_slice[..0],
+            },
+        }
     }
 }
 
@@ -1788,6 +1793,15 @@ fn prefix_assertions() {
     prefix_to_var!(e0 : expr ; pe0 : prefix ; "()");
     core::assert_eq!{e0, pe0.till_constant_to_full()};
     core::assert_eq!{e0, pe0.till_constant_to_till_last_constant()};
+
+    let invalid = [64u8];
+    let invalid_panics = std::panic::catch_unwind(|| {
+        (mork_bytestring::Expr { ptr: invalid.as_ptr() as *mut _ }).prefix()
+    });
+    core::assert!(invalid_panics.is_err());
+    let invalid_prefix = derive_prefix_from_expr_slice(&invalid);
+    core::assert_eq!(invalid_prefix.till_constant_to_full(), &invalid);
+    core::assert_eq!(invalid_prefix.till_constant_to_till_last_constant(), &invalid[..0]);
 
     prefix_to_var!(e2 : expr; pe2 : prefix; "$a");
     core::assert_ne!{e2, pe2.till_constant_to_full()};

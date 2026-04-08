@@ -226,7 +226,7 @@ pub trait Space: Sized {
     /// 4. A zero-length result vector means the `sample_expr` that was paired with the `focus_token` is a singleton
     ///  within its result set.  A zero-length result vector when `focus_token == &[]` means the subspace is empty
     ///
-    fn token_bfs<'s>(&'s self, focus_token: &[u8], pattern: Expr, pattern_reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, OwnedExpr)> {
+    fn token_bfs<'s>(&'s self, focus_token: &[u8], pattern: Expr, pattern_reader: &mut Self::Reader<'s>) -> Vec<(Vec<u8>, OwnedExpr, usize)> {
         token_bfs_impl(
             focus_token,
             pattern,

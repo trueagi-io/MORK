@@ -1444,7 +1444,7 @@ where
         Ok(i)
 }
 
-pub(crate) fn token_bfs_impl<Rz>(focus_token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, OwnedExpr)>
+pub(crate) fn token_bfs_impl<Rz>(focus_token: &[u8], pattern: Expr, mut rz: Rz) -> Vec<(Vec<u8>, OwnedExpr, usize)>
 where
     Rz: Zipper + ZipperAbsolutePath + ZipperMoving + ZipperIteration + ZipperPathBuffer + ZipperForking<()>
 {
@@ -1476,13 +1476,28 @@ where
             rzc.to_next_val();
 
             let e = OwnedExpr::from(rzc.origin_path());
+            let expr_path_len = rzc.origin_path().len();
             drop(rzc);
 
             if e.borrow().unifiable(pattern) {
                 let v = rz.path().to_vec();
                 // println!("token {:?}", &v[..]);
                 // println!("expr  {:?}", e);
-                res.push((v, e));
+
+                //Provide the number of downstream paths beyond this point, so the client can be smarter about subsequent calls
+                let child_count = {
+                    let path_len = rz.path().len();
+                    rz.descend_until();
+                    let child_count = if expr_path_len > rz.origin_path().len() {
+                        rz.child_count()
+                    } else {
+                        1 //This covers the special case below of one concrete atom
+                    };
+                    rz.ascend(rz.path().len() - path_len);
+                    child_count
+                };
+
+                res.push((v, e, child_count));
             }
             rz.ascend_byte();
         }
@@ -1493,7 +1508,7 @@ where
             rzc.to_next_val();
             let e = OwnedExpr::from(rzc.origin_path());
             if e.borrow().unifiable(pattern) {
-                res.push((vec![], e)); //No point in returning a token, since no further exploration from this point is fruitful
+                res.push((vec![], e, 0)); //No point in returning a token, since no further exploration from this point is fruitful
             }
         }
     }
@@ -2253,7 +2268,7 @@ fn bfs_test() {
     let mut reader = space.new_reader(unsafe { &*template.prefix().unwrap_or(template.span()) }, &()).unwrap();
     let prime_results = space.token_bfs(&[], expr!(space, "$"), &mut reader);
     println!("Prime {:?}", space.token_bfs(&[], expr!(space, "$"), &mut reader));
-    let [(t1, _), (t2, _), ..] = &prime_results[..] else { panic!() };
+    let [(t1, _, _), (t2, _, _), ..] = &prime_results[..] else { panic!() };
     println!("L1.0 {:?}", space.token_bfs(t1, expr!(space, "$"), &mut reader));
     println!("L1.1 {:?}", space.token_bfs(t2, expr!(space, "$"), &mut reader));
 }

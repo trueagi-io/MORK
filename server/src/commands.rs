@@ -335,7 +335,7 @@ fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr:
 
     let mut first = true;
     writer.write(b"[")?;
-    for (new_tok, expr) in result_paths {
+    for (new_tok, expr, downstream_cnt) in result_paths {
         if first {
             first = false
         } else {
@@ -351,10 +351,14 @@ fn do_bfs(ctx: &MorkService, cmd: Command, mut reader: ReadPermission, mut expr:
             } else {
                 writer.write(b", ")?;
             }
-            writer.write(format!("{}", byte as u16).as_bytes())?;
+            write!(writer, "{}", byte as u16)?;
         }
 
-        writer.write(b"], \"expr\": ")?;
+        writer.write(b"], \"cnt\": ")?;
+
+        write!(writer, "{downstream_cnt}")?;
+
+        writer.write(b", \"expr\": ")?;
 
         serialize_sexpr_into(expr.borrow().ptr, &mut expr_buffer, ctx.0.space.symbol_table())
             .map_err(|e|CommandError::internal(format!("failed to serialize to MeTTa S-Expressions: {e:?}")))?;

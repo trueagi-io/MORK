@@ -1879,3 +1879,94 @@ async fn misbehaving_transform() -> Result<(), ()> {
     println!("{}", String::from_utf8(out).unwrap());
     Ok(())
 }
+
+#[cfg(test)]
+async fn load_and_explore_symbol_case(input: &str) -> String {
+    let ctx = MorkService::new().await;
+
+    let pattern = ctx.0.space.sexpr_to_expr("$").unwrap();
+    let template = ctx.0.space.sexpr_to_expr("_1").unwrap();
+    let expr_bytes = pattern.as_bytes().to_vec();
+
+    let mut writer = ctx.0.space.new_writer(&[], &()).unwrap();
+    ctx.0.space
+        .load_sexpr(input.as_bytes(), pattern.borrow(), template.borrow(), &mut writer)
+        .unwrap();
+    drop(writer);
+
+    let reader = ctx.0.space.new_reader_async(&[], &()).await.unwrap();
+    let cmd = Command {
+        def: ExploreCmd::CONST_CMD,
+        args: vec![ArgVal::Expr(pattern), ArgVal::Path(vec![])],
+        properties: vec![],
+        cmd_id: 0,
+    };
+
+    let out = do_bfs(&ctx, cmd, reader, expr_bytes).unwrap();
+    String::from_utf8(out.get_bytes().unwrap().to_vec()).unwrap()
+}
+
+#[cfg(test)]
+async fn explore_malformed_symbol_case() {
+    let ctx = MorkService::new().await;
+
+    let pattern = ctx.0.space.sexpr_to_expr("$").unwrap();
+    let expr_bytes = pattern.as_bytes().to_vec();
+
+    let mut writer = ctx.0.space.new_writer(&[], &()).unwrap();
+    let mut wz = ctx.0.space.write_zipper(&mut writer);
+    #[cfg(feature = "interning")]
+    {
+        let permit = ctx.0.space.symbol_table().try_aquire_permission().unwrap();
+        let symbol = permit.get_sym_or_insert(&[b' ', b'[', b']', b'(', b')', b'"']);
+        wz.descend_to(&symbol);
+    }
+    #[cfg(not(feature = "interning"))]
+    {
+        wz.descend_to(&[mork_bytestring::Tag::SymbolSize(1).byte(), 192u8]);
+    }
+    wz.set_val(());
+    ctx.0.space.cleanup_write_zipper(wz);
+    drop(writer);
+
+    let reader = ctx.0.space.new_reader_async(&[], &()).await.unwrap();
+    let cmd = Command {
+        def: ExploreCmd::CONST_CMD,
+        args: vec![ArgVal::Expr(pattern), ArgVal::Path(vec![])],
+        properties: vec![],
+        cmd_id: 0,
+    };
+
+    do_bfs(&ctx, cmd, reader, expr_bytes).unwrap();
+}
+
+#[cfg(test)]
+#[test]
+fn symbol_edge_cases() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let long_symbol = "a".repeat(2049);
+        let cases = [
+            ("simple", "(edge simple)\n".to_string()),
+            ("spaces", "(edge \"contains spaces\")\n".to_string()),
+            ("leading/trailing whitespace", "(edge \" leading and trailing \")\n".to_string()),
+            ("parser-reserved chars", "(edge \"$ _1 [2] ()\")\n".to_string()),
+            ("brackets and parens", "(edge \"contains [brackets] and (parens)\")\n".to_string()),
+            ("unicode", "(edge \"café au lait\")\n".to_string()),
+            ("long symbol", format!("(edge {})\n", long_symbol)),
+        ];
+
+        for (name, input) in cases {
+            let output = load_and_explore_symbol_case(&input).await;
+            assert!(output.starts_with('['), "edge case `{name}` returned malformed JSON");
+            assert!(output.ends_with(']'), "edge case `{name}` returned malformed JSON");
+        }
+
+        explore_malformed_symbol_case().await;
+    });
+}

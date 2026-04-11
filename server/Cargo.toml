@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 pathmap = { workspace=true }
-mork = { workspace=true }
+mork = { workspace=true, features = ["utf8_validation"] }
 mork-frontend = { workspace=true }
 mork-bytestring = { workspace = true }
 bucket_map = { workspace=true }
@@ -29,11 +29,11 @@ futures-util = { version="0.3.30" }
 eventsource-stream = "0.2" # Used to parse server-side-events for the `status_listen` tests
 
 [features]
-default = ["tokio_workers", "neo4j", "local_files"]
+default = ["tokio_workers", "neo4j", "local_files", "utf8_validation"]
 serialize_tests = [] # Causes tests to run with 100ms between each one, so they don't interfere with each other
 tokio_workers = [] # Use Tokio threads as the server workers
 mork_workers = ["dep:num_cpus", "dep:scc"] # Use our own custom thread pool for CPU-heavy work.  CURRENTLY UNMAINTAINED
 local_files = [] # Allows the server to import and export files on the host.  Handy for a local server, but disable in a multi-user remote environment with untrusted users.
 neo4j = ["mork/neo4j"]
 interning = ["mork/interning"]
-
+utf8_validation = ["mork/utf8_validation"]

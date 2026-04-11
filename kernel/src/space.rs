@@ -1,5 +1,6 @@
 use core::assert_eq;
 use core::result::Result::{Err, Ok};
+use std::borrow::Cow;
 use std::io::{BufRead, Write};
 use std::{process, usize};
 use std::collections::BTreeMap;
@@ -7,7 +8,7 @@ use std::fs::File;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::{Arc, Mutex};
 use futures::TryFutureExt;
-use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply};
+use mork_bytestring::{byte_item, Expr, OwnedExpr, ExprZipper, ExprTrait, serialize, Tag, ExprEnv, unify, apply, Traversal, execute_loop};
 use mork_frontend::bytestring_parser::{Parser, ParserError, ParserErrorType, ParseContext};
 use bucket_map::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::PathMap;
@@ -47,6 +48,131 @@ impl DefaultSpace {
             sm: SharedMapping::new(),
         }
     }
+}
+
+#[inline(always)]
+fn symbol_needs_quotes(symbol: &[u8]) -> bool {
+    symbol.iter().any(|b| matches!(*b, b' ' | b'\t' | b'\n'))
+}
+
+#[cfg(feature = "utf8_validation")]
+#[cold]
+#[inline(never)]
+fn escape_symbol_bytes(symbol: &[u8]) -> String {
+    let mut escaped = String::with_capacity(symbol.len() * 4 + 2);
+    escaped.push('"');
+    for &byte in symbol {
+        match byte {
+            b'\\' => escaped.push_str("\\\\"),
+            b'"' => escaped.push_str("\\\""),
+            b'\n' => escaped.push_str("\\n"),
+            b'\r' => escaped.push_str("\\r"),
+            b'\t' => escaped.push_str("\\t"),
+            0x20..=0x7e => escaped.push(byte as char),
+            _ => {
+                escaped.push_str("\\x");
+                let hi = byte >> 4;
+                let lo = byte & 0x0f;
+                escaped.push(char::from(if hi < 10 { b'0' + hi } else { b'a' + (hi - 10) }));
+                escaped.push(char::from(if lo < 10 { b'0' + lo } else { b'a' + (lo - 10) }));
+            }
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+#[inline(always)]
+pub fn symbol_text_for_serialization(symbol: &[u8]) -> Cow<'_, str> {
+    #[cfg(not(feature = "utf8_validation"))]
+    {
+        return Cow::Borrowed(unsafe { std::str::from_utf8_unchecked(symbol) });
+    }
+
+    #[cfg(feature = "utf8_validation")]
+    {
+        match std::str::from_utf8(symbol) {
+            Ok(text) => Cow::Borrowed(text),
+            Err(_) => Cow::Owned(escape_symbol_bytes(symbol)),
+        }
+    }
+}
+
+#[inline(always)]
+fn write_quoted_symbol_bytes<W: Write>(dst: &mut W, symbol: &[u8]) {
+    let _ = dst.write(b"\"");
+    let _ = dst.write(symbol);
+    let _ = dst.write(b"\"");
+}
+
+#[cold]
+#[inline(never)]
+fn write_escaped_symbol_bytes<W: Write>(dst: &mut W, symbol: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let _ = dst.write(b"\"");
+    for &byte in symbol {
+        match byte {
+            b'\\' => { let _ = dst.write(b"\\\\"); }
+            b'"' => { let _ = dst.write(b"\\\""); }
+            b'\n' => { let _ = dst.write(b"\\n"); }
+            b'\r' => { let _ = dst.write(b"\\r"); }
+            b'\t' => { let _ = dst.write(b"\\t"); }
+            0x20..=0x7e => { let _ = dst.write(&[byte]); }
+            _ => {
+                let _ = dst.write(&[b'\\', b'x', HEX[(byte >> 4) as usize], HEX[(byte & 0x0f) as usize]]);
+            }
+        }
+    }
+    let _ = dst.write(b"\"");
+}
+
+#[inline(always)]
+fn write_serialized_symbol<W: Write>(dst: &mut W, symbol: &[u8], quote_whitespace: bool) {
+    #[cfg(not(feature = "utf8_validation"))]
+    {
+        if quote_whitespace && symbol_needs_quotes(symbol) {
+            write_quoted_symbol_bytes(dst, symbol);
+        } else {
+            let _ = dst.write(symbol);
+        }
+        return;
+    }
+
+    #[cfg(feature = "utf8_validation")]
+    {
+        match std::str::from_utf8(symbol) {
+            Ok(_) if quote_whitespace && symbol_needs_quotes(symbol) => write_quoted_symbol_bytes(dst, symbol),
+            Ok(text) => { let _ = dst.write(text.as_bytes()); }
+            Err(_) => write_escaped_symbol_bytes(dst, symbol),
+        }
+    }
+}
+
+struct DumpSexprTraversal<'a, W: Write> {
+    out: &'a mut W,
+    #[allow(unused)]
+    sm: &'a SharedMapping,
+    transient: bool,
+}
+
+#[allow(unused_variables, unused_must_use)]
+impl<W: Write> Traversal<(), ()> for DumpSexprTraversal<'_, W> {
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(b" "); }; self.out.write(b"$"); }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(b" "); }; self.out.write(b"_"); self.out.write((i as u16 + 1).to_string().as_bytes()); }
+    #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {
+        if self.transient { self.out.write(b" "); }
+        #[cfg(feature="interning")]
+        {
+            let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
+            let bytes = self.sm.get_bytes(symbol).expect(format!("failed to look up {:?}", symbol).as_str());
+            write_serialized_symbol(self.out, bytes, true);
+        }
+        #[cfg(not(feature="interning"))]
+        write_serialized_symbol(self.out, s, true);
+    }
+    #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write(b" "); }; self.out.write(b"("); self.transient = false; }
+    #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
+    #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write(b")"); }
 }
 
 /// Read Permission object in a [DefaultSpace]
@@ -713,12 +839,10 @@ macro_rules! sexpr {
             {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
             let table = $space.symbol_table();
-            let mstr = table.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-            // println!("symbol {symbol:?}, bytes {mstr:?}");
-            unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+            $crate::space::symbol_text_for_serialization(table.get_bytes(symbol).expect(format!("failed to look up {:?}", symbol).as_str()))
             }
             #[cfg(not(feature="interning"))]
-            unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap_or(format!("{:?}", s).as_str())) }
+            $crate::space::symbol_text_for_serialization(s)
         });
         String::from_utf8(v).unwrap_or_else(|_| unsafe { e.span().as_ref()}.map(mork_bytestring::serialize).unwrap_or("<null>".to_string()))
     }};
@@ -1528,12 +1652,10 @@ impl DefaultSpace {
                 #[cfg(feature="interning")]
                 {
                     let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                    let mstr = self.sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                    // println!("symbol {symbol:?}, bytes {mstr:?}");
-                    unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+                    symbol_text_for_serialization(self.sm.get_bytes(symbol).expect(format!("failed to look up {:?}", symbol).as_str()))
                 }
                 #[cfg(not(feature="interning"))]
-                unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+                symbol_text_for_serialization(s)
             });
             w.write(&[b'\n']).map_err(|x| x.to_string())?;
             i += 1;
@@ -1590,29 +1712,8 @@ pub(crate) fn dump_as_sexpr_impl<'s, RZ, W: std::io::Write>(
             }
         }
 
-        // &buffer[constant_template_prefix.len()..oz.loc]
-        let mut varbuf = [0u8; 66];
-        varbuf[0] = b'"';
-
-        Expr{ ptr: buffer.as_ptr().cast_mut() }.serialize(w, |s| {
-            #[cfg(feature="interning")]
-            let s_slice = {
-                let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-                let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-                // println!("symbol {symbol:?}, bytes {mstr:?}");
-                unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
-            };
-            #[cfg(not(feature="interning"))]
-            let s_slice: &str = unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) };
-
-            if s_slice.contains(|b: char| b.is_whitespace()) {
-                varbuf[1..1+s.len()].copy_from_slice(s);
-                varbuf[1+s.len()] = b'"';
-                unsafe { std::mem::transmute(std::str::from_utf8(&varbuf[..s.len() + 2]).unwrap()) }
-            } else {
-                s_slice
-            }
-        });
+        let mut traversal = DumpSexprTraversal { out: w, sm, transient: false };
+        execute_loop(&mut traversal, Expr{ ptr: buffer.as_ptr().cast_mut() }, 0);
 
         if i < max_write {
             // GOAT, we can't make a safely move a string through that setjmp machinery without risking leaking memory
@@ -1634,12 +1735,10 @@ pub fn serialize_sexpr_into<W : std::io::Write>(src_expr_ptr: *mut u8, dst: &mut
         #[cfg(feature="interning")]
         {
             let symbol = i64::from_be_bytes(s.try_into().unwrap()).to_be_bytes();
-            let mstr = sm.get_bytes(symbol).map(unsafe { |x| std::str::from_utf8_unchecked(x) });
-            // println!("symbol {symbol:?}, bytes {mstr:?}");
-            unsafe { std::mem::transmute(mstr.expect(format!("failed to look up {:?}", symbol).as_str())) }
+            symbol_text_for_serialization(sm.get_bytes(symbol).expect(format!("failed to look up {:?}", symbol).as_str()))
         }
         #[cfg(not(feature="interning"))]
-        unsafe { std::mem::transmute(std::str::from_utf8(s).unwrap()) }
+        symbol_text_for_serialization(s)
     });
 
     Ok(())

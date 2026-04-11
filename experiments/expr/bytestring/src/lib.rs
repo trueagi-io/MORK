@@ -7,6 +7,7 @@ use std::{
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
 use std::collections::BTreeMap;
+use std::borrow::Cow;
 use std::hash::Hasher;
 use gxhash::{HashSet, HashSetExt, HashMap, HashMapExt};
 use smallvec::SmallVec;
@@ -1115,7 +1116,7 @@ impl Expr {
     }
 
     #[inline(never)]
-    pub fn serialize<Target : std::io::Write, F : for <'a> FnMut(&'a [u8]) -> &'a str>(&self, t: &mut Target, map_symbol: F) -> () {
+    pub fn serialize<Target : std::io::Write, F : for <'a> FnMut(&'a [u8]) -> Cow<'a, str>>(&self, t: &mut Target, map_symbol: F) -> () {
         let mut traversal = SerializerTraversal{ out: t, map_symbol: map_symbol, transient: false };
         execute_loop(&mut traversal, *self, 0);
     }
@@ -1366,9 +1367,9 @@ impl Debug for Expr {
     }
 }
 
-struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> FnMut(&'b [u8]) -> &'b str> { out: &'a mut Target, map_symbol: F, transient: bool }
+struct SerializerTraversal<'a, Target : std::io::Write, F : for <'b> FnMut(&'b [u8]) -> Cow<'b, str>> { out: &'a mut Target, map_symbol: F, transient: bool }
 #[allow(unused_variables, unused_must_use)]
-impl <Target : std::io::Write, F : for <'b> FnMut(&'b [u8]) -> &'b str> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
+impl <Target : std::io::Write, F : for <'b> FnMut(&'b [u8]) -> Cow<'b, str>> Traversal<(), ()> for SerializerTraversal<'_, Target, F> {
     #[inline(always)] fn new_var(&mut self, offset: usize) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("$".as_bytes()); }
     #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write("_".as_bytes()); self.out.write((i as u16 + 1).to_string().as_bytes()); }
     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () { if self.transient { self.out.write(" ".as_bytes()); }; self.out.write((self.map_symbol)(s).as_bytes()); }

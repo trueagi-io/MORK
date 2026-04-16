@@ -124,7 +124,7 @@ pub(crate) enum WriteResource<'w, 'a, 'k> {
 //     }
 // }
 
-pub trait Sink {
+pub(crate) trait Sink {
     fn new(e: Expr) -> Self;
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest>;
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w;

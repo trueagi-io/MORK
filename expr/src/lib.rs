@@ -716,9 +716,19 @@ impl Expr {
 
     #[inline(never)]
     pub fn unifiable(self, other: Expr) -> bool {
-        let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
+        // // this is what should normally be done, but the __function__ unify does not handle cycles.
+        // let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
+        // unify(s).is_ok()
 
-        unify(s).is_ok()
+
+        // This buffer only exists to run the __method__ unify, but we don't need the contents.
+        thread_local! {
+            static JUNK : core::cell::UnsafeCell<[u8;100000]> = core::cell::UnsafeCell::new([0;100000]);
+        }
+        let junk = JUNK.with(|mut buf| buf.get() as *mut u8);
+        let mut ez = ExprZipper::new(Expr { ptr: junk });
+
+        self.unify(other, &mut ez).is_ok()
     }
 
     pub fn unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
@@ -730,6 +740,15 @@ impl Expr {
                 let mut stack: Vec<(u8, u8)> = vec![];
                 let mut assignments: Vec<(u8, u8)> = vec![];
                 apply(0, 0, 0, &mut ExprZipper::new(self), &bindings, o, &mut cycled, &mut stack, &mut assignments);
+
+                // the unify __function__ does not do full occurs check, this enforces it __after__ apply, making the unify __method__ cycle safe
+                if !cycled.is_empty() {
+                    return Err(UnificationFailure::Occurs(cycled.first_key_value().unwrap().0.clone(), 
+                        /* admittedly, this value is here only to satisfy the signature, the previous code assumed that errors can't happen past this point */ 
+                        ExprEnv::new(1, other))
+                    );
+                }
+
                 Ok(())
             }
             Err(f) => Err(f)

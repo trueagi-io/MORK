@@ -17,7 +17,7 @@ pub(crate) enum Resource<'trie, 'path> {
     Z3(ReadZipperOwned<()>)
 }
 
-pub trait Source {
+pub(crate) trait Source {
     // step 1: parsing the source
     fn new(e: Expr) -> Self;
     // step 2: request access to resources before running

@@ -1072,6 +1072,121 @@ async fn upload_export_paths() -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(not(feature="interning"))]
+#[tokio::test]
+async fn upload_paths_round_trip_via_http() -> Result<(), Error> {
+    use std::collections::BTreeSet;
+
+    decl_lit!{io_expr!() =>  "(upload_paths_round_trip_via_http $v)"}
+    decl_lit!{id_pattern_template!() => "$v"}
+
+    const METTA_UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", io_expr!(),
+    );
+    const PATHS_UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", id_pattern_template!(),
+        "/", io_expr!(),
+        "/?", "format=paths"
+    );
+    const EXPORT_PATHS_URL: &str = concat!(
+        server_url!(),
+        "/", "export",
+        "/", io_expr!(),
+        "/", id_pattern_template!(),
+        "/?", "format=paths"
+    );
+    const EXPORT_METTA_URL: &str = concat!(
+        server_url!(),
+        "/", "export",
+        "/", io_expr!(),
+        "/", id_pattern_template!(),
+    );
+    const CLEAR_URL: &str = concat!(
+        server_url!(),
+        "/", "clear",
+        "/", io_expr!(),
+    );
+    const STATUS_URL: &str = concat!(
+        server_url!(),
+        "/", "status",
+        "/", io_expr!(),
+    );
+
+    let metta_input = "\
+(edge alpha beta)\n\
+(edge beta gamma)\n\
+(node (attrs alpha) (kind source))\n\
+(node (attrs beta) (kind middle))\n\
+(node (attrs gamma) (kind sink))\n\
+(graph meta (version 1))\n";
+
+    let normalize_lines = |text: &str| -> BTreeSet<String> {
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.to_string())
+            .collect()
+    };
+
+    wait_for_server().await.unwrap();
+
+    // Seed the space through the real HTTP upload endpoint with MeTTa payload.
+    let response = reqwest::Client::new().post(METTA_UPLOAD_URL).body(metta_input).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // Export both MeTTa and `.paths` so we can preserve the binary dump and the semantic baseline.
+    let response = reqwest::Client::new().get(EXPORT_METTA_URL).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let before_metta = response.text().await?;
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    let response = reqwest::Client::new().get(EXPORT_PATHS_URL).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let path_bytes = response.bytes().await?;
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // Clear the subspace so the `.paths` upload has to reconstruct the data from scratch.
+    let response = reqwest::Client::new().get(CLEAR_URL).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // Re-import via the real HTTP upload endpoint using `format=paths`.
+    let response = reqwest::Client::new().post(PATHS_UPLOAD_URL).body(path_bytes).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    // Export MeTTa again and compare logical contents as a line set.
+    let response = reqwest::Client::new().get(EXPORT_METTA_URL).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let after_metta = response.text().await?;
+    wait_for_url_eq_status(STATUS_URL, "pathClear").await.unwrap();
+
+    assert_eq!(
+        normalize_lines(&before_metta),
+        normalize_lines(&after_metta),
+        "HTTP upload/export/clear/upload round-trip changed the logical MeTTa contents"
+    );
+
+    Ok(())
+}
+
 /// Tests that it's at least possible to write to the root of the space
 ///
 /// This test is ignored because it pollutes the root of the space with crap and holds a lock that

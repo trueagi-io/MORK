@@ -9,7 +9,7 @@ use std::usize;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving, ZipperWriting, ZipperReadOnlyConditionalIteration, ZipperReadOnlyConditionalValues, ZipperAbsolutePath};
+use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving, ZipperWriting, ZipperAbsolutePath};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -161,6 +161,7 @@ impl CommandDefinition for ClearCmd {
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.remove_branches(true);
         wz.remove_val(true);
+        ctx.0.space.cleanup_write_zipper(wz);
         Ok("ACK. Cleared".into())
     }
 }
@@ -208,6 +209,7 @@ impl CommandDefinition for CopyCmd {
         }
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.graft(&rz);
+        ctx.0.space.cleanup_write_zipper(wz);
         Ok("ACK. Copied".into())
     }
 }
@@ -516,27 +518,23 @@ fn dump_as_format<W: Write>(ctx: &MorkService, writer: &mut std::io::BufWriter<W
         // #[cfg(not(feature="interning"))]
         DataFormat::Paths => {
             // println!("serializing...");
-            thread_local!{
-                static buf: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
-            }
-            buf.with(|b| {
-                let mut rz = ctx.0.space.read_zipper(&mut reader);
-                pathmap::paths_serialization::serialize_paths_from_funcs(writer, &mut rz, |rz| Ok(rz.to_next_val()), |rz| {
-                    let p = rz.origin_path();
-                    let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
-                    // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
-                    match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
-                        Ok(()) => unsafe {
-                            // println!("success {:?}", Expr{ ptr: (*b.get()).as_mut_ptr() });
-                            Some(slice_from_raw_parts((*b.get()).as_ptr(), oz.loc).as_ref().unwrap())
-                        }
-                        Err(_e) => {
-                            // println!("failure");
-                            None
-                        }
+            let mut buf = std::mem::MaybeUninit::<[u8; 4096]>::uninit();
+            let buf_ptr = buf.as_mut_ptr().cast::<u8>();
+            let mut rz = ctx.0.space.read_zipper(&mut reader);
+            pathmap::paths_serialization::serialize_paths_from_funcs(writer, &mut rz, |rz| Ok(rz.to_next_val()), |rz| {
+                let p = rz.origin_path();
+                let mut oz = ExprZipper::new(Expr{ ptr: buf_ptr });
+                // println!("dump transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                    Ok(()) => unsafe {
+                        // println!("success {:?}", Expr{ ptr: buf_ptr });
+                        Some(slice_from_raw_parts(buf_ptr, oz.loc).as_ref().unwrap())
+                    }
+                    Err(_e) => {
+                        // println!("failure");
+                        None
                     }
                 }
-            )
             }).map_err(|e| CommandError::internal(format!("Error occurred writing raw paths: {e:?}")))?;
         }
     };
@@ -679,7 +677,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
         let file_handle = std::fs::File::open(&file_path)?;
         let file_stream = BufReader::new(file_handle);
 
-        do_parse(&ctx_clone.0.space, file_stream, pattern, template, &mut writer, file_type)
+        do_parse(ctx_clone, file_stream, pattern, template, &mut writer, file_type)
     }).await.map_err(CommandError::internal)? {
         Ok(()) => {},
         Err(err) => {
@@ -732,7 +730,8 @@ fn detect_file_type(_file_path: &Path, uri: &str) -> Result<DataFormat, CommandE
     DataFormat::from_str(extension).ok_or_else(|| file_extension_err())
 }
 
-fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, pattern: OwnedExpr, template: OwnedExpr, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+fn do_parse<SrcStream: Read + BufRead>(ctx: MorkService, src: SrcStream, pattern: OwnedExpr, template: OwnedExpr, writer: &mut WritePermission, file_type: DataFormat) -> Result<(), CommandError> {
+    let space = &ctx.0.space;
     let pattern_expr = pattern.borrow();
     let template_expr = template.borrow();
     match file_type {
@@ -756,24 +755,30 @@ fn do_parse<SrcStream: Read + BufRead>(space: &ServerSpace, src: SrcStream, patt
         DataFormat::Paths => {
             let bl = writer.path().len();
             let mut wz = space.write_zipper(writer);
-            thread_local!{
-                static buf: std::cell::UnsafeCell<[u8; 4096]> = std::cell::UnsafeCell::new([0; 4096]);
-            }
-            let pathmap::paths_serialization::DeserializationStats { path_count, .. } = buf.with(|b| {
-                // println!("for each deserialized...");
-                pathmap::paths_serialization::for_each_deserialized_path(src, |k, p| {
-                    let mut oz = ExprZipper::new(Expr{ ptr: unsafe { (*b.get()).as_mut_ptr() } });
-                    // println!("transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
-                    match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
-                        Ok(()) => unsafe {
-                            wz.move_to_path(slice_from_raw_parts((*b.get()).as_ptr().offset(bl as _), oz.loc).as_ref().unwrap());
-                            wz.set_val(());
-                        }
-                        Err(_e) => {}
+            let mut buf = std::mem::MaybeUninit::<[u8; 4096]>::uninit();
+
+            let buf_ptr = buf.as_mut_ptr().cast::<u8>();
+            // println!("for each deserialized...");
+            let result = pathmap::paths_serialization::for_each_deserialized_path(src, |_k, p| {
+                let mut oz = ExprZipper::new(Expr{ ptr: buf_ptr });
+                // println!("transforming {:?} with {:?} => {:?}", Expr{ ptr: p.as_ptr() as *mut u8 }, pattern.borrow(), template.borrow());
+                match (Expr{ ptr: p.as_ptr() as *mut u8 }.transformData(pattern.borrow(), template.borrow(), &mut oz)) {
+                    Ok(()) => unsafe {
+                        wz.move_to_path(slice_from_raw_parts(buf_ptr.offset(bl as _), oz.loc).as_ref().unwrap());
+                        wz.set_val(());
                     }
-                    std::io::Result::Ok(())
-                })
-            }).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+                    Err(_e) => {}
+                }
+                std::io::Result::Ok(())
+            });
+
+            ctx.0.space.cleanup_write_zipper(wz);
+
+            let path_count = match result {
+                Ok(pathmap::paths_serialization::DeserializationStats { path_count, .. }) => path_count,
+                Err(e) => return Err(CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))
+            };
+
             println!("Loaded {path_count} paths from `.paths` file");
         }
     }
@@ -1137,6 +1142,7 @@ impl CommandDefinition for MettaThreadSuspendCmd {
 
         suspend_wz.descend_to(exec_prefix_expr.as_bytes());
         suspend_wz.graft_map(pats_templates);
+        ctx.0.space.cleanup_write_zipper(suspend_wz);
 
         Ok(
             WorkResult::Immediate(
@@ -1516,7 +1522,7 @@ impl CommandDefinition for UploadCmd {
         let src_buf     = get_all_post_frame_bytes(&mut req).await?;
         let data_format = format;
         match tokio::task::spawn_blocking(move || {
-            do_parse(&ctx_clone.0.space, &src_buf[..], pattern, template, &mut writer, data_format)
+            do_parse(ctx_clone, &src_buf[..], pattern, template, &mut writer, data_format)
         }).await.map_err(CommandError::internal)? {
             Ok(()) => {},
             Err(err) => {

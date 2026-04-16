@@ -758,7 +758,7 @@ fn main() {
     runtime.thread_stack_size(16*1024*1024);
     runtime.enable_io();
     runtime.enable_time();
-    let mut runtime = runtime.build().unwrap();
+    let runtime = runtime.build().unwrap();
 
     //Init the Mork network service
     let service = runtime.block_on(MorkService::new());

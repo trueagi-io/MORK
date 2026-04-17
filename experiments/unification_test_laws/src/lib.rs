@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path;
 
-use mork_expr::ExprZipper;
+use mork_expr::{ExprZipper, apply_e};
 
 pub fn convert_and_add_line_numbers_big_metta() {
     use std::{io::{Read, Write}};
@@ -198,7 +198,37 @@ pub fn unify_with_mork_unifier() {
                 
                     ez.reset();
                     // if e_l_.unifiable(e_r_) {
-                    if e_l_.unify(e_r_, &mut ez).is_ok() {
+                    // if e_l_.unify(e_r_, &mut ez).is_ok() {
+                    if 'inlined : {
+                        let this = e_l_;
+                        let other = e_r_;
+                        // let o: &mut ExprZipper = &mut ez;
+                        let mut s = vec![(mork_expr::ExprEnv::new(0, this), mork_expr::ExprEnv::new(1, other))];
+
+                        match mork_expr::unify(s) {
+                            Ok(bindings) => {
+                                let mut void   = std::io::sink();
+                                let mut snk    = mork_expr::item_sink(&mut void);
+                                let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
+                                
+                                let mut stack       : Vec<(u8, u8)> = vec![];
+                                let mut assignments : Vec<(u8, u8)> = vec![];
+                                // apply(0, 0, 0, &mut ExprZipper::new(this), &bindings, o, &mut cycled, &mut stack, &mut assignments);
+                                apply_e(0, 0, 0, this, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut stack, &mut assignments);
+
+                                // the unify __function__ does not do full occurs check, this enforces it __after__ apply, making the unify __method__ cycle safe
+                                if !cycled.is_empty() {
+                                    break 'inlined Err(mork_expr::UnificationFailure::Occurs(cycled.first_key_value().unwrap().0.clone(), 
+                                        /* admittedly, this value is here only to satisfy the signature, the previous code assumed that errors can't happen past this point */ 
+                                        mork_expr::ExprEnv::new(1, other))
+                                    );
+                                }
+
+                                Ok(())
+                            }
+                            Err(f) => Err(f)
+                        }
+                    }.is_ok() {
                         unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) };
                     }
                 }

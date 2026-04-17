@@ -593,6 +593,7 @@ impl Service<Request<IncomingBody>> for MorkService {
             | GET => MettaThreadCmd
             | GET => MettaThreadSuspendCmd
             | POST => TransformCmd
+            | POST => SubtractCmd
         }
     }
 }

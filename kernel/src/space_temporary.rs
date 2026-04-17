@@ -10,7 +10,7 @@ use mork_bytestring::{Expr, ExprTrait, OwnedExpr, ExprZipper};
 use pathmap::{PathMap, morphisms::Catamorphism, zipper::*};
 
 use crate::space::{
-    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
+    ExecError, dump_as_sexpr_impl, load_csv_impl, load_json_impl, load_sexpr_impl, transform_multi_multi_impl, subtract_multi_multi_impl, metta_calculus_impl, token_bfs_impl, ParDataParser
 };
 
 #[cfg(feature="neo4j")]
@@ -348,6 +348,31 @@ pub trait Space: Sized {
         let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
 
         let result = transform_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
+
+        for wz in template_wzs {
+            self.cleanup_write_zipper(wz);
+        }
+        result
+    }
+
+    fn subtract_multi_multi<'s, E: ExprTrait>(
+        &'s self,
+        patterns : &[E],
+        read_map: &PathMap<()>,
+        templates : &[E],
+        template_prefixes : &[(usize, usize)],
+        writers : &mut [Self::Writer<'s>],
+    ) -> (usize, bool) {
+        let make_prefix = |e:&Expr|  unsafe { e.prefix().unwrap_or_else(|_| e.span()).as_ref().unwrap() };
+
+        let pattern_rzs: Vec<_> = patterns.iter().map(|pat| {
+            let path = make_prefix(&pat.borrow());
+            read_map.read_zipper_at_borrowed_path(path)
+        }).collect();
+
+        let mut template_wzs: Vec<_> = writers.iter_mut().map(|writer| self.write_zipper(writer)).collect();
+
+        let result = subtract_multi_multi_impl(patterns, &pattern_rzs, templates, template_prefixes, &mut template_wzs);
 
         for wz in template_wzs {
             self.cleanup_write_zipper(wz);

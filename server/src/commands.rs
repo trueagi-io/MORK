@@ -9,7 +9,7 @@ use std::usize;
 
 use mork::{OwnedExpr, ExprTrait};
 use mork::{Space, space::serialize_sexpr_into};
-use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving, ZipperWriting, ZipperAbsolutePath};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperAbsolutePath};
 use tokio::fs::File;
 use tokio::io::{BufWriter, AsyncWriteExt};
 
@@ -204,9 +204,6 @@ impl CommandDefinition for CopyCmd {
         let mut writer = ctx.0.space.new_writer_async(dst_prefix, &()).await?;
 
         let rz = ctx.0.space.read_zipper(&mut reader);
-        if !rz.path_exists() {
-            return Ok("ERR. Empty Source".into())
-        }
         let mut wz = ctx.0.space.write_zipper(&mut writer);
         wz.graft(&rz);
         ctx.0.space.cleanup_write_zipper(wz);

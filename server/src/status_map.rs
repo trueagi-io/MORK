@@ -196,6 +196,9 @@ impl StatusMap {
         let senders_vec = guard.get_val_mut_at(path).unwrap();
         if let Some(pos) = senders_vec.iter().position(|(map_stream_id, _)| *map_stream_id == stream_id) {
             senders_vec.remove(pos);
+            if senders_vec.is_empty() {
+                guard.remove_val_at(path, true);
+            }
         }
     }
 

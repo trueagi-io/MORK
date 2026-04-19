@@ -291,11 +291,14 @@ impl StatusMap {
         // wz.set_value(new_status);
         // Ok(())
 
-        let mut user_map = self.0.user_status.write().unwrap();
-        let mut zipper = user_map.write_zipper_at_path(path);
-        zipper.set_val(new_status);
+        //Write the new status into the user_map map
+        {
+            let mut user_map = self.0.user_status.write().unwrap();
+            let mut zipper = user_map.write_zipper_at_path(path);
+            zipper.set_val(new_status);
+        }
 
-        //Send the status to any streams monitoring this path
+        //Send the updated status to any streams monitoring this path
         self.send_new_status(path);
 
         Ok(())

@@ -1,0 +1,10 @@
+[package]
+name = "unification_test_laws"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+mork = {workspace = true}
+distr-combinators = {git = "https://github.com/luketpeterson/distr-combinators.git"}
+rand = "0.9.1" # the api is still depending on the old version
+mork-expr = { workspace=true }

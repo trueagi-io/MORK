@@ -1662,6 +1662,7 @@ impl CommandError {
             StatusRecord::PathReadOnlyTemporary => Self::external(StatusCode::CONFLICT, log_message),
             StatusRecord::PathForbidden => Self::external(StatusCode::FORBIDDEN, log_message),
             StatusRecord::PathForbiddenTemporary => Self::external(StatusCode::CONFLICT, log_message),
+            StatusRecord::ServerShutdown => Self::external(StatusCode::SERVICE_UNAVAILABLE, "Server is shutting down"),
             StatusRecord::FetchError(err) => Self::external(err.status_code, err.log_message),
             StatusRecord::ParseError(err) => Self::external(StatusCode::UNSUPPORTED_MEDIA_TYPE, err.log_message),
             StatusRecord::ExecError(err) =>Self::external(StatusCode::BAD_REQUEST, err),

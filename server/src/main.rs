@@ -144,6 +144,9 @@ impl MorkService {
 
         println!("Beginnging shutdown.  No new connections will be accepted"); //GOAT log this.
 
+        // Notify any open status_streams that the server is shutting down, and then close the connections
+        self.0.space.status_map.shutdown_status_streams();
+
         //Wait for all connections finish
         shutdown_watcher.shutdown().await;
         drop(listener);

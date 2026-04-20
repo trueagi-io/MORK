@@ -1323,6 +1323,59 @@ impl CommandDefinition for StopCmd {
 }
 
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+// subtract
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
+
+/// expects the post body to be of this form of sexpr
+/// ```ignore
+/// (subtract
+///   (, (pattern0 ...)
+///      (pattern1 ...)
+///      ...
+///   )
+///   (, (template0 ...)
+///      (template1 ...)
+///      ...
+///   )
+/// )
+/// ```
+
+pub struct SubtractCmd;
+
+impl CommandDefinition for SubtractCmd {
+    const NAME: &'static str = "subtract";
+    const CONST_CMD: &'static Self = &Self;
+    const CONSUME_WORKER: bool = true;
+    fn args() -> &'static [ArgDef] {
+        &[]
+    }
+    fn properties() -> &'static [PropDef] {
+        &[]
+    }
+    async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, mut _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
+        let work_thread = thread.unwrap();
+
+        let post_bytes = get_all_post_frame_bytes(&mut _req).await?;
+        let src = core::str::from_utf8(&post_bytes).map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
+        let (patterns, templates) = pattern_template_args(&ctx.0.space, src)
+            .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
+
+        let (read_map, template_prefixes, mut writers) = ctx.0.space.acquire_transform_permissions(&patterns, &templates, &())
+            .map_err(|exec_err| exec_err.into_perm_err().unwrap())?;
+
+        work_thread.dispatch_blocking_task(cmd, move |_c| {
+            ctx.0.space.subtract_multi_multi(&patterns, &read_map, &templates, &template_prefixes, &mut writers);
+            Ok(())
+        }).await;
+
+        Ok(WorkResult::Immediate(Bytes::from("ACK. Subtract dispatched")))
+    }
+}
+
+
+
+// ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 // transform
 // ===***===***===***===***===***===***===***===***===***===***===***===***===***===***===***
 
@@ -1430,7 +1483,8 @@ fn pattern_template_args(space: &ServerSpace, input: &str)->Result<(Vec<OwnedExp
     let Ok(Tag::Arity(3)) = expr_z.item() else { return  Err(TransformMultiMultiError::ExpectedArity3AsFirstByte);};
 
     expr_z.next_child();
-    if unsafe {expr_z.subexpr().span().as_ref() != mork::expr!(space, "transform").span().as_ref()} {
+    if unsafe {expr_z.subexpr().span().as_ref() != mork::expr!(space, "transform").span().as_ref() && 
+        expr_z.subexpr().span().as_ref() != mork::expr!(space, "subtract").span().as_ref() } {
         return Err(TransformMultiMultiError::ExpectedTransformSym)
     }
 

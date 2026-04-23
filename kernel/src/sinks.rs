@@ -1230,13 +1230,19 @@ fn parse_symbol_args<'a>(path: &'a [u8], header_size: usize) -> Vec<&'a [u8]> {
     args
 }
 
-/// TensorCollectSink — accumulates (indices, value) tuples into a named SparseTensorF64.
+/// TensorCollectSink — writes (indices, value) tuples directly into a named SparseTensorF64.
 /// Syntax: (tensor_collect name $i0 $i1 ... $val)
+///
+/// The first matching tuple replaces any existing tensor at `name` with a
+/// fresh one; subsequent matches in the same exec invocation accumulate
+/// into it. This assumes no concurrent tensor-as-source path is reading
+/// `name` during the exec — if that ever becomes possible the writes must
+/// be buffered until `finalize()` (see TensorFreeSink for that pattern).
 pub struct TensorCollectSink {
     e: Expr,
     name: Vec<u8>,
     rank: usize,
-    entries: Vec<(Vec<usize>, f64)>,
+    initialized: bool,
 }
 
 impl TensorCollectSink {
@@ -1257,45 +1263,38 @@ impl Sink for TensorCollectSink {
                 panic!("tensor_collect: second arg must be a symbol (tensor name)")
             }
         };
-        TensorCollectSink { e, name, rank, entries: Vec::new() }
+        TensorCollectSink { e, name, rank, initialized: false }
     }
 
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         std::iter::once(WriteResourceRequest::TensorStore)
     }
 
-    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
-        // Parse args after header + name
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
         let name_len = self.name.len();
         let args = parse_symbol_args(path, Self::HEADER_SIZE + 1 + name_len);
 
-        if args.len() >= self.rank + 1 {
-            let mut indices = Vec::with_capacity(self.rank);
-            for i in 0..self.rank {
-                if let Ok(s) = std::str::from_utf8(args[i]) {
-                    if let Ok(idx) = s.parse::<usize>() {
-                        indices.push(idx);
-                    } else { return; }
-                } else { return; }
-            }
-            if let Ok(s) = std::str::from_utf8(args[self.rank]) {
-                if let Ok(val) = s.parse::<f64>() {
-                    self.entries.push((indices, val));
-                }
-            }
+        if args.len() < self.rank + 1 { return; }
+
+        let mut indices = Vec::with_capacity(self.rank);
+        for i in 0..self.rank {
+            let Ok(s) = std::str::from_utf8(args[i]) else { return; };
+            let Ok(idx) = s.parse::<usize>() else { return; };
+            indices.push(idx);
         }
+        let Ok(s) = std::str::from_utf8(args[self.rank]) else { return; };
+        let Ok(val) = s.parse::<f64>() else { return; };
+
+        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
+        if !self.initialized {
+            store.insert(self.name.clone(), crate::sparse::SparseTensorF64::new(self.rank));
+            self.initialized = true;
+        }
+        store.get_mut(&self.name).unwrap().set(&indices, val);
     }
 
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
-        if self.entries.is_empty() { return false; }
-        let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
-
-        let mut tensor = crate::sparse::SparseTensorF64::new(self.rank);
-        for (indices, value) in self.entries.drain(..) {
-            tensor.set(&indices, value);
-        }
-        store.insert(self.name.clone(), tensor);
-        true
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It) -> bool where 'a: 'w, 'k: 'w {
+        self.initialized
     }
 }
 

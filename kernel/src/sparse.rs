@@ -471,7 +471,5 @@ mod tests {
     }
 }
 /*
-sinks create intermediate representation of tensors and they should not
-put directly to tensor
 binary ops (tensor add/mul) don't work
 */

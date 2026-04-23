@@ -9,7 +9,7 @@ use eval_ffi::{ExprSink, ExprSource, EvalError, Tag};
 
 macro_rules! op {
     (num nary $name:ident($initial:expr, $t:ident: $tt:ty, $x:ident: $tx:ty) => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -23,7 +23,7 @@ macro_rules! op {
         }
     };
     (num quaternary $name:ident($x:ident: $tx:ty, $y:ident: $ty:ty, $z:ident: $tz:ty, $w:ident: $tw:ty) => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -37,7 +37,7 @@ macro_rules! op {
         }
     };
     (num ternary $name:ident($x:ident: $tx:ty, $y:ident: $ty:ty, $z:ident: $tz:ty) => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -50,7 +50,7 @@ macro_rules! op {
         }
     };
     (num binary $name:ident($x:ident: $tx:ty, $y:ident: $ty:ty) => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -62,7 +62,7 @@ macro_rules! op {
         }
     };
     (num unary $name:ident($x:ident: $tx:ty) => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -73,7 +73,7 @@ macro_rules! op {
         }
     };
     (num nulary $name:ident() => $e:expr) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -83,7 +83,7 @@ macro_rules! op {
         }
     };
     (num from_string $name:ident<$t:ty>) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -95,7 +95,7 @@ macro_rules! op {
         }
     };
     (num to_string $name:ident<$t:ty>) => {
-        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+        pub extern "C" fn $name(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
             let expr = unsafe { &mut *expr };
             let sink = unsafe { &mut *sink };
             let items = expr.consume_head_check(stringify!($name).as_bytes())?;
@@ -703,7 +703,7 @@ op!(num nary min_f32(f32::INFINITY, t: f32, x: f32) => t.min(x));
 op!(num from_string f32_from_string<f32>);
 op!(num to_string f32_to_string<f32>);
 
-pub extern "C" fn encode_hex(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn encode_hex(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"encode_hex")?;
@@ -716,7 +716,7 @@ pub extern "C" fn encode_hex(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
     Ok(())
 }
 
-pub extern "C" fn decode_hex(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn decode_hex(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"decode_hex")?;
@@ -729,7 +729,7 @@ pub extern "C" fn decode_hex(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
     Ok(())
 }
 
-pub extern "C" fn decode_base64url(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn decode_base64url(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"decode_base64url")?;
@@ -742,7 +742,7 @@ pub extern "C" fn decode_base64url(expr: *mut ExprSource, sink: *mut ExprSink) -
     Ok(())
 }
 
-pub extern "C" fn encode_base64url(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn encode_base64url(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"encode_base64url")?;
@@ -755,7 +755,7 @@ pub extern "C" fn encode_base64url(expr: *mut ExprSource, sink: *mut ExprSink) -
     Ok(())
 }
 
-pub extern "C" fn hash_expr(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn hash_expr(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"hash_expr")?;
@@ -767,7 +767,7 @@ pub extern "C" fn hash_expr(expr: *mut ExprSource, sink: *mut ExprSink) -> Resul
     Ok(())
 }
 
-pub extern "C" fn reverse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn reverse_symbol(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"reverse_symbol")?;
@@ -780,7 +780,7 @@ pub extern "C" fn reverse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> 
     Ok(())
 }
 
-pub extern "C" fn collapse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn collapse_symbol(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"collapse_symbol")?;
@@ -800,7 +800,7 @@ pub extern "C" fn collapse_symbol(expr: *mut ExprSource, sink: *mut ExprSink) ->
     Ok(())
 }
 
-pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"explode_symbol")?;
@@ -813,7 +813,7 @@ pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> 
     Ok(())
 }
 
-// pub extern "C" fn nth_expr(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+// pub extern "C" fn nth_expr(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
 //     let expr = unsafe { &mut *expr };
 //     let sink = unsafe { &mut *sink };
 //     let items = expr.consume_head_check(b"nth_expr")?;
@@ -829,7 +829,7 @@ pub extern "C" fn explode_symbol(expr: *mut ExprSource, sink: *mut ExprSink) -> 
 // (ifnz <symbol> then <nonzero expr> else <zero expr>)
 // The condition <symbol> may be of any length (<symbol> is always len >= 1), 
 //   but all bytes in the <symbol> must be b'\0' in order for the condition to be considered `false`
-pub extern "C" fn ifnz(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn ifnz(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"ifnz")?;
@@ -853,7 +853,7 @@ pub extern "C" fn ifnz(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(),
     }
 }
 
-pub extern "C" fn tuple(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn tuple(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"tuple")?;

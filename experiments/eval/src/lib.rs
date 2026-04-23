@@ -7,11 +7,11 @@ use mork_expr::{item_source, SourceItem};
 use eval_ffi::{EvalError, ExprSink, ExprSource, FuncPtr, Tag};
 use log::trace;
 
-extern "C" fn nothing(src: *mut ExprSource, snk: *mut ExprSink) -> Result<(), EvalError> {
+extern "C" fn nothing(src: *mut ExprSource, snk: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     Ok(())
 }
 
-extern "C" fn quote(src: *mut ExprSource, snk: *mut ExprSink) -> Result<(), EvalError> {
+extern "C" fn quote(src: *mut ExprSource, snk: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     unreachable!()
 }
 
@@ -140,8 +140,7 @@ impl EvalScope {
                 let mut data = core::mem::take(&mut top_frame.sink).finish();
                 let offset = prev_frame.sink.as_ref().len();
                 let mut src = ExprSource::new(data.as_ptr());
-                src.context = self.context;
-                (top_frame.func)(&mut src, &mut prev_frame.sink)?;
+                (top_frame.func)(&mut src, &mut prev_frame.sink, self.context)?;
                 trace!(target: "eval", "{:?} ==> {:?}", mork_expr::serialize(&data[..]), mork_expr::serialize(&prev_frame.sink.as_ref()[offset..]));
                 let top = self.stack.pop().unwrap();
                 // return buffer to pool

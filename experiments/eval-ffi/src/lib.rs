@@ -10,7 +10,7 @@ pub use sink::{ExprSink};
 pub use source::{ExprSource};
 pub use mork_expr::{Tag, SourceItem};
 
-pub type FuncPtr = extern "C" fn(*mut ExprSource, *mut ExprSink) -> Result<(), EvalError>;
+pub type FuncPtr = extern "C" fn(*mut ExprSource, *mut ExprSink, *mut ()) -> Result<(), EvalError>;
 
 #[derive(Debug)]
 pub enum EvalError {

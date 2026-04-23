@@ -141,21 +141,21 @@ impl einsum_dyn::NDIndex<f64> for SparseTensorF64 {
 }
 
 // ============================================================================
-// Pure functions (access tensor store via ExprSource.context)
+// Pure functions (access tensor store via ctx arg)
 // ============================================================================
 
 use eval_ffi::{ExprSource, ExprSink, EvalError};
 use mork_expr::SourceItem;
 use eval::{EvalScope, FuncType};
 
-/// Read tensor store from the ExprSource context pointer.
+/// Reinterpret the opaque context pointer as a tensor store reference.
 /// The context is set by PureSink via ASink::set_context before eval.
-unsafe fn tensor_store_from_context(expr: &ExprSource) -> Option<&HashMap<Vec<u8>, SparseTensorF64>> {
-    (expr.context as *const HashMap<Vec<u8>, SparseTensorF64>).as_ref()
+unsafe fn tensor_store_from_context(ctx: *mut ()) -> Option<&'static HashMap<Vec<u8>, SparseTensorF64>> {
+    (ctx as *const HashMap<Vec<u8>, SparseTensorF64>).as_ref()
 }
 
 /// (tensor_get name i0 i1 ... iN) -> f64 value at that index
-pub extern "C" fn tensor_get(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn tensor_get(expr: *mut ExprSource, sink: *mut ExprSink, ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"tensor_get")?;
@@ -178,7 +178,7 @@ pub extern "C" fn tensor_get(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
         indices.push(idx);
     }
 
-    let store = unsafe { tensor_store_from_context(expr) };
+    let store = unsafe { tensor_store_from_context(ctx) };
     let val = store
         .and_then(|s| s.get(&name))
         .and_then(|t| t.get(&indices))
@@ -189,7 +189,7 @@ pub extern "C" fn tensor_get(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
 }
 
 /// (tensor_nnz name) -> u64 count of non-zeros
-pub extern "C" fn tensor_nnz(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn tensor_nnz(expr: *mut ExprSource, sink: *mut ExprSink, ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"tensor_nnz")?;
@@ -200,7 +200,7 @@ pub extern "C" fn tensor_nnz(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
     };
     let name = name.to_vec();
 
-    let store = unsafe { tensor_store_from_context(expr) };
+    let store = unsafe { tensor_store_from_context(ctx) };
     let nnz = store
         .and_then(|s| s.get(&name))
         .map(|t| t.nnz())
@@ -386,3 +386,9 @@ mod tests {
         }
     }
 }
+/*
+sinks create intermediate representation of tensors and they should not
+put directly to tensor
+binary ops (tensor add/mul) don't work
+tensor_clear only clears the first item
+*/

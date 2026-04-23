@@ -1,7 +1,7 @@
 use eval_ffi::{ExprSink, ExprSource, EvalError, SourceItem};
 
 #[unsafe(export_name = "ground_mul")]
-pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"*")?;
@@ -16,7 +16,7 @@ pub extern "C" fn ground_mul(expr: *mut ExprSource, sink: *mut ExprSink) -> Resu
 }
 
 #[unsafe(export_name = "ground_sum")]
-pub extern "C" fn ground_sum(expr: *mut ExprSource, sink: *mut ExprSink) -> Result<(), EvalError> {
+pub extern "C" fn ground_sum(expr: *mut ExprSource, sink: *mut ExprSink, _ctx: *mut ()) -> Result<(), EvalError> {
     let expr = unsafe { &mut *expr };
     let sink = unsafe { &mut *sink };
     let items = expr.consume_head_check(b"+")?;

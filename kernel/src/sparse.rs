@@ -385,10 +385,37 @@ mod tests {
             assert!((val - 50.0).abs() < 1e-10, "tensor_get C 1 1 = {} expected 50.0", val);
         }
     }
+
+    #[test]
+    fn test_tensor_free_multi_match() {
+        use crate::space::Space;
+
+        let mut s = Space::new();
+
+        for name in [b"A".as_slice(), b"B", b"C", b"D"] {
+            let mut t = SparseTensorF64::new(1);
+            t.set(&[0], 1.0);
+            s.tensors.insert(name.to_vec(), t);
+        }
+
+        s.add_all_sexpr(r#"
+            (to_free A)
+            (to_free B)
+            (to_free C)
+
+            (exec F (, (to_free $name)) (O (tensor_free $name)))
+        "#.as_bytes()).unwrap();
+
+        s.metta_calculus(100);
+
+        assert!(!s.tensors.contains_key(b"A".as_slice()), "A should be freed");
+        assert!(!s.tensors.contains_key(b"B".as_slice()), "B should be freed");
+        assert!(!s.tensors.contains_key(b"C".as_slice()), "C should be freed");
+        assert!(s.tensors.contains_key(b"D".as_slice()), "D should survive");
+    }
 }
 /*
 sinks create intermediate representation of tensors and they should not
 put directly to tensor
 binary ops (tensor add/mul) don't work
-tensor_clear only clears the first item
 */

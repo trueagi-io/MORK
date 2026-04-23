@@ -1434,31 +1434,42 @@ impl Sink for TensorBinopSink {
     }
 }
 
-/// TensorFreeSink — removes a named tensor.
+/// TensorFreeSink — removes named tensors.
 /// Syntax: (tensor_free A)
+///
+/// Names are buffered during `sink()` and the actual removals happen in
+/// `finalize()`. We cannot free in `sink()` because a future source type
+/// (tensor-as-source) could be iterating the tensor store while pattern
+/// matches drive these calls — mutating the store mid-iteration would
+/// invalidate the upstream zipper.
 pub struct TensorFreeSink {
     e: Expr,
-    name: Vec<u8>,
-    parsed: bool,
+    names: Vec<Vec<u8>>,
 }
 
 impl Sink for TensorFreeSink {
     fn new(e: Expr) -> Self {
-        TensorFreeSink { e, name: Vec::new(), parsed: false }
+        TensorFreeSink { e, names: Vec::new() }
     }
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         std::iter::once(WriteResourceRequest::TensorStore)
     }
     fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a: 'w, 'k: 'w {
-        if self.parsed { return; }
         // "tensor_free" is 11 chars → header = 13
         let args = parse_symbol_args(path, 13);
-        self.name = args.first().map(|a| a.to_vec()).unwrap_or_default();
-        self.parsed = true;
+        if let Some(name) = args.first() {
+            self.names.push(name.to_vec());
+        }
     }
     fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a: 'w, 'k: 'w {
         let WriteResource::TensorStore(store) = it.next().unwrap() else { unreachable!() };
-        store.remove(&self.name).is_some()
+        let mut any = false;
+        for name in self.names.drain(..) {
+            if store.remove(&name).is_some() {
+                any = true;
+            }
+        }
+        any
     }
 }
 

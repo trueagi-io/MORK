@@ -387,6 +387,62 @@ mod tests {
     }
 
     #[test]
+    fn test_tensor_add_sink() {
+        use crate::space::Space;
+
+        let mut s = Space::new();
+
+        let mut a = SparseTensorF64::new(2);
+        a.set(&[0, 0], 1.0);
+        a.set(&[0, 1], 2.0);
+        s.tensors.insert(b"A".to_vec(), a);
+
+        let mut b = SparseTensorF64::new(2);
+        b.set(&[0, 0], 10.0);
+        b.set(&[1, 0], 20.0);
+        s.tensors.insert(b"B".to_vec(), b);
+
+        s.add_all_sexpr(r#"
+            (exec F (,) (O (tensor_add A B C)))
+        "#.as_bytes()).unwrap();
+
+        s.metta_calculus(100);
+
+        let c = s.tensors.get(b"C".as_slice()).expect("C should exist");
+        assert_eq!(c.get(&[0, 0]), Some(11.0));
+        assert_eq!(c.get(&[0, 1]), Some(2.0));
+        assert_eq!(c.get(&[1, 0]), Some(20.0));
+    }
+
+    #[test]
+    fn test_tensor_mul_sink() {
+        use crate::space::Space;
+
+        let mut s = Space::new();
+
+        let mut a = SparseTensorF64::new(2);
+        a.set(&[0, 0], 3.0);
+        a.set(&[0, 1], 5.0);
+        s.tensors.insert(b"A".to_vec(), a);
+
+        let mut b = SparseTensorF64::new(2);
+        b.set(&[0, 0], 2.0);
+        b.set(&[1, 1], 4.0);
+        s.tensors.insert(b"B".to_vec(), b);
+
+        s.add_all_sexpr(r#"
+            (exec F (,) (O (tensor_mul A B C)))
+        "#.as_bytes()).unwrap();
+
+        s.metta_calculus(100);
+
+        let c = s.tensors.get(b"C".as_slice()).expect("C should exist");
+        assert_eq!(c.get(&[0, 0]), Some(6.0));
+        assert_eq!(c.get(&[0, 1]), None);
+        assert_eq!(c.get(&[1, 1]), None);
+    }
+
+    #[test]
     fn test_tensor_free_multi_match() {
         use crate::space::Space;
 

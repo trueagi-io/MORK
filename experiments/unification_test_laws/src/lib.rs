@@ -192,6 +192,8 @@ pub fn unify_with_mork_unifier() {
                 
                 let mut buffer = [0_u8;1024];
                 let mut ez     = mork_expr::ExprZipper::new(mork_expr::Expr{ptr : (&mut buffer).as_mut_ptr()});
+                let mut stack       : Vec<(u8, u8)> = vec![];
+                let mut assignments : Vec<(u8, u8)> = vec![];
                 for each_other in 0..expr_pos.len() - 1 {
 
                     let (e_r_line_str, e_r_) = line_and_expr(expr_block, expr_pos, each_other);
@@ -210,10 +212,8 @@ pub fn unify_with_mork_unifier() {
                                 let mut void   = std::io::sink();
                                 let mut snk    = mork_expr::item_sink(&mut void);
                                 let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
-                                
-                                let mut stack       : Vec<(u8, u8)> = vec![];
-                                let mut assignments : Vec<(u8, u8)> = vec![];
-                                // apply(0, 0, 0, &mut ExprZipper::new(this), &bindings, o, &mut cycled, &mut stack, &mut assignments);
+                                stack.clear();
+                                assignments.clear();
                                 apply_e(0, 0, 0, this, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut stack, &mut assignments);
 
                                 // the unify __function__ does not do full occurs check, this enforces it __after__ apply, making the unify __method__ cycle safe

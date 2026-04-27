@@ -715,6 +715,7 @@ impl Expr {
     // }
 
     #[inline(never)]
+    #[cfg(test)]
     pub fn unifiable(self, other: Expr) -> bool {
         // // this is what should normally be done, but the __function__ unify does not handle cycles.
         // let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
@@ -728,10 +729,16 @@ impl Expr {
         let junk = JUNK.with(|mut buf| buf.get() as *mut u8);
         let mut ez = ExprZipper::new(Expr { ptr: junk });
 
-        self.unify(other, &mut ez).is_ok()
+        self._unify(other, &mut ez).is_ok()
     }
 
+    #[cfg(test)]
+    #[allow(deprecated)]
     pub fn unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
+        self._unify(other, o)
+    }
+    #[deprecated]
+    pub fn _unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
         let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
 
         match unify(s) {
@@ -1845,6 +1852,7 @@ pub enum UnificationFailure {
 const APPLY_DEPTH: u32 = 64;
 const MAX_UNIFY_ITER: u32 = 1000;
 const PRINT_DEBUG: bool = false;
+#[deprecated]
 #[inline(never)]
 pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<ExprVar, ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
     let depth = stack.len();

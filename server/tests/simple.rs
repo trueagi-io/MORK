@@ -657,6 +657,64 @@ async fn clear_request_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Tests the "clear" command
+#[tokio::test]
+async fn clear_request_test_degenerate() -> Result<(), Error> {
+    decl_lit!{space_expr!() => "$v"}
+    // decl_lit!{space_expr!() => "(clear_request_test_degenerate $v)"}
+    decl_lit!{file_expr!() => "$v"}
+
+    const UPLOAD_URL: &str = concat!(
+        server_url!(),
+        "/", "upload",
+        "/", file_expr!(),
+        "/", space_expr!(),
+    );
+    const CLEAR_URL: &str = concat!(
+        server_url!(),
+        "/", "clear",
+        // "/", space_expr!(),
+        // "/", "(clear_request_test_degenerate (male Bob))",
+        "/", "(male Bob)",
+    );
+    const EXPORT_URL: &str = concat!(
+        server_url!(),
+        "/", "export",
+        "/", space_expr!(),
+        "/", file_expr!(),
+    );
+    const PAYLOAD: &str = "(male Bob)\n(female Kate)\n";
+    wait_for_server().await.unwrap();
+
+    #[cfg(feature = "serialize_tests")]
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    //Upload the data so we have something to clear
+    let response = reqwest::Client::new().post(UPLOAD_URL).body(PAYLOAD).send().await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    println!("Upload response: {}", response.text().await?);
+
+    // Clear the data
+    let response = reqwest::get(CLEAR_URL).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    println!("Clear response:\n{}", response.text().await?);
+
+    // Export the data to confirm nothing is there
+    let response = reqwest::get(EXPORT_URL).await?;
+    if !response.status().is_success() {
+        panic!("Error response: {} - {}", response.status(), response.text().await?)
+    }
+    let response_buf = response.text().await?;
+    println!("Export response:\n{}", response_buf);
+    // assert_eq!(response_buf.len(), 0);
+
+    Ok(())
+}
+
 /// Tests the "explore" command
 #[tokio::test]
 async fn explore_request_test() -> Result<(), Error> {

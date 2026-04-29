@@ -714,21 +714,17 @@ impl Expr {
     //     }
     // }
 
-    #[inline(never)]
     #[cfg(test)]
+    #[doc(hidden)]
+    #[inline(never)]
+    #[deprecated]
     pub fn unifiable(self, other: Expr) -> bool {
-        // // this is what should normally be done, but the __function__ unify does not handle cycles.
-        // let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
-        // unify(s).is_ok()
-
-
         // This buffer only exists to run the __method__ unify, but we don't need the contents.
         thread_local! {
             static JUNK : core::cell::UnsafeCell<[u8;100000]> = core::cell::UnsafeCell::new([0;100000]);
         }
         let junk = JUNK.with(|mut buf| buf.get() as *mut u8);
-        let mut ez = ExprZipper::new(Expr { ptr: junk });
-
+        let mut ez = ExprZipper::new(Expr { ptr: junk });   
         self._unify(other, &mut ez).is_ok()
     }
 
@@ -737,11 +733,12 @@ impl Expr {
     pub fn unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
         self._unify(other, o)
     }
+    #[doc(hidden)]
     #[deprecated]
     pub fn _unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), UnificationFailure> {
         let mut s = vec![(ExprEnv::new(0, self), ExprEnv::new(1, other))];
 
-        match unify(s) {
+        match unify(&mut s) {
             Ok(bindings) => {
                 let mut cycled = BTreeMap::<(u8, u8), u8>::new();
                 let mut stack: Vec<(u8, u8)> = vec![];
@@ -788,7 +785,7 @@ impl Expr {
         let y = Expr{ ptr: data.as_mut_ptr() };
         let mut s = vec![(ExprEnv::new(0, x), ExprEnv::new(1, y))];
         
-        if let Ok(bindings) = unify(s) {
+        if let Ok(bindings) = unify(&mut s) {
             let mut cycled = BTreeMap::<ExprVar, u8>::new();
             let mut stack: Vec<ExprVar> = vec![];
             let mut assignments: Vec<ExprVar> = vec![];
@@ -1965,7 +1962,7 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
 
 
 #[inline(never)]
-pub fn unify(mut stack: Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
+pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
     let mut iterations = 0;
     let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
@@ -2313,6 +2310,7 @@ fn anti_unify_apply(
 mod tests {
     use crate::gxhash::GxHasher;
     use super::*;
+    #[cfg(test)]
     #[test]
     fn test_unify() {
         {

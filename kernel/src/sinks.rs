@@ -17,7 +17,7 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct};
+use mork_expr::{Expr, ExprEnv, ExprZipper, ExtractFailure, Tag, UnificationFailure, apply, byte_item, destruct, item_byte, parse, serialize, traverseh, unifiable_reuse_state, unify};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
@@ -177,10 +177,18 @@ impl Sink for AddSink {
 }
 
 // (U <expr>)
-pub struct USink { e: Expr, buf: Option<*mut u8>, tmp: Option<*mut u8>, last: usize, conflict: bool }
+pub struct USink { 
+    e               : Expr,
+    buf             : Option<*mut u8>,
+    tmp             : Option<*mut u8>,
+    conflict        : bool, 
+    tmp_expr_env    : Vec<(ExprEnv, ExprEnv)>,
+    tmp_stack       : Vec<(u8, u8)>,
+    tmp_assignments : Vec<(u8, u8)>,
+}
 impl Sink for USink {
     fn new(e: Expr) -> Self {
-        USink { e, buf: None, tmp: None, last: usize::MAX, conflict: false }
+        USink { e, buf: None, tmp: None, conflict: false , tmp_expr_env: Vec::new(), tmp_stack: Vec::new(), tmp_assignments: Vec::new() }
     }
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
@@ -195,18 +203,24 @@ impl Sink for USink {
         if let Some(e) = self.buf {
             let mut tmp = self.tmp.unwrap();
             let eau = Expr{ ptr: e };
-            let mut wz = ExprZipper::new(Expr{ ptr: tmp });
-            let Ok(_) = eau._unify(Expr{ ptr: path[3..].as_ptr().cast_mut() }, &mut wz) else {
+
+            if mork_expr::unifies_reuse_state(
+                eau, 
+                Expr{ ptr: path[3..].as_ptr().cast_mut() },
+                unsafe { core::slice::from_raw_parts_mut(e, 1 << 32) },  
+                &mut self.tmp_expr_env, 
+                &mut self.tmp_stack,
+                &mut self.tmp_assignments
+            ) {
                 self.conflict = true;
                 return;
-            };
+            }
+
             std::mem::swap(&mut self.buf, &mut self.tmp);
-            self.last = wz.loc;
         } else {
             self.buf = Some(unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(1 << 32).unwrap()) });
             self.tmp = Some(unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(1 << 32).unwrap()) });
             unsafe { std::ptr::copy_nonoverlapping(path[3..].as_ptr(), self.buf.unwrap(), path[3..].len()) }
-            self.last = path[3..].len();
         }
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
@@ -221,10 +235,13 @@ impl Sink for USink {
                 false
             }
             Some(buf) => {
-                let buf = unsafe { slice_from_raw_parts(buf as *const u8, self.last).as_ref().unwrap() };
-                trace!(target: "sink", "U unified expression '{}'", serialize(buf));
+                let mut es = ExprSource::new(buf as *const u8);
+                while let Ok(_) = es.consume_head() {}                
+                let buf_slice = unsafe { slice_from_raw_parts(buf as *const u8, es.position).as_ref().unwrap() };
+
+                trace!(target: "sink", "U unified expression '{}'", serialize(buf_slice));
                 let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
-                wz.move_to_path(&buf[wz.root_prefix_path().len()..]);
+                wz.move_to_path(&buf_slice[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 true
             }

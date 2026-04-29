@@ -1,6 +1,6 @@
 use ::core::convert::TryFrom;
-use std::ptr::slice_from_raw_parts;
-use crate::{Expr, Tag, byte_item, item_byte};
+use std::{ops::Coroutine, ptr::slice_from_raw_parts};
+use crate::{Expr, Tag, byte_item, item_byte, item_sink};
 
 /// A macro to destructure a mork-bytestring expression into its components.
 ///
@@ -410,6 +410,37 @@ macro_rules! construct_impl {
         $crate::construct_impl!(@write, $label, $cursor, $($rest)*);
     };
     (@write, $label:lifetime, $cursor:ident, ) => { };
+}
+
+/// This macro implements that final "occurs check" __after__ application.<br>
+/// This is a macro, as a function risks not being inlined.<br>
+/// The following is based on the apply_e and item_sink
+/// ```ignore
+/// pub fn apply_e_clears_and_cycles_check<'o, W: std::io::Write>(
+///     n                  : u8,                          // :expr
+///     mut original_intros: u8,                          // :expr
+///     mut new_intros     : u8,                          // :expr
+///     e                  : Expr,                        // :expr
+///     bindings           : &BTreeMap<ExprVar, ExprEnv>, // :expr
+///     es                 : &mut W,                      // :ident, Writer is converted internally to a sink
+///     stack              : &mut Vec<ExprVar>,           // :ident, stack is cleared on use!
+///     assignments        : &mut Vec<ExprVar>            // :ident, assignment is cleared on use!
+/// ) -> (u8,u8,no_cycles:bool)
+/// ```
+/// The important pattern here is that mutable values are taken by name (ident) and others by expression (expr). This lowers syntactic noise by letting the implementation add the references itself.
+#[macro_export]
+macro_rules! apply_e_clears_stacks_and_cycles_check {
+    ($n:expr, $original_intros:expr, $new_intros:expr, $pat_expr:expr, $bindings:expr, $snk:ident, $stack:ident, $assignments:ident) => {{
+        core::debug_assert!($stack.is_empty());
+        core::debug_assert!($assignments.is_empty());
+        let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
+        let mut snk_ = $crate::item_sink(&mut $snk);
+        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!(snk_), &mut cycled, &mut $stack, &mut $assignments);
+        $stack.clear();
+        $assignments.clear();
+
+        (l,r,cycled.is_empty())
+    }};
 }
 
 #[cfg(test)]

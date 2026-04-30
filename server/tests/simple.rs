@@ -660,8 +660,7 @@ async fn clear_request_test() -> Result<(), Error> {
 /// Tests the "clear" command
 #[tokio::test]
 async fn clear_request_test_degenerate() -> Result<(), Error> {
-    decl_lit!{space_expr!() => "$v"}
-    // decl_lit!{space_expr!() => "(clear_request_test_degenerate $v)"}
+    decl_lit!{space_expr!() => "(clear_request_test_degenerate $v)"}
     decl_lit!{file_expr!() => "$v"}
 
     const UPLOAD_URL: &str = concat!(
@@ -674,8 +673,7 @@ async fn clear_request_test_degenerate() -> Result<(), Error> {
         server_url!(),
         "/", "clear",
         // "/", space_expr!(),
-        // "/", "(clear_request_test_degenerate (male Bob))",
-        "/", "(male Bob)",
+        "/", "(clear_request_test_degenerate (male Bob))",
     );
     const EXPORT_URL: &str = concat!(
         server_url!(),
@@ -683,7 +681,7 @@ async fn clear_request_test_degenerate() -> Result<(), Error> {
         "/", space_expr!(),
         "/", file_expr!(),
     );
-    const PAYLOAD: &str = "(male Bob)\n(female Kate)\n";
+    const PAYLOAD: &str = "(male Bobby)\n(male Bob)\n(female Jill)\n(female Kate)\n";
     wait_for_server().await.unwrap();
 
     #[cfg(feature = "serialize_tests")]

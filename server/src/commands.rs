@@ -111,7 +111,7 @@ impl CommandDefinition for BusywaitCmd {
 
         let expr1 = match expr1 {
             Some(expr) => {
-                let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
+                let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_full();
                 if writer1 {
                     Some(Box::new(ctx.0.space.new_writer_async(prefix, &()).await?) as Box<dyn Any + Send + Sync>)
                 } else {
@@ -155,7 +155,7 @@ impl CommandDefinition for ClearCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_full();
         let mut writer = ctx.0.space.new_writer_async(prefix, &()).await?;
 
         let mut wz = ctx.0.space.write_zipper(&mut writer);
@@ -196,11 +196,11 @@ impl CommandDefinition for CopyCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let src_expr = cmd.args[0].as_expr_bytes();
-        let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_till_last_constant();
+        let src_prefix = derive_prefix_from_expr_slice(&src_expr).till_constant_to_full();
         let mut reader = ctx.0.space.new_reader_async(src_prefix, &()).await?;
 
         let dst_expr = cmd.args[1].as_expr_bytes();
-        let dst_prefix = derive_prefix_from_expr_slice(&dst_expr).till_constant_to_till_last_constant();
+        let dst_prefix = derive_prefix_from_expr_slice(&dst_expr).till_constant_to_full();
         let mut writer = ctx.0.space.new_writer_async(dst_prefix, &()).await?;
 
         let rz = ctx.0.space.read_zipper(&mut reader);
@@ -235,7 +235,7 @@ impl CommandDefinition for CountCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_full();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
 
         tokio::task::spawn(async move {
@@ -312,7 +312,7 @@ impl CommandDefinition for ExploreCmd {
     async fn work(ctx: MorkService, cmd: Command, thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
 
         let expr = cmd.args[0].as_expr_bytes().to_vec();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_full();
         let reader = ctx.0.space.new_reader_async(prefix, &()).await?;
 
         let out = tokio::task::spawn_blocking(move || -> Result<WorkResult, CommandError> {
@@ -427,7 +427,7 @@ impl CommandDefinition for ExportCmd {
         let (pattern, template) = pattern_template_from_sexpr_pair(&ctx.0.space, cmd.args[0].as_str(), cmd.args[1].as_str())
             .map_err(|e| CommandError::external(StatusCode::BAD_REQUEST, format!("{e:?}")))?;
 
-        let pat_reader = ctx.0.space.new_reader_async(&derive_prefix_from_expr_slice(pattern.as_bytes()).till_constant_to_till_last_constant(), &()).await?;
+        let pat_reader = ctx.0.space.new_reader_async(&derive_prefix_from_expr_slice(pattern.as_bytes()).till_constant_to_full(), &()).await?;
 
         let format = cmd.properties[0].as_ref().map(|fmt_arg| fmt_arg.as_str()).unwrap_or("metta");
         let format = DataFormat::from_str(format).ok_or_else(|| CommandError::external(StatusCode::BAD_REQUEST, format!("Unrecognized format: {format}")))?;
@@ -598,7 +598,7 @@ async fn do_import(ctx: &MorkService, thread: WorkThreadHandle, cmd: &Command, p
     let file_uri = cmd.properties[0].as_ref().unwrap().as_str();
     let url = Url::parse(file_uri)?;
 
-    let space_prefix = derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_till_last_constant().to_owned();
+    let space_prefix = derive_prefix_from_expr_slice(template.as_bytes()).till_constant_to_full().to_owned();
 
     let file_path = if url.scheme() == "file" {
 
@@ -1173,7 +1173,7 @@ impl CommandDefinition for StatusCmd {
     }
     async fn work(ctx: MorkService, cmd: Command, _thread: Option<WorkThreadHandle>, _req: Request<IncomingBody>) -> Result<WorkResult, CommandError> {
         let expr = cmd.args[0].as_expr_bytes();
-        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_till_last_constant();
+        let prefix = derive_prefix_from_expr_slice(&expr).till_constant_to_full();
 
         let status = ctx.0.space.get_status(&prefix);
         let json_string = serde_json::to_string(&status)?;
@@ -1211,7 +1211,7 @@ impl CommandDefinition for StatusStreamCmd {
     ) -> Result<WorkResult, CommandError> {
 
         let expr = cmd.args[0].as_expr_bytes();
-        let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_till_last_constant();
+        let prefix = derive_prefix_from_expr_slice(expr).till_constant_to_full();
 
         //Make a channel to send status updates to the client
         let (tx, rx) = mpsc::channel::<StatusRecord>(100);
@@ -1741,7 +1741,9 @@ impl<'a> DerivedPrefix<'a> {
             DerivedPrefix::TillConst { full, .. } => full,
         }
     }
-    #[allow(unused)]
+    // #[allow(unused)]
+
+    #[deprecated(note = "This was initially added to make it easer to write a namespace without needing to put a variable at the end. This was misguided and caused issues.")]
     /// the [`Self::TillConstant`] variant will be collapsed to the `till_last_constant` field, and the [`Self::TillVar`] variant to it's inner value
     fn till_constant_to_till_last_constant(self) -> ExprPrefixSlice<'a> {
         match self {

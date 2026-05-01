@@ -294,6 +294,28 @@ pub fn unifies_reuse_state<W>(
     out
 }
 
+/// Unified value will be written to `sink`<br>
+/// `sink` can be in an indeterminate shape if the unification fails.<br>
+/// NOTE : expr_env, stack, assignments are cleared when this is called
+#[inline(always)]
+pub fn unifies_reuse_state_takes_coroutine<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(
+    left            : Expr,
+    right           : Expr,
+    mut sink        : &mut OS,
+    mut expr_env    : &mut Vec<(ExprEnv, ExprEnv)>,
+    mut stack       : &mut Vec<(u8, u8)>,
+    mut assignments : &mut Vec<(u8, u8)>
+) -> bool {
+    expr_env.clear();
+    expr_env.extend_from_slice(&[(ExprEnv::new(0, left), ExprEnv::new(1, right))]);
+    let out = match crate::unify(expr_env) {
+        Ok(bindings) => crate::apply_e_clears_stacks_and_cycles_check_takes_coroutine!(0,0,0, left, &bindings, sink, stack, assignments).2,
+        Err(_) => false,
+    };
+    expr_env.clear();
+    out
+}
+
 
 mod tests {
     use std::ops::*;

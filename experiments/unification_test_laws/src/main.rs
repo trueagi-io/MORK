@@ -2,9 +2,9 @@ use unification_test_laws::{unify_with_mork_unifier, convert_and_add_line_number
 
 fn main() {
 
-    let convert_big_metta        = !true;
+    let convert_big_metta        =  true;
     let run_mork_unifier         =  true;
-    let run_prolog_unifier       = !true;
+    let run_prolog_unifier       =  true;
     let collect_results_and_diff =  true;
 
     // prep big.metta to enumerate axioms

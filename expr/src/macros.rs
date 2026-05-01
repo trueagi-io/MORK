@@ -414,6 +414,37 @@ macro_rules! construct_impl {
 
 /// This macro implements that final "occurs check" __after__ application.<br>
 /// This is a macro, as a function risks not being inlined.<br>
+/// The following is based on the apply_e
+/// ```ignore
+/// pub fn apply_e_clears_and_cycles_check<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(
+///     n                  : u8,                          // :expr
+///     mut original_intros: u8,                          // :expr
+///     mut new_intros     : u8,                          // :expr
+///     e                  : Expr,                        // :expr
+///     bindings           : &BTreeMap<ExprVar, ExprEnv>, // :expr
+///     es                 : &mut OS,                     // :ident,
+///     stack              : &mut Vec<ExprVar>,           // :ident, stack is cleared on use!
+///     assignments        : &mut Vec<ExprVar>            // :ident, assignment is cleared on use!
+/// ) -> (u8,u8,no_cycles:bool)
+/// ```
+/// The important pattern here is that mutable values are taken by name (ident) and others by expression (expr). This lowers syntactic noise by letting the implementation add the references itself.
+#[macro_export]
+macro_rules! apply_e_clears_stacks_and_cycles_check_takes_coroutine {
+    ($n:expr, $original_intros:expr, $new_intros:expr, $pat_expr:expr, $bindings:expr, $es:ident, $stack:ident, $assignments:ident) => {{
+        core::debug_assert!($stack.is_empty());
+        core::debug_assert!($assignments.is_empty());
+        let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
+        // let mut snk_ = $crate::item_sink(&mut $es);
+        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!(&mut $es), &mut cycled, &mut $stack, &mut $assignments);
+        $stack.clear();
+        $assignments.clear();
+
+        (l,r,cycled.is_empty())
+    }};
+}
+
+/// This macro implements that final "occurs check" __after__ application.<br>
+/// This is a macro, as a function risks not being inlined.<br>
 /// The following is based on the apply_e and item_sink
 /// ```ignore
 /// pub fn apply_e_clears_and_cycles_check<'o, W: std::io::Write>(
@@ -430,16 +461,9 @@ macro_rules! construct_impl {
 /// The important pattern here is that mutable values are taken by name (ident) and others by expression (expr). This lowers syntactic noise by letting the implementation add the references itself.
 #[macro_export]
 macro_rules! apply_e_clears_stacks_and_cycles_check {
-    ($n:expr, $original_intros:expr, $new_intros:expr, $pat_expr:expr, $bindings:expr, $snk:ident, $stack:ident, $assignments:ident) => {{
-        core::debug_assert!($stack.is_empty());
-        core::debug_assert!($assignments.is_empty());
-        let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
-        let mut snk_ = $crate::item_sink(&mut $snk);
-        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!(snk_), &mut cycled, &mut $stack, &mut $assignments);
-        $stack.clear();
-        $assignments.clear();
-
-        (l,r,cycled.is_empty())
+    ($n:expr, $original_intros:expr, $new_intros:expr, $pat_expr:expr, $bindings:expr, $es:ident, $stack:ident, $assignments:ident) => {{
+        let mut snk = $crate::item_sink(&mut $es);
+        $crate::apply_e_clears_stacks_and_cycles_check_takes_coroutine!($n,$original_intros,$new_intros,$pat_expr,$bindings,snk,$stack,$assignments)
     }};
 }
 

@@ -17,7 +17,7 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_expr::{Expr, ExprEnv, ExprZipper, ExtractFailure, Tag, UnificationFailure, apply, byte_item, destruct, item_byte, parse, serialize, traverseh, unifiable_reuse_state, unify};
+use mork_expr::{Expr, ExprEnv, ExprZipper, ExtractFailure, Tag, UnificationFailure, apply, byte_item, destruct, item_byte, item_sink, parse, serialize, traverseh, unifiable_reuse_state, unify};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
@@ -27,7 +27,7 @@ use log::*;
 use pathmap::morphisms::Catamorphism;
 use pathmap::PathMap;
 use eval::EvalScope;
-use eval_ffi::{ExprSink, ExprSource};
+use eval_ffi::{ExprSink, ExprSource, SourceItem};
 use mork_expr::macros::SerializableExpr;
 use crate::{expr, pure};
 use crate::space::ACT_PATH;
@@ -185,10 +185,21 @@ pub struct USink {
     tmp_expr_env    : Vec<(ExprEnv, ExprEnv)>,
     tmp_stack       : Vec<(u8, u8)>,
     tmp_assignments : Vec<(u8, u8)>,
+    last_len        : usize,
 }
 impl Sink for USink {
     fn new(e: Expr) -> Self {
-        USink { e, buf: None, tmp: None, conflict: false , tmp_expr_env: Vec::new(), tmp_stack: Vec::new(), tmp_assignments: Vec::new() }
+        USink { 
+            e, 
+            buf: None, 
+            tmp: None, 
+            conflict: false , 
+            tmp_expr_env: Vec::new(), 
+            tmp_stack: 
+            Vec::new(), 
+            tmp_assignments: Vec::new(), 
+            last_len : usize::MAX
+        }
     }
     fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| self.e.span()).as_ref().unwrap() }[3..];
@@ -204,10 +215,27 @@ impl Sink for USink {
             let mut tmp = self.tmp.unwrap();
             let eau = Expr{ ptr: e };
 
-            if mork_expr::unifies_reuse_state(
+            let mut snk = item_sink(&mut unsafe { core::slice::from_raw_parts_mut(e, 1 << 32) });
+
+            let mut counter = 0;
+            let y = #[coroutine]|mut x : SourceItem| {
+                let outer = std::pin::pin!(&mut snk);
+                loop {
+                    counter += match x {
+                        SourceItem::Tag(tag)      => 1,
+                        SourceItem::Symbol(items) => items.len(),
+                    };
+                    x = match outer.resume(x) {
+                        y @ CoroutineState::Yielded(_)  => yield y,
+                        c @ CoroutineState::Complete(_) => return c,
+                    }
+                }
+            };
+
+            if mork_expr::unifies_reuse_state_takes_coroutine(
                 eau, 
                 Expr{ ptr: path[3..].as_ptr().cast_mut() },
-                unsafe { core::slice::from_raw_parts_mut(e, 1 << 32) },  
+                &mut snk,  
                 &mut self.tmp_expr_env, 
                 &mut self.tmp_stack,
                 &mut self.tmp_assignments
@@ -216,11 +244,15 @@ impl Sink for USink {
                 return;
             }
 
+            self.last_len = counter;
+
             std::mem::swap(&mut self.buf, &mut self.tmp);
         } else {
             self.buf = Some(unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(1 << 32).unwrap()) });
             self.tmp = Some(unsafe { std::alloc::alloc(std::alloc::Layout::array::<u8>(1 << 32).unwrap()) });
             unsafe { std::ptr::copy_nonoverlapping(path[3..].as_ptr(), self.buf.unwrap(), path[3..].len()) }
+            
+            self.last_len = path[3..].len();
         }
     }
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
@@ -235,10 +267,8 @@ impl Sink for USink {
                 false
             }
             Some(buf) => {
-                let mut es = ExprSource::new(buf as *const u8);
-                while let Ok(_) = es.consume_head() {}                
-                let buf_slice = unsafe { slice_from_raw_parts(buf as *const u8, es.position).as_ref().unwrap() };
 
+                let buf_slice = unsafe { slice_from_raw_parts(buf as *const u8, self.last).as_ref().unwrap() };
                 trace!(target: "sink", "U unified expression '{}'", serialize(buf_slice));
                 let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
                 wz.move_to_path(&buf_slice[wz.root_prefix_path().len()..]);

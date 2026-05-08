@@ -212,7 +212,11 @@ pub trait Parser {
             it.next_to_tmp_buf()?;
             while it.has_next() {
               match it.next_to_tmp_buf()? {
-                b'"' => { break }
+                b'"' => {
+                  // this guarantees that strings end in a double quote.
+                  if it.tmp_buf.len() > 62 { it.tmp_buf[62] = b'"' }
+                  break;
+                }
                 b'\\' => {
                   if it.has_next() { it.next_to_tmp_buf()?; }
                   else { return Err(it.error_here(ParserErrorType::UnfinishedEscapeSequence)) }

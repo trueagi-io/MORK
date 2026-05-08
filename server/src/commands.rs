@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::ptr::slice_from_raw_parts;
 use std::usize;
 
-use mork::{OwnedExpr, ExprTrait};
+use mork::{ExprTrait, OwnedExpr, expr};
 use mork::{Space, space::serialize_sexpr_into};
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperWriting, ZipperAbsolutePath};
 use tokio::fs::File;
@@ -1978,4 +1978,58 @@ fn symbol_edge_cases() {
 
         explore_malformed_symbol_case().await;
     });
+}
+
+
+#[cfg(not(feature = "interning"))]
+#[test]
+fn string_truncation_ends_with_double_quote() {
+    let input = r#""Check whether a condition holds for all elements in a select set""#;
+
+    println!("\"Check whether a condition holds for all elements in a select set\"\n^len = {}", "Check whether a condition holds for all elements in a select set".len());
+
+    let space = ServerSpace::new();
+    let mut writer = space.new_writer(&[], &()).unwrap();
+    space.load_sexpr(input.as_bytes(),expr!(space,"$"), expr!(space,"_1"), &mut writer).unwrap();
+
+    drop(writer);
+    let mut reader = space.new_reader(&[], &()).unwrap();
+    let mut rz = space.read_zipper(&mut reader);
+    rz.descend_until();
+
+    println!("{}",
+        rz.path().len()
+    );
+    println!("{:?}",
+        rz.path()
+    );
+
+    let mut path = rz.path();
+    assert_eq!(path.last(), Some(&b'"'));
+
+    print_expr_debug(Expr { ptr: path.as_ptr() as *mut u8 });
+    return;
+
+
+    // where
+    fn print_expr_debug(e : Expr) {
+        let mut bytes = unsafe { e.span().as_ref().unwrap() };
+        
+        let mut var_count = 0;
+        print!("EXPR {:p}\n\t", e.ptr);
+        'debug_print : while let [first_byte, rest @ .. ] = bytes {
+            match mork_bytestring::byte_item(*first_byte) {
+                mork_bytestring::Tag::NewVar        => {print!("${} ", var_count); var_count += 1},
+                mork_bytestring::Tag::VarRef(r)     => print!("&{} ", r),
+                mork_bytestring::Tag::SymbolSize(l) => {
+                    print!("<{}>{:?} ", l, str::from_utf8(&rest[0..l as usize]));
+                    bytes = &rest[l as usize .. ];
+                    continue 'debug_print;
+            },
+                mork_bytestring::Tag::Arity(a)      => print!("\n\t[{}]", a),
+            };
+            bytes = rest
+        }
+        println!();
+    }
 }

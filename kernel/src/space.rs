@@ -2044,6 +2044,70 @@ pub(crate) fn transform_multi_multi_impl<'s, E, RZ, WZ> (
         (touched, any_new)
 }
 
+pub(crate) fn subtract_multi_multi_impl<'s, E, RZ, WZ> (
+    patterns            : &[E],
+    pattern_rzs         : &[RZ],
+    templates           : &[E],
+    template_prefixes   : &[(usize, usize)],
+    template_wzs        : &mut [WZ],
+) -> (usize, bool)
+    where
+    E: ExprTrait,
+    RZ : ZipperMoving + ZipperReadOnlySubtries<'s, ()> + ZipperInfallibleSubtries<()> + ZipperAbsolutePath,
+    WZ : ZipperMoving + ZipperWriting<()>
+{
+        let mut buffer = Vec::with_capacity(1 << 32);
+
+        let mut any_new = false;
+        let touched = query_multi_impl(patterns, pattern_rzs, |refs_bindings, loc| {
+
+            let Err((ref bindings, mut oi, mut ni, mut assignments)) = refs_bindings else { todo!() };
+            #[cfg(debug_assertions)]
+            bindings.iter().for_each(|(v, ee)| trace!(target: "subtract", "binding {:?} {}", *v, ee.show()));
+
+            for (i, ((incremental_path_start, wz_idx), template)) in template_prefixes.iter().zip(templates.iter()).enumerate() {
+                let wz = &mut template_wzs[*wz_idx];
+
+                let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+
+                trace!(target: "subtract", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.borrow().span().as_ref().unwrap()}));
+                // println!("ass len {}", assignments.len());
+                let mut ass = if i == 0 {
+                    // assignments.clone()
+                    vec![]
+                } else {
+                    // assignments[..1].to_vec()
+                    vec![]
+                };
+                // let mut ass = vec![];
+                let res = mork_bytestring::apply(0 as u8, 0 as u8, 0, &mut ExprZipper::new(template.borrow()), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut ass);
+                // println!("res {:?}", res);
+                // (oi, ni) = res;
+
+                //   0      1      2      3      4      5      6      7      8      9
+                //  [(1,3), (3,4), (3,5), (3,6), (3,0), (3,1), (3,7), (3,8), (3,2), (3,3)]
+                // <0, 3> = (, (petri (? <3,4> <3,5> <3,6>)) (petri (! <3,0> <3,1>)) (exec PC0 <3,7> <3,8>))
+                // <0, 4> = (, (petri <3,2>) (exec PC0 <3,3> <3,4>))
+                // [4] exec PC0 _4 _5
+
+                // loc.transformed(template,)
+                trace!(target: "subtract", "{i} out {:?}", oz.root);
+                // println!("descending {:?} to {:?}", serialize(prefix), serialize(&buffer[template_prefixes[subsumption[i]].len()..oz.loc]));
+
+                wz.descend_to(unsafe { &slice_from_raw_parts(buffer.as_ptr(), oz.loc).as_ref().unwrap()[*incremental_path_start..] });
+
+                // println!("wz path {} {}", serialize(template_prefixes[subsumption[i]]), serialize(wz.path()));
+                // println!("insert path {}", serialize(&buffer[..oz.loc]));
+                any_new |= wz.remove_val(true).is_none();
+                wz.reset();
+            }
+            true
+        });
+
+        (touched, any_new)
+}
+
+
 impl DefaultSpace {
 
     pub fn transform_multi(&mut self, patterns: &[Expr], template: Expr) -> (usize, bool) {

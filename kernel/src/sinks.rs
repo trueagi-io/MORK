@@ -215,27 +215,13 @@ impl Sink for USink {
             let mut tmp = self.tmp.unwrap();
             let eau = Expr{ ptr: e };
 
-            let mut snk = item_sink(&mut unsafe { core::slice::from_raw_parts_mut(e, 1 << 32) });
-
-            let mut counter = 0;
-            let y = #[coroutine]|mut x : SourceItem| {
-                let outer = std::pin::pin!(&mut snk);
-                loop {
-                    counter += match x {
-                        SourceItem::Tag(tag)      => 1,
-                        SourceItem::Symbol(items) => items.len(),
-                    };
-                    x = match outer.resume(x) {
-                        y @ CoroutineState::Yielded(_)  => yield y,
-                        c @ CoroutineState::Complete(_) => return c,
-                    }
-                }
-            };
+            let mut cursor = std::io::Cursor::new(unsafe { core::slice::from_raw_parts_mut(e, 1 << 32) });
+            let mut snk = item_sink(&mut cursor);
 
             if mork_expr::unifies_reuse_state_takes_coroutine(
                 eau, 
                 Expr{ ptr: path[3..].as_ptr().cast_mut() },
-                &mut snk,  
+                snk,  
                 &mut self.tmp_expr_env, 
                 &mut self.tmp_stack,
                 &mut self.tmp_assignments
@@ -244,7 +230,7 @@ impl Sink for USink {
                 return;
             }
 
-            self.last_len = counter;
+            self.last_len = cursor.position() as usize;
 
             std::mem::swap(&mut self.buf, &mut self.tmp);
         } else {
@@ -268,7 +254,7 @@ impl Sink for USink {
             }
             Some(buf) => {
 
-                let buf_slice = unsafe { slice_from_raw_parts(buf as *const u8, self.last).as_ref().unwrap() };
+                let buf_slice = unsafe { slice_from_raw_parts(buf as *const u8, self.last_len).as_ref().unwrap() };
                 trace!(target: "sink", "U unified expression '{}'", serialize(buf_slice));
                 let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
                 wz.move_to_path(&buf_slice[wz.root_prefix_path().len()..]);

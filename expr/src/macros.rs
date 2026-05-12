@@ -435,7 +435,7 @@ macro_rules! apply_e_clears_stacks_and_cycles_check_takes_coroutine {
         core::debug_assert!($assignments.is_empty());
         let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
         // let mut snk_ = $crate::item_sink(&mut $es);
-        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!(&mut $es), &mut cycled, &mut $stack, &mut $assignments);
+        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!($es), &mut cycled, &mut $stack, &mut $assignments);
         $stack.clear();
         $assignments.clear();
 

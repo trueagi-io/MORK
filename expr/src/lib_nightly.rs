@@ -301,7 +301,7 @@ pub fn unifies_reuse_state<W>(
 pub fn unifies_reuse_state_takes_coroutine<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(
     left            : Expr,
     right           : Expr,
-    mut sink        : &mut OS,
+    mut sink        : OS,
     mut expr_env    : &mut Vec<(ExprEnv, ExprEnv)>,
     mut stack       : &mut Vec<(u8, u8)>,
     mut assignments : &mut Vec<(u8, u8)>

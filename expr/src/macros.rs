@@ -423,21 +423,20 @@ macro_rules! construct_impl {
 ///     e                  : Expr,                        // :expr
 ///     bindings           : &BTreeMap<ExprVar, ExprEnv>, // :expr
 ///     es                 : &mut OS,                     // :ident,
-///     stack              : &mut Vec<ExprVar>,           // :ident, stack is cleared on use!
-///     assignments        : &mut Vec<ExprVar>            // :ident, assignment is cleared on use!
+///     stack              : &mut Vec<ExprVar>,           // :ident
+///     assignments        : &mut Vec<ExprVar>            // :ident
 /// ) -> (u8,u8,no_cycles:bool)
 /// ```
 /// The important pattern here is that mutable values are taken by name (ident) and others by expression (expr). This lowers syntactic noise by letting the implementation add the references itself.
 #[macro_export]
 macro_rules! apply_e_clears_stacks_and_cycles_check_takes_coroutine {
     ($n:expr, $original_intros:expr, $new_intros:expr, $pat_expr:expr, $bindings:expr, $es:ident, $stack:ident, $assignments:ident) => {{
-        core::debug_assert!($stack.is_empty());
-        core::debug_assert!($assignments.is_empty());
         let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
         // let mut snk_ = $crate::item_sink(&mut $es);
-        let (l,r) = $crate::apply_e(0, 0, 0, $pat_expr, $bindings, &mut std::pin::pin!($es), &mut cycled, &mut $stack, &mut $assignments);
+        // print!("{:?}\n", (&$stack, &$assignments));
         $stack.clear();
         $assignments.clear();
+        let (l,r) = $crate::apply_e($n, $original_intros, $new_intros, $pat_expr, $bindings, &mut std::pin::pin!($es), &mut cycled, &mut $stack, &mut $assignments);
 
         (l,r,cycled.is_empty())
     }};
@@ -454,8 +453,8 @@ macro_rules! apply_e_clears_stacks_and_cycles_check_takes_coroutine {
 ///     e                  : Expr,                        // :expr
 ///     bindings           : &BTreeMap<ExprVar, ExprEnv>, // :expr
 ///     es                 : &mut W,                      // :ident, Writer is converted internally to a sink
-///     stack              : &mut Vec<ExprVar>,           // :ident, stack is cleared on use!
-///     assignments        : &mut Vec<ExprVar>            // :ident, assignment is cleared on use!
+///     stack              : &mut Vec<ExprVar>,           // :ident
+///     assignments        : &mut Vec<ExprVar>            // :ident
 /// ) -> (u8,u8,no_cycles:bool)
 /// ```
 /// The important pattern here is that mutable values are taken by name (ident) and others by expression (expr). This lowers syntactic noise by letting the implementation add the references itself.

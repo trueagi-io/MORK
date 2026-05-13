@@ -1238,7 +1238,7 @@ impl Space {
 
                         // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-                        let bindings = unify(pairs);
+                        let bindings = unify(&mut pairs);
 
                         match bindings {
                             Ok(bs) => {
@@ -1710,7 +1710,7 @@ impl Space {
             };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
-            Ok(())
+            return Ok(())
         }, _err => return Err("exec shape (exec <loc> <patterns> <templates>)"))
     }
 

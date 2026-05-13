@@ -196,7 +196,7 @@ impl Sink for USink {
             let mut tmp = self.tmp.unwrap();
             let eau = Expr{ ptr: e };
             let mut wz = ExprZipper::new(Expr{ ptr: tmp });
-            let Ok(_) = eau.unify(Expr{ ptr: path[3..].as_ptr().cast_mut() }, &mut wz) else {
+            let Ok(_) = eau._unify(Expr{ ptr: path[3..].as_ptr().cast_mut() }, &mut wz) else {
                 self.conflict = true;
                 return;
             };

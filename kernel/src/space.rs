@@ -1364,7 +1364,6 @@ impl Space {
 
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
-        // let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1380,7 +1379,6 @@ impl Space {
                         mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
                     }) else {break 'query false;};
 
-                    // for (i, template) in templates.iter().enumerate() {
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
 

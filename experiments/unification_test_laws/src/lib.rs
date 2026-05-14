@@ -190,48 +190,16 @@ pub fn unify_with_mork_unifier() {
             
                 let (e_l_line_str, e_l_) = line_and_expr(expr_block, expr_pos, each);
                 
-                let mut buffer = [0_u8;1024];
-                let mut ez     = mork_expr::ExprZipper::new(mork_expr::Expr{ptr : (&mut buffer).as_mut_ptr()});
+
+                let mut stack       : Vec<(u8, u8)>           = Vec::new();
+                let mut assignments : Vec<(u8, u8)>           = Vec::new();
+                let mut expr_env    : Vec<(mork_expr::ExprEnv, mork_expr::ExprEnv)> = Vec::new();
                 for each_other in 0..expr_pos.len() - 1 {
-
                     let (e_r_line_str, e_r_) = line_and_expr(expr_block, expr_pos, each_other);
-                
-                    ez.reset();
-                    // if e_l_.unifiable(e_r_) {
-                    // if e_l_.unify(e_r_, &mut ez).is_ok() {
-                    if 'inlined : {
-                        let this = e_l_;
-                        let other = e_r_;
-                        // let o: &mut ExprZipper = &mut ez;
-                        let mut s = vec![(mork_expr::ExprEnv::new(0, this), mork_expr::ExprEnv::new(1, other))];
-
-                        match mork_expr::unify(s) {
-                            Ok(bindings) => {
-                                let mut void   = std::io::sink();
-                                let mut snk    = mork_expr::item_sink(&mut void);
-                                let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
-                                
-                                let mut stack       : Vec<(u8, u8)> = vec![];
-                                let mut assignments : Vec<(u8, u8)> = vec![];
-                                // apply(0, 0, 0, &mut ExprZipper::new(this), &bindings, o, &mut cycled, &mut stack, &mut assignments);
-                                apply_e(0, 0, 0, this, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut stack, &mut assignments);
-
-                                // the unify __function__ does not do full occurs check, this enforces it __after__ apply, making the unify __method__ cycle safe
-                                if !cycled.is_empty() {
-                                    break 'inlined Err(mork_expr::UnificationFailure::Occurs(cycled.first_key_value().unwrap().0.clone(), 
-                                        /* admittedly, this value is here only to satisfy the signature, the previous code assumed that errors can't happen past this point */ 
-                                        mork_expr::ExprEnv::new(1, other))
-                                    );
-                                }
-
-                                Ok(())
-                            }
-                            Err(f) => Err(f)
-                        }
-                    }.is_ok() {
-                        unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) };
-                    }
-                }
+                    if  mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
+                         unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) };
+                     }
+                 }
 
                 const FILE_NAME_PREFIX : &[u8] = b"axiom_";
                 const FILE_EXTENSION   : &[u8] = b".metta";

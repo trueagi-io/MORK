@@ -925,7 +925,9 @@ impl Space {
         let mut pat = vec![item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(1)), b','];
         pat.extend_from_slice(unsafe { pattern.span().as_ref().unwrap() });
 
-        Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| {
+        let mut stack       = Vec::new();
+        let mut assignments = Vec::new();
+        Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| 'query : {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
             match refs_bindings {
@@ -933,12 +935,15 @@ impl Space {
                     assert!(false)
                 }
                 Err(ref bindings) => {
-                    let (oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
-                        let r = apply(0, 0, 0, &mut ExprZipper::new(pattern), &bindings, &mut ExprZipper::new(Expr{ ptr: buffer.as_mut_ptr() }), &mut cycled, &mut vec![], &mut vec![]);
-                        r
-                    };
-                    mork_expr::apply(0, oi, ni, &mut ExprZipper::new(template), bindings, &mut oz, &mut BTreeMap::new(), &mut vec![], &mut vec![]);
+                    buffer.clear();
+
+                    let (oi, ni, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0, pattern, bindings, buffer, stack, assignments)
+                    else { break 'query false};
+
+                    buffer.clear();
+
+                    let (_,_,true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni, template, bindings, buffer, stack, assignments)
+                    else { break 'query false;};
                 }
             }
 
@@ -954,6 +959,7 @@ impl Space {
                 #[cfg(not(feature="interning"))]
                 unsafe { std::mem::transmute(std::str::from_utf8_unchecked(s)) }
             }, |i, intro| { Expr::VARNAMES[i as usize] });
+            let mut buffer_slice = &mut buffer[..];
             w.write(&[b'\n']).map_err(|x| x.to_string()).unwrap();
 
             true
@@ -1238,7 +1244,7 @@ impl Space {
 
                         // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-                        let bindings = unify(pairs);
+                        let bindings = unify(&mut pairs);
 
                         match bindings {
                             Ok(bs) => {
@@ -1357,7 +1363,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1368,27 +1374,21 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (mut oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                    let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
-                        let mut snk = mork_expr::item_sink(&mut void);
-                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
-                        assignments.clear();
-                        r
-                    };
+                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
+                    }) else {break 'query false;};
 
-                    for (i, template) in templates.iter().enumerate() {
+                    'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
+
                         buffer.clear();
-                        let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
                         oi = toi;
-                        ass.clear();
-                        astack.clear();
+
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         wz.move_to_path(&buffer[wz.root_prefix_path().len()..]);
@@ -1438,7 +1438,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| {
+        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
             // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1449,27 +1449,20 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (mut oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                    let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
-                        let mut snk = mork_expr::item_sink(&mut void);
-                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
-                        assignments.clear();
-                        r
-                    };
+                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
+                    }) else {break 'query false;};
 
-                    for (i, template) in templates.iter().enumerate() {
+                    'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
                         oi = toi;
-                        ass.clear();
-                        astack.clear();
+
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         wz.move_to_path(&buffer[wz.root_prefix_path().len()..]);
@@ -1528,7 +1521,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1539,26 +1532,19 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (mut oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                    let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
-                        let mut snk = mork_expr::item_sink(&mut void);
-                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);                        trace.clear();
-                        assignments.clear();
-                        r
-                    };
-                
-                    for (i, template) in templates.iter().enumerate() {
+                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
+                    }) else {break 'query false;};
+
+                    'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
                         oi = toi;
-                        ass.clear();
-                        astack.clear();
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
@@ -1621,7 +1607,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| {
+        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1632,27 +1618,18 @@ impl Space {
                     #[cfg(debug_assertions)]
                     bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
 
-                    let (mut oi, ni) = {
-                        let mut cycled = BTreeMap::<(u8, u8), u8>::new();
+                    let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
-                        let mut snk = mork_expr::item_sink(&mut void);
-                        let r = mork_expr::apply_e(0, 0, 0, pat_expr, &bindings, &mut std::pin::pin!(snk), &mut cycled, &mut trace, &mut assignments);
-                        trace.clear();
-                        assignments.clear();
-                        r
-                    };
+                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
+                    }) else {break 'query false;};
 
-                    for (i, template) in templates.iter().enumerate() {
+                    'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
 
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let mut snk = mork_expr::item_sink(&mut buffer);
-                        let (toi, _) = mork_expr::apply_e(0, oi, ni, *template, bindings, &mut std::pin::pin!(snk), &mut BTreeMap::new(), &mut astack, &mut ass);
-                        oi = toi;
-                        ass.clear();
-                        astack.clear();
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
@@ -1710,7 +1687,7 @@ impl Space {
             };
 
             trace!(target: "interpret", "(run, changed) = {:?}", res);
-            Ok(())
+            return Ok(())
         }, _err => return Err("exec shape (exec <loc> <patterns> <templates>)"))
     }
 
@@ -1769,14 +1746,16 @@ impl Space {
         
         let mut res = vec![];
         
-        
+        let mut stack       : Vec<(u8, u8)>           = Vec::new();
+        let mut assignments : Vec<(u8, u8)>           = Vec::new();
+        let mut expr_env    : Vec<(ExprEnv, ExprEnv)> = Vec::new();
         while let Some(b) = it.next() {
             rz.descend_to_byte(b);
             
             let mut rzc = rz.clone();
             rzc.to_next_val();
             let e = Expr { ptr: rzc.origin_path().to_vec().leak().as_ptr().cast_mut() };
-            if e.unifiable(pattern) {
+            if mork_expr::unifiable_reuse_state(e, pattern, &mut expr_env, &mut stack, &mut assignments) {
                 let v = rz.origin_path().to_vec();
                 // println!("token {:?}", &v[..]);
                 // println!("expr  {:?}", e);

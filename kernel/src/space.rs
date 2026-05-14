@@ -97,12 +97,11 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
-                // technically requires us to replace references to this NewVar on the stack with e
-                // if !$nv && item_byte(Tag::NewVar) == b {
-                //     if $e.n == 0 {
-                //         references.push(u32::MAX);
-                //     }
-                // }
+                if !$nv && item_byte(Tag::NewVar) == b {
+                    if $e.n == 0 {
+                        references.push(u32::MAX);
+                    }
+                }
                 loc.descend_to_byte(b);
                 debug_assert!(loc.path_exists());
                 coreferential_transition(loc, stack, references, f);
@@ -161,13 +160,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     if e.n == 0 { references.pop(); }
                 }
                 Tag::VarRef(i) => {
-                    // let addition = if e.n == 0 && references[i as usize] != u32::MAX {
-                    let addition = if e.n == 0 {
-                        if i as usize >= references.len() {
-                            trace!(target: "coref trans", "i {i} #references {}", references.len());
-                            stack.push(e);
-                            return;
-                        }
+                    let addition = if e.n == 0 && references[i as usize] != u32::MAX {
                         trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
@@ -179,7 +172,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
                     };
                     stack.push(addition);
-                    vs!(e, false);
+                    vs!(e, true);
                     coreferential_transition(loc, stack, references, f);
                     stack.pop();
                 }

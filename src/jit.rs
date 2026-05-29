@@ -182,8 +182,9 @@ impl<'a> SparseView<'a> {
     }
 }
 
-/// A tensor passed to the JIT: dense, a square 2D [`Csr`], or a general
-/// (batched / rectangular) [`SparseView`].
+/// A tensor passed to the JIT: dense, a [`Csr`] (any shape), or a general
+/// (batched / rectangular) [`SparseView`]. `Csr` and `SparseView` share the
+/// same CSR-style layout and code path; `Csr` is the convenient owning type.
 #[derive(Clone)]
 pub enum JitInput<'a> {
     Dense(&'a Dense<f32>),
@@ -200,7 +201,7 @@ impl JitInput<'_> {
     fn shape(&self) -> Vec<usize> {
         match self {
             JitInput::Dense(d) => d.shape.clone(),
-            JitInput::Csr(c) => vec![c.n as usize, c.n as usize],
+            JitInput::Csr(c) => c.shape.clone(),
             JitInput::Sparse(v) => v.shape.clone(),
         }
     }
@@ -1095,6 +1096,30 @@ mod tests {
         for (j, v) in jit_out.data.iter().zip(vm_out.data.iter()) {
             assert!((j - v).abs() <= 1e-5 * (1.0 + v.abs()), "jit {j} vs vm {v}");
         }
+    }
+
+    #[test]
+    fn rectangular_csr_input() {
+        // A non-square Csr (2×3) passed via the JitInput::Csr path.
+        let a = Csr::<u32, f32>::from_parts(
+            vec![2, 3],
+            vec![0, 2, 3],
+            vec![1, 2, 0],
+            vec![2.0, 3.0, 1.0],
+        );
+        let a_dense = dense(vec![2, 3], &[0., 2., 3., 1., 0., 0.]);
+        let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+
+        let sp =
+            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![2, 4]]).unwrap();
+        let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
+        sp.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut y_sp]);
+
+        let de = DenseF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
+        let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
+        de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
+
+        assert_eq!(y_sp.data, y_de.data);
     }
 
     #[test]

@@ -33,3 +33,7 @@ rand = "0.9"
 [[bench]]
 name = "perf"
 harness = false
+
+[[example]]
+name = "jit_bench"
+required-features = ["jit"]

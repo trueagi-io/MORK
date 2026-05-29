@@ -1,10 +1,19 @@
 //! Compressed sparse row matrix with sequential and parallel SpGEMM.
 //!
-//! [`Csr<I, V>`] stores an `n×n` matrix as three flat arrays (`row_ptr`,
-//! `col_idx`, `values`) and is immutable after construction. The
-//! `Csr<u32, V>` specialisation implements [`NDIndex`] and [`Sparse2D`]
-//! so it composes with [`crate::einsum`]; other `(I, V)` pairs are
-//! storage-only.
+//! [`Csr<I, V>`] stores a sparse tensor as three flat arrays (`row_ptr`,
+//! `col_idx`, `values`) and is immutable after construction. The logical
+//! shape is `ndim >= 2`: the **last** axis is the stored column and all
+//! preceding axes form the compound row index (flattened row-major into
+//! `row_ptr`). This covers square 2D matrices, **rectangular** 2D matrices,
+//! and **batched / higher-rank** sparse tensors.
+//!
+//! The square-2D graph operations ([`matmul`](Csr::matmul),
+//! [`connected_components`](Csr::connected_components),
+//! [`rcm`](Csr::rcm), …) assert a square 2D shape and panic otherwise.
+//!
+//! The `Csr<u32, V>` specialisation implements [`NDIndex`] (for any shape)
+//! and [`Sparse2D`] (only when 2D) so it composes with [`crate::einsum`];
+//! other `(I, V)` pairs are storage-only.
 //!
 //! # Example
 //!
@@ -75,10 +84,14 @@ impl Value for f64 {
     #[inline] fn sat_mul(a: Self, b: Self) -> Self { a * b }
 }
 
-/// Compressed-sparse-row n×n matrix.
+/// Compressed-sparse-row sparse tensor.
+///
+/// `shape` has `ndim >= 2`; the last axis is the stored column, the preceding
+/// axes form the (row-major) compound row index. `row_ptr` has length
+/// `compound_rows + 1`.
 #[derive(Clone, Debug)]
 pub struct Csr<I = u32, V = u32> {
-    pub n: I,
+    pub shape: Vec<usize>,
     pub row_ptr: Vec<usize>,
     pub col_idx: Vec<I>,
     pub values: Vec<V>,
@@ -108,9 +121,10 @@ impl<T> SendPtr<T> {
 impl<I: Index, V: Value> Csr<I, V> {
     /// Empty n×n matrix.
     pub fn new(n: I) -> Self {
+        let nu = n.to_usize();
         Self {
-            n,
-            row_ptr: vec![0; n.to_usize() + 1],
+            shape: vec![nu, nu],
+            row_ptr: vec![0; nu + 1],
             col_idx: Vec::new(),
             values: Vec::new(),
         }
@@ -129,7 +143,7 @@ impl<I: Index, V: Value> Csr<I, V> {
             values.push(one);
         }
         row_ptr.push(nu);
-        Self { n, row_ptr, col_idx, values }
+        Self { shape: vec![nu, nu], row_ptr, col_idx, values }
     }
 
     /// Build from a directed edge list — each edge contributes `V::one()`.
@@ -139,8 +153,8 @@ impl<I: Index, V: Value> Csr<I, V> {
         Self::from_coo(n, &mut triplets)
     }
 
-    /// Build from COO triplets. Sorts by (row, col) and merges duplicates by
-    /// summing.
+    /// Build a square `n×n` matrix from COO triplets. Sorts by (row, col) and
+    /// merges duplicates by summing.
     pub fn from_coo(n: I, triplets: &mut Vec<(I, I, V)>) -> Self {
         let nu = n.to_usize();
         triplets.sort_unstable_by_key(|&(r, c, _)| (r, c));
@@ -177,7 +191,78 @@ impl<I: Index, V: Value> Csr<I, V> {
             cur_row += 1;
         }
 
-        Self { n, row_ptr, col_idx: col_idx_out, values: values_out }
+        Self { shape: vec![nu, nu], row_ptr, col_idx: col_idx_out, values: values_out }
+    }
+
+    /// Build directly from CSR-style arrays for an arbitrary (rectangular or
+    /// batched) shape. The last axis of `shape` is the stored column; the
+    /// product of the preceding axes is the number of compound rows.
+    ///
+    /// Panics if the lengths are inconsistent with `shape`.
+    pub fn from_parts(
+        shape: Vec<usize>,
+        row_ptr: Vec<usize>,
+        col_idx: Vec<I>,
+        values: Vec<V>,
+    ) -> Self {
+        assert!(shape.len() >= 2, "Csr shape needs ndim >= 2, got {shape:?}");
+        let rows: usize = shape[..shape.len() - 1].iter().product();
+        assert_eq!(
+            row_ptr.len(),
+            rows + 1,
+            "row_ptr length {} must be product(leading dims)+1 = {}",
+            row_ptr.len(),
+            rows + 1
+        );
+        assert_eq!(col_idx.len(), values.len(), "col_idx and values length differ");
+        Self { shape, row_ptr, col_idx, values }
+    }
+
+    // ── Shape accessors ──
+
+    /// Number of axes (`>= 2`).
+    #[inline]
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    /// Size of `axis`.
+    #[inline]
+    pub fn dim(&self, axis: usize) -> usize {
+        self.shape[axis]
+    }
+
+    /// Number of stored columns (size of the last axis).
+    #[inline]
+    pub fn n_cols(&self) -> usize {
+        self.shape[self.shape.len() - 1]
+    }
+
+    /// Number of compound rows (product of all but the last axis).
+    #[inline]
+    pub fn n_rows(&self) -> usize {
+        self.row_ptr.len() - 1
+    }
+
+    #[inline]
+    fn is_square_2d(&self) -> bool {
+        self.shape.len() == 2 && self.shape[0] == self.shape[1]
+    }
+
+    #[inline]
+    fn assert_square_2d(&self, what: &str) {
+        assert!(
+            self.is_square_2d(),
+            "Csr::{what} requires a square 2D matrix, but shape is {:?}",
+            self.shape
+        );
+    }
+
+    /// Side length of a square 2D matrix. Panics unless the shape is square 2D.
+    #[inline]
+    pub fn n(&self) -> I {
+        self.assert_square_2d("n");
+        I::from_usize(self.shape[0])
     }
 }
 
@@ -190,7 +275,9 @@ impl<I: Index, V: Value> Csr<I, V> {
     pub fn nnz(&self) -> usize { self.values.len() }
 
     /// Value at `(r, c)` via binary search within the row, or `V::default()`.
+    /// Requires a 2D shape (rectangular is fine); panics otherwise.
     pub fn get(&self, r: I, c: I) -> V {
+        assert_eq!(self.shape.len(), 2, "Csr::get(r, c) requires a 2D matrix");
         let start = self.row_ptr[r.to_usize()];
         let end = self.row_ptr[r.to_usize() + 1];
         match self.col_idx[start..end].binary_search(&c) {
@@ -199,8 +286,9 @@ impl<I: Index, V: Value> Csr<I, V> {
         }
     }
 
-    /// Iterate `(col, value)` pairs in row `r`.
+    /// Iterate `(col, value)` pairs in row `r`. Requires a 2D shape.
     pub fn row(&self, r: I) -> impl Iterator<Item = (I, V)> + '_ {
+        assert_eq!(self.shape.len(), 2, "Csr::row(r) requires a 2D matrix");
         let start = self.row_ptr[r.to_usize()];
         let end = self.row_ptr[r.to_usize() + 1];
         self.col_idx[start..end]
@@ -218,9 +306,10 @@ impl<I: Index, V: Value> Csr<I, V> {
     /// Sequential SpGEMM: `self × other`, dense `Vec<V>` accumulator per row.
     /// Time `O(flops + n × touched_rows)`, scratch `O(n)`.
     pub fn matmul(&self, other: &Self) -> Self {
-        assert_eq!(self.n.to_usize(), other.n.to_usize());
-        let n = self.n;
-        let nu = n.to_usize();
+        self.assert_square_2d("matmul");
+        other.assert_square_2d("matmul");
+        assert_eq!(self.shape[0], other.shape[0], "matmul shape mismatch");
+        let nu = self.shape[0];
 
         let mut row_ptr = Vec::with_capacity(nu + 1);
         let mut col_idx = Vec::new();
@@ -263,7 +352,7 @@ impl<I: Index, V: Value> Csr<I, V> {
             row_ptr.push(col_idx.len());
         }
 
-        Self { n, row_ptr, col_idx, values }
+        Self { shape: vec![nu, nu], row_ptr, col_idx, values }
     }
 
     /// Parallel SpGEMM via rayon. Two-pass: symbolic (count nnz per row),
@@ -276,9 +365,10 @@ impl<I: Index, V: Value> Csr<I, V> {
     {
         use rayon::prelude::*;
 
-        assert_eq!(self.n.to_usize(), other.n.to_usize());
-        let n = self.n;
-        let nu = n.to_usize();
+        self.assert_square_2d("matmul_par");
+        other.assert_square_2d("matmul_par");
+        assert_eq!(self.shape[0], other.shape[0], "matmul_par shape mismatch");
+        let nu = self.shape[0];
 
         // Pass 1: symbolic — count nnz per row, reusing a boolean mask.
         let mut nnz_per_row = vec![0usize; nu];
@@ -368,18 +458,18 @@ impl<I: Index, V: Value> Csr<I, V> {
         );
 
         Self {
-            n,
+            shape: vec![nu, nu],
             row_ptr,
             col_idx: col_idx_out,
             values: values_out,
         }
     }
 
-    /// Element-wise addition via sorted merge per row.
+    /// Element-wise addition via sorted merge per (compound) row. Works for
+    /// any shape; both operands must have the same shape.
     pub fn add(&self, other: &Self) -> Self {
-        assert_eq!(self.n.to_usize(), other.n.to_usize());
-        let n = self.n;
-        let nu = n.to_usize();
+        assert_eq!(self.shape, other.shape, "add shape mismatch");
+        let nu = self.n_rows();
 
         let mut row_ptr = Vec::with_capacity(nu + 1);
         let mut col_idx = Vec::new();
@@ -428,7 +518,7 @@ impl<I: Index, V: Value> Csr<I, V> {
             row_ptr.push(col_idx.len());
         }
 
-        Self { n, row_ptr, col_idx, values }
+        Self { shape: self.shape.clone(), row_ptr, col_idx, values }
     }
 }
 
@@ -441,7 +531,8 @@ impl<I: Index, V: Value> Csr<I, V> {
     /// (treats the graph as undirected — an edge in either direction
     /// connects its endpoints). Returns one component id per node.
     pub fn connected_components(&self) -> Vec<usize> {
-        let nu = self.n.to_usize();
+        self.assert_square_2d("connected_components");
+        let nu = self.shape[0];
         let mut parent: Vec<usize> = (0..nu).collect();
         let mut rank = vec![0u8; nu];
 
@@ -492,10 +583,11 @@ impl<I: Index, V: Value> Csr<I, V> {
     /// far entries sit from the diagonal. RCM reordering can dramatically
     /// reduce this.
     pub fn bandwidth_stats(&self) -> (usize, f64) {
+        self.assert_square_2d("bandwidth_stats");
         let mut max_bw = 0usize;
         let mut sum_bw: u64 = 0;
         let mut count: u64 = 0;
-        for r in 0..self.n.to_usize() {
+        for r in 0..self.shape[0] {
             let s = self.row_ptr[r];
             let e = self.row_ptr[r + 1];
             for idx in s..e {
@@ -514,7 +606,8 @@ impl<I: Index, V: Value> Csr<I, V> {
     /// order; the resulting permutation is then reversed and applied.
     /// Reduces bandwidth — useful before matmul for cache locality.
     pub fn rcm(&mut self) {
-        let nu = self.n.to_usize();
+        self.assert_square_2d("rcm");
+        let nu = self.shape[0];
         let mut visited = vec![false; nu];
         let mut order: Vec<I> = Vec::with_capacity(nu);
 
@@ -575,8 +668,9 @@ impl<I: Index, V: Value> Csr<I, V> {
     }
 
     /// Reorder rows and columns by a permutation. `perm[new] = old`.
+    /// Square 2D only (callers — `rcm` — assert this).
     fn permute(&mut self, perm: &[I]) {
-        let nu = self.n.to_usize();
+        let nu = self.shape[0];
         let nnz = self.nnz();
         assert_eq!(perm.len(), nu);
 
@@ -634,33 +728,57 @@ impl<I: Index, V: Value> Csr<I, V> {
 // NDIndex + Sparse2D impls for u32-indexed Csr
 // ─────────────────────────────────────────────────────────────────────────
 
+impl<V: Value> Csr<u32, V> {
+    /// Flatten the leading indices `ix[..ndim-1]` (row-major) into a compound
+    /// row index. `ix` must have one entry per axis.
+    #[inline]
+    fn compound_row(&self, ix: &[usize]) -> usize {
+        let nd = self.shape.len();
+        let mut row = 0usize;
+        for k in 0..nd - 1 {
+            row = row * self.shape[k] + ix[k];
+        }
+        row
+    }
+}
+
 impl<V: Value + 'static> NDIndex<V> for Csr<u32, V> {
-    fn ndim(&self) -> usize { 2 }
-    fn dim(&self, _axis: usize) -> usize { self.n as usize }
+    fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+    fn dim(&self, axis: usize) -> usize {
+        self.shape[axis]
+    }
     fn get(&self, ix: &[usize]) -> V {
-        Csr::get(self, ix[0] as u32, ix[1] as u32)
+        self.get_opt(ix).unwrap_or_default()
     }
     fn set(&mut self, _ix: &[usize], _v: V) {
         panic!("Csr is immutable after construction");
     }
     fn get_opt(&self, ix: &[usize]) -> Option<V> {
-        let r = ix[0];
-        let c = ix[1] as u32;
-        let start = self.row_ptr[r];
-        let end = self.row_ptr[r + 1];
+        let row = self.compound_row(ix);
+        let c = ix[self.shape.len() - 1] as u32;
+        let start = self.row_ptr[row];
+        let end = self.row_ptr[row + 1];
         match self.col_idx[start..end].binary_search(&c) {
             Ok(i) => Some(self.values[start + i]),
             Err(_) => None,
         }
     }
+    /// Only 2D matrices expose the [`Sparse2D`] row-iteration view; the einsum
+    /// VM falls back to `get_opt` for higher-rank sparse tensors.
     fn as_sparse_2d(&self) -> Option<&dyn Sparse2D<V>> {
-        Some(self)
+        if self.shape.len() == 2 {
+            Some(self)
+        } else {
+            None
+        }
     }
 }
 
 impl<V: Value + 'static> Sparse2D<V> for Csr<u32, V> {
     fn nnz(&self) -> usize { self.values.len() }
-    fn n_rows(&self) -> usize { self.n as usize }
+    fn n_rows(&self) -> usize { self.row_ptr.len() - 1 }
     fn row_nnz(&self, row: usize) -> usize {
         self.row_ptr[row + 1] - self.row_ptr[row]
     }
@@ -771,6 +889,84 @@ mod tests {
         m.rcm();
         let (bw1, _) = m.bandwidth_stats();
         assert!(bw1 <= bw0, "RCM should not increase bandwidth ({bw0} -> {bw1})");
+    }
+
+    #[test]
+    fn rectangular_construction_and_index() {
+        // 2×3: A[0,1]=2, A[0,2]=3, A[1,0]=1.
+        let m = Csr::<u32, f32>::from_parts(
+            vec![2, 3],
+            vec![0, 2, 3],
+            vec![1, 2, 0],
+            vec![2.0, 3.0, 1.0],
+        );
+        assert_eq!(m.ndim(), 2);
+        assert_eq!(m.dim(0), 2);
+        assert_eq!(m.n_cols(), 3);
+        assert_eq!(m.n_rows(), 2);
+        assert_eq!(NDIndex::get_opt(&m, &[0, 1]), Some(2.0));
+        assert_eq!(NDIndex::get_opt(&m, &[0, 0]), None);
+        assert_eq!(NDIndex::get_opt(&m, &[1, 0]), Some(1.0));
+        assert_eq!(NDIndex::get(&m, &[1, 2]), 0.0);
+        // 2D still exposes the Sparse2D view.
+        assert!(NDIndex::as_sparse_2d(&m).is_some());
+    }
+
+    #[test]
+    fn batched_3d_index() {
+        // [2,2,2]: compound row = b*2 + i.
+        let m = Csr::<u32, f32>::from_parts(
+            vec![2, 2, 2],
+            vec![0, 2, 3, 4, 5],
+            vec![0, 1, 1, 0, 0],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+        );
+        assert_eq!(m.ndim(), 3);
+        assert_eq!(NDIndex::get_opt(&m, &[0, 0, 0]), Some(1.0));
+        assert_eq!(NDIndex::get_opt(&m, &[0, 0, 1]), Some(2.0));
+        assert_eq!(NDIndex::get_opt(&m, &[0, 1, 1]), Some(3.0));
+        assert_eq!(NDIndex::get_opt(&m, &[0, 1, 0]), None);
+        assert_eq!(NDIndex::get_opt(&m, &[1, 0, 0]), Some(4.0));
+        assert_eq!(NDIndex::get_opt(&m, &[1, 1, 0]), Some(5.0));
+        // Higher-rank does not expose the 2D Sparse2D view.
+        assert!(NDIndex::as_sparse_2d(&m).is_none());
+    }
+
+    #[test]
+    fn add_rectangular() {
+        let a = Csr::<u32, u32>::from_parts(vec![2, 3], vec![0, 1, 2], vec![1, 0], vec![5, 7]);
+        let b = Csr::<u32, u32>::from_parts(vec![2, 3], vec![0, 1, 2], vec![1, 2], vec![3, 9]);
+        let c = a.add(&b);
+        assert_eq!(c.shape, vec![2, 3]);
+        assert_eq!(NDIndex::get_opt(&c, &[0, 1]), Some(8)); // 5 + 3
+        assert_eq!(NDIndex::get_opt(&c, &[1, 0]), Some(7));
+        assert_eq!(NDIndex::get_opt(&c, &[1, 2]), Some(9));
+    }
+
+    #[test]
+    #[should_panic(expected = "square 2D")]
+    fn matmul_panics_on_rectangular() {
+        let m = Csr::<u32, u32>::from_parts(vec![2, 3], vec![0, 1, 2], vec![1, 0], vec![1, 1]);
+        let _ = m.matmul(&m);
+    }
+
+    #[test]
+    #[should_panic(expected = "square 2D")]
+    fn n_panics_on_rectangular() {
+        let m = Csr::<u32, u32>::from_parts(vec![2, 3], vec![0, 1, 2], vec![1, 0], vec![1, 1]);
+        let _ = m.n();
+    }
+
+    #[test]
+    #[should_panic(expected = "square 2D")]
+    fn connected_components_panics_on_batched() {
+        let m = Csr::<u32, u32>::from_parts(
+            vec![2, 2, 2],
+            vec![0, 1, 1, 2, 2],
+            vec![0, 1],
+            vec![1, 1],
+        );
+        let _ = m.connected_components();
     }
 
     #[cfg(feature = "rayon")]

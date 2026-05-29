@@ -255,12 +255,12 @@ fn section_csr_times_dense() {
 
         // Reconstruct the CSR in f32 once; reuse across both benches.
         let mut trips: Vec<(u32, u32, f32)> = Vec::with_capacity(a.nnz());
-        for r in 0..a.n {
+        for r in 0..a.n() {
             for (c, v) in a.row(r) {
                 trips.push((r, c, v as f32));
             }
         }
-        let af = Csr::<u32, f32>::from_coo(a.n, &mut trips);
+        let af = Csr::<u32, f32>::from_coo(a.n(), &mut trips);
 
         println!("\n--- CSR({n}×{n}, nnz={}) × Dense({n}×{d}) ---", a.nnz());
         let iters: u32 = if s == 10 { 200 } else { 20 };

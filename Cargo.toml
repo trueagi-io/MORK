@@ -11,6 +11,7 @@ blocked = []
 rayon = ["dep:rayon"]
 jit = [
     "dense",
+    "csr",
     "dep:cranelift-jit",
     "dep:cranelift-module",
     "dep:cranelift-frontend",

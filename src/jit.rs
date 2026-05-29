@@ -4,7 +4,7 @@
 //! VM. A spec like `"ab,bc->ac"` plus concrete inputs is compiled — once —
 //! into a machine-code loop nest that reads and writes the tensors' backing
 //! storage directly (no per-element trait dispatch). The compiled
-//! [`DenseF32Jit`] is then reused across many executions of the same spec and
+//! [`EinsumF32Jit`] is then reused across many executions of the same spec and
 //! shapes.
 //!
 //! # Inputs and outputs
@@ -30,8 +30,8 @@
 //!   `values`), exactly like the VM's sparse loop, so structural zeros are
 //!   skipped at native speed.
 //! - **Shape-specialized.** Dimensions are baked in as constants, so a given
-//!   [`DenseF32Jit`] is valid only for the exact shapes (and per-input
-//!   dense/sparse kinds) it was compiled for; [`run`](DenseF32Jit::run)
+//!   [`EinsumF32Jit`] is valid only for the exact shapes (and per-input
+//!   dense/sparse kinds) it was compiled for; [`run`](EinsumF32Jit::run)
 //!   asserts this.
 //! - **Layout seam.** [`Layout`] abstracts random-access element addressing.
 //!   `DenseLayout` is the only implementor (CSR has no constant-time random
@@ -59,14 +59,14 @@
 //! # Output convention
 //!
 //! Outputs are **accumulated into** and must be zeroed by the caller before
-//! [`run`](DenseF32Jit::run) (same convention as [`crate::einsum`]). For an
+//! [`run`](EinsumF32Jit::run) (same convention as [`crate::einsum`]). For an
 //! all-dense single output the contraction sum is held in a register and
 //! stored once per free-index tuple; otherwise outputs are read-modify-write.
 //!
 //! # Example
 //!
 //! ```
-//! use linalg::jit::{DenseF32Jit, JitInput};
+//! use linalg::jit::{EinsumF32Jit, JitInput};
 //! use linalg::dense::Dense;
 //! use linalg::tensor::NDIndex;
 //!
@@ -76,7 +76,7 @@
 //! b.fill_from(&[7., 8., 9., 10., 11., 12.]);
 //! let mut c = Dense::<f32>::zeros(vec![2, 2]);
 //!
-//! let jit = DenseF32Jit::compile(
+//! let jit = EinsumF32Jit::compile(
 //!     "ab,bc->ac",
 //!     &[JitInput::Dense(&a), JitInput::Dense(&b)],
 //!     &[vec![2, 2]],
@@ -294,14 +294,14 @@ impl Layout for DenseLayout {
 /// Construct with [`compile`](Self::compile); execute with
 /// [`run`](Self::run). Holds the owning [`JITModule`] so the generated code
 /// stays mapped for the lifetime of this value.
-pub struct DenseF32Jit {
+pub struct EinsumF32Jit {
     _module: JITModule,
     func: extern "C" fn(*const *const u8, *const *mut u8),
     inputs: Vec<InputSpec>,
     output_shapes: Vec<Vec<usize>>,
 }
 
-impl DenseF32Jit {
+impl EinsumF32Jit {
     /// Compile `spec` for the given inputs and output shapes.
     ///
     /// Only each input's shape and kind (dense vs sparse) are read here, not
@@ -1010,7 +1010,7 @@ mod tests {
     fn matmul() {
         let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
         let b = dense(vec![3, 2], &[7., 8., 9., 10., 11., 12.]);
-        let jit = DenseF32Jit::compile("ab,bc->ac", &[d(&a), d(&b)], &[vec![2, 2]]).unwrap();
+        let jit = EinsumF32Jit::compile("ab,bc->ac", &[d(&a), d(&b)], &[vec![2, 2]]).unwrap();
         let mut c = Dense::<f32>::zeros(vec![2, 2]);
         jit.run(&[d(&a), d(&b)], &mut [&mut c]);
         assert_eq!(c.data, vec![58., 64., 139., 154.]);
@@ -1019,7 +1019,7 @@ mod tests {
     #[test]
     fn transpose() {
         let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
-        let jit = DenseF32Jit::compile("ab->ba", &[d(&a)], &[vec![3, 2]]).unwrap();
+        let jit = EinsumF32Jit::compile("ab->ba", &[d(&a)], &[vec![3, 2]]).unwrap();
         let mut t = Dense::<f32>::zeros(vec![3, 2]);
         jit.run(&[d(&a)], &mut [&mut t]);
         assert_eq!(t.data, vec![1., 4., 2., 5., 3., 6.]);
@@ -1029,7 +1029,7 @@ mod tests {
     fn dot_to_scalar() {
         let a = dense(vec![4], &[1., 2., 3., 4.]);
         let b = dense(vec![4], &[5., 6., 7., 8.]);
-        let jit = DenseF32Jit::compile("i,i->", &[d(&a), d(&b)], &[vec![]]).unwrap();
+        let jit = EinsumF32Jit::compile("i,i->", &[d(&a), d(&b)], &[vec![]]).unwrap();
         let mut s = Dense::<f32>::zeros(vec![]);
         jit.run(&[d(&a), d(&b)], &mut [&mut s]);
         assert_eq!(s.get(&[]), 70.0);
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn trace() {
         let m = dense(vec![3, 3], &[1., 2., 3., 4., 5., 6., 7., 8., 9.]);
-        let jit = DenseF32Jit::compile("aa->", &[d(&m)], &[vec![]]).unwrap();
+        let jit = EinsumF32Jit::compile("aa->", &[d(&m)], &[vec![]]).unwrap();
         let mut s = Dense::<f32>::zeros(vec![]);
         jit.run(&[d(&m)], &mut [&mut s]);
         assert_eq!(s.get(&[]), 15.0);
@@ -1049,7 +1049,7 @@ mod tests {
         let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
         let b = dense(vec![3, 4], &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]);
         let c = dense(vec![4, 2], &[1., 2., 3., 4., 5., 6., 7., 8.]);
-        let jit = DenseF32Jit::compile("ab,bc,cd->ad", &[d(&a), d(&b), d(&c)], &[vec![2, 2]])
+        let jit = EinsumF32Jit::compile("ab,bc,cd->ad", &[d(&a), d(&b), d(&c)], &[vec![2, 2]])
             .unwrap();
         let mut out = Dense::<f32>::zeros(vec![2, 2]);
         jit.run(&[d(&a), d(&b), d(&c)], &mut [&mut out]);
@@ -1060,7 +1060,7 @@ mod tests {
     fn multi_output() {
         let a = dense(vec![2, 2], &[1., 2., 3., 4.]);
         let b = dense(vec![2, 2], &[5., 6., 7., 8.]);
-        let jit = DenseF32Jit::compile(
+        let jit = EinsumF32Jit::compile(
             "ab,bc->ac,ca",
             &[d(&a), d(&b)],
             &[vec![2, 2], vec![2, 2]],
@@ -1077,7 +1077,7 @@ mod tests {
     fn reused_across_executions() {
         let b = dense(vec![2, 2], &[1., 2., 3., 4.]);
         let a0 = dense(vec![2, 2], &[1., 0., 0., 1.]);
-        let jit = DenseF32Jit::compile("ab,bc->ac", &[d(&a0), d(&b)], &[vec![2, 2]]).unwrap();
+        let jit = EinsumF32Jit::compile("ab,bc->ac", &[d(&a0), d(&b)], &[vec![2, 2]]).unwrap();
         for k in 1..4u32 {
             let f = k as f32;
             let a = dense(vec![2, 2], &[f, 0., 0., f]);
@@ -1099,7 +1099,7 @@ mod tests {
         let a = cyclic_perm();
         let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
         let jit =
-            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![3, 2]]).unwrap();
+            EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![3, 2]]).unwrap();
         let mut y = Dense::<f32>::zeros(vec![3, 2]);
         jit.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut y]);
         // row i picks up row (i+1 mod 3) of x.
@@ -1110,7 +1110,7 @@ mod tests {
     fn csr_times_csr() {
         let a = cyclic_perm();
         let b = cyclic_perm();
-        let jit = DenseF32Jit::compile(
+        let jit = EinsumF32Jit::compile(
             "ab,bc->ac",
             &[JitInput::Csr(&a), JitInput::Csr(&b)],
             &[vec![3, 3]],
@@ -1146,7 +1146,7 @@ mod tests {
         }
 
         let jit =
-            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![5, 3]]).unwrap();
+            EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![5, 3]]).unwrap();
         let mut jit_out = Dense::<f32>::zeros(vec![5, 3]);
         jit.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut jit_out]);
 
@@ -1176,11 +1176,11 @@ mod tests {
         let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
 
         let sp =
-            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![2, 4]]).unwrap();
+            EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![2, 4]]).unwrap();
         let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
         sp.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut y_sp]);
 
-        let de = DenseF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
+        let de = EinsumF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
         let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
         de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
 
@@ -1198,14 +1198,14 @@ mod tests {
         let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
 
         let sp =
-            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Sparse(a.clone()), d(&x)], &[vec![2, 4]])
+            EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Sparse(a.clone()), d(&x)], &[vec![2, 4]])
                 .unwrap();
         let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
         sp.run(&[JitInput::Sparse(a), d(&x)], &mut [&mut y_sp]);
 
         // Cross-check against the dense-equivalent JIT (engine already
         // validated against the VM for dense).
-        let de = DenseF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
+        let de = EinsumF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
         let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
         de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
 
@@ -1227,7 +1227,7 @@ mod tests {
             &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.],
         );
 
-        let sp = DenseF32Jit::compile(
+        let sp = EinsumF32Jit::compile(
             "bij,bjk->bik",
             &[JitInput::Sparse(a.clone()), d(&bb)],
             &[vec![2, 2, 3]],
@@ -1236,7 +1236,7 @@ mod tests {
         let mut out_sp = Dense::<f32>::zeros(vec![2, 2, 3]);
         sp.run(&[JitInput::Sparse(a), d(&bb)], &mut [&mut out_sp]);
 
-        let de = DenseF32Jit::compile("bij,bjk->bik", &[d(&a_dense), d(&bb)], &[vec![2, 2, 3]])
+        let de = EinsumF32Jit::compile("bij,bjk->bik", &[d(&a_dense), d(&bb)], &[vec![2, 2, 3]])
             .unwrap();
         let mut out_de = Dense::<f32>::zeros(vec![2, 2, 3]);
         de.run(&[d(&a_dense), d(&bb)], &mut [&mut out_de]);
@@ -1252,7 +1252,7 @@ mod tests {
         // the second's column can't be reached by row iteration.
         let a = cyclic_perm();
         let b = cyclic_perm();
-        let err = DenseF32Jit::compile(
+        let err = EinsumF32Jit::compile(
             "ab,cb->ac",
             &[JitInput::Csr(&a), JitInput::Csr(&b)],
             &[vec![3, 3]],
@@ -1291,7 +1291,7 @@ mod tests {
             let jit_inputs: Vec<JitInput> = ins.iter().map(d).collect();
             let in_refs: Vec<&Dense<f32>> = ins.iter().collect();
 
-            let jit = DenseF32Jit::compile(
+            let jit = EinsumF32Jit::compile(
                 spec,
                 &jit_inputs,
                 &out_shapes.iter().map(|s| s.to_vec()).collect::<Vec<_>>(),
@@ -1325,15 +1325,15 @@ mod tests {
         let b = dense(vec![3, 2], &[0.; 6]);
         let b_bad = dense(vec![4, 2], &[0.; 8]);
         assert_eq!(
-            DenseF32Jit::compile("ab,bc", &[d(&a), d(&b)], &[vec![2, 2]]).err(),
+            EinsumF32Jit::compile("ab,bc", &[d(&a), d(&b)], &[vec![2, 2]]).err(),
             Some(JitError::Spec(InvalidSpec::MissingArrow)),
         );
         assert_eq!(
-            DenseF32Jit::compile("ab,bc->az", &[d(&a), d(&b)], &[vec![2, 2]]).err(),
+            EinsumF32Jit::compile("ab,bc->az", &[d(&a), d(&b)], &[vec![2, 2]]).err(),
             Some(JitError::Spec(InvalidSpec::UnboundOutputIndex { index: 'z' })),
         );
         assert_eq!(
-            DenseF32Jit::compile("ab,bc->ac", &[d(&a), d(&b_bad)], &[vec![2, 2]]).err(),
+            EinsumF32Jit::compile("ab,bc->ac", &[d(&a), d(&b_bad)], &[vec![2, 2]]).err(),
             Some(JitError::Spec(InvalidSpec::DimensionMismatch {
                 index: 'b',
                 expected: 3,

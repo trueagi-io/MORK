@@ -31,7 +31,7 @@ use rayon::prelude::*;
 use linalg::csr::Csr;
 use linalg::dense::Dense;
 use linalg::einsum::einsum;
-use linalg::jit::{DenseF32Jit, JitError, JitInput};
+use linalg::jit::{EinsumF32Jit, JitError, JitInput};
 use linalg::tensor::NDIndex;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ fn check_case(input_patterns: &[Vec<u8>], out_pattern: &[u8], sparse_mask: &[boo
         })
         .collect();
 
-    match DenseF32Jit::compile(&spec, &jit_inputs, &[out_shape.clone()]) {
+    match EinsumF32Jit::compile(&spec, &jit_inputs, &[out_shape.clone()]) {
         Ok(jit) => {
             let mut jit_out = Dense::<f32>::zeros(out_shape.clone());
             jit.run(&jit_inputs, &mut [&mut jit_out]);

@@ -7,7 +7,7 @@ use std::time::Instant;
 use linalg::csr::Csr;
 use linalg::dense::Dense;
 use linalg::einsum::{einsum, einsum_homogenous};
-use linalg::jit::{DenseF32Jit, JitInput};
+use linalg::jit::{EinsumF32Jit, JitInput};
 use linalg::tensor::NDIndex;
 
 fn fill_rand(t: &mut Dense<f32>, mut state: u64) {
@@ -36,7 +36,7 @@ fn bench_matmul(n: usize, iters: u32) {
     fill_rand(&mut a, 1);
     fill_rand(&mut b, 2);
 
-    let jit = DenseF32Jit::compile(
+    let jit = EinsumF32Jit::compile(
         "ab,bc->ac",
         &[JitInput::Dense(&a), JitInput::Dense(&b)],
         &[vec![n, n]],
@@ -79,7 +79,7 @@ fn bench_csr_dense(n: usize, per_row: usize, cols: usize, iters: u32) {
     let mut x = Dense::<f32>::zeros(vec![n, cols]);
     fill_rand(&mut x, 9);
 
-    let jit = DenseF32Jit::compile(
+    let jit = EinsumF32Jit::compile(
         "ab,bc->ac",
         &[JitInput::Csr(&a), JitInput::Dense(&x)],
         &[vec![n, cols]],
@@ -122,7 +122,7 @@ fn main() {
     let big_a = Dense::<f32>::zeros(vec![256, 256]);
     let big_b = Dense::<f32>::zeros(vec![256, 256]);
     let start = Instant::now();
-    let _ = DenseF32Jit::compile(
+    let _ = EinsumF32Jit::compile(
         "ab,bc->ac",
         &[JitInput::Dense(&big_a), JitInput::Dense(&big_b)],
         &[vec![256, 256]],

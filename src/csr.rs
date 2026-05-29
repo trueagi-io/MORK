@@ -765,14 +765,11 @@ impl<V: Value + 'static> NDIndex<V> for Csr<u32, V> {
             Err(_) => None,
         }
     }
-    /// Only 2D matrices expose the [`Sparse2D`] row-iteration view; the einsum
-    /// VM falls back to `get_opt` for higher-rank sparse tensors.
+    /// Exposes the row-iteration view for any rank: [`Sparse2D`] indexes by
+    /// the *compound* row (the flattened leading axes), which `row_ptr`
+    /// already encodes, so batched/rectangular tensors iterate natively too.
     fn as_sparse_2d(&self) -> Option<&dyn Sparse2D<V>> {
-        if self.shape.len() == 2 {
-            Some(self)
-        } else {
-            None
-        }
+        Some(self)
     }
 }
 
@@ -928,8 +925,11 @@ mod tests {
         assert_eq!(NDIndex::get_opt(&m, &[0, 1, 0]), None);
         assert_eq!(NDIndex::get_opt(&m, &[1, 0, 0]), Some(4.0));
         assert_eq!(NDIndex::get_opt(&m, &[1, 1, 0]), Some(5.0));
-        // Higher-rank does not expose the 2D Sparse2D view.
-        assert!(NDIndex::as_sparse_2d(&m).is_none());
+        // Higher-rank exposes the row view too, indexed by compound row.
+        let sp = NDIndex::as_sparse_2d(&m).expect("sparse view");
+        assert_eq!(sp.n_rows(), 4); // 2 (batch) * 2 (i)
+        assert_eq!(sp.row_nnz(0), 2); // compound row (b=0,i=0) has 2 entries
+        assert_eq!(sp.row_entry(2, 0), (0, 4.0)); // (b=1,i=0) -> col 0, val 4
     }
 
     #[test]

@@ -34,21 +34,25 @@ pub trait NDIndex<T> {
     }
 }
 
-/// Extension of [`NDIndex`] for 2D sparse matrices.
+/// Extension of [`NDIndex`] for CSR-style sparse tensors.
 ///
 /// Provides row-wise access to non-zero entries — the engine uses this to
-/// skip entire zero columns inside the einsum inner loop.
+/// skip entire zero columns inside the einsum inner loop. `row` is the
+/// **compound** row index: the flattened leading axes (everything but the
+/// last). For a 2D matrix that is just the row; for a batched/rectangular
+/// tensor it is the row-major flattening of all axes except the stored
+/// column, so the same row-iteration interface serves any rank.
 pub trait Sparse2D<T>: NDIndex<T> {
     /// Total number of structural non-zeros.
     fn nnz(&self) -> usize;
 
-    /// Number of rows (axis 0).
+    /// Number of compound rows (product of all axes but the last).
     fn n_rows(&self) -> usize;
 
-    /// Number of non-zero entries in `row`.
+    /// Number of non-zero entries in compound `row`.
     fn row_nnz(&self, row: usize) -> usize;
 
-    /// The `idx`-th non-zero entry in `row` as `(col, value)`.
+    /// The `idx`-th non-zero entry in compound `row` as `(col, value)`.
     /// `idx` must be in `0..row_nnz(row)`.
     fn row_entry(&self, row: usize, idx: usize) -> (usize, T);
 }

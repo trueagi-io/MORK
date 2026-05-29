@@ -210,11 +210,14 @@ enum VmOp {
     /// Iterate `slot` from 0 to `dim-1`. `end_pc` is one past the matching
     /// `LoopEnd`. `fused` = body is a single `MulAcc`; run inline.
     DenseLoop { slot: u8, dim: usize, end_pc: usize, fused: bool },
-    /// For each non-zero in `inputs[input_idx]` at `vals[row_slot]`, set
-    /// `vals[col_slot]` to the column index. Same `end_pc`/`fused` meaning.
+    /// For each non-zero in `inputs[input_idx]`'s compound row — formed by
+    /// flattening `leading` (row-major, using `leading_dims`) from the current
+    /// `vals` — set `vals[col_slot]` to the column index. Same `end_pc`/`fused`
+    /// meaning. For a 2D input `leading` is a single row slot.
     SparseRowLoop {
         input_idx: usize,
-        row_slot: u8,
+        leading: Vec<u8>,
+        leading_dims: Vec<usize>,
         col_slot: u8,
         end_pc: usize,
         fused: bool,
@@ -282,14 +285,16 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
         }
     }
 
-    // For each input: is it a 2D sparse matrix? If so, record (axis_0_slot, axis_1_slot).
-    let sparse_axes: Vec<Option<(u8, u8)>> = spec
+    // For each input exposing a sparse row view (any rank >= 2), record its
+    // leading (compound-row) slots and trailing stored-column slot.
+    let sparse_axes: Vec<Option<(Vec<u8>, u8)>> = spec
         .inputs
         .iter()
         .zip(inputs.iter())
         .map(|(inp_spec, arr)| {
-            if inp_spec.len() == 2 && arr.as_sparse_2d().is_some() {
-                Some((inp_spec[0], inp_spec[1]))
+            if inp_spec.len() >= 2 && arr.as_sparse_2d().is_some() {
+                let n = inp_spec.len();
+                Some((inp_spec[..n - 1].to_vec(), inp_spec[n - 1]))
             } else {
                 None
             }
@@ -316,8 +321,9 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
         }
     }
 
-    // Greedy scheduler: pick sparse loops first when their row axis is fixed,
-    // otherwise dense — preferring row-axes of sparse inputs to unlock them.
+    // Greedy scheduler: pick sparse loops first when all their leading axes
+    // are fixed, otherwise dense — preferring leading axes of sparse inputs to
+    // unlock them.
     let mut fixed = [false; 26];
     let mut loop_order: Vec<VmOp> = Vec::new();
     let mut n_fixed = 0usize;
@@ -329,11 +335,15 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
                 continue;
             }
             for (idx, axes) in sparse_axes.iter().enumerate() {
-                if let Some((ax0, ax1)) = axes {
-                    if *ax1 == s && fixed[*ax0 as usize] {
+                if let Some((leading, col)) = axes {
+                    let leads_fixed = leading.iter().all(|&l| fixed[l as usize]);
+                    if *col == s && !leading.contains(&s) && leads_fixed {
+                        let leading_dims =
+                            leading.iter().map(|&l| dims[l as usize]).collect();
                         loop_order.push(VmOp::SparseRowLoop {
                             input_idx: idx,
-                            row_slot: *ax0,
+                            leading: leading.clone(),
+                            leading_dims,
                             col_slot: s,
                             end_pc: 0,
                             fused: false,
@@ -356,12 +366,12 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
                 if fixed[s as usize] {
                     continue;
                 }
-                let is_sparse_ax0 = sparse_axes
+                let is_sparse_lead = sparse_axes
                     .iter()
-                    .any(|axes| matches!(axes, Some((ax0, _)) if *ax0 == s));
-                if is_sparse_ax0 || best.is_none() {
+                    .any(|axes| matches!(axes, Some((leading, _)) if leading.contains(&s)));
+                if is_sparse_lead || best.is_none() {
                     best = Some(s);
-                    if is_sparse_ax0 {
+                    if is_sparse_lead {
                         break;
                     }
                 }
@@ -378,20 +388,15 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
         }
     }
 
-    // Cache: which inputs have both axes covered by one SparseRowLoop?
+    // Cache: which inputs have all their axes covered by one SparseRowLoop?
     let sparse_value_source: Vec<Option<usize>> = spec
         .inputs
         .iter()
         .enumerate()
-        .map(|(inp_idx, inp_spec)| {
-            if inp_spec.len() != 2 {
-                return None;
-            }
+        .map(|(inp_idx, _)| {
             for (loop_idx, op) in loop_order.iter().enumerate() {
-                if let VmOp::SparseRowLoop { input_idx, row_slot, col_slot, .. } = op {
-                    if *input_idx == inp_idx
-                        && sparse_axes[inp_idx] == Some((*row_slot, *col_slot))
-                    {
+                if let VmOp::SparseRowLoop { input_idx, .. } = op {
+                    if *input_idx == inp_idx {
                         return Some(loop_idx);
                     }
                 }
@@ -583,8 +588,12 @@ impl Program {
                     }
                     pc = *end_pc;
                 }
-                VmOp::SparseRowLoop { input_idx, row_slot, col_slot, end_pc, fused } => {
-                    let row = vals[*row_slot as usize];
+                VmOp::SparseRowLoop { input_idx, leading, leading_dims, col_slot, end_pc, fused } => {
+                    // Compound row: row-major flatten of the leading slots.
+                    let mut row = 0usize;
+                    for (k, &ls) in leading.iter().enumerate() {
+                        row = row * leading_dims[k] + vals[ls as usize];
+                    }
                     let cs = *col_slot as usize;
                     // Compile guarantees: this input has as_sparse_2d() == Some(_)
                     let sparse = sparse_views[*input_idx]
@@ -873,13 +882,13 @@ impl fmt::Display for Program {
                     writeln!(f, "{pad}FOR {ch} IN 0..{dim}{tag}")?;
                     indent += 1;
                 }
-                VmOp::SparseRowLoop { input_idx, row_slot, col_slot, fused, .. } => {
-                    let row_ch = (row_slot + b'a') as char;
+                VmOp::SparseRowLoop { input_idx, leading, col_slot, fused, .. } => {
+                    let row_str: String = leading.iter().map(|&s| (s + b'a') as char).collect();
                     let col_ch = (col_slot + b'a') as char;
                     let tag = if *fused { "  [SPARSE,FUSED]" } else { "  [SPARSE]" };
                     writeln!(
                         f,
-                        "{pad}FOR ({col_ch}, val) IN input[{input_idx}].row({row_ch}){tag}"
+                        "{pad}FOR ({col_ch}, val) IN input[{input_idx}].row({row_str}){tag}"
                     )?;
                     indent += 1;
                 }
@@ -989,5 +998,74 @@ mod tests {
             einsum_homogenous::<f32, _, _>("ab,bc->az", &[&a, &b], &mut [&mut c]).unwrap_err(),
             InvalidSpec::UnboundOutputIndex { index: 'z' },
         );
+    }
+
+    #[cfg(feature = "csr")]
+    #[test]
+    fn batched_sparse_uses_compound_row_loop() {
+        use crate::csr::Csr;
+
+        // 3D sparse A "bij" [2,2,2]; dense B "bjk" [2,2,3]; out "bik".
+        let a = Csr::<u32, f32>::from_parts(
+            vec![2, 2, 2],
+            vec![0, 2, 3, 4, 5],
+            vec![0, 1, 1, 0, 0],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+        );
+        let mut a_dense = Dense::<f32>::zeros(vec![2, 2, 2]);
+        a_dense.fill_from(&[1., 2., 0., 3., 4., 0., 5., 0.]);
+        let mut bb = Dense::<f32>::zeros(vec![2, 2, 3]);
+        bb.fill_from(&[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+
+        // The plan walks the sparse compound (b, i) row, not a get_opt fallback.
+        let prog =
+            compile::<f32, dyn NDIndex<f32>>("bij,bjk->bik", &[&a as &dyn NDIndex<f32>, &bb])
+                .unwrap();
+        let plan = format!("{prog}");
+        assert!(plan.contains("[SPARSE]"), "expected a sparse loop:\n{plan}");
+        assert!(plan.contains(".row(bi)"), "expected compound (b,i) row:\n{plan}");
+
+        // Result matches the all-dense VM.
+        let mut out_sp = Dense::<f32>::zeros(vec![2, 2, 3]);
+        einsum::<f32>(
+            "bij,bjk->bik",
+            &[&a as &dyn NDIndex<f32>, &bb],
+            &mut [&mut out_sp as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+
+        let mut out_de = Dense::<f32>::zeros(vec![2, 2, 3]);
+        einsum_homogenous::<f32, _, _>("bij,bjk->bik", &[&a_dense, &bb], &mut [&mut out_de])
+            .unwrap();
+
+        assert_eq!(out_sp.data, out_de.data);
+        // Spot value: out[0,1,:] = 3 * B[0,1,:] = [12,15,18].
+        assert_eq!(&out_sp.data[3..6], &[12., 15., 18.]);
+    }
+
+    #[cfg(feature = "csr")]
+    #[test]
+    fn rectangular_sparse_via_vm() {
+        use crate::csr::Csr;
+
+        // Non-square sparse A (2×3) times dense X (3×4).
+        let a = Csr::<u32, f32>::from_parts(vec![2, 3], vec![0, 2, 3], vec![1, 2, 0], vec![2.0, 3.0, 1.0]);
+        let mut a_dense = Dense::<f32>::zeros(vec![2, 3]);
+        a_dense.fill_from(&[0., 2., 3., 1., 0., 0.]);
+        let mut x = Dense::<f32>::zeros(vec![3, 4]);
+        x.fill_from(&[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+
+        let mut out_sp = Dense::<f32>::zeros(vec![2, 4]);
+        einsum::<f32>(
+            "ab,bc->ac",
+            &[&a as &dyn NDIndex<f32>, &x],
+            &mut [&mut out_sp as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+
+        let mut out_de = Dense::<f32>::zeros(vec![2, 4]);
+        einsum_homogenous::<f32, _, _>("ab,bc->ac", &[&a_dense, &x], &mut [&mut out_de]).unwrap();
+
+        assert_eq!(out_sp.data, out_de.data);
     }
 }

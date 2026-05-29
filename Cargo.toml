@@ -9,9 +9,22 @@ dense = []
 csr = []
 blocked = []
 rayon = ["dep:rayon"]
+jit = [
+    "dense",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-frontend",
+    "dep:cranelift-codegen",
+    "dep:cranelift-native",
+]
 
 [dependencies]
 rayon = { version = "1", optional = true }
+cranelift-jit = { version = "0.132", optional = true }
+cranelift-module = { version = "0.132", optional = true }
+cranelift-frontend = { version = "0.132", optional = true }
+cranelift-codegen = { version = "0.132", optional = true }
+cranelift-native = { version = "0.132", optional = true }
 
 [dev-dependencies]
 rand = "0.9"

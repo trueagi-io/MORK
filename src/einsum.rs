@@ -95,9 +95,9 @@ impl std::error::Error for InvalidSpec {}
 // Spec parser
 // ─────────────────────────────────────────────────────────────────────────
 
-struct Spec {
-    inputs: Vec<Vec<u8>>,
-    outputs: Vec<Vec<u8>>,
+pub(crate) struct Spec {
+    pub(crate) inputs: Vec<Vec<u8>>,
+    pub(crate) outputs: Vec<Vec<u8>>,
 }
 
 impl Spec {
@@ -120,7 +120,7 @@ impl Spec {
     }
 }
 
-fn parse_spec(spec: &str, expected_inputs: usize) -> Result<Spec, InvalidSpec> {
+pub(crate) fn parse_spec(spec: &str, expected_inputs: usize) -> Result<Spec, InvalidSpec> {
     let spec = spec.replace(' ', "");
     let (lhs, rhs) = spec.split_once("->").ok_or(InvalidSpec::MissingArrow)?;
 

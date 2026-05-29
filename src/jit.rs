@@ -293,12 +293,28 @@ impl Layout for DenseLayout {
 ///
 /// Construct with [`compile`](Self::compile); execute with
 /// [`run`](Self::run). Holds the owning [`JITModule`] so the generated code
-/// stays mapped for the lifetime of this value.
+/// stays mapped for the lifetime of this value; the code memory is released
+/// on drop.
 pub struct EinsumF32Jit {
-    _module: JITModule,
+    /// `Option` only so [`Drop`] can `take()` it and call the consuming
+    /// `JITModule::free_memory(self)`. Always `Some` between construction
+    /// and drop; the [`Drop`] impl is the only place it goes to `None`.
+    module: Option<JITModule>,
     func: extern "C" fn(*const *const u8, *const *mut u8),
     inputs: Vec<InputSpec>,
     output_shapes: Vec<Vec<usize>>,
+}
+
+impl Drop for EinsumF32Jit {
+    fn drop(&mut self) {
+        if let Some(m) = self.module.take() {
+            // SAFETY: we own the only reference to the JIT'd code (`func`
+            // lives in this same struct and is dropped with us, and the
+            // function pointer never escapes — `run` takes `&self`). So
+            // nothing else can be running or about to call the code.
+            unsafe { m.free_memory() };
+        }
+    }
 }
 
 impl EinsumF32Jit {
@@ -378,7 +394,7 @@ impl EinsumF32Jit {
         let (module, func) = codegen(&parsed.inputs, &parsed.outputs, &is_sparse, &dims)?;
 
         Ok(Self {
-            _module: module,
+            module: Some(module),
             func,
             inputs: in_shapes
                 .into_iter()
@@ -387,17 +403,6 @@ impl EinsumF32Jit {
                 .collect(),
             output_shapes: output_shapes.to_vec(),
         })
-    }
-
-    /// Release the JIT-compiled code memory. Consumes `self`, so the function
-    /// pointer can no longer be invoked. Use this when you compile many
-    /// short-lived programs and don't want their code pages to accumulate
-    /// (a `JITModule`'s allocated code is otherwise leaked on drop).
-    pub fn free_memory(self) {
-        // SAFETY: nothing outside `self` references the JIT code memory —
-        // `func` is held inside this struct and dropped here, and the caller
-        // can't invoke it again because we take `self` by value.
-        unsafe { self._module.free_memory() };
     }
 
     /// Execute against concrete tensors.
@@ -487,7 +492,7 @@ pub fn einsum_jit(
         outputs.iter().map(|o| o.shape.clone()).collect();
     let jit = EinsumF32Jit::compile(spec, inputs, &output_shapes)?;
     jit.run(inputs, outputs);
-    jit.free_memory();
+    // jit is dropped here — its Drop impl frees the JIT'd code memory.
     Ok(())
 }
 

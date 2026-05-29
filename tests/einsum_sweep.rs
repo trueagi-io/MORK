@@ -312,7 +312,7 @@ fn check_case(input_patterns: &[Vec<u8>], out_pattern: &[u8], sparse_mask: &[boo
         Ok(jit) => {
             let mut jit_out = Dense::<f32>::zeros(out_shape.clone());
             jit.run(&jit_inputs, &mut [&mut jit_out]);
-            jit.free_memory();
+            // `jit` drops at end of arm — Drop releases the code memory.
             if jit_out.data != expected {
                 panic!(
                     "JIT mismatch on {spec} sparse={sparse_mask:?}:\n  expected {expected:?}\n  got      {:?}",

@@ -645,7 +645,16 @@ impl Program {
                                 buf[i] = vals[s as usize];
                             }
                             buf[st.acc_out_pos as usize] = j;
-                            outs[0].set(&buf[..len], st.acc[j]);
+                            // RMW, not overwrite: when a contracted slot sits
+                            // outside the accumulator's scope (e.g. `acd->cd`
+                            // where `a` is outermost and the acc is over `d`),
+                            // we visit each output element once per outer
+                            // contracted tuple and the contributions must sum.
+                            // Output is pre-zeroed by convention, so the first
+                            // flush adds to 0 and we get acc; later flushes
+                            // accumulate.
+                            let cur = outs[0].get(&buf[..len]);
+                            outs[0].set(&buf[..len], cur + st.acc[j]);
                             st.acc[j] = T::default();
                             st.touched[j] = false;
                         }

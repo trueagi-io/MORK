@@ -389,6 +389,17 @@ impl DenseF32Jit {
         })
     }
 
+    /// Release the JIT-compiled code memory. Consumes `self`, so the function
+    /// pointer can no longer be invoked. Use this when you compile many
+    /// short-lived programs and don't want their code pages to accumulate
+    /// (a `JITModule`'s allocated code is otherwise leaked on drop).
+    pub fn free_memory(self) {
+        // SAFETY: nothing outside `self` references the JIT code memory —
+        // `func` is held inside this struct and dropped here, and the caller
+        // can't invoke it again because we take `self` by value.
+        unsafe { self._module.free_memory() };
+    }
+
     /// Execute against concrete tensors.
     ///
     /// Panics if any input/output count, kind, or shape does not match what

@@ -58,6 +58,50 @@ fn bench_matmul(n: usize, iters: u32) {
     );
 }
 
+/// Same dense matmul `"ab,bc->ac"`, but timing three dispatch paths
+/// side-by-side: monomorphic VM (`einsum_homogenous`, inlined NDIndex
+/// calls), dyn VM (`einsum`, vtable per element), and JIT (native code).
+/// Shows the cost of dyn dispatch separately from the VM's interpreter
+/// overhead.
+fn bench_matmul_dispatch(n: usize, iters: u32) {
+    let mut a = Dense::<f32>::zeros(vec![n, n]);
+    let mut b = Dense::<f32>::zeros(vec![n, n]);
+    fill_rand(&mut a, 1);
+    fill_rand(&mut b, 2);
+
+    let jit = EinsumF32Jit::compile(
+        "ab,bc->ac",
+        &[JitInput::Dense(&a), JitInput::Dense(&b)],
+        &[vec![n, n]],
+    )
+    .unwrap();
+
+    let mono_us = time(iters, || {
+        let mut c = Dense::<f32>::zeros(vec![n, n]);
+        einsum_homogenous::<f32, _, _>("ab,bc->ac", &[&a, &b], &mut [&mut c]).unwrap();
+    });
+    let dyn_us = time(iters, || {
+        let mut c = Dense::<f32>::zeros(vec![n, n]);
+        einsum::<f32>(
+            "ab,bc->ac",
+            &[&a as &dyn NDIndex<f32>, &b as &dyn NDIndex<f32>],
+            &mut [&mut c as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+    });
+    let jit_us = time(iters, || {
+        let mut c = Dense::<f32>::zeros(vec![n, n]);
+        jit.run(&[JitInput::Dense(&a), JitInput::Dense(&b)], &mut [&mut c]);
+    });
+
+    println!(
+        "  matmul {n:>4}x{n:<4}  mono {mono_us:>10.2} µs   dyn {dyn_us:>10.2} µs   JIT {jit_us:>9.2} µs   (dyn {:.1}× mono, JIT {:.0}× mono, {:.0}× dyn)",
+        dyn_us / mono_us,
+        mono_us / jit_us,
+        dyn_us / jit_us,
+    );
+}
+
 /// Attention shape: Q · Kᵀ over the (b, h) batch — `"bhqd,bhkd->bhqk"`.
 /// Q has shape `[b, h, qk, d]`, K has shape `[b, h, qk, d]`, output is
 /// `[b, h, qk, qk]`. Inner contraction is over `d`.
@@ -78,17 +122,28 @@ fn bench_attention(b: usize, h: usize, qk: usize, d: usize, iters: u32) {
     )
     .unwrap();
 
-    let vm_us = time(iters, || {
+    let mono_us = time(iters, || {
         let mut o = Dense::<f32>::zeros(out_shape.clone());
         einsum_homogenous::<f32, _, _>("bhqd,bhkd->bhqk", &[&q, &k], &mut [&mut o]).unwrap();
+    });
+    let dyn_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        einsum::<f32>(
+            "bhqd,bhkd->bhqk",
+            &[&q as &dyn NDIndex<f32>, &k as &dyn NDIndex<f32>],
+            &mut [&mut o as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
     });
     let jit_us = time(iters, || {
         let mut o = Dense::<f32>::zeros(out_shape.clone());
         jit.run(&[JitInput::Dense(&q), JitInput::Dense(&k)], &mut [&mut o]);
     });
     println!(
-        "  attention b={b:<2} h={h:<2} q=k={qk:<3} d={d:<3}   VM {vm_us:>11.2} µs   JIT {jit_us:>10.2} µs   {:>6.1}× faster",
-        vm_us / jit_us
+        "  b={b:<2} h={h:<2} q=k={qk:<3} d={d:<3}  mono {mono_us:>11.2} µs   dyn {dyn_us:>11.2} µs   JIT {jit_us:>10.2} µs   (dyn {:.1}× mono, JIT {:.0}× mono, {:.0}× dyn)",
+        dyn_us / mono_us,
+        mono_us / jit_us,
+        dyn_us / jit_us,
     );
 }
 
@@ -147,7 +202,12 @@ fn main() {
     bench_matmul(128, 200);
     bench_matmul(256, 40);
 
-    println!("\nattention: bhqd,bhkd->bhqk (Q · Kᵀ over batched heads) vs the VM\n");
+    println!("\ndispatch breakdown: monomorphic VM vs dyn VM vs JIT (dense matmul)\n");
+    bench_matmul_dispatch(16, 5000);
+    bench_matmul_dispatch(64, 200);
+    bench_matmul_dispatch(128, 30);
+
+    println!("\nattention: bhqd,bhkd->bhqk (Q · Kᵀ over batched heads) — mono / dyn / JIT\n");
     bench_attention(2, 4, 16, 32, 2000);
     bench_attention(4, 8, 64, 64, 80);
     bench_attention(8, 12, 128, 64, 8);

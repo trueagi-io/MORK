@@ -58,6 +58,40 @@ fn bench_matmul(n: usize, iters: u32) {
     );
 }
 
+/// Attention shape: Q · Kᵀ over the (b, h) batch — `"bhqd,bhkd->bhqk"`.
+/// Q has shape `[b, h, qk, d]`, K has shape `[b, h, qk, d]`, output is
+/// `[b, h, qk, qk]`. Inner contraction is over `d`.
+fn bench_attention(b: usize, h: usize, qk: usize, d: usize, iters: u32) {
+    let q_shape = vec![b, h, qk, d];
+    let k_shape = vec![b, h, qk, d];
+    let out_shape = vec![b, h, qk, qk];
+
+    let mut q = Dense::<f32>::zeros(q_shape.clone());
+    let mut k = Dense::<f32>::zeros(k_shape.clone());
+    fill_rand(&mut q, 11);
+    fill_rand(&mut k, 13);
+
+    let jit = EinsumF32Jit::compile(
+        "bhqd,bhkd->bhqk",
+        &[JitInput::Dense(&q), JitInput::Dense(&k)],
+        &[out_shape.clone()],
+    )
+    .unwrap();
+
+    let vm_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        einsum_homogenous::<f32, _, _>("bhqd,bhkd->bhqk", &[&q, &k], &mut [&mut o]).unwrap();
+    });
+    let jit_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        jit.run(&[JitInput::Dense(&q), JitInput::Dense(&k)], &mut [&mut o]);
+    });
+    println!(
+        "  attention b={b:<2} h={h:<2} q=k={qk:<3} d={d:<3}   VM {vm_us:>11.2} µs   JIT {jit_us:>10.2} µs   {:>6.1}× faster",
+        vm_us / jit_us
+    );
+}
+
 /// Random sparse n×n CSR with ~`per_row` non-zeros per row.
 fn rand_csr(n: usize, per_row: usize, mut state: u64) -> Csr<u32, f32> {
     let mut triples: Vec<(u32, u32, f32)> = Vec::new();
@@ -112,6 +146,11 @@ fn main() {
     bench_matmul(64, 1000);
     bench_matmul(128, 200);
     bench_matmul(256, 40);
+
+    println!("\nattention: bhqd,bhkd->bhqk (Q · Kᵀ over batched heads) vs the VM\n");
+    bench_attention(2, 4, 16, 32, 2000);
+    bench_attention(4, 8, 64, 64, 80);
+    bench_attention(8, 12, 128, 64, 8);
 
     println!("\nsparse: CSR x Dense (native sparse row iteration) vs the VM\n");
     bench_csr_dense(256, 8, 32, 2000);

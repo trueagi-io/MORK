@@ -553,10 +553,94 @@ fn schedule(
 // Code generation
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Base pointer(s) for one input, as loaded at function entry.
+/// How to emit a row-iteration loop for one tensor format in JIT'd code.
+///
+/// The format decides how to walk a row's stored entries given its own base
+/// pointers (in `bases`, in the same order the format pushes them across the
+/// call boundary). The codegen passes the already-computed compound row
+/// index and the Cranelift variables to def with each entry's column and
+/// value.
+///
+/// Same convention as [`open_dense_loop`]: returns `(induction_var, header,
+/// exit)`; afterwards the builder sits in the (sealed) loop body with
+/// `col_var`/`val_var` already defined. The caller closes the loop via
+/// [`close_loop`].
+trait RowLayout {
+    /// Number of pointer-slots this format takes at the call boundary.
+    fn n_ptr_slots(&self) -> usize;
+
+    fn emit_row_open(
+        &self,
+        b: &mut FunctionBuilder,
+        ptr_ty: Type,
+        bases: &[Value],
+        compound_row: Value,
+        col_var: Variable,
+        val_var: Variable,
+    ) -> (Variable, Block, Block);
+}
+
+/// `Csr<u32, f32>` layout: three pointers (`row_ptr: usize`, `col_idx: u32`,
+/// `values: f32`); the row's entries are `row_ptr[r]..row_ptr[r+1]`.
+struct CsrRowLayout;
+
+impl RowLayout for CsrRowLayout {
+    fn n_ptr_slots(&self) -> usize {
+        3
+    }
+
+    fn emit_row_open(
+        &self,
+        b: &mut FunctionBuilder,
+        ptr_ty: Type,
+        bases: &[Value],
+        compound_row: Value,
+        col_var: Variable,
+        val_var: Variable,
+    ) -> (Variable, Block, Block) {
+        let row_ptr_base = bases[0];
+        let col_idx_base = bases[1];
+        let values_base = bases[2];
+
+        // start = row_ptr[r], end = row_ptr[r + 1]  (usize / i64).
+        let row_byte = b.ins().ishl_imm(compound_row, 3); // * 8
+        let start_addr = b.ins().iadd(row_ptr_base, row_byte);
+        let start = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 0);
+        let end = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 8);
+
+        let ei = b.declare_var(ptr_ty);
+        b.def_var(ei, start);
+
+        let header = b.create_block();
+        let body = b.create_block();
+        let exit = b.create_block();
+        b.ins().jump(header, &[]);
+        b.switch_to_block(header);
+        let ei_v = b.use_var(ei);
+        let cond = b.ins().icmp(IntCC::UnsignedLessThan, ei_v, end);
+        b.ins().brif(cond, body, &[], exit, &[]);
+        b.switch_to_block(body);
+        b.seal_block(body);
+
+        // col = col_idx[ei] (u32 -> index), val = values[ei] (f32).
+        let ei_b = b.use_var(ei);
+        let off4 = b.ins().ishl_imm(ei_b, 2); // * 4
+        let col_addr = b.ins().iadd(col_idx_base, off4);
+        let col32 = b.ins().load(types::I32, MemFlags::trusted(), col_addr, 0);
+        let col = b.ins().uextend(ptr_ty, col32);
+        b.def_var(col_var, col);
+        let val_addr = b.ins().iadd(values_base, off4);
+        let val = b.ins().load(types::F32, MemFlags::trusted(), val_addr, 0);
+        b.def_var(val_var, val);
+
+        (ei, header, exit)
+    }
+}
+
+/// Base pointer(s) plus the layout for one input, as loaded at function entry.
 enum InputBase {
-    Dense(Value),
-    Csr { row_ptr: Value, col_idx: Value, values: Value },
+    Dense { layout: DenseLayout, base: Value },
+    Row { layout: Box<dyn RowLayout>, bases: Vec<Value> },
 }
 
 /// Open a dense counted loop `for v in 0..dim`. Returns `(header, exit)`;
@@ -588,62 +672,23 @@ fn leading_strides(leading: &[u8], dims: &[usize; 26]) -> Vec<i64> {
     strides
 }
 
-/// Open a sparse row loop over a sparse input's compound row (computed from
-/// `leading_vars` × `leading_strides`). Binds `col_var` to each stored column
-/// index and `val_var` to each stored value. Returns `(induction_var, header,
-/// exit)`; afterwards the builder sits in the (sealed) loop body with
-/// `col_var`/`val_var` already defined.
-#[allow(clippy::too_many_arguments)]
-fn open_sparse_loop(
+/// Emit the row-major compound row index for a sparse input from its leading
+/// slot vars and dims (`compound = Σ leading_val[k] · stride[k]`). Format-
+/// agnostic — used by every row-layout call site.
+fn emit_compound_row(
     b: &mut FunctionBuilder,
     ptr_ty: Type,
-    leading_vars: &[Variable],
+    leading: &[u8],
     leading_strides: &[i64],
-    col_var: Variable,
-    val_var: Variable,
-    row_ptr_base: Value,
-    col_idx_base: Value,
-    values_base: Value,
-) -> (Variable, Block, Block) {
-    // compound_row = Σ leading_val[k] * stride[k]; entries are at
-    // row_ptr[compound_row]..row_ptr[compound_row + 1] (row_ptr is usize/i64).
+    vars: &[Variable; 26],
+) -> Value {
     let mut compound = b.ins().iconst(ptr_ty, 0);
-    for (k, &v) in leading_vars.iter().enumerate() {
-        let lv = b.use_var(v);
+    for (k, &s) in leading.iter().enumerate() {
+        let lv = b.use_var(vars[s as usize]);
         let contrib = b.ins().imul_imm(lv, leading_strides[k]);
         compound = b.ins().iadd(compound, contrib);
     }
-    let row_byte = b.ins().ishl_imm(compound, 3); // * 8
-    let start_addr = b.ins().iadd(row_ptr_base, row_byte);
-    let start = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 0);
-    let end = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 8);
-
-    let ei = b.declare_var(ptr_ty);
-    b.def_var(ei, start);
-
-    let header = b.create_block();
-    let body = b.create_block();
-    let exit = b.create_block();
-    b.ins().jump(header, &[]);
-    b.switch_to_block(header);
-    let ei_v = b.use_var(ei);
-    let cond = b.ins().icmp(IntCC::UnsignedLessThan, ei_v, end);
-    b.ins().brif(cond, body, &[], exit, &[]);
-    b.switch_to_block(body);
-    b.seal_block(body);
-
-    // col = col_idx[ei] (u32 -> index), val = values[ei] (f32).
-    let ei_b = b.use_var(ei);
-    let off4 = b.ins().ishl_imm(ei_b, 2); // * 4
-    let col_addr = b.ins().iadd(col_idx_base, off4);
-    let col32 = b.ins().load(types::I32, MemFlags::trusted(), col_addr, 0);
-    let col = b.ins().uextend(ptr_ty, col32);
-    b.def_var(col_var, col);
-    let val_addr = b.ins().iadd(values_base, off4);
-    let val = b.ins().load(types::F32, MemFlags::trusted(), val_addr, 0);
-    b.def_var(val_var, val);
-
-    (ei, header, exit)
+    compound
 }
 
 /// Close a loop: increment its induction variable, back-edge, seal the header,
@@ -665,7 +710,6 @@ fn emit_product(
     b: &mut FunctionBuilder,
     ptr_ty: Type,
     inputs: &[Vec<u8>],
-    layouts: &[DenseLayout],
     bases: &[InputBase],
     val_vars: &[Option<Variable>],
     vars: &[Variable; 26],
@@ -675,14 +719,15 @@ fn emit_product(
         let v = if let Some(vv) = val_vars[i] {
             b.use_var(vv)
         } else {
-            let base = match bases[i] {
-                InputBase::Dense(p) => p,
-                InputBase::Csr { .. } => unreachable!("CSR input must be sparse-covered"),
-            };
-            let idx_vals: Vec<Value> =
-                pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();
-            let addr = layouts[i].emit_elem_addr(b, ptr_ty, base, &idx_vals);
-            b.ins().load(types::F32, MemFlags::trusted(), addr, 0)
+            match &bases[i] {
+                InputBase::Dense { layout, base } => {
+                    let idx_vals: Vec<Value> =
+                        pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();
+                    let addr = layout.emit_elem_addr(b, ptr_ty, *base, &idx_vals);
+                    b.ins().load(types::F32, MemFlags::trusted(), addr, 0)
+                }
+                InputBase::Row { .. } => unreachable!("row input must be sparse-covered"),
+            }
         };
         product = Some(match product {
             None => v,
@@ -769,10 +814,8 @@ fn codegen(
         }
     }
 
-    // Dense row-major layouts (CSR inputs get an unused placeholder).
+    // Row-major dense layouts for outputs (outputs are always dense).
     let axis_dims = |pat: &[u8]| -> Vec<usize> { pat.iter().map(|&s| dims[s as usize]).collect() };
-    let in_layouts: Vec<DenseLayout> =
-        inputs.iter().map(|p| DenseLayout::new(&axis_dims(p))).collect();
     let out_layouts: Vec<DenseLayout> =
         outputs.iter().map(|p| DenseLayout::new(&axis_dims(p))).collect();
 
@@ -806,21 +849,31 @@ fn codegen(
         let ins_ptr = b.block_params(entry)[0];
         let outs_ptr = b.block_params(entry)[1];
 
-        // Load base pointer(s) per input (dense: 1 slot, sparse: 3 slots).
+        // Load base pointer(s) per input. Each input's layout decides how
+        // many pointer-slots it consumes; we just walk them in order.
         let mut bases: Vec<InputBase> = Vec::with_capacity(inputs.len());
         let mut slot = 0i32;
-        for &sp in is_sparse {
+        for (i, &sp) in is_sparse.iter().enumerate() {
             if sp {
-                let rp = b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
-                let ci =
-                    b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, (slot + 1) * ptr_bytes);
-                let vv =
-                    b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, (slot + 2) * ptr_bytes);
-                bases.push(InputBase::Csr { row_ptr: rp, col_idx: ci, values: vv });
-                slot += 3;
+                let layout: Box<dyn RowLayout> = Box::new(CsrRowLayout);
+                let n = layout.n_ptr_slots();
+                let input_bases: Vec<Value> = (0..n)
+                    .map(|j| {
+                        b.ins().load(
+                            ptr_ty,
+                            MemFlags::trusted(),
+                            ins_ptr,
+                            (slot + j as i32) * ptr_bytes,
+                        )
+                    })
+                    .collect();
+                bases.push(InputBase::Row { layout, bases: input_bases });
+                slot += n as i32;
             } else {
-                let p = b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
-                bases.push(InputBase::Dense(p));
+                let base =
+                    b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
+                let layout = DenseLayout::new(&axis_dims(&inputs[i]));
+                bases.push(InputBase::Dense { layout, base });
                 slot += 1;
             }
         }
@@ -842,7 +895,7 @@ fn codegen(
                 c_loops.push((vars[s as usize], open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize])));
             }
 
-            let prod = emit_product(&mut b, ptr_ty, inputs, &in_layouts, &bases, &val_vars, &vars);
+            let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
             let cur = b.use_var(acc);
             let sum = b.ins().fadd(cur, prod);
             b.def_var(acc, sum);
@@ -873,30 +926,31 @@ fn codegen(
                         opened.push((vars[*slot as usize], h, e));
                     }
                     LoopOp::Sparse { input_idx, leading, col_slot } => {
-                        let (rp, ci, vv) = match bases[*input_idx] {
-                            InputBase::Csr { row_ptr, col_idx, values } => (row_ptr, col_idx, values),
-                            InputBase::Dense(_) => unreachable!("sparse op on dense input"),
-                        };
-                        let lead_vars: Vec<Variable> =
-                            leading.iter().map(|&s| vars[s as usize]).collect();
                         let strides = leading_strides(leading, dims);
-                        let (ei, h, e) = open_sparse_loop(
+                        let compound =
+                            emit_compound_row(&mut b, ptr_ty, leading, &strides, &vars);
+                        let (layout, input_bases) = match &bases[*input_idx] {
+                            InputBase::Row { layout, bases } => {
+                                (layout.as_ref(), bases.as_slice())
+                            }
+                            InputBase::Dense { .. } => {
+                                unreachable!("sparse op on dense input")
+                            }
+                        };
+                        let (ei, h, e) = layout.emit_row_open(
                             &mut b,
                             ptr_ty,
-                            &lead_vars,
-                            &strides,
+                            input_bases,
+                            compound,
                             vars[*col_slot as usize],
                             val_vars[*input_idx].expect("sparse input has value var"),
-                            rp,
-                            ci,
-                            vv,
                         );
                         opened.push((ei, h, e));
                     }
                 }
             }
 
-            let prod = emit_product(&mut b, ptr_ty, inputs, &in_layouts, &bases, &val_vars, &vars);
+            let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
             for (oi, pattern) in outputs.iter().enumerate() {
                 let idx_vals: Vec<Value> =
                     pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();

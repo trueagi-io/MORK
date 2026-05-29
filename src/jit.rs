@@ -452,6 +452,45 @@ impl EinsumF32Jit {
     }
 }
 
+/// One-shot compile + run + free, matching the shape of
+/// [`crate::einsum::einsum`]. Output shapes are taken from the passed-in
+/// `Dense` outputs.
+///
+/// JIT compile is ~hundreds of µs, so this amortizes badly across repeated
+/// calls with the same spec — prefer [`EinsumF32Jit::compile`] +
+/// [`run`](EinsumF32Jit::run) when reusing a program. This wrapper exists
+/// for one-off / scripty use where the convenience matters more than the
+/// per-call compile cost.
+///
+/// # Example
+///
+/// ```
+/// use linalg::jit::{einsum_jit, JitInput};
+/// use linalg::dense::Dense;
+/// use linalg::tensor::NDIndex;
+///
+/// let mut a = Dense::<f32>::zeros(vec![2, 3]);
+/// a.fill_from(&[1., 2., 3., 4., 5., 6.]);
+/// let mut b = Dense::<f32>::zeros(vec![3, 2]);
+/// b.fill_from(&[7., 8., 9., 10., 11., 12.]);
+/// let mut c = Dense::<f32>::zeros(vec![2, 2]);
+///
+/// einsum_jit("ab,bc->ac", &[JitInput::Dense(&a), JitInput::Dense(&b)], &mut [&mut c]).unwrap();
+/// assert_eq!(c.get(&[0, 0]), 58.0);
+/// ```
+pub fn einsum_jit(
+    spec: &str,
+    inputs: &[JitInput],
+    outputs: &mut [&mut Dense<f32>],
+) -> Result<(), JitError> {
+    let output_shapes: Vec<Vec<usize>> =
+        outputs.iter().map(|o| o.shape.clone()).collect();
+    let jit = EinsumF32Jit::compile(spec, inputs, &output_shapes)?;
+    jit.run(inputs, outputs);
+    jit.free_memory();
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Loop scheduling
 // ─────────────────────────────────────────────────────────────────────────

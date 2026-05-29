@@ -9,10 +9,16 @@
 //!
 //! # Inputs and outputs
 //!
-//! Inputs may be dense ([`Dense<f32>`]) or compressed-sparse-row
-//! ([`Csr<u32, f32>`]), mixed freely, passed as [`JitInput`]. Outputs are
-//! always [`Dense<f32>`] (CSR is immutable after construction, so it can't be
-//! written into).
+//! Inputs are passed as [`JitInput`] and may be mixed freely:
+//! - [`Dense<f32>`] of any rank;
+//! - a square 2D [`Csr<u32, f32>`] (the graph matrix type);
+//! - a general [`SparseView`] — a batched, possibly **rectangular** CSR-style
+//!   tensor whose last axis is the stored column and whose leading axes form
+//!   the compound row index. This covers non-square sparse matrices and
+//!   higher-rank batched sparse tensors (e.g. `"bij,bjk->bik"`).
+//!
+//! Outputs are always [`Dense<f32>`] (sparse storage is immutable, so it
+//! can't be written into).
 //!
 //! # Design
 //!
@@ -130,27 +136,77 @@ impl std::error::Error for JitError {}
 // Public input handle
 // ─────────────────────────────────────────────────────────────────────────
 
-/// A tensor passed to the JIT, dense or CSR-sparse.
-#[derive(Clone, Copy)]
+/// A borrowed batched / rectangular sparse tensor in CSR-style layout.
+///
+/// The **last** axis is the sparse stored column; all preceding axes form the
+/// compound row index, flattened row-major (C-order) into `row_ptr`. This
+/// represents a stack of `rows × cols` sparse matrices (one per leading-index
+/// tuple) — so it covers non-square matrices and batched sparse tensors
+/// (e.g. `"bij"`). A square 2D [`Csr`] is the special case `B = 1, rows = cols`.
+#[derive(Clone)]
+pub struct SparseView<'a> {
+    shape: Vec<usize>,
+    row_ptr: &'a [usize],
+    col_idx: &'a [u32],
+    values: &'a [f32],
+}
+
+impl<'a> SparseView<'a> {
+    /// Build a view from raw CSR-style arrays.
+    ///
+    /// - `shape`: full logical shape, `ndim >= 2`. Last axis = sparse column;
+    ///   the product of the preceding axes is the number of compound rows.
+    /// - `row_ptr`: length `compound_rows + 1`; `row_ptr[r]..row_ptr[r+1]` is
+    ///   the stored-entry range for compound row `r`.
+    /// - `col_idx` / `values`: parallel arrays of length `nnz`; each
+    ///   `col_idx[k] < shape[last]`.
+    ///
+    /// Panics if the lengths are inconsistent with `shape`.
+    pub fn new(
+        shape: Vec<usize>,
+        row_ptr: &'a [usize],
+        col_idx: &'a [u32],
+        values: &'a [f32],
+    ) -> Self {
+        assert!(shape.len() >= 2, "sparse view needs ndim >= 2");
+        let rows: usize = shape[..shape.len() - 1].iter().product();
+        assert_eq!(
+            row_ptr.len(),
+            rows + 1,
+            "row_ptr length {} must be product(leading dims)+1 = {}",
+            row_ptr.len(),
+            rows + 1
+        );
+        assert_eq!(col_idx.len(), values.len(), "col_idx and values length differ");
+        Self { shape, row_ptr, col_idx, values }
+    }
+}
+
+/// A tensor passed to the JIT: dense, a square 2D [`Csr`], or a general
+/// (batched / rectangular) [`SparseView`].
+#[derive(Clone)]
 pub enum JitInput<'a> {
     Dense(&'a Dense<f32>),
     Csr(&'a Csr<u32, f32>),
+    Sparse(SparseView<'a>),
 }
 
 impl JitInput<'_> {
-    fn is_csr(&self) -> bool {
-        matches!(self, JitInput::Csr(_))
+    fn is_sparse(&self) -> bool {
+        !matches!(self, JitInput::Dense(_))
     }
 
-    /// Logical einsum shape (CSR is an `n × n` matrix).
+    /// Logical einsum shape.
     fn shape(&self) -> Vec<usize> {
         match self {
             JitInput::Dense(d) => d.shape.clone(),
             JitInput::Csr(c) => vec![c.n as usize, c.n as usize],
+            JitInput::Sparse(v) => v.shape.clone(),
         }
     }
 
-    /// Append this input's backing pointers in codegen slot order.
+    /// Append this input's backing pointers in codegen slot order. Sparse
+    /// inputs contribute `row_ptr`, `col_idx`, `values` (in that order).
     fn push_ptrs(&self, out: &mut Vec<*const u8>) {
         match self {
             JitInput::Dense(d) => out.push(d.data.as_ptr() as *const u8),
@@ -159,6 +215,11 @@ impl JitInput<'_> {
                 out.push(c.col_idx.as_ptr() as *const u8);
                 out.push(c.values.as_ptr() as *const u8);
             }
+            JitInput::Sparse(v) => {
+                out.push(v.row_ptr.as_ptr() as *const u8);
+                out.push(v.col_idx.as_ptr() as *const u8);
+                out.push(v.values.as_ptr() as *const u8);
+            }
         }
     }
 }
@@ -166,7 +227,7 @@ impl JitInput<'_> {
 /// What this program was compiled to expect for one input.
 #[derive(Clone, PartialEq, Eq)]
 struct InputSpec {
-    is_csr: bool,
+    is_sparse: bool,
     shape: Vec<usize>,
 }
 
@@ -242,9 +303,9 @@ pub struct DenseF32Jit {
 impl DenseF32Jit {
     /// Compile `spec` for the given inputs and output shapes.
     ///
-    /// Only each input's shape and kind (dense vs CSR) are read here, not its
-    /// data — but those are baked in, so the returned program is valid only
-    /// for inputs matching exactly. Shapes are outermost-axis-first.
+    /// Only each input's shape and kind (dense vs sparse) are read here, not
+    /// its data — but those are baked in, so the returned program is valid
+    /// only for inputs matching exactly. Shapes are outermost-axis-first.
     pub fn compile(
         spec: &str,
         inputs: &[JitInput],
@@ -252,7 +313,7 @@ impl DenseF32Jit {
     ) -> Result<Self, JitError> {
         let parsed = parse_spec(spec, inputs.len())?;
         let in_shapes: Vec<Vec<usize>> = inputs.iter().map(|i| i.shape()).collect();
-        let is_csr: Vec<bool> = inputs.iter().map(|i| i.is_csr()).collect();
+        let is_sparse: Vec<bool> = inputs.iter().map(|i| i.is_sparse()).collect();
 
         // Collect and validate per-slot dimensions from input shapes.
         let mut dims = [0usize; 26];
@@ -313,15 +374,15 @@ impl DenseF32Jit {
             }
         }
 
-        let (module, func) = codegen(&parsed.inputs, &parsed.outputs, &is_csr, &dims)?;
+        let (module, func) = codegen(&parsed.inputs, &parsed.outputs, &is_sparse, &dims)?;
 
         Ok(Self {
             _module: module,
             func,
             inputs: in_shapes
                 .into_iter()
-                .zip(is_csr)
-                .map(|(shape, is_csr)| InputSpec { is_csr, shape })
+                .zip(is_sparse)
+                .map(|(shape, is_sparse)| InputSpec { is_sparse, shape })
                 .collect(),
             output_shapes: output_shapes.to_vec(),
         })
@@ -349,8 +410,8 @@ impl DenseF32Jit {
         for (i, inp) in inputs.iter().enumerate() {
             let spec = &self.inputs[i];
             assert_eq!(
-                inp.is_csr(), spec.is_csr,
-                "input {i} kind mismatch (dense vs CSR)"
+                inp.is_sparse(), spec.is_sparse,
+                "input {i} kind mismatch (dense vs sparse)"
             );
             assert_eq!(
                 inp.shape(), spec.shape,
@@ -383,22 +444,29 @@ impl DenseF32Jit {
 // Loop scheduling
 // ─────────────────────────────────────────────────────────────────────────
 
+/// The sparse axes of one input: the trailing stored-column slot, and the
+/// preceding slots that together form the compound row index (row-major).
+struct SparseAxes {
+    leading: Vec<u8>,
+    col: u8,
+}
+
 /// One loop in the generated nest, outermost-first.
 enum LoopOp {
     /// Dense counted loop `for slot in 0..dim`.
     Dense { slot: u8 },
-    /// Iterate the stored non-zeros of `inputs[input_idx]`'s row
-    /// `vals[row_slot]`, binding `col_slot` to each column index.
-    Sparse { input_idx: usize, row_slot: u8, col_slot: u8 },
+    /// Iterate the stored non-zeros of `inputs[input_idx]`'s compound row
+    /// (formed from `leading`), binding `col_slot` to each column index.
+    Sparse { input_idx: usize, leading: Vec<u8>, col_slot: u8 },
 }
 
-/// Greedy schedule mirroring the VM: prefer a sparse row loop whose row axis
-/// is already fixed; otherwise add a dense loop, favouring a sparse input's
-/// row axis so it can be unlocked next.
+/// Greedy schedule mirroring the VM: prefer a sparse row loop whose leading
+/// (row) axes are all fixed; otherwise add a dense loop, favouring a sparse
+/// input's leading axis so it can be unlocked next.
 fn schedule(
     inputs: &[Vec<u8>],
     outputs: &[Vec<u8>],
-    sparse_axes: &[Option<(u8, u8)>],
+    sparse_axes: &[Option<SparseAxes>],
 ) -> Vec<LoopOp> {
     let mut all_slots = Vec::new();
     let mut seen = [false; 26];
@@ -416,16 +484,21 @@ fn schedule(
     let mut plan = Vec::new();
 
     while n_fixed < all_slots.len() {
-        // Try to emit a sparse row loop whose row axis is fixed.
+        // Try to emit a sparse row loop whose leading axes are all fixed.
         let mut found = false;
         'scan: for &s in &all_slots {
             if fixed[s as usize] {
                 continue;
             }
             for (idx, axes) in sparse_axes.iter().enumerate() {
-                if let Some((r, c)) = *axes {
-                    if c == s && r != c && fixed[r as usize] {
-                        plan.push(LoopOp::Sparse { input_idx: idx, row_slot: r, col_slot: c });
+                if let Some(ax) = axes {
+                    let leads_fixed = ax.leading.iter().all(|&l| fixed[l as usize]);
+                    if ax.col == s && !ax.leading.contains(&s) && leads_fixed {
+                        plan.push(LoopOp::Sparse {
+                            input_idx: idx,
+                            leading: ax.leading.clone(),
+                            col_slot: s,
+                        });
                         fixed[s as usize] = true;
                         n_fixed += 1;
                         found = true;
@@ -438,16 +511,16 @@ fn schedule(
             continue;
         }
 
-        // Otherwise a dense loop; prefer a sparse input's row axis.
+        // Otherwise a dense loop; prefer a sparse input's leading axis.
         let mut pick = None;
         for &s in &all_slots {
             if fixed[s as usize] {
                 continue;
             }
-            let is_row = sparse_axes
+            let is_leading = sparse_axes
                 .iter()
-                .any(|a| matches!(a, Some((r, _)) if *r == s));
-            if is_row {
+                .any(|a| matches!(a, Some(ax) if ax.leading.contains(&s)));
+            if is_leading {
                 pick = Some(s);
                 break;
             }
@@ -492,24 +565,43 @@ fn open_dense_loop(b: &mut FunctionBuilder, ptr_ty: Type, v: Variable, dim: usiz
     (header, exit)
 }
 
-/// Open a sparse row loop over `inputs[..]`'s row `row_var`. Binds `col_var`
-/// to each stored column index and `val_var` to each stored value. Returns
-/// `(induction_var, header, exit)`; afterwards the builder sits in the
-/// (sealed) loop body with `col_var`/`val_var` already defined.
+/// Row-major strides (in compound-row units) for the leading axes of a sparse
+/// input, so `compound_row = Σ leading_val[k] * strides[k]`.
+fn leading_strides(leading: &[u8], dims: &[usize; 26]) -> Vec<i64> {
+    let n = leading.len();
+    let mut strides = vec![1i64; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        strides[k] = strides[k + 1] * dims[leading[k + 1] as usize] as i64;
+    }
+    strides
+}
+
+/// Open a sparse row loop over a sparse input's compound row (computed from
+/// `leading_vars` × `leading_strides`). Binds `col_var` to each stored column
+/// index and `val_var` to each stored value. Returns `(induction_var, header,
+/// exit)`; afterwards the builder sits in the (sealed) loop body with
+/// `col_var`/`val_var` already defined.
 #[allow(clippy::too_many_arguments)]
 fn open_sparse_loop(
     b: &mut FunctionBuilder,
     ptr_ty: Type,
-    row_var: Variable,
+    leading_vars: &[Variable],
+    leading_strides: &[i64],
     col_var: Variable,
     val_var: Variable,
     row_ptr_base: Value,
     col_idx_base: Value,
     values_base: Value,
 ) -> (Variable, Block, Block) {
-    // start = row_ptr[row], end = row_ptr[row + 1]  (row_ptr is usize/i64).
-    let row = b.use_var(row_var);
-    let row_byte = b.ins().ishl_imm(row, 3); // * 8
+    // compound_row = Σ leading_val[k] * stride[k]; entries are at
+    // row_ptr[compound_row]..row_ptr[compound_row + 1] (row_ptr is usize/i64).
+    let mut compound = b.ins().iconst(ptr_ty, 0);
+    for (k, &v) in leading_vars.iter().enumerate() {
+        let lv = b.use_var(v);
+        let contrib = b.ins().imul_imm(lv, leading_strides[k]);
+        compound = b.ins().iadd(compound, contrib);
+    }
+    let row_byte = b.ins().ishl_imm(compound, 3); // * 8
     let start_addr = b.ins().iadd(row_ptr_base, row_byte);
     let start = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 0);
     let end = b.ins().load(types::I64, MemFlags::trusted(), start_addr, 8);
@@ -604,16 +696,24 @@ fn new_module() -> JITModule {
 fn codegen(
     inputs: &[Vec<u8>],
     outputs: &[Vec<u8>],
-    is_csr: &[bool],
+    is_sparse: &[bool],
     dims: &[usize; 26],
 ) -> Result<(JITModule, extern "C" fn(*const *const u8, *const *mut u8)), JitError> {
-    let any_sparse = is_csr.iter().any(|&c| c);
+    let any_sparse = is_sparse.iter().any(|&c| c);
 
-    // Sparse axes per input: Some((row_slot, col_slot)) for CSR (always 2D).
-    let sparse_axes: Vec<Option<(u8, u8)>> = inputs
+    // Sparse axes per input: the last slot is the stored column; all preceding
+    // slots form the (row-major) compound row index.
+    let sparse_axes: Vec<Option<SparseAxes>> = inputs
         .iter()
-        .zip(is_csr)
-        .map(|(pat, &csr)| if csr { Some((pat[0], pat[1])) } else { None })
+        .zip(is_sparse)
+        .map(|(pat, &sp)| {
+            if sp {
+                let n = pat.len();
+                Some(SparseAxes { leading: pat[..n - 1].to_vec(), col: pat[n - 1] })
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Free (in some output) vs contracted (inputs only) slots, first-appearance.
@@ -647,12 +747,12 @@ fn codegen(
             sparse_covered[*input_idx] = true;
         }
     }
-    // Every CSR input must be covered, else we'd need a (binary-search) random
-    // access we don't generate.
-    for (i, &csr) in is_csr.iter().enumerate() {
-        if csr && !sparse_covered[i] {
+    // Every sparse input must be covered, else we'd need a (binary-search)
+    // random access we don't generate.
+    for (i, &sp) in is_sparse.iter().enumerate() {
+        if sp && !sparse_covered[i] {
             return Err(JitError::Unsupported(
-                "a CSR input's column index could not be reached by sparse row iteration",
+                "a sparse input's column index could not be reached by row iteration",
             ));
         }
     }
@@ -679,12 +779,12 @@ fn codegen(
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
 
         // One index variable per slot, an accumulator register, and a value
-        // register per CSR input. Unused variables are harmless.
+        // register per sparse input. Unused variables are harmless.
         let vars: [Variable; 26] = std::array::from_fn(|_| b.declare_var(ptr_ty));
         let acc = b.declare_var(types::F32);
-        let val_vars: Vec<Option<Variable>> = is_csr
+        let val_vars: Vec<Option<Variable>> = is_sparse
             .iter()
-            .map(|&csr| if csr { Some(b.declare_var(types::F32)) } else { None })
+            .map(|&sp| if sp { Some(b.declare_var(types::F32)) } else { None })
             .collect();
 
         let entry = b.create_block();
@@ -694,11 +794,11 @@ fn codegen(
         let ins_ptr = b.block_params(entry)[0];
         let outs_ptr = b.block_params(entry)[1];
 
-        // Load base pointer(s) for every input (dense: 1 slot, CSR: 3 slots).
+        // Load base pointer(s) per input (dense: 1 slot, sparse: 3 slots).
         let mut bases: Vec<InputBase> = Vec::with_capacity(inputs.len());
         let mut slot = 0i32;
-        for &csr in is_csr {
-            if csr {
+        for &sp in is_sparse {
+            if sp {
                 let rp = b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
                 let ci =
                     b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, (slot + 1) * ptr_bytes);
@@ -750,23 +850,31 @@ fn codegen(
             // ── General path: sparse-aware loop nest, read-modify-write. ──
             let mut opened: Vec<(Variable, Block, Block)> = Vec::with_capacity(plan.len());
             for op in &plan {
-                match *op {
+                match op {
                     LoopOp::Dense { slot } => {
-                        let (h, e) =
-                            open_dense_loop(&mut b, ptr_ty, vars[slot as usize], dims[slot as usize]);
-                        opened.push((vars[slot as usize], h, e));
+                        let (h, e) = open_dense_loop(
+                            &mut b,
+                            ptr_ty,
+                            vars[*slot as usize],
+                            dims[*slot as usize],
+                        );
+                        opened.push((vars[*slot as usize], h, e));
                     }
-                    LoopOp::Sparse { input_idx, row_slot, col_slot } => {
-                        let (rp, ci, vv) = match bases[input_idx] {
+                    LoopOp::Sparse { input_idx, leading, col_slot } => {
+                        let (rp, ci, vv) = match bases[*input_idx] {
                             InputBase::Csr { row_ptr, col_idx, values } => (row_ptr, col_idx, values),
                             InputBase::Dense(_) => unreachable!("sparse op on dense input"),
                         };
+                        let lead_vars: Vec<Variable> =
+                            leading.iter().map(|&s| vars[s as usize]).collect();
+                        let strides = leading_strides(leading, dims);
                         let (ei, h, e) = open_sparse_loop(
                             &mut b,
                             ptr_ty,
-                            vars[row_slot as usize],
-                            vars[col_slot as usize],
-                            val_vars[input_idx].expect("CSR input has value var"),
+                            &lead_vars,
+                            &strides,
+                            vars[*col_slot as usize],
+                            val_vars[*input_idx].expect("sparse input has value var"),
                             rp,
                             ci,
                             vv,
@@ -987,6 +1095,65 @@ mod tests {
         for (j, v) in jit_out.data.iter().zip(vm_out.data.iter()) {
             assert!((j - v).abs() <= 1e-5 * (1.0 + v.abs()), "jit {j} vs vm {v}");
         }
+    }
+
+    #[test]
+    fn rectangular_sparse_times_dense() {
+        // Non-square sparse A (2×3): A[0,1]=2, A[0,2]=3, A[1,0]=1.
+        let row_ptr = vec![0usize, 2, 3];
+        let col_idx = vec![1u32, 2, 0];
+        let values = vec![2.0f32, 3.0, 1.0];
+        let a = SparseView::new(vec![2, 3], &row_ptr, &col_idx, &values);
+        let a_dense = dense(vec![2, 3], &[0., 2., 3., 1., 0., 0.]);
+        let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+
+        let sp =
+            DenseF32Jit::compile("ab,bc->ac", &[JitInput::Sparse(a.clone()), d(&x)], &[vec![2, 4]])
+                .unwrap();
+        let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
+        sp.run(&[JitInput::Sparse(a), d(&x)], &mut [&mut y_sp]);
+
+        // Cross-check against the dense-equivalent JIT (engine already
+        // validated against the VM for dense).
+        let de = DenseF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
+        let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
+        de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
+
+        assert_eq!(y_sp.data, y_de.data);
+    }
+
+    #[test]
+    fn batched_sparse_times_dense() {
+        // 3D sparse A "bij" with shape [2,2,2]; dense B "bjk" [2,2,3];
+        // out "bik" [2,2,3]. Compound row index = b*2 + i.
+        let row_ptr = vec![0usize, 2, 3, 4, 5];
+        let col_idx = vec![0u32, 1, 1, 0, 0];
+        let values = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
+        let a = SparseView::new(vec![2, 2, 2], &row_ptr, &col_idx, &values);
+        // Dense equivalent of A.
+        let a_dense = dense(vec![2, 2, 2], &[1., 2., 0., 3., 4., 0., 5., 0.]);
+        let bb = dense(
+            vec![2, 2, 3],
+            &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.],
+        );
+
+        let sp = DenseF32Jit::compile(
+            "bij,bjk->bik",
+            &[JitInput::Sparse(a.clone()), d(&bb)],
+            &[vec![2, 2, 3]],
+        )
+        .unwrap();
+        let mut out_sp = Dense::<f32>::zeros(vec![2, 2, 3]);
+        sp.run(&[JitInput::Sparse(a), d(&bb)], &mut [&mut out_sp]);
+
+        let de = DenseF32Jit::compile("bij,bjk->bik", &[d(&a_dense), d(&bb)], &[vec![2, 2, 3]])
+            .unwrap();
+        let mut out_de = Dense::<f32>::zeros(vec![2, 2, 3]);
+        de.run(&[d(&a_dense), d(&bb)], &mut [&mut out_de]);
+
+        assert_eq!(out_sp.data, out_de.data);
+        // Spot-check one hand value: out[0,1,:] = 3 * B[0,1,:] = [12,15,18].
+        assert_eq!(&out_sp.data[3..6], &[12., 15., 18.]);
     }
 
     #[test]

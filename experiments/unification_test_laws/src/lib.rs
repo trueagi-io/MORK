@@ -253,15 +253,15 @@ pub fn results_to_single_file() -> std::io::Result<()> {
     let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let tmp = manefest.join("tmp");
-    
-    for unifier in ["mork", "prolog"] {
+
+    for unifier in ["mork", "prolog", "iterated_left_right"] {
         let dir_path = tmp.join(unifier);
         let results_dir = dir_path.join("results");
         for each in std::fs::read_dir(results_dir)? {
             let file = each.unwrap();
             let f_name = file.file_name();
             let name = f_name.to_str().unwrap();
-            assert!(name.starts_with("axiom_"));
+            assert!(name.starts_with("axiom_") || name.starts_with("axioms_"));
             assert!(name.ends_with(".metta"));
 
             let contents = std::fs::read_to_string(file.path()).unwrap();
@@ -277,8 +277,11 @@ pub fn results_to_single_file() -> std::io::Result<()> {
         }
 
         collect.sort_by(|[l0,l1],[r0,r1]| l0.cmp(r0).then(l1.cmp(r1)));
+        collect.dedup();
 
         let out_path = dir_path.join("all_results.metta");
+        println!("!! {:?}", out_path);
+
         let mut out_file = std::fs::File::create(out_path).unwrap();
         for [l,r] in &collect {
             write!(out_file, "(unifies {} {})\n", l,r).unwrap()
@@ -290,3 +293,57 @@ pub fn results_to_single_file() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+
+// pub fn iterated_left_right_results() -> std::io::Result<()> {
+//     use std::{io::{Read, Write}};
+
+//     let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+//     let tmp = manefest.join("tmp");
+    
+//     for unifier in ["iterated_left_right"] {
+//         let dir_path = tmp.join(unifier);
+        
+//         let results_dir = dir_path.join("results");
+        
+//         let results_unifies_dir = dir_path.join("unifies");
+//         let results_unifications_dir = dir_path.join("unifications");
+
+//         std::fs::create_dir_all(&results_unifies_dir);
+//         std::fs::create_dir_all(&results_unifications_dir);
+
+//         for each in std::fs::read_dir(results_dir)? {
+//             let file = each.unwrap();
+//             let f_name = file.file_name();
+//             let name = f_name.to_str().unwrap();
+
+//             let contents = std::fs::read_to_string(file.path()).unwrap();
+
+//             let mut unifies      = std::fs::File::create(results_unifies_dir.join(name)).unwrap();
+//             let mut unifications = std::fs::File::create(results_unifications_dir.join(name)).unwrap();
+
+//             for each in  contents.split_terminator('\n') {
+//                 let strip_parens = &each[1..each.len()-1];
+//                 let mut tokens = strip_parens.split_ascii_whitespace();
+
+//                 let functor = tokens.next();
+//                 let left  : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+//                 let right : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+//                 match functor {
+//                     Some("combined")     => {
+//                         write!(unifies, "(unifies {} {})\n", left, right);
+
+//                     }
+//                     Some("unifications") => {
+//                         write!(unifications, "(unifications {} {})\n", left, right);
+//                     }
+//                     _                    => {}
+//                 }
+//             };
+//             unifies.flush().unwrap();
+//             unifications.flush().unwrap();
+//         }
+//     }
+//     Ok(())
+// }

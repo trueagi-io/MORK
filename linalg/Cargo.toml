@@ -18,7 +18,6 @@ jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-native",
 ]
-
 [dependencies]
 rayon = { version = "1", optional = true }
 cranelift-jit = { version = "0.132", optional = true }
@@ -33,6 +32,10 @@ rayon = "1"
 
 [[bench]]
 name = "perf"
+harness = false
+
+[[bench]]
+name = "graph"
 harness = false
 
 [[example]]

@@ -9,6 +9,7 @@ members = [
     "experiments/eval-ffi",
     "experiments/eval-examples",
     "experiments/unification_test_laws",
+    "linalg/",
 ]
 
 default-members = ["kernel/"]

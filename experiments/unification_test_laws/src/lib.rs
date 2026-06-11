@@ -246,7 +246,7 @@ pub fn unify_with_mork_unifier() {
 
 
 
-pub fn results_to_single_file() -> std::io::Result<()> {
+pub fn results_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
     use std::{io::{Read, Write}};
     let mut collect = Vec::new();
 
@@ -254,7 +254,7 @@ pub fn results_to_single_file() -> std::io::Result<()> {
 
     let tmp = manefest.join("tmp");
 
-    for unifier in ["mork", "prolog", "iterated_left_right"] {
+    for unifier in tmp_folders {
         let dir_path = tmp.join(unifier);
         let results_dir = dir_path.join("results");
         for each in std::fs::read_dir(results_dir)? {
@@ -281,11 +281,29 @@ pub fn results_to_single_file() -> std::io::Result<()> {
 
         let out_path = dir_path.join("all_results.metta");
         println!("!! {:?}", out_path);
-
+        
         let mut out_file = std::fs::File::create(out_path).unwrap();
         for [l,r] in &collect {
             write!(out_file, "(unifies {} {})\n", l,r).unwrap()
         }
+
+
+
+        collect.push([usize::MAX,usize::MAX]);
+        let out_path_counts = dir_path.join("all_results_counts.metta");
+        let mut out_file_counts = std::fs::File::create(out_path_counts).unwrap();
+        collect.iter().fold((None, 0), |(cur,count),&[line_left,line_right]| {
+            if Some(line_left) == cur {
+                (cur, count+1)
+            } 
+            else {
+                if let Some(line) = cur {
+                    write!(out_file_counts, "(unifies-count {} {})\n", line,count).unwrap();
+                } 
+                (Some(line_left), 1)
+            }
+        });
+        collect.pop(/* remove dummy */);
 
         collect.clear();
         out_file.flush().unwrap();

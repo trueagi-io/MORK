@@ -1,0 +1,54 @@
+[package]
+name = "linalg"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["dense", "csr", "blocked", "rayon"]
+dense = []
+csr = []
+blocked = []
+rayon = ["dep:rayon"]
+jit = [
+    "dense",
+    "csr",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-frontend",
+    "dep:cranelift-codegen",
+    "dep:cranelift-native",
+]
+# BLAS baseline for the crossover bench (links the system OpenBLAS).
+blas = ["dep:blas", "dep:blas-src", "dep:openblas-src"]
+
+[dependencies]
+rayon = { version = "1", optional = true }
+blas = { version = "0.23", optional = true }
+blas-src = { version = "0.14", features = ["openblas"], optional = true }
+openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+cranelift-jit = { version = "0.132", optional = true }
+cranelift-module = { version = "0.132", optional = true }
+cranelift-frontend = { version = "0.132", optional = true }
+cranelift-codegen = { version = "0.132", optional = true }
+cranelift-native = { version = "0.132", optional = true }
+
+[dev-dependencies]
+rand = "0.9"
+rayon = "1"
+
+[[bench]]
+name = "perf"
+harness = false
+
+[[bench]]
+name = "graph"
+harness = false
+
+[[bench]]
+name = "crossover"
+harness = false
+required-features = ["blas"]
+
+[[example]]
+name = "jit_bench"
+required-features = ["jit"]

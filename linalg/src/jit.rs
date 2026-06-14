@@ -101,6 +101,21 @@ use crate::csr::Csr;
 use crate::dense::Dense;
 use crate::einsum::{parse_spec, InvalidSpec};
 
+
+pub enum Tensor {
+    Dense(Dense<f32>),
+    Csr(Csr<u32, f32>)
+}
+
+impl From<&Tensor> for JitInput {
+    fn from(value: &Tensor) -> Self {
+        match value {
+            Tensor::Dense(d) => { JitInput::Dense(d) }
+            Tensor::Csr(s) => { JitInput::Csr(s) }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────────────────────────────

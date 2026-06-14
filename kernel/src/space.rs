@@ -22,6 +22,7 @@ use pathmap::zipper::*;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::{zipper, PathMap};
 use mork_frontend::json_parser::Transcriber;
+use linalg::jit::*;
 use log::*;
 use subprocess::{Popen, PopenConfig, Redirection};
 use subprocess::unix::PopenExt;
@@ -40,6 +41,7 @@ pub struct Space {
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<OwnedSourceItem, Box<Popen>>,
+    pub tensors: HashMap<OwnedSourceItem, Tensor>,
     pub last_merkleize: Instant,
     pub timing: bool
 }
@@ -444,7 +446,7 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), tensors: HashMap::new(), last_merkleize: Instant::now(), timing: false }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {

@@ -9,6 +9,7 @@ eval-ffi = { workspace=true }
 mork-frontend = { workspace=true }
 mork-expr = { workspace=true }
 mork-interning = { workspace = true }
+linalg = { workspace = true, optional = true, features = ["jit"] }
 pathmap = { workspace = true, features = ["nightly"] }
 log = { workspace=true }
 env_logger = { workspace=true }
@@ -28,10 +29,11 @@ hex = "0.4.3"
 subprocess = { version = "0.2.13" }
 
 [features]
-default = ["grounding", "specialize_io"]
+default = ["grounding", "specialize_io", "einsum"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]
+einsum = ["dep:linalg"]
 z3 = []
 no_search = []
 grounding = []

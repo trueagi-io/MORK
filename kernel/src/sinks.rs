@@ -93,7 +93,8 @@ impl PartialOrd for WriteResourceRequest {
 pub(crate) enum WriteResource<'w, 'a, 'k> {
     BTM(&'w mut WriteZipperTracked<'a, 'k, ()>),
     ACT(()),
-    Z3(&'w mut subprocess::Popen)
+    Z3(&'w mut subprocess::Popen),
+    
 }
 
 // trait JoinLattice  {

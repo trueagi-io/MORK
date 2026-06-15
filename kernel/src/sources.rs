@@ -8,13 +8,15 @@ use mork_expr::macros::SerializableExpr;
 pub(crate) enum ResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
-    Z3(&'static str)
+    Z3(&'static str),
+    Tensor(&'static str),
 }
 
 pub(crate) enum Resource<'trie, 'path> {
     BTM(ReadZipperUntracked<'trie, 'path, ()>),
     ACT(ACTMmapZipper<'trie, ()>),
-    Z3(ReadZipperOwned<()>)
+    Z3(ReadZipperOwned<()>),
+    Tensor(ReadZipperOwned<()>),
 }
 
 pub(crate) trait Source {
@@ -128,6 +130,40 @@ impl Source for Z3Source {
 }
 
 
+struct TensorNonzerosSource {
+    e: Expr,
+    ins: &'static str
+}
+impl Source for TensorNonzerosSource {
+    fn new(e: Expr) -> Self {
+        destruct!(e, ("tensor-nonzeros" {instance: &str} {se: Expr}), {
+            return TensorNonzerosSource{ e, ins: instance }
+        }, _err => { panic!("tensor-nonzeros not the right shape {:?}", e) });
+    }
+
+    fn request(&self) -> impl Iterator<Item=ResourceRequest> {
+        std::iter::once(ResourceRequest::Tensor(self.ins))
+    }
+
+    fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        // prefix: '[3] tensor-nonzeros <tensor name>'
+        static CONSTANT_PREFIX: [u8; 17] = [
+            item_byte(Tag::Arity(3)),
+            item_byte(Tag::SymbolSize(15)),
+            b't', b'e', b'n', b's', b'o', b'r', b'-', b'n', b'o', b'n', b'z', b'e', b'r', b'o', b's'
+        ];
+        let Resource::Tensor(rz) = it.next().unwrap() else { unreachable!() };
+        let mut prefix = vec![];
+        prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
+        prefix.push(item_byte(Tag::SymbolSize( (self.ins.size() as u8) - 1)));
+        prefix.extend_from_slice(self.ins.as_bytes());
+        trace!(target: "source", "tensor-nonzeros prefix {}", serialize(&prefix[..]));
+        let rz = PrefixZipper::new(prefix, rz);
+        AFactor::TensorNonzerosSource(rz)
+    }
+}
+
+
 struct CmpSource {
     e: Expr,
     cmp: usize
@@ -196,7 +232,8 @@ impl Source for CmpSource {
 
 pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSource), CompatSource(CompatSource),
     #[cfg(feature = "z3")]
-    Z3Source(Z3Source)
+    Z3Source(Z3Source),
+    TensorNonzerosSource(TensorNonzerosSource),
 }
 
 #[derive(PolyZipper)]
@@ -208,6 +245,7 @@ pub enum AFactor<'trie, V: Clone + Send + Sync + Unpin + 'static = ()> {
         ReadZipperOwned<V>, V, (usize, PathMap<()>), for<'a> fn((usize, PathMap<()>), &'a [u8], usize) -> ((usize, PathMap<()>), Option<ReadZipperOwned<V>>)>>),
     #[cfg(feature = "z3")]
     Z3Source(PrefixZipper<'trie, ReadZipperOwned<V>>),
+    TensorNonzerosSource(PrefixZipper<'trie, ReadZipperOwned<V>>),
 }
 
 impl ASource {
@@ -227,6 +265,12 @@ impl Source for ASource {
             return ASource::Z3Source(Z3Source::new(e));
             #[cfg(not(feature = "z3"))]
             panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(15)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'-' && *e.ptr.offset(9) == b'n' &&
+            *e.ptr.offset(10) == b'o' && *e.ptr.offset(11) == b'n' && *e.ptr.offset(12) == b'z' && *e.ptr.offset(13) == b'e' &&
+            *e.ptr.offset(14) == b'r' && *e.ptr.offset(15) == b'o' && *e.ptr.offset(16) == b's' } {
+            ASource::TensorNonzerosSource(TensorNonzerosSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && (*e.ptr.offset(2) == b'=' || *e.ptr.offset(2) == b'!') && *e.ptr.offset(3) == b'=' } {
             ASource::CmpSource(CmpSource::new(e))
         } else {
@@ -243,6 +287,7 @@ impl Source for ASource {
                 ASource::CompatSource(s) => { for i in s.request().into_iter() { yield i } }
                 #[cfg(feature = "z3")]
                 ASource::Z3Source(s) => { for i in s.request().into_iter() { yield i } }
+                ASource::TensorNonzerosSource(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -255,6 +300,7 @@ impl Source for ASource {
             ASource::CompatSource(s) => { s.source(it) }
             #[cfg(feature = "z3")]
             ASource::Z3Source(s) => { s.source(it) }
+            ASource::TensorNonzerosSource(s) => { s.source(it) }
         }
     }
 }

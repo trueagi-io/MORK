@@ -3195,6 +3195,44 @@ fn sink_z3_basic_multi() {
     assert_eq!(res, "2\n");
 }
 
+fn sink_tensor_basic() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+
+(exec 0 (,)
+        (O (tensor-boxes a (, 0 0 0) (, 200 10 5) 1.)
+           (tensor-boxes a (, 100 0 0) (, 200 1 5) 6.225)))
+
+(exec 1 (I (tensor-nonzeros a $c))
+        (, (out $c)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+    let nonzeros = res.lines().count();
+
+    let tensor = s.tensors.get(&mork_expr::OwnedSourceItem::from("a")).unwrap();
+    let linalg::jit::Tensor::Dense(dense) = tensor else { unreachable!() };
+    let idx = |i: usize, j: usize, k: usize| ((i * 10) + j) * 5 + k;
+
+    println!("tensor nonzeros: {nonzeros}");
+    assert_eq!(dense.shape, vec![200, 10, 5]);
+    assert_eq!(dense.data[idx(0, 0, 0)], 1.0);
+    assert!((dense.data[idx(100, 0, 0)] - 7.225).abs() < 0.0001);
+    assert_eq!(dense.data[idx(100, 1, 0)], 1.0);
+    assert_eq!(nonzeros, 200 * 10 * 5);
+    assert!(res.contains("(, 0 0 0)\n"));
+    assert!(res.contains("(, 199 9 4)\n"));
+}
+
 fn sink_wasm_add() {
     let mut s = Space::new();
 
@@ -5989,6 +6027,7 @@ fn main() {
             sink_z3_basic();
             #[cfg(feature = "z3")]
             sink_z3_basic_multi();
+            sink_tensor_basic();
         }
         Commands::Run { input_path, steps, instrumentation, timing, aux_path, output_path } => {
             #[cfg(debug_assertions)]

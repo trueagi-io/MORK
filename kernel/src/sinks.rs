@@ -28,6 +28,8 @@ use pathmap::morphisms::Catamorphism;
 use pathmap::PathMap;
 use eval::EvalScope;
 use eval_ffi::{ExprSink, ExprSource};
+use linalg::dense::Dense;
+use linalg::jit::Tensor;
 use mork_expr::macros::SerializableExpr;
 use crate::{expr, pure};
 use crate::space::ACT_PATH;
@@ -37,6 +39,7 @@ pub(crate) enum WriteResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
     Z3(&'static str),
+    Tensor(&'static str),
 }
 
 impl WriteResourceRequest {
@@ -64,6 +67,12 @@ impl WriteResourceRequest {
                     _ => { None }
                 }
             }
+            WriteResourceRequest::Tensor(s) => {
+                match other {
+                    WriteResourceRequest::Tensor(o) if s == o => { Some(WriteResourceRequest::Tensor(s)) }
+                    _ => { None }
+                }
+            }
         }
     }
 }
@@ -86,6 +95,11 @@ impl PartialOrd for WriteResourceRequest {
                     if s == o { Some(Ordering::Equal) } else { None }
                 } else { None }
             }
+            WriteResourceRequest::Tensor(s) => {
+                if let WriteResourceRequest::Tensor(o) = other {
+                    if s == o { Some(Ordering::Equal) } else { None }
+                } else { None }
+            }
         }
     }
 }
@@ -94,6 +108,7 @@ pub(crate) enum WriteResource<'w, 'a, 'k> {
     BTM(&'w mut WriteZipperTracked<'a, 'k, ()>),
     ACT(()),
     Z3(&'w mut subprocess::Popen),
+    Tensor(&'w mut Tensor),
     
 }
 
@@ -130,6 +145,79 @@ pub(crate) trait Sink {
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest>;
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w;
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w;
+}
+
+fn symbol_bytes(e: Expr) -> &'static [u8] {
+    unsafe { e.symbol().expect("expected symbol").as_ref().unwrap() }
+}
+
+fn symbol_usize(e: Expr) -> usize {
+    std::str::from_utf8(symbol_bytes(e)).expect("box coordinate is not utf-8")
+        .parse().expect("box coordinate is not usize")
+}
+
+fn symbol_f32(e: Expr) -> f32 {
+    std::str::from_utf8(symbol_bytes(e)).expect("box value is not utf-8")
+        .parse().expect("box value is not f32")
+}
+
+fn tuple_usizes(e: Expr) -> Vec<usize> {
+    let mut args = Vec::new();
+    ExprEnv::new(0, e).args(&mut args);
+    assert!(args.len() > 1, "coordinate must be a tuple like (, 0 0 0)");
+    assert_eq!(symbol_bytes(args[0].subsexpr()), b",", "coordinate must use the , tuple functor");
+    args[1..].iter().map(|arg| symbol_usize(arg.subsexpr())).collect()
+}
+
+fn tensor_linear_index(shape: &[usize], coord: &[usize]) -> usize {
+    debug_assert_eq!(shape.len(), coord.len());
+    let mut idx = 0usize;
+    let mut stride = 1usize;
+    for (&k, &dim) in coord.iter().rev().zip(shape.iter().rev()) {
+        debug_assert!(k < dim);
+        idx += k * stride;
+        stride *= dim;
+    }
+    idx
+}
+
+fn tensor_coordinate(mut index: usize, shape: &[usize]) -> Vec<usize> {
+    let mut coord = vec![0; shape.len()];
+    for axis in (0..shape.len()).rev() {
+        let dim = shape[axis];
+        coord[axis] = index % dim;
+        index /= dim;
+    }
+    coord
+}
+
+fn copy_dense_tensor(dst: &mut Dense<f32>, src: &Dense<f32>) {
+    for (linear, value) in src.data.iter().enumerate() {
+        if *value != 0.0 {
+            let coord = tensor_coordinate(linear, &src.shape);
+            let idx = tensor_linear_index(&dst.shape, &coord);
+            dst.data[idx] += *value;
+        }
+    }
+}
+
+fn add_tensor_box(dense: &mut Dense<f32>, b: &TensorBox) {
+    let mut coord = b.start.clone();
+    loop {
+        let idx = tensor_linear_index(&dense.shape, &coord);
+        dense.data[idx] += b.value;
+
+        for axis in (0..coord.len()).rev() {
+            coord[axis] += 1;
+            if coord[axis] < b.end[axis] {
+                break;
+            }
+            if axis == 0 {
+                return;
+            }
+            coord[axis] = b.start[axis];
+        }
+    }
 }
 
 pub struct CompatSink { e: Expr, changed: bool }
@@ -1194,6 +1282,77 @@ impl Sink for PureSink {
     }
 }
 
+struct TensorBox {
+    start: Vec<usize>,
+    end: Vec<usize>,
+    value: f32,
+}
+
+// (tensor-boxes <name> (, <start0> ... <startN>) (, <end0> ... <endN>) <value>)
+pub struct TensorBoxesSink { e: Expr, boxes: Vec<TensorBox>, ins: &'static str, changed: bool }
+impl Sink for TensorBoxesSink {
+    fn new(e: Expr) -> Self {
+        destruct!(e, ("tensor-boxes" {instance: &str} {start: Expr} {end: Expr} {value: Expr}), {
+            trace!(target: "sink", "tensor-boxes requesting tensor {instance}");
+            TensorBoxesSink { e, boxes: vec![], ins: instance, changed: false }
+        }, _err => { unreachable!() })
+    }
+    fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::Tensor(self.ins))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::Tensor(_) = it.next().unwrap() else { unreachable!() };
+        let concrete = Expr { ptr: path.as_ptr().cast_mut() };
+        destruct!(concrete, ("tensor-boxes" {instance: &str} start end value), {
+            assert_eq!(instance, self.ins, "tensor resource name changed after substitution");
+            let start = tuple_usizes(start);
+            let end = tuple_usizes(end);
+            let value = symbol_f32(value);
+            assert_eq!(start.len(), end.len(), "tensor-boxes start/end ranks differ");
+            assert!(!start.is_empty(), "tensor-boxes rank must be at least 1");
+            for (lo, hi) in start.iter().zip(end.iter()) {
+                assert!(lo < hi, "tensor-boxes uses half-open ranges and requires start < end on every axis");
+            }
+            trace!(target: "sink", "tensor-boxes sinking {} {:?} {:?} {}", self.ins, start, end, value);
+            self.boxes.push(TensorBox { start, end, value });
+            self.changed = true;
+        }, _err => { panic!("tensor-boxes concrete sink not the right shape {:?}", concrete) })
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::Tensor(tensor) = it.next().unwrap() else { unreachable!() };
+        if !self.changed {
+            return false;
+        }
+        let rank = self.boxes[0].start.len();
+        let existing_dense = match tensor {
+            Tensor::Dense(dense) if dense.shape.is_empty() && dense.data.len() == 1 && dense.data[0] == 0.0 => None,
+            Tensor::Dense(dense) => {
+                assert_eq!(dense.shape.len(), rank, "existing tensor rank differs from tensor-boxes rank");
+                Some(dense.clone())
+            }
+            Tensor::Csr(_) => panic!("tensor-boxes can only add to dense tensors"),
+        };
+
+        let mut shape = existing_dense.as_ref().map(|dense| dense.shape.clone()).unwrap_or_else(|| vec![0; rank]);
+        for b in &self.boxes {
+            assert_eq!(b.start.len(), rank, "all tensor-boxes for one tensor must have the same rank");
+            for axis in 0..rank {
+                shape[axis] = shape[axis].max(b.end[axis]);
+            }
+        }
+        let mut dense = Dense::<f32>::zeros(shape);
+        if let Some(existing) = existing_dense {
+            copy_dense_tensor(&mut dense, &existing);
+        }
+        for b in &self.boxes {
+            add_tensor_box(&mut dense, b);
+        }
+        *tensor = Tensor::Dense(dense);
+        true
+    }
+}
+
+
 // (z3 <instance> <declaration or assertion>)
 #[cfg(feature = "z3")]
 pub struct Z3Sink { e: Expr, buffer: Vec<u8>, ins: &'static str }
@@ -1233,6 +1392,7 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadTailSink
     PureSink(PureSink),
     #[cfg(feature = "z3")]
     Z3Sink(Z3Sink),
+    TensorBoxesSink(TensorBoxesSink),
     AUSink(AUSink),
     USink(USink),
     CompatSink(CompatSink),
@@ -1309,6 +1469,11 @@ impl Sink for ASink {
             return ASink::Z3Sink(Z3Sink::new(e));
             #[cfg(not(feature = "z3"))]
             panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(5)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(12)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'-' && *e.ptr.offset(9) == b'b' &&
+            *e.ptr.offset(10) == b'o' && *e.ptr.offset(11) == b'x' && *e.ptr.offset(12) == b'e' && *e.ptr.offset(13) == b's' } {
+            return ASink::TensorBoxesSink(TensorBoxesSink::new(e));
         } else {
             panic!("unrecognized sink")
         }
@@ -1334,6 +1499,7 @@ impl Sink for ASink {
                 ASink::PureSink(s) => { for i in s.request().into_iter() { yield i } }
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::TensorBoxesSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FSumSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
@@ -1361,6 +1527,7 @@ impl Sink for ASink {
             ASink::PureSink(s) => { s.sink(it, path) }
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
+            ASink::TensorBoxesSink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
             ASink::FSumSink(s) => { s.sink(it, path) }
             ASink::FMinSink(s) => { s.sink(it, path) }
@@ -1388,6 +1555,7 @@ impl Sink for ASink {
             ASink::PureSink(s) => { s.finalize(it) }
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
+            ASink::TensorBoxesSink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
             ASink::FSumSink(s) => { s.finalize(it) }
             ASink::FMinSink(s) => { s.finalize(it) }

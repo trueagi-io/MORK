@@ -107,8 +107,8 @@ pub enum Tensor {
     Csr(Csr<u32, f32>)
 }
 
-impl From<&Tensor> for JitInput {
-    fn from(value: &Tensor) -> Self {
+impl<'a> From<&'a Tensor> for JitInput<'a> {
+    fn from(value: &'a Tensor) -> Self {
         match value {
             Tensor::Dense(d) => { JitInput::Dense(d) }
             Tensor::Csr(s) => { JitInput::Csr(s) }

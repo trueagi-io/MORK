@@ -1031,10 +1031,68 @@ impl Space {
         Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
     }
 
+    fn push_path_symbol(path: &mut Vec<u8>, symbol: &str) {
+        assert!(symbol.len() < 64, "MORK symbols must be shorter than 64 bytes");
+        path.push(item_byte(Tag::SymbolSize(symbol.len() as u8)));
+        path.extend_from_slice(symbol.as_bytes());
+    }
+
+    fn push_tensor_coordinate(path: &mut Vec<u8>, coord: &[usize]) {
+        assert!(coord.len() < 63, "tensor coordinate rank is too high");
+        path.push(item_byte(Tag::Arity((coord.len() + 1) as u8)));
+        Self::push_path_symbol(path, ",");
+        for index in coord {
+            Self::push_path_symbol(path, &index.to_string());
+        }
+    }
+
+    fn linear_to_coordinate(mut index: usize, shape: &[usize]) -> Vec<usize> {
+        let mut coord = vec![0; shape.len()];
+        for axis in (0..shape.len()).rev() {
+            let dim = shape[axis];
+            coord[axis] = index % dim;
+            index /= dim;
+        }
+        coord
+    }
+
+    fn tensor_nonzero_paths(tensor: &Tensor) -> PathMap<()> {
+        let mut map = PathMap::new();
+        match tensor {
+            Tensor::Dense(dense) => {
+                for (linear, value) in dense.data.iter().enumerate() {
+                    if *value != 0.0 {
+                        let coord = Self::linear_to_coordinate(linear, &dense.shape);
+                        let mut path = Vec::new();
+                        Self::push_tensor_coordinate(&mut path, &coord);
+                        map.insert(&path, ());
+                    }
+                }
+            }
+            Tensor::Csr(sparse) => {
+                let leading_shape = &sparse.shape[..sparse.shape.len() - 1];
+                for row in 0..sparse.row_ptr.len() - 1 {
+                    let leading_coord = Self::linear_to_coordinate(row, leading_shape);
+                    for i in sparse.row_ptr[row]..sparse.row_ptr[row + 1] {
+                        if sparse.values[i] != 0.0 {
+                            let mut coord = leading_coord.clone();
+                            coord.push(sparse.col_idx[i] as usize);
+                            let mut path = Vec::new();
+                            Self::push_tensor_coordinate(&mut path, &coord);
+                            map.insert(&path, ());
+                        }
+                    }
+                }
+            }
+        }
+        map
+    }
+
     #[inline]
     unsafe fn read_handler<'trie, 'path>(btm: *const PathMap<()>,
                     mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
                     z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
+                    tensors: *mut HashMap<OwnedSourceItem, Tensor>,
                     request: ResourceRequest) -> Resource<'trie, 'path> {
         match request {
             ResourceRequest::BTM(prefix) => {
@@ -1079,6 +1137,12 @@ impl Space {
                     Resource::Z3(PathMap::new().into_read_zipper(&[]))
                 }
             }
+            ResourceRequest::Tensor(name) => {
+                trace!(target: "query_multi_i", "getting tensor {} nonzeros", name);
+                let tensor = tensors.as_mut().unwrap().get(&OwnedSourceItem::from(name))
+                    .unwrap_or_else(|| panic!("non existent tensor {}", name));
+                Resource::Tensor(Self::tensor_nonzero_paths(tensor).into_read_zipper(&[]))
+            }
         }
     }
 
@@ -1086,6 +1150,7 @@ impl Space {
     unsafe fn write_handler<'w, 'a, 'k>(zh_wzs: (*mut ZipperHead<'w, 'a, ()>, *mut Vec<WriteZipperTracked<'a, 'k, ()>>),
                 mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
                 z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
+                tensors: *mut HashMap<OwnedSourceItem, Tensor>,
                 request: &WriteResourceRequest) -> WriteResource<'w, 'a, 'k> where 'w : 'a {
         match *request {
             WriteResourceRequest::BTM(p) => {
@@ -1111,12 +1176,20 @@ impl Space {
                 }).as_mut();
                 WriteResource::Z3(instance)
             }
+            WriteResourceRequest::Tensor(f) => {
+                trace!(target: "transform", "retrieving tensor {}", f);
+                let tensor = tensors.as_mut().unwrap().entry(OwnedSourceItem::from(f)).or_insert_with(|| {
+                    Tensor::Dense(linalg::dense::Dense::<f32>::zeros(vec![]))
+                });
+                WriteResource::Tensor(tensor)
+            }
         }
     }
 
     pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(no_source: bool,
             mmaps: &mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
             z3s: &mut HashMap<OwnedSourceItem, Box<Popen>>,
+            tensors: &mut HashMap<OwnedSourceItem, Tensor>,
             btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         use crate::sources::{ASource, Resource, ResourceRequest, Source};
 
@@ -1136,7 +1209,7 @@ impl Space {
         let mut factors: Vec<_> = Vec::with_capacity(n_factors);
         for e in pat_args[1..].iter() {
             let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::new(e.subsexpr()) };
-            factors.push(src.source(src.request().map(|request| unsafe { Self::read_handler(btm, mmaps, z3s, request) })));
+            factors.push(src.source(src.request().map(|request| unsafe { Self::read_handler(btm, mmaps, z3s, tensors, request) })));
             srcs.push(src);
         }
 
@@ -1440,7 +1513,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
+        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &mut self.tensors, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
             // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1503,10 +1576,11 @@ impl Space {
         let outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
         let acts_ptr = ((&self.mmaps) as *const HashMap<OwnedSourceItem, _>).cast_mut();
         let z3s_ptr = ((&self.z3s) as *const HashMap<OwnedSourceItem, Box<Popen>>).cast_mut();
+        let tensors_ptr = ((&self.tensors) as *const HashMap<OwnedSourceItem, Tensor>).cast_mut();
         template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, tensors_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1589,10 +1663,11 @@ impl Space {
         let outstanding_wzs_ptr = ((&outstanding_wzs) as *const Vec<WriteZipperTracked<()>>).cast_mut();
         let acts_ptr = ((&self.mmaps) as *const HashMap<OwnedSourceItem, _>).cast_mut();
         let z3s_ptr = ((&self.z3s) as *const HashMap<OwnedSourceItem, Box<Popen>>).cast_mut();
+        let tensors_ptr = ((&self.tensors) as *const HashMap<OwnedSourceItem, Tensor>).cast_mut();
         template_prefixes.iter().enumerate().for_each(|(i, request)| {
             if subsumption[i] == i {
                 placements[i] = template_resources.len();
-                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, request) });
+                template_resources.push(unsafe { Self::write_handler((zh_ptr, outstanding_wzs_ptr), acts_ptr, z3s_ptr, tensors_ptr, request) });
             }
         });
         for i in 0..subsumption.len() {
@@ -1609,7 +1684,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
+        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &mut self.tensors, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {

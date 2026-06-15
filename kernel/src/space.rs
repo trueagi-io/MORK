@@ -23,6 +23,7 @@ use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::{zipper, PathMap};
 use mork_frontend::json_parser::Transcriber;
 use linalg::jit::*;
+use linalg::tensor::NDIndex;
 use log::*;
 use subprocess::{Popen, PopenConfig, Redirection};
 use subprocess::unix::PopenExt;
@@ -1088,6 +1089,22 @@ impl Space {
         map
     }
 
+    fn tensor_value(tensor: &Tensor, coord: &[usize]) -> f32 {
+        match tensor {
+            Tensor::Dense(dense) => NDIndex::get(dense, coord),
+            Tensor::Csr(sparse) => NDIndex::get(sparse, coord),
+        }
+    }
+
+    fn tensor_value_paths(tensor: &Tensor, coord: &[usize]) -> PathMap<()> {
+        let mut map = PathMap::new();
+        let value = Self::tensor_value(tensor, coord);
+        let mut path = Vec::new();
+        Self::push_path_symbol(&mut path, &value.to_string());
+        map.insert(&path, ());
+        map
+    }
+
     #[inline]
     unsafe fn read_handler<'trie, 'path>(btm: *const PathMap<()>,
                     mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
@@ -1143,6 +1160,12 @@ impl Space {
                     .unwrap_or_else(|| panic!("non existent tensor {}", name));
                 Resource::Tensor(Self::tensor_nonzero_paths(tensor).into_read_zipper(&[]))
             }
+            ResourceRequest::TensorGet(name, coord) => {
+                trace!(target: "query_multi_i", "getting tensor {} value at {:?}", name, coord);
+                let tensor = tensors.as_mut().unwrap().get(&OwnedSourceItem::from(name))
+                    .unwrap_or_else(|| panic!("non existent tensor {}", name));
+                Resource::TensorGet(Self::tensor_value_paths(tensor, &coord).into_read_zipper(&[]))
+            }
         }
     }
 
@@ -1182,6 +1205,10 @@ impl Space {
                     Tensor::Dense(linalg::dense::Dense::<f32>::zeros(vec![]))
                 });
                 WriteResource::Tensor(tensor)
+            }
+            WriteResourceRequest::TensorMap => {
+                trace!(target: "transform", "retrieving tensor map");
+                WriteResource::TensorMap(tensors.as_mut().unwrap())
             }
         }
     }

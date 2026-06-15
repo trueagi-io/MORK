@@ -3201,8 +3201,9 @@ fn sink_tensor_basic() {
     const SPACE_EXPRS: &str = r#"
 
 (exec 0 (,)
-        (O (tensor-boxes a (, 0 0 0) (, 200 10 5) 1.)
-           (tensor-boxes a (, 100 0 0) (, 200 1 5) 6.225)))
+        (O (tensor-cubes a (, 0 0 0) (, 200 10 5) 1.)
+           (tensor-cubes a (, 100 0 0) (, 200 1 5) 6.225)
+           (tensor-cubes a (, 4 4) (, 5 5) 3.)))
 
 (exec 1 (I (tensor-nonzeros a $c))
         (, (out $c)))
@@ -3228,9 +3229,109 @@ fn sink_tensor_basic() {
     assert_eq!(dense.data[idx(0, 0, 0)], 1.0);
     assert!((dense.data[idx(100, 0, 0)] - 7.225).abs() < 0.0001);
     assert_eq!(dense.data[idx(100, 1, 0)], 1.0);
+    assert_eq!(dense.data[idx(0, 4, 4)], 4.0);
+    assert_eq!(dense.data[idx(199, 4, 4)], 4.0);
     assert_eq!(nonzeros, 200 * 10 * 5);
     assert!(res.contains("(, 0 0 0)\n"));
     assert!(res.contains("(, 199 9 4)\n"));
+}
+
+fn tensor_dense<'a>(s: &'a Space, name: &str) -> &'a linalg::dense::Dense<f32> {
+    let tensor = s.tensors.get(&mork_expr::OwnedSourceItem::from(name)).unwrap();
+    let linalg::jit::Tensor::Dense(dense) = tensor else { unreachable!() };
+    dense
+}
+
+fn assert_close(actual: f32, expected: f32) {
+    assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
+}
+
+fn sink_tensor_einsum() {
+    let mut s = Space::new();
+
+    const MATMUL: &str = r#"
+(exec 0 (,)
+        (O (tensor-cubes A (, 0 0) (, 2 3) 0.)
+           (tensor-cubes A (, 0 0) (, 1 1) 1.)
+           (tensor-cubes A (, 0 1) (, 1 2) 2.)
+           (tensor-cubes A (, 0 2) (, 1 3) 3.)
+           (tensor-cubes A (, 1 0) (, 2 1) 4.)
+           (tensor-cubes A (, 1 1) (, 2 2) 5.)
+           (tensor-cubes A (, 1 2) (, 2 3) 6.)
+           (tensor-cubes B (, 0 0) (, 3 2) 0.)
+           (tensor-cubes B (, 0 0) (, 1 1) 7.)
+           (tensor-cubes B (, 0 1) (, 1 2) 8.)
+           (tensor-cubes B (, 1 0) (, 2 1) 9.)
+           (tensor-cubes B (, 1 1) (, 2 2) 10.)
+           (tensor-cubes B (, 2 0) (, 3 1) 11.)
+           (tensor-cubes B (, 2 1) (, 3 2) 12.)
+           (einsum (, A B) (, M) (, ab bc) (, ac))))
+    "#;
+    s.add_all_sexpr(MATMUL.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+    let m = tensor_dense(&s, "M");
+    assert_eq!(m.shape, vec![2, 2]);
+    assert_close(m.data[0], 58.0);
+    assert_close(m.data[1], 64.0);
+    assert_close(m.data[2], 139.0);
+    assert_close(m.data[3], 154.0);
+
+    let mut s = Space::new();
+    const MULTI_DEST: &str = r#"
+(exec 0 (,)
+        (O (tensor-cubes A (, 0 0 0) (, 2 2 3) 1.)
+           (tensor-cubes B (, 0 0 0) (, 4 3 2) 2.)
+           (tensor-cubes C (, 0 0) (, 2 4) 5.)
+           (einsum (, A B C) (, X Y) (, iab jbc ij) (, ac ij))))
+    "#;
+    s.add_all_sexpr(MULTI_DEST.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+    let x = tensor_dense(&s, "X");
+    let y = tensor_dense(&s, "Y");
+    assert_eq!(x.shape, vec![2, 2]);
+    assert_eq!(y.shape, vec![2, 4]);
+    assert!(x.data.iter().all(|v| (*v - 240.0).abs() < 0.0001));
+    assert!(y.data.iter().all(|v| (*v - 120.0).abs() < 0.0001));
+
+    let mut s = Space::new();
+    const SCALAR_PROJECT: &str = r#"
+(exec 0 (,)
+        (O (tensor-cubes A (, 0 0 0) (, 2 2 2) 1.)
+           (tensor-cubes A (, 1 1 1) (, 2 2 2) 3.)
+           (einsum (, A) (, ) (, iab) (, ))))
+    "#;
+    s.add_all_sexpr(SCALAR_PROJECT.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+    let a = tensor_dense(&s, "A");
+    assert_eq!(a.shape, Vec::<usize>::new());
+    assert_close(a.data[0], 11.0);
+}
+
+fn sink_tensor_get() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,)
+        (O (tensor-cubes g (, 0 0) (, 3 3) 0.)
+           (tensor-cubes g (, 1 1) (, 2 2) 4.5)))
+
+(exec 1 (I (tensor-get g (, 1 1) $v))
+        (, (hit $v)))
+
+(exec 2 (I (tensor-get g (, 2 2) $v))
+        (, (zero $v)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+
+    let mut hit = vec![];
+    s.dump_sexpr(expr!(s, "[2] hit $"), expr!(s, "_1"), &mut hit);
+    assert_eq!(String::from_utf8_lossy_owned(hit), "4.5\n");
+
+    let mut zero = vec![];
+    s.dump_sexpr(expr!(s, "[2] zero $"), expr!(s, "_1"), &mut zero);
+    assert_eq!(String::from_utf8_lossy_owned(zero), "0\n");
 }
 
 fn sink_wasm_add() {
@@ -6028,6 +6129,8 @@ fn main() {
             #[cfg(feature = "z3")]
             sink_z3_basic_multi();
             sink_tensor_basic();
+            sink_tensor_einsum();
+            sink_tensor_get();
         }
         Commands::Run { input_path, steps, instrumentation, timing, aux_path, output_path } => {
             #[cfg(debug_assertions)]

@@ -2,7 +2,7 @@ use log::trace;
 use pathmap::arena_compact::{ACTMmapZipper};
 use pathmap::PathMap;
 use pathmap::zipper::*;
-use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
+use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, ExprEnv, Tag};
 use mork_expr::macros::SerializableExpr;
 
 pub(crate) enum ResourceRequest {
@@ -10,6 +10,7 @@ pub(crate) enum ResourceRequest {
     ACT(&'static str),
     Z3(&'static str),
     Tensor(&'static str),
+    TensorGet(&'static str, Vec<usize>),
 }
 
 pub(crate) enum Resource<'trie, 'path> {
@@ -17,6 +18,24 @@ pub(crate) enum Resource<'trie, 'path> {
     ACT(ACTMmapZipper<'trie, ()>),
     Z3(ReadZipperOwned<()>),
     Tensor(ReadZipperOwned<()>),
+    TensorGet(ReadZipperOwned<()>),
+}
+
+fn symbol_bytes(e: Expr) -> &'static [u8] {
+    unsafe { e.symbol().expect("expected symbol").as_ref().unwrap() }
+}
+
+fn symbol_usize(e: Expr) -> usize {
+    std::str::from_utf8(symbol_bytes(e)).expect("tensor coordinate is not utf-8")
+        .parse().expect("tensor coordinate is not usize")
+}
+
+fn tuple_usizes(e: Expr) -> Vec<usize> {
+    let mut args = Vec::new();
+    ExprEnv::new(0, e).args(&mut args);
+    assert!(!args.is_empty(), "coordinate must be a tuple like (, 0 0 0)");
+    assert_eq!(symbol_bytes(args[0].subsexpr()), b",", "coordinate must use the , tuple functor");
+    args[1..].iter().map(|arg| symbol_usize(arg.subsexpr())).collect()
 }
 
 pub(crate) trait Source {
@@ -164,6 +183,43 @@ impl Source for TensorNonzerosSource {
 }
 
 
+struct TensorGetSource {
+    e: Expr,
+    ins: &'static str,
+    index: Expr,
+    coord: Vec<usize>,
+}
+impl Source for TensorGetSource {
+    fn new(e: Expr) -> Self {
+        destruct!(e, ("tensor-get" {instance: &str} {index: Expr} {se: Expr}), {
+            return TensorGetSource{ e, ins: instance, index, coord: tuple_usizes(index) }
+        }, _err => { panic!("tensor-get not the right shape {:?}", e) });
+    }
+
+    fn request(&self) -> impl Iterator<Item=ResourceRequest> {
+        std::iter::once(ResourceRequest::TensorGet(self.ins, self.coord.clone()))
+    }
+
+    fn source<'trie, 'path, It: Iterator<Item=Resource<'trie, 'path>>>(&self, mut it: It) -> AFactor<'trie, ()> where 'path : 'trie {
+        // prefix: '[4] tensor-get <tensor name> <coordinate tuple>'
+        static CONSTANT_PREFIX: [u8; 12] = [
+            item_byte(Tag::Arity(4)),
+            item_byte(Tag::SymbolSize(10)),
+            b't', b'e', b'n', b's', b'o', b'r', b'-', b'g', b'e', b't'
+        ];
+        let Resource::TensorGet(rz) = it.next().unwrap() else { unreachable!() };
+        let mut prefix = vec![];
+        prefix.extend_from_slice(&CONSTANT_PREFIX[..]);
+        prefix.push(item_byte(Tag::SymbolSize( (self.ins.size() as u8) - 1)));
+        prefix.extend_from_slice(self.ins.as_bytes());
+        prefix.extend_from_slice(unsafe { self.index.span().as_ref().unwrap() });
+        trace!(target: "source", "tensor-get prefix {}", serialize(&prefix[..]));
+        let rz = PrefixZipper::new(prefix, rz);
+        AFactor::TensorNonzerosSource(rz)
+    }
+}
+
+
 struct CmpSource {
     e: Expr,
     cmp: usize
@@ -234,6 +290,7 @@ pub enum ASource { PosSource(BTMSource), ACTSource(ACTSource), CmpSource(CmpSour
     #[cfg(feature = "z3")]
     Z3Source(Z3Source),
     TensorNonzerosSource(TensorNonzerosSource),
+    TensorGetSource(TensorGetSource),
 }
 
 #[derive(PolyZipper)]
@@ -271,6 +328,11 @@ impl Source for ASource {
             *e.ptr.offset(10) == b'o' && *e.ptr.offset(11) == b'n' && *e.ptr.offset(12) == b'z' && *e.ptr.offset(13) == b'e' &&
             *e.ptr.offset(14) == b'r' && *e.ptr.offset(15) == b'o' && *e.ptr.offset(16) == b's' } {
             ASource::TensorNonzerosSource(TensorNonzerosSource::new(e))
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(10)) &&
+            *e.ptr.offset(2) == b't' && *e.ptr.offset(3) == b'e' && *e.ptr.offset(4) == b'n' && *e.ptr.offset(5) == b's' &&
+            *e.ptr.offset(6) == b'o' && *e.ptr.offset(7) == b'r' && *e.ptr.offset(8) == b'-' && *e.ptr.offset(9) == b'g' &&
+            *e.ptr.offset(10) == b'e' && *e.ptr.offset(11) == b't' } {
+            ASource::TensorGetSource(TensorGetSource::new(e))
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(3)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(2)) && (*e.ptr.offset(2) == b'=' || *e.ptr.offset(2) == b'!') && *e.ptr.offset(3) == b'=' } {
             ASource::CmpSource(CmpSource::new(e))
         } else {
@@ -288,6 +350,7 @@ impl Source for ASource {
                 #[cfg(feature = "z3")]
                 ASource::Z3Source(s) => { for i in s.request().into_iter() { yield i } }
                 ASource::TensorNonzerosSource(s) => { for i in s.request().into_iter() { yield i } }
+                ASource::TensorGetSource(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -301,6 +364,7 @@ impl Source for ASource {
             #[cfg(feature = "z3")]
             ASource::Z3Source(s) => { s.source(it) }
             ASource::TensorNonzerosSource(s) => { s.source(it) }
+            ASource::TensorGetSource(s) => { s.source(it) }
         }
     }
 }

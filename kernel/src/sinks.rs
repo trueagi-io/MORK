@@ -404,17 +404,14 @@ impl <const head: bool> Sink for HeadTailSink<head> {
                 self.extremum.extend_from_slice(rz.path()); // yikes, throwing away our needless allocation
             }
         } else {
-            if &self.extremum[..] <= mpath {
-                if self.extrema.insert(mpath, ()).is_none() {
-                    trace!(target: "sink", "head/tail adding new top at '{}'", serialize(mpath));
+            if self.extrema.insert(mpath, ()).is_none() {
+                trace!(target: "sink", "head/tail adding '{}'", serialize(mpath));
+                self.count += 1;
+                let update = self.extremum.is_empty()
+                    || if head { &self.extremum[..] < mpath } else { mpath < &self.extremum[..] };
+                if update {
                     self.extremum.clear();
                     self.extremum.extend_from_slice(mpath);
-                    self.count += 1;
-                }
-            } else {
-                if self.extrema.insert(mpath, ()).is_none() {
-                    trace!(target: "sink", "head/tail adding '{}'", serialize(mpath));
-                    self.count += 1;
                 }
             }
         }

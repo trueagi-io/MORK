@@ -2489,7 +2489,63 @@ fn sink_tail() {
     let res = String::from_utf8(v).unwrap();
 
     println!("result: {res}");
-    assert_eq!(res, "(3 x Q)\n(1 y Q)\n(3 y Q)\n(1 x R)\n(3 x R)\n(2 y R)\n(3 y R)\n")
+    assert_eq!(res, "(3 y Q)\n(1 x R)\n(2 x R)\n(3 x R)\n(1 y R)\n(2 y R)\n(3 y R)\n")
+}
+
+fn head_tail_sink_results(sink: &str, max: usize, xs: &[&str], ys: &[&str], zs: &[&str]) -> Vec<String> {
+    let mut s = Space::new();
+    let mut space_exprs = String::new();
+
+    for (name, values) in [("foo", xs), ("bar", ys), ("baz", zs)] {
+        for value in values {
+            space_exprs.push_str(&format!("({name} {value})\n"));
+        }
+    }
+
+    let sink_expr = match sink {
+        "+" => "(+ (cux $z $y $x))".to_string(),
+        "head" | "tail" => format!("({sink} {max} (cux $z $y $x))"),
+        _ => unreachable!("unknown sink {sink}"),
+    };
+    space_exprs.push_str(&format!("(exec 0 (, (foo $x) (bar $y) (baz $z)) (O {sink_expr}))\n"));
+
+    s.add_all_sexpr(space_exprs.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[4] cux $ $ $"), expr!(s, "[3] _3 _2 _1"), &mut v);
+    String::from_utf8(v).unwrap().lines().map(str::to_owned).collect()
+}
+
+fn sink_head_tail_generated() {
+    let cases: [(&[&str], &[&str], &[&str]); 3] = [
+        (&["1", "2", "3"], &["x", "y"], &["P", "Q", "R"]),
+        (&["e", "a", "b"], &["y", "x"], &["R", "P"]),
+        (&["4", "1", "3", "2"], &["m", "k", "n"], &["B", "A"]),
+    ];
+
+    for (xs, ys, zs) in cases {
+        let all = head_tail_sink_results("+", 0, xs, ys, zs);
+        let mut maxima = vec![1, 2, 3, 7, all.len(), all.len() + 1];
+        maxima.sort_unstable();
+        maxima.dedup();
+
+        for max in maxima {
+            let expected_head: Vec<String> = all.iter().take(max).cloned().collect();
+            let expected_tail: Vec<String> = all.iter().skip(all.len().saturating_sub(max)).cloned().collect();
+
+            assert_eq!(
+                head_tail_sink_results("head", max, xs, ys, zs),
+                expected_head,
+                "head {max} failed for generated case {xs:?} {ys:?} {zs:?}",
+            );
+            assert_eq!(
+                head_tail_sink_results("tail", max, xs, ys, zs),
+                expected_tail,
+                "tail {max} failed for generated case {xs:?} {ys:?} {zs:?}",
+            );
+        }
+    }
 }
 
 fn sink_count_literal() {
@@ -5952,6 +6008,7 @@ fn main() {
             sink_anti_unify();
             sink_head();
             sink_tail();
+            sink_head_tail_generated();
             sink_count_literal();
             sink_count_constant();
             sink_count();

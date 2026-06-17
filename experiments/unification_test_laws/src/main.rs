@@ -2,7 +2,7 @@ use std::{fmt::Write, num::NonZero, path::PathBuf};
 
 use mork::expr;
 use rand::random;
-use unification_test_laws::{unify_with_mork_unifier, convert_and_add_line_numbers_big_metta, results_to_single_file};
+use unification_test_laws::{convert_and_add_line_numbers_big_metta, cycles_to_single_file, results_to_single_file, unify_with_mork_unifier};
 // explore this later
 // https://github.com/trueagi-io/MORK/blob/old_main/benchmarks/logic-query/src/main.rs
 
@@ -10,21 +10,41 @@ fn main() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let axioms = std::fs::read_to_string(manifest.join("tmp/big_.metta")).unwrap();
 
-    // this first section is our source of truth
-    let convert_big_metta        = !true;
-    let run_mork_unifier         = !true;
-    let run_prolog_unifier       = !true;
-    let collect_results_and_diff =  true;
+    // the following booleans configure what tasks will run. Many tasks take a while to run, anywhere from a minute to 20 hours.
 
+    // this first section is our source of truth
+    // The original dataset is just the axioms, this convertes it into two files, one as mm2 but with line numbers, 
+    // and the other as the same thing, but as prolog.
+    let convert_big_metta         = !true;
+    
+    // The first unifiers run fairly quickly, they finish on my machine in about 1 hour.
+    // unlike the later mork space tests, there is no provision to archive the old results and separate WIP file.
+    // make sure you run these to completion, then avoid rerunning them unless absolutely needed.
+    // If you stop the computation half way you will get half written files, and corrupt the results.
+
+    // This runs the expression unifier, without going through the pathmap
+    let run_mork_unifier          = !true;
+    // The Prolog code depends on you having SWI-Prolog installed.
+    let run_prolog_unifier        = !true;
+    // this task isn't strictly needed for checking the correctness, but it can find all cycles that exist in the data.
+    let run_prolog_unifier_cycles = !true;
+    // many long tasks generate files incrementally, so that if you need to stop the computation prematurely,
+    // you'll still have files you can check for anomalies
+    let collect_results_and_diff  = !true;
+
+
+    // If the above sections are running will then you can move on to checking the behavior of query, knowing that the expression unifier is correct.
+
+    let check_mork_space          = !true;
     // here we configure the tests for queries in the space
-    let run_in_mork_space        =  true;
-    let run_in_mork_space_config = RunInMorkSpace {
-        whole_set                : !true,
-        identity_assertion       : !true,
-        iterate_left             :  true,
-        iterate_right            :  true,
+    let run_in_mork_space         = !true;
+    let run_in_mork_space_config  = RunInMorkSpace {
+        whole_set                 : !true,
+        identity_assertion        : !true,
+        iterate_left              : !true,
+        iterate_right             : !true,
         // this takes a __very__  long time to compute (on my computer, 20 saturated threads, ~18 hours)
-        iterate_left_right       : !true,
+        iterate_left_right        : !true,
 
         axioms   : &axioms,
         manifest : &manifest,
@@ -35,13 +55,12 @@ fn main() {
         convert_and_add_line_numbers_big_metta();
     }
 
-    // run mork unifier
+    // The unifies the metta expressions directly
     if run_mork_unifier {
         unify_with_mork_unifier();
     }
 
-
-    // run prolog unifier
+    // this is our oracle for the correctness of the results
     if run_prolog_unifier {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let tmp_dir = manifest.join("tmp");
@@ -53,7 +72,23 @@ fn main() {
         // println!("SWI Prolog status {:?}", prolog_exit_status);
     }
 
-    // collect results
+    // the previous test file has a modified copy that implements the following.
+    // the primary difference is that this is trying to find cycles rather than omit them. 
+    if run_prolog_unifier_cycles {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let tmp_dir = manifest.join("tmp");
+
+        let prolog_exit_status = std::process::Command::new("swipl")
+            .current_dir(&tmp_dir)
+            .args(["-O","-g","['../axiom_unify_record_cycles.prolog'], write_all_results_concurrent, halt."])
+            .spawn().unwrap().wait();
+
+        cycles_to_single_file(&["prolog_cycles"]);
+        // println!("SWI Prolog status {:?}", prolog_exit_status);
+    }
+
+
+    // compare the mork expression unifier with the oracle prolog code.
     if collect_results_and_diff {
         results_to_single_file(&["mork", "prolog"]);
 
@@ -64,7 +99,6 @@ fn main() {
         if let Ok(proc) = &std::process::Command::new("diff").args([&mork, &prolog]).output()
         {
             let diff =  core::str::from_utf8(&proc.stdout).unwrap();
-            println!("{}", diff.len());
             println!("\nMORK-PROLOG\nBEGIN DIFF\n{}END DIFF", diff);
             if diff.len() > 0 { println!("EXPRESSION UNIFIER IS BROKEN"); return;}
         }
@@ -73,13 +107,12 @@ fn main() {
 
     // What follows are tests for queries in the space.
     // if MORK expression and Prolog are not in agreement, then the following is a waste of time.
-    assert!(collect_results_and_diff);
+    if !check_mork_space {return;};
 
     if run_in_mork_space {
         run_in_mork_space_config.run();
     }
 
-    // collect results
     if collect_results_and_diff {
         let results_dir = |dir| [env!("CARGO_MANIFEST_DIR"), "/tmp/", dir, "/all_results.metta"].into_iter().collect::<String>();
         let mork        = results_dir("mork");
@@ -131,7 +164,7 @@ struct RunInMorkSpace<'a> {
     manifest             : &'a std::path::Path
 }
 
-/// This is primarily a means to avoid overwriting previos results by accident when a run goes poorly.
+/// This is primarily a means to avoid overwriting previous results by accident when a run goes poorly.
 /// Results will be added to a "<dir_name>_WIP" folder. When update is called, the files in <dir_name> are archived to "<dir_name>_OLD", and the WIP folder gets move to "<dir_name>"
 struct ResultsWIPControl {
     outdir       : std::path::PathBuf,
@@ -203,6 +236,7 @@ impl RunInMorkSpace<'_> {
         core::assert_eq!(&w, "(unifications 100001)\n");
     }
 
+    /// This runs the query we would like to do, note how it isn"t multithreaded
     fn whole_set_run(&self) {
         println!("\nWHOLE SET");
 
@@ -230,7 +264,7 @@ impl RunInMorkSpace<'_> {
         s.dump_sexpr(expr!(s,"[3] unifications $ $"), expr!(s,"[3] unifications _1 _2"),  &mut outfile_ );
     }
 
-    // construct execs for each `n` where `n` is the right hand side argument.
+    /// construct execs for each `n` where `n` is the right hand side argument.
     fn iterate_left_run(&self) {
 
         self.iterate_runs_multithreaded_boilerplate("iterate_left", "", &|iteration|{
@@ -249,7 +283,7 @@ impl RunInMorkSpace<'_> {
         });
     }
 
-    // construct execs for each `m` where `m` is the right hand side argument.
+    /// construct execs for each `m` where `m` is the right hand side argument.
     fn iterate_right_run(&self) {
 
         self.iterate_runs_multithreaded_boilerplate("iterate_right", "", &|iteration| {
@@ -273,7 +307,7 @@ impl RunInMorkSpace<'_> {
     /// Avoid running this if possible, it's crazy slow. 
     /// This takes a __very__  long time to compute (on my computer, 20 saturated threads, ~18 hours)
     /// 
-    /// Runnig it however did show that expression unification is working correctly.
+    /// Running it however did show that expression unification is working correctly.
     /// If this test fails then fix expression unification/application first!
     fn iterate_left_right_run(&self) {
         let mut ms = String::new();
@@ -300,8 +334,6 @@ impl RunInMorkSpace<'_> {
     }
 
     /// for_each_iteration is expected to generate `(unifies $n $m)` values.
-    /// 
-    /// iteration here is actually done by filtering
     fn iterate_runs_multithreaded_boilerplate(&self, task : &str, forall_runs_sexpr_additions : &str, for_each_iteration : &(impl Fn(usize)->String + Sync) ) {
         let mut s = mork::space::Space::new();
         
@@ -389,7 +421,7 @@ impl RunInMorkSpace<'_> {
         if iterate_right {
             self.iterate_right_run();
         }
-        // try iterating the left and right arguments, __vey expensive__
+        // try iterating the left and right arguments, __very expensive__
         if generate_iteration {
             self.iterate_left_right_run();
         }

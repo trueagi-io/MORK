@@ -1,11 +1,13 @@
-use std::fs::read_dir;
+use std::io::Read;
+use std::{fs::read_dir, io::Write};
 use std::num::NonZeroUsize;
-use std::fmt::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path;
 
-use mork_expr::{ExprZipper, apply_e};
+use mork_expr::{ExprZipper, Unifiable, apply_e};
 
+// Here we generate two files that are the big.metta files but with line numbers.
+// it makes one mm2 file, and one prolog file at the same time.
 pub fn convert_and_add_line_numbers_big_metta() {
     use std::{io::{Read, Write}};
 
@@ -139,25 +141,46 @@ pub fn unify_with_mork_unifier() {
 
     let threads_max = std::thread::available_parallelism().unwrap_or(unsafe { NonZeroUsize::new_unchecked(1) }).get();
 
-    let mut outputs = Vec::with_capacity(expr_pos.len()-1);
-    for each in 0..expr_pos.len() - 1 {
-        outputs.push(String::new());
-    }
-
-
     let range  = 0..expr_pos.len()-1;
 
     std::fs::create_dir_all(&results);
 
+    let signal = std::sync::atomic::AtomicBool::new(true);
     std::thread::scope(|s|{
+        let (tx,rx) = std::sync::mpsc::channel::<std::cmp::Reverse<(usize, String)>>();
+        let mut cycles_file = std::fs::File::create(manifest.join("tmp/cycles.mm2")).unwrap();
+
+        // this thread is collecting found cycles.
+        // unlike the later code, it only constructs one file.
+        let signal = &signal;
+        let cycles_collection = s.spawn(move || {
+            let mut queue = std::collections::binary_heap::BinaryHeap::new();
+            let mut next = 0;
+            loop {
+                let r = rx.try_recv();
+                if let Ok(r) = r {
+                    queue.push(r);
+                } 
+                if let Some(std::cmp::Reverse((n,_))) = queue.peek() && n == &next {
+                    next += 1;
+                    let top = queue.pop().unwrap();
+                    cycles_file.write_all(top.0.1.as_bytes());
+                    cycles_file.flush();
+                    continue;
+                }
+                if !signal.load(std::sync::atomic::Ordering::Acquire) && queue.is_empty() { break }
+            }
+            cycles_file.flush();
+        });
 
         let mut threads = Vec::new();
         
         for each in range.clone()
         {
             let expr_block = &*expr_block;
-            let expr_pos = &*expr_pos;
-            let results = &results;
+            let expr_pos   = &*expr_pos;
+            let results    = &results;
+            let tx_clone   = tx.clone();
 
             fn line_and_expr<'a, 'b>(expr_block: &'a[u8], expr_pos: &[usize], nth : usize) -> (&'a [u8],mork_expr::Expr) {
                 // (line 0 ....)
@@ -172,6 +195,7 @@ pub fn unify_with_mork_unifier() {
                     ,  b'e'
                     ]
                 };
+
                 const NUM_TAG_POS : usize = HEADER.len();
                 const NUM_POS     : usize = NUM_TAG_POS+1;
 
@@ -187,18 +211,22 @@ pub fn unify_with_mork_unifier() {
             }
             threads.push((each, s.spawn(move ||{
                 let mut out_string = String::with_capacity(32);
+                let mut cycles_out_string = String::with_capacity(32);
             
                 let (e_l_line_str, e_l_) = line_and_expr(expr_block, expr_pos, each);
                 
 
-                let mut stack       : Vec<(u8, u8)>           = Vec::new();
-                let mut assignments : Vec<(u8, u8)>           = Vec::new();
+                let mut stack       : Vec<(u8, u8)>                                 = Vec::new();
+                let mut assignments : Vec<(u8, u8)>                                 = Vec::new();
                 let mut expr_env    : Vec<(mork_expr::ExprEnv, mork_expr::ExprEnv)> = Vec::new();
                 for each_other in 0..expr_pos.len() - 1 {
+                    use std::fmt::Write;
                     let (e_r_line_str, e_r_) = line_and_expr(expr_block, expr_pos, each_other);
-                    if  mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
-                         unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) };
-                     }
+                    match mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
+                        Unifiable::Unifies => { unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; }
+                        Unifiable::Cycles  => { unsafe { writeln!(cycles_out_string,"(cycles {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; }
+                         _ => {}
+                    }
                  }
 
                 const FILE_NAME_PREFIX : &[u8] = b"axiom_";
@@ -217,7 +245,8 @@ pub fn unify_with_mork_unifier() {
 
                 std::io::Write::write_all(&mut out_file,out_string.as_bytes()).unwrap();
 
-                out_string
+                tx_clone.send(std::cmp::Reverse((each, cycles_out_string)));
+
             })));
 
             // we keep the number of live threads bounded
@@ -225,8 +254,7 @@ pub fn unify_with_mork_unifier() {
             while threads.len() >= threads_max {
                 if threads[choice].1.is_finished() {
                     let (n, t) = threads.remove(choice);
-                    let unifications = t.join().unwrap();
-                    outputs[n] = unifications;
+                    let _ = t.join().unwrap();
                     println!("JOINED : {}", n);
                     break;
                 }
@@ -236,16 +264,17 @@ pub fn unify_with_mork_unifier() {
 
         // close off the remaining threads
         for (n,t) in threads {
-            let unifications = t.join().unwrap();
-            outputs[n] = unifications;
+            let _ = t.join().unwrap();
             println!("JOINED : {}", n);
         }
+        signal.store(false, std::sync::atomic::Ordering::Release);
+        cycles_collection.join();
     });
 }
 
 
 
-
+/// collectes the results of the unifications into a single file for each tmp result folder.
 pub fn results_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
     use std::{io::{Read, Write}};
     let mut collect = Vec::new();
@@ -313,55 +342,90 @@ pub fn results_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
 }
 
 
-// pub fn iterated_left_right_results() -> std::io::Result<()> {
-//     use std::{io::{Read, Write}};
 
-//     let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-//     let tmp = manefest.join("tmp");
-    
-//     for unifier in ["iterated_left_right"] {
-//         let dir_path = tmp.join(unifier);
+/// this a slightly modified version of `esults_to_single_file`, but for the cycles instead of unifications.
+pub fn cycles_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
+    use std::{io::{Read, Write}};
+    let mut collect = Vec::new();
+
+    let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let tmp = manefest.join("tmp");
+
+    for unifier in tmp_folders {
+        let dir_path = tmp.join(unifier);
+        let results_dir = dir_path.join("results");
+        for each in std::fs::read_dir(results_dir)? {
+            let file = each.unwrap();
+            let f_name = file.file_name();
+            let name = f_name.to_str().unwrap();
+            assert!(name.starts_with("axiom_") || name.starts_with("axioms_"));
+            assert!(name.ends_with(".metta"));
+
+            let contents = std::fs::read_to_string(file.path()).unwrap();
+
+            for each in  contents.split_terminator('\n') {
+                let strip_parens = &each[1..each.len()-1];
+                let mut tokens = strip_parens.split_ascii_whitespace();
+                let Some("cycles") = tokens.next() else {panic!()};
+                let left  : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+                let right : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+                collect.push([left,right]);
+            };
+        }
+
+        collect.sort_by(|[l0,l1],[r0,r1]| l0.cmp(r0).then(l1.cmp(r1)));
+        collect.dedup();
+
+        let out_path = dir_path.join("all_cycles.metta");
+        println!("!! {:?}", out_path);
         
-//         let results_dir = dir_path.join("results");
-        
-//         let results_unifies_dir = dir_path.join("unifies");
-//         let results_unifications_dir = dir_path.join("unifications");
+        let mut out_file = std::fs::File::create(out_path).unwrap();
+        for [l,r] in &collect {
+            write!(out_file, "(cycles {} {})\n", l,r).unwrap()
+        }
 
-//         std::fs::create_dir_all(&results_unifies_dir);
-//         std::fs::create_dir_all(&results_unifications_dir);
 
-//         for each in std::fs::read_dir(results_dir)? {
-//             let file = each.unwrap();
-//             let f_name = file.file_name();
-//             let name = f_name.to_str().unwrap();
+        collect.push([usize::MAX,usize::MAX]);
+        let out_path_counts = dir_path.join("all_cycles_counts.metta");
+        let mut out_file_counts = std::fs::File::create(out_path_counts).unwrap();
+        collect.iter().fold((None, 0), |(cur,count),&[line_left,line_right]| {
+            if Some(line_left) == cur {
+                (cur, count+1)
+            } 
+            else {
+                if let Some(line) = cur {
+                    write!(out_file_counts, "(cycles-count {} {})\n", line,count).unwrap();
+                } 
+                (Some(line_left), 1)
+            }
+        });
+        collect.pop(/* remove dummy */);
 
-//             let contents = std::fs::read_to_string(file.path()).unwrap();
+        collect.clear();
+        out_file.flush().unwrap();
 
-//             let mut unifies      = std::fs::File::create(results_unifies_dir.join(name)).unwrap();
-//             let mut unifications = std::fs::File::create(results_unifications_dir.join(name)).unwrap();
+    }
+    Ok(())
+}
 
-//             for each in  contents.split_terminator('\n') {
-//                 let strip_parens = &each[1..each.len()-1];
-//                 let mut tokens = strip_parens.split_ascii_whitespace();
 
-//                 let functor = tokens.next();
-//                 let left  : usize = tokens.next().unwrap().parse::<usize>().unwrap();
-//                 let right : usize = tokens.next().unwrap().parse::<usize>().unwrap();
-//                 match functor {
-//                     Some("combined")     => {
-//                         write!(unifies, "(unifies {} {})\n", left, right);
 
-//                     }
-//                     Some("unifications") => {
-//                         write!(unifications, "(unifications {} {})\n", left, right);
-//                     }
-//                     _                    => {}
-//                 }
-//             };
-//             unifies.flush().unwrap();
-//             unifications.flush().unwrap();
-//         }
-//     }
-//     Ok(())
-// }
+
+#[test]
+fn hit_cycles() {
+    let mut s = mork::space::Space::new();
+    let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let mut buf = String::new();
+    let big_metta = std::fs::File::open(manefest.join("tmp/big_.metta")).unwrap().read_to_string(&mut buf);
+
+    s.add_all_sexpr(buf.as_bytes());
+
+    s.add_all_sexpr(b"(exec 0 (, (line 1 $a) (line $m $a)) (, (unifies 1 $m)))");
+    s.metta_calculus(1000000000);
+
+
+
+}

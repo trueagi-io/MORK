@@ -264,10 +264,17 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
         }
     }
 }
-
+/// NOTE : Some `Cycles` end up as `Fails`.
+/// It just means the Cycle was discoverd during apply.
+pub enum Unifiable { Unifies, Cycles, Fails}
+impl Unifiable {
+    pub fn unifies(&self)->bool {matches!(self, Unifiable::Unifies)}
+    pub fn cycles(&self)->bool {matches!(self, Unifiable::Cycles)}
+    pub fn fails(&self)->bool {matches!(self, Unifiable::Fails)}
+}
 /// NOTE : expr_env, stack, assignments are cleared when this is called
 #[inline(always)]
-pub fn unifiable_reuse_state(left : Expr, right : Expr, mut expr_env : &mut Vec<(ExprEnv, ExprEnv)>, mut stack : &mut Vec<(u8, u8)>, mut assignments : &mut Vec<(u8, u8)>)->bool {
+pub fn unifiable_reuse_state(left : Expr, right : Expr, mut expr_env : &mut Vec<(ExprEnv, ExprEnv)>, mut stack : &mut Vec<(u8, u8)>, mut assignments : &mut Vec<(u8, u8)>)->Unifiable {
     let mut void   = std::io::sink();
     unifies_reuse_state(left, right, void, expr_env, stack, assignments)
 }
@@ -283,12 +290,12 @@ pub fn unifies_reuse_state<W>(
     mut expr_env    : &mut Vec<(ExprEnv, ExprEnv)>,
     mut stack       : &mut Vec<(u8, u8)>,
     mut assignments : &mut Vec<(u8, u8)>
-)->bool where W : std::io::Write {
+)-> Unifiable where W : std::io::Write {
     expr_env.clear();
     expr_env.extend_from_slice(&[(ExprEnv::new(0, left), ExprEnv::new(1, right))]);
     let out = match crate::unify(expr_env) {
-        Ok(bindings) => crate::apply_e_clears_stacks_and_cycles_check!(0,0,0, left, &bindings, sink, stack, assignments).2,
-        Err(_) => false,
+        Ok(bindings) => if crate::apply_e_clears_stacks_and_cycles_check!(0,0,0, left, &bindings, sink, stack, assignments).2 { Unifiable::Unifies } else { Unifiable::Cycles},
+        Err(_) => Unifiable::Fails,
     };
     expr_env.clear();
     out

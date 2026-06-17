@@ -1755,7 +1755,7 @@ impl Space {
             let mut rzc = rz.clone();
             rzc.to_next_val();
             let e = Expr { ptr: rzc.origin_path().to_vec().leak().as_ptr().cast_mut() };
-            if mork_expr::unifiable_reuse_state(e, pattern, &mut expr_env, &mut stack, &mut assignments) {
+            if mork_expr::unifiable_reuse_state(e, pattern, &mut expr_env, &mut stack, &mut assignments).unifies() {
                 let v = rz.origin_path().to_vec();
                 // println!("token {:?}", &v[..]);
                 // println!("expr  {:?}", e);

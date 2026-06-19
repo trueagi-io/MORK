@@ -1,6 +1,6 @@
 #![feature(string_from_utf8_lossy_owned)]
 
-use mork::{expr, prefix, sexpr};
+use mork::{expr, prefix, sexpr, space};
 use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
 use mork_expr::{item_byte, serialize, SourceItem, Tag};
@@ -3260,6 +3260,79 @@ fn bench_sink_odd_even_sort(elements: usize) {
     assert_eq!(res[..res.len()-1], arr.iter().map(|i| i.to_string()).join("\n"));
 }
 
+#[derive(Debug,Clone, Copy)]
+struct QueryLhsCount { line : u32, found : u32, expected : u32 }
+fn query_lhs_range_from_big_metta(range : [usize;2]) -> Result< Vec<QueryLhsCount>, Vec<QueryLhsCount>>  {
+    if range[1]-range[0] == 0 {return Result::Ok( Vec::new());}
+    core::assert!(range[0] <= range[1]);
+    core::assert!(range[1] <= 100001);
+    
+    let mut lhs_range = range;
+    let mut rhs_range = [0,100000];
+
+    let manefest = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
+    
+    let mut s = Space::new();
+
+    let mut buf = String::with_capacity(10000000);
+    macro_rules! load {() => {{
+            s.add_all_sexpr(buf.as_bytes());
+            buf.clear();
+    }};}
+    
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated.metta")).unwrap().read_to_string(&mut buf);
+    load!();
+
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated_unification_results_oracle.metta")).unwrap().read_to_string(&mut buf);
+    load!();
+
+    std::fmt::write(&mut buf, std::format_args!("(bounds (lhs ({} .. {})) (rhs ({} .. {})))", lhs_range[0], lhs_range[1], rhs_range[0], rhs_range[1]));
+    load!();
+
+    for each in lhs_range[0]..lhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(lhs {})", each)); }
+    load!();
+
+    for each in rhs_range[0]..rhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(rhs {})", each)); }
+    load!();
+
+    s.add_all_sexpr(b"\n\
+        (exec 0 (,  (lhs $lhs)  (rhs $rhs)  (line $lhs $a)  (line $rhs $a)                         ) (,  (result $lhs $rhs)  )                                       )\n\
+        (exec 1 (,  (bounds $l ($r $rhs_b))  (result $lhs $rhs)                                    ) (O  (count (count (query_lhs $lhs $rhs_b) $n) $n ($lhs $rhs)) ) )\n\
+        (exec 2 (,  (bounds $l ($r $rhs_b))  (lhs $lhs)                                            ) (,  (count (query_lhs $lhs $rhs_b) 0)  )                        )\n\
+        (exec 3 (,  (count (query_lhs $lhs $rhs_b) $n)                                             ) (O  (+ (non-zero-count $n) )  (- (non-zero-count  0) )  )       )\n\
+        (exec 4 (,  (non-zero-count $n)  (count (query_lhs $lhs $rhs_b) $n)                        ) (O  (- (count (query_lhs $lhs $rhs_b) 0) )  )                   )\n\
+        (exec 5 (,  (bounds ($l $lhs_b) ($r $rhs_b))  (lhs $lhs)  (rhs $rhs)  (unifies $lhs $rhs)  ) (O  (count (count (oracle $lhs $rhs_b) $n) $n ($lhs $rhs)) )    )\n\
+        (exec 6 (,  (count (query_lhs $lhs $rhs_b) $found)  (count (oracle $lhs $rhs_b) $expected) ) (O  (+ (out $lhs $found $expected) ))                           )\n\
+        "
+    );
+    s.metta_calculus(1000000000);
+
+    buf.clear();
+    s.dump_sexpr(expr!(s,"[4] out $ $ $"), expr!(s, "[4] out _1 _2 _3"), unsafe { buf.as_mut_vec() });
+
+    // println!("{}", buf);
+
+    let mut out_ctor : fn(_)->_ = Result::Ok;
+    let mut out_vec = Vec::with_capacity(range[1]-range[0]);
+    for line in  buf.split_terminator('\n') {
+        let mut l    = line.as_bytes().strip_prefix(b"(out ").unwrap().strip_suffix(b")").unwrap();
+        let mut nums = l.split(|&c|c==b' ').flat_map(str::from_utf8).flat_map(str::parse::<u32>);
+        let line     = nums.next().unwrap();
+        let found    = nums.next().unwrap();
+        let expected = nums.next().unwrap();
+        assert!(nums.next().is_none());
+
+        if found != expected { out_ctor = Result::Err }
+
+        out_vec.push(QueryLhsCount { line, found, expected });
+    }
+
+    out_ctor(out_vec)
+}
+
+fn logic_query_ranges() {
+    query_lhs_range_from_big_metta([0,10]).unwrap();
+}
 
 fn logic_query() {
     // return;
@@ -5814,6 +5887,7 @@ fn main() {
 
             process_calculus_reverse();
             issue_43();
+            logic_query_ranges();
             // logic_query(); // possibly faulty test
             meta_ana();
             meta_ana_exec();

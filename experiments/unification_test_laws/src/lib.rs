@@ -1,10 +1,12 @@
+use std::fmt::Write;
 use std::io::Read;
-use std::{fs::read_dir, io::Write};
+use std::{fs::read_dir};
 use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
-use std::path;
+use std::{path, sync};
 
-use mork_expr::{ExprZipper, Unifiable, apply_e};
+use mork::expr;
+use mork_expr::{ExprZipper, apply_e};
 
 // Here we generate two files that are the big.metta files but with line numbers.
 // it makes one mm2 file, and one prolog file at the same time.
@@ -145,33 +147,7 @@ pub fn unify_with_mork_unifier() {
 
     std::fs::create_dir_all(&results);
 
-    let signal = std::sync::atomic::AtomicBool::new(true);
     std::thread::scope(|s|{
-        let (tx,rx) = std::sync::mpsc::channel::<std::cmp::Reverse<(usize, String)>>();
-        let mut cycles_file = std::fs::File::create(manifest.join("tmp/cycles.mm2")).unwrap();
-
-        // this thread is collecting found cycles.
-        // unlike the later code, it only constructs one file.
-        let signal = &signal;
-        let cycles_collection = s.spawn(move || {
-            let mut queue = std::collections::binary_heap::BinaryHeap::new();
-            let mut next = 0;
-            loop {
-                let r = rx.try_recv();
-                if let Ok(r) = r {
-                    queue.push(r);
-                } 
-                if let Some(std::cmp::Reverse((n,_))) = queue.peek() && n == &next {
-                    next += 1;
-                    let top = queue.pop().unwrap();
-                    cycles_file.write_all(top.0.1.as_bytes());
-                    cycles_file.flush();
-                    continue;
-                }
-                if !signal.load(std::sync::atomic::Ordering::Acquire) && queue.is_empty() { break }
-            }
-            cycles_file.flush();
-        });
 
         let mut threads = Vec::new();
         
@@ -180,7 +156,6 @@ pub fn unify_with_mork_unifier() {
             let expr_block = &*expr_block;
             let expr_pos   = &*expr_pos;
             let results    = &results;
-            let tx_clone   = tx.clone();
 
             fn line_and_expr<'a, 'b>(expr_block: &'a[u8], expr_pos: &[usize], nth : usize) -> (&'a [u8],mork_expr::Expr) {
                 // (line 0 ....)
@@ -222,10 +197,8 @@ pub fn unify_with_mork_unifier() {
                 for each_other in 0..expr_pos.len() - 1 {
                     use std::fmt::Write;
                     let (e_r_line_str, e_r_) = line_and_expr(expr_block, expr_pos, each_other);
-                    match mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
-                        Unifiable::Unifies => { unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; }
-                        Unifiable::Cycles  => { unsafe { writeln!(cycles_out_string,"(cycles {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; }
-                         _ => {}
+                    if mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
+                        unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; 
                     }
                  }
 
@@ -244,8 +217,6 @@ pub fn unify_with_mork_unifier() {
                 let mut out_file = std::fs::File::create(core::str::from_utf8(&path[0..path_len]).unwrap()).unwrap();
 
                 std::io::Write::write_all(&mut out_file,out_string.as_bytes()).unwrap();
-
-                tx_clone.send(std::cmp::Reverse((each, cycles_out_string)));
 
             })));
 
@@ -267,8 +238,6 @@ pub fn unify_with_mork_unifier() {
             let _ = t.join().unwrap();
             println!("JOINED : {}", n);
         }
-        signal.store(false, std::sync::atomic::Ordering::Release);
-        cycles_collection.join();
     });
 }
 
@@ -410,22 +379,77 @@ pub fn cycles_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug,Clone, Copy)]
+struct QueryLhsCount { line : u32, found : u32, expected : u32 }
+pub fn query_lhs_range_from_big_metta(range : [usize;2]) -> Result< Vec<QueryLhsCount>, Vec<QueryLhsCount>>  {
+    if range[1]-range[0] == 0 {return Result::Ok( Vec::new());}
+    core::assert!(range[0] <= range[1]);
+    core::assert!(range[1] <= 100001);
+    
+    let mut lhs_range = range;
+    let mut rhs_range = [0,100000];
 
-
-
-#[test]
-fn hit_cycles() {
+    let manefest = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
+    
     let mut s = mork::space::Space::new();
-    let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let mut buf = String::new();
-    let big_metta = std::fs::File::open(manefest.join("tmp/big_.metta")).unwrap().read_to_string(&mut buf);
+    let mut buf = String::with_capacity(10000000);
+    macro_rules! load {() => {{
+            s.add_all_sexpr(buf.as_bytes());
+            buf.clear();
+    }};}
+    
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated.metta")).unwrap().read_to_string(&mut buf);
+    load!();
 
-    s.add_all_sexpr(buf.as_bytes());
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated_unification_results_oracle.metta")).unwrap().read_to_string(&mut buf);
+    load!();
 
-    s.add_all_sexpr(b"(exec 0 (, (line 1 $a) (line $m $a)) (, (unifies 1 $m)))");
+    std::fmt::write(&mut buf, std::format_args!("(bounds (lhs ({} .. {})) (rhs ({} .. {})))", lhs_range[0], lhs_range[1], rhs_range[0], rhs_range[1]));
+    load!();
+
+    for each in lhs_range[0]..lhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(lhs {})", each)); }
+    load!();
+
+    for each in rhs_range[0]..rhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(rhs {})", each)); }
+    load!();
+
+    s.add_all_sexpr(b"\n\
+        (exec 0 (,  (lhs $lhs)  (rhs $rhs)  (line $lhs $a)  (line $rhs $a)                         ) (,  (result $lhs $rhs)  )                                       )\n\
+        (exec 1 (,  (bounds $l ($r $rhs_b))  (result $lhs $rhs)                                    ) (O  (count (count (query_lhs $lhs $rhs_b) $n) $n ($lhs $rhs)) ) )\n\
+        (exec 2 (,  (bounds $l ($r $rhs_b))  (lhs $lhs)                                            ) (,  (count (query_lhs $lhs $rhs_b) 0)  )                        )\n\
+        (exec 3 (,  (count (query_lhs $lhs $rhs_b) $n)                                             ) (O  (+ (non-zero-count $n) )  (- (non-zero-count  0) )  )       )\n\
+        (exec 4 (,  (non-zero-count $n)  (count (query_lhs $lhs $rhs_b) $n)                        ) (O  (- (count (query_lhs $lhs $rhs_b) 0) )  )                   )\n\
+        (exec 5 (,  (bounds ($l $lhs_b) ($r $rhs_b))  (lhs $lhs)  (rhs $rhs)  (unifies $lhs $rhs)  ) (O  (count (count (oracle $lhs $rhs_b) $n) $n ($lhs $rhs)) )    )\n\
+        (exec 6 (,  (count (query_lhs $lhs $rhs_b) $found)  (count (oracle $lhs $rhs_b) $expected) ) (O  (+ (out $lhs $found $expected) ))                           )\n\
+        "
+    );
     s.metta_calculus(1000000000);
 
+    buf.clear();
+    s.dump_sexpr(expr!(s,"[4] out $ $ $"), expr!(s, "[4] out _1 _2 _3"), unsafe { buf.as_mut_vec() });
 
+    println!("{}", buf);
 
+    let mut out_ctor : fn(_)->_ = Result::Ok;
+    let mut out_vec = Vec::with_capacity(range[1]-range[0]);
+    for line in  buf.split_terminator('\n') {
+        let mut l    = line.as_bytes().strip_prefix(b"(out ").unwrap().strip_suffix(b")").unwrap();
+        let mut nums = l.split(|&c|c==b' ').flat_map(str::from_utf8).flat_map(str::parse::<u32>);
+        let line     = nums.next().unwrap();
+        let found    = nums.next().unwrap();
+        let expected = nums.next().unwrap();
+        assert!(nums.next().is_none());
+
+        if found != expected { out_ctor = Result::Err }
+
+        out_vec.push(QueryLhsCount{ line, found, expected });
+    }
+
+    out_ctor(out_vec)
+}
+
+#[test]
+fn range_test() {
+    query_lhs_range_from_big_metta([0,20]).unwrap();
 }

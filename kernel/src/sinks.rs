@@ -224,7 +224,7 @@ impl Sink for USink {
                 &mut self.tmp_expr_env, 
                 &mut self.tmp_stack,
                 &mut self.tmp_assignments
-            ).unifies() {
+            ) {
                 self.conflict = true;
                 return;
             }

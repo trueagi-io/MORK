@@ -1,11 +1,15 @@
-use std::fs::read_dir;
-use std::num::NonZeroUsize;
 use std::fmt::Write;
+use std::io::Read;
+use std::{fs::read_dir};
+use std::num::NonZeroUsize;
 use std::os::unix::ffi::OsStrExt;
-use std::path;
+use std::{path, sync};
 
+use mork::expr;
 use mork_expr::{ExprZipper, apply_e};
 
+// Here we generate two files that are the big.metta files but with line numbers.
+// it makes one mm2 file, and one prolog file at the same time.
 pub fn convert_and_add_line_numbers_big_metta() {
     use std::{io::{Read, Write}};
 
@@ -139,12 +143,6 @@ pub fn unify_with_mork_unifier() {
 
     let threads_max = std::thread::available_parallelism().unwrap_or(unsafe { NonZeroUsize::new_unchecked(1) }).get();
 
-    let mut outputs = Vec::with_capacity(expr_pos.len()-1);
-    for each in 0..expr_pos.len() - 1 {
-        outputs.push(String::new());
-    }
-
-
     let range  = 0..expr_pos.len()-1;
 
     std::fs::create_dir_all(&results);
@@ -156,8 +154,8 @@ pub fn unify_with_mork_unifier() {
         for each in range.clone()
         {
             let expr_block = &*expr_block;
-            let expr_pos = &*expr_pos;
-            let results = &results;
+            let expr_pos   = &*expr_pos;
+            let results    = &results;
 
             fn line_and_expr<'a, 'b>(expr_block: &'a[u8], expr_pos: &[usize], nth : usize) -> (&'a [u8],mork_expr::Expr) {
                 // (line 0 ....)
@@ -172,6 +170,7 @@ pub fn unify_with_mork_unifier() {
                     ,  b'e'
                     ]
                 };
+
                 const NUM_TAG_POS : usize = HEADER.len();
                 const NUM_POS     : usize = NUM_TAG_POS+1;
 
@@ -187,18 +186,20 @@ pub fn unify_with_mork_unifier() {
             }
             threads.push((each, s.spawn(move ||{
                 let mut out_string = String::with_capacity(32);
+                let mut cycles_out_string = String::with_capacity(32);
             
                 let (e_l_line_str, e_l_) = line_and_expr(expr_block, expr_pos, each);
                 
 
-                let mut stack       : Vec<(u8, u8)>           = Vec::new();
-                let mut assignments : Vec<(u8, u8)>           = Vec::new();
+                let mut stack       : Vec<(u8, u8)>                                 = Vec::new();
+                let mut assignments : Vec<(u8, u8)>                                 = Vec::new();
                 let mut expr_env    : Vec<(mork_expr::ExprEnv, mork_expr::ExprEnv)> = Vec::new();
                 for each_other in 0..expr_pos.len() - 1 {
+                    use std::fmt::Write;
                     let (e_r_line_str, e_r_) = line_and_expr(expr_block, expr_pos, each_other);
-                    if  mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
-                         unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) };
-                     }
+                    if mork_expr::unifiable_reuse_state(e_l_, e_r_, &mut expr_env, &mut stack, &mut assignments) {
+                        unsafe { writeln!(out_string,"(unifies {} {})", core::str::from_utf8_unchecked(e_l_line_str), core::str::from_utf8_unchecked(e_r_line_str)) }; 
+                    }
                  }
 
                 const FILE_NAME_PREFIX : &[u8] = b"axiom_";
@@ -217,7 +218,6 @@ pub fn unify_with_mork_unifier() {
 
                 std::io::Write::write_all(&mut out_file,out_string.as_bytes()).unwrap();
 
-                out_string
             })));
 
             // we keep the number of live threads bounded
@@ -225,8 +225,7 @@ pub fn unify_with_mork_unifier() {
             while threads.len() >= threads_max {
                 if threads[choice].1.is_finished() {
                     let (n, t) = threads.remove(choice);
-                    let unifications = t.join().unwrap();
-                    outputs[n] = unifications;
+                    let _ = t.join().unwrap();
                     println!("JOINED : {}", n);
                     break;
                 }
@@ -236,8 +235,7 @@ pub fn unify_with_mork_unifier() {
 
         // close off the remaining threads
         for (n,t) in threads {
-            let unifications = t.join().unwrap();
-            outputs[n] = unifications;
+            let _ = t.join().unwrap();
             println!("JOINED : {}", n);
         }
     });
@@ -245,23 +243,23 @@ pub fn unify_with_mork_unifier() {
 
 
 
-
-pub fn results_to_single_file() -> std::io::Result<()> {
+/// collectes the results of the unifications into a single file for each tmp result folder.
+pub fn results_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
     use std::{io::{Read, Write}};
     let mut collect = Vec::new();
 
     let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     let tmp = manefest.join("tmp");
-    
-    for unifier in ["mork", "prolog"] {
+
+    for unifier in tmp_folders {
         let dir_path = tmp.join(unifier);
         let results_dir = dir_path.join("results");
         for each in std::fs::read_dir(results_dir)? {
             let file = each.unwrap();
             let f_name = file.file_name();
             let name = f_name.to_str().unwrap();
-            assert!(name.starts_with("axiom_"));
+            assert!(name.starts_with("axiom_") || name.starts_with("axioms_"));
             assert!(name.ends_with(".metta"));
 
             let contents = std::fs::read_to_string(file.path()).unwrap();
@@ -277,16 +275,181 @@ pub fn results_to_single_file() -> std::io::Result<()> {
         }
 
         collect.sort_by(|[l0,l1],[r0,r1]| l0.cmp(r0).then(l1.cmp(r1)));
+        collect.dedup();
 
         let out_path = dir_path.join("all_results.metta");
+        println!("!! {:?}", out_path);
+        
         let mut out_file = std::fs::File::create(out_path).unwrap();
         for [l,r] in &collect {
             write!(out_file, "(unifies {} {})\n", l,r).unwrap()
         }
+
+
+
+        collect.push([usize::MAX,usize::MAX]);
+        let out_path_counts = dir_path.join("all_results_counts.metta");
+        let mut out_file_counts = std::fs::File::create(out_path_counts).unwrap();
+        collect.iter().fold((None, 0), |(cur,count),&[line_left,line_right]| {
+            if Some(line_left) == cur {
+                (cur, count+1)
+            } 
+            else {
+                if let Some(line) = cur {
+                    write!(out_file_counts, "(unifies-count {} {})\n", line,count).unwrap();
+                } 
+                (Some(line_left), 1)
+            }
+        });
+        collect.pop(/* remove dummy */);
 
         collect.clear();
         out_file.flush().unwrap();
 
     }
     Ok(())
+}
+
+
+
+
+/// this a slightly modified version of `esults_to_single_file`, but for the cycles instead of unifications.
+pub fn cycles_to_single_file(tmp_folders : &[&str]) -> std::io::Result<()> {
+    use std::{io::{Read, Write}};
+    let mut collect = Vec::new();
+
+    let manefest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let tmp = manefest.join("tmp");
+
+    for unifier in tmp_folders {
+        let dir_path = tmp.join(unifier);
+        let results_dir = dir_path.join("results");
+        for each in std::fs::read_dir(results_dir)? {
+            let file = each.unwrap();
+            let f_name = file.file_name();
+            let name = f_name.to_str().unwrap();
+            assert!(name.starts_with("axiom_") || name.starts_with("axioms_"));
+            assert!(name.ends_with(".metta"));
+
+            let contents = std::fs::read_to_string(file.path()).unwrap();
+
+            for each in  contents.split_terminator('\n') {
+                let strip_parens = &each[1..each.len()-1];
+                let mut tokens = strip_parens.split_ascii_whitespace();
+                let Some("cycles") = tokens.next() else {panic!()};
+                let left  : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+                let right : usize = tokens.next().unwrap().parse::<usize>().unwrap();
+                collect.push([left,right]);
+            };
+        }
+
+        collect.sort_by(|[l0,l1],[r0,r1]| l0.cmp(r0).then(l1.cmp(r1)));
+        collect.dedup();
+
+        let out_path = dir_path.join("all_cycles.metta");
+        println!("!! {:?}", out_path);
+        
+        let mut out_file = std::fs::File::create(out_path).unwrap();
+        for [l,r] in &collect {
+            write!(out_file, "(cycles {} {})\n", l,r).unwrap()
+        }
+
+
+        collect.push([usize::MAX,usize::MAX]);
+        let out_path_counts = dir_path.join("all_cycles_counts.metta");
+        let mut out_file_counts = std::fs::File::create(out_path_counts).unwrap();
+        collect.iter().fold((None, 0), |(cur,count),&[line_left,line_right]| {
+            if Some(line_left) == cur {
+                (cur, count+1)
+            } 
+            else {
+                if let Some(line) = cur {
+                    write!(out_file_counts, "(cycles-count {} {})\n", line,count).unwrap();
+                } 
+                (Some(line_left), 1)
+            }
+        });
+        collect.pop(/* remove dummy */);
+
+        collect.clear();
+        out_file.flush().unwrap();
+
+    }
+    Ok(())
+}
+
+#[derive(Debug,Clone, Copy)]
+struct QueryLhsCount { line : u32, found : u32, expected : u32 }
+pub fn query_lhs_range_from_big_metta(range : [usize;2]) -> Result< Vec<QueryLhsCount>, Vec<QueryLhsCount>>  {
+    if range[1]-range[0] == 0 {return Result::Ok( Vec::new());}
+    core::assert!(range[0] <= range[1]);
+    core::assert!(range[1] <= 100001);
+    
+    let mut lhs_range = range;
+    let mut rhs_range = [0,100000];
+
+    let manefest = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
+    
+    let mut s = mork::space::Space::new();
+
+    let mut buf = String::with_capacity(10000000);
+    macro_rules! load {() => {{
+            s.add_all_sexpr(buf.as_bytes());
+            buf.clear();
+    }};}
+    
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated.metta")).unwrap().read_to_string(&mut buf);
+    load!();
+
+    std::fs::File::open(manefest.join("kernel/resources/big_enumerated_unification_results_oracle.metta")).unwrap().read_to_string(&mut buf);
+    load!();
+
+    std::fmt::write(&mut buf, std::format_args!("(bounds (lhs ({} .. {})) (rhs ({} .. {})))", lhs_range[0], lhs_range[1], rhs_range[0], rhs_range[1]));
+    load!();
+
+    for each in lhs_range[0]..lhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(lhs {})", each)); }
+    load!();
+
+    for each in rhs_range[0]..rhs_range[1] { std::fmt::write(&mut buf, std::format_args!("(rhs {})", each)); }
+    load!();
+
+    s.add_all_sexpr(b"\n\
+        (exec 0 (,  (lhs $lhs)  (rhs $rhs)  (line $lhs $a)  (line $rhs $a)                         ) (,  (result $lhs $rhs)  )                                       )\n\
+        (exec 1 (,  (bounds $l ($r $rhs_b))  (result $lhs $rhs)                                    ) (O  (count (count (query_lhs $lhs $rhs_b) $n) $n ($lhs $rhs)) ) )\n\
+        (exec 2 (,  (bounds $l ($r $rhs_b))  (lhs $lhs)                                            ) (,  (count (query_lhs $lhs $rhs_b) 0)  )                        )\n\
+        (exec 3 (,  (count (query_lhs $lhs $rhs_b) $n)                                             ) (O  (+ (non-zero-count $n) )  (- (non-zero-count  0) )  )       )\n\
+        (exec 4 (,  (non-zero-count $n)  (count (query_lhs $lhs $rhs_b) $n)                        ) (O  (- (count (query_lhs $lhs $rhs_b) 0) )  )                   )\n\
+        (exec 5 (,  (bounds ($l $lhs_b) ($r $rhs_b))  (lhs $lhs)  (rhs $rhs)  (unifies $lhs $rhs)  ) (O  (count (count (oracle $lhs $rhs_b) $n) $n ($lhs $rhs)) )    )\n\
+        (exec 6 (,  (count (query_lhs $lhs $rhs_b) $found)  (count (oracle $lhs $rhs_b) $expected) ) (O  (+ (out $lhs $found $expected) ))                           )\n\
+        "
+    );
+    s.metta_calculus(1000000000);
+
+    buf.clear();
+    s.dump_sexpr(expr!(s,"[4] out $ $ $"), expr!(s, "[4] out _1 _2 _3"), unsafe { buf.as_mut_vec() });
+
+    println!("{}", buf);
+
+    let mut out_ctor : fn(_)->_ = Result::Ok;
+    let mut out_vec = Vec::with_capacity(range[1]-range[0]);
+    for line in  buf.split_terminator('\n') {
+        let mut l    = line.as_bytes().strip_prefix(b"(out ").unwrap().strip_suffix(b")").unwrap();
+        let mut nums = l.split(|&c|c==b' ').flat_map(str::from_utf8).flat_map(str::parse::<u32>);
+        let line     = nums.next().unwrap();
+        let found    = nums.next().unwrap();
+        let expected = nums.next().unwrap();
+        assert!(nums.next().is_none());
+
+        if found != expected { out_ctor = Result::Err }
+
+        out_vec.push(QueryLhsCount{ line, found, expected });
+    }
+
+    out_ctor(out_vec)
+}
+
+#[test]
+fn range_test() {
+    query_lhs_range_from_big_metta([0,20]).unwrap();
 }

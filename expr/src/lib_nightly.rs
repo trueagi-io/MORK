@@ -264,7 +264,6 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
         }
     }
 }
-
 /// NOTE : expr_env, stack, assignments are cleared when this is called
 #[inline(always)]
 pub fn unifiable_reuse_state(left : Expr, right : Expr, mut expr_env : &mut Vec<(ExprEnv, ExprEnv)>, mut stack : &mut Vec<(u8, u8)>, mut assignments : &mut Vec<(u8, u8)>)->bool {
@@ -283,12 +282,12 @@ pub fn unifies_reuse_state<W>(
     mut expr_env    : &mut Vec<(ExprEnv, ExprEnv)>,
     mut stack       : &mut Vec<(u8, u8)>,
     mut assignments : &mut Vec<(u8, u8)>
-)->bool where W : std::io::Write {
+)-> bool where W : std::io::Write {
     expr_env.clear();
     expr_env.extend_from_slice(&[(ExprEnv::new(0, left), ExprEnv::new(1, right))]);
     let out = match crate::unify(expr_env) {
         Ok(bindings) => crate::apply_e_clears_stacks_and_cycles_check!(0,0,0, left, &bindings, sink, stack, assignments).2,
-        Err(_) => false,
+        Err(_)       => false,
     };
     expr_env.clear();
     out

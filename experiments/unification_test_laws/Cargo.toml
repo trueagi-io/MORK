@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 mork = {workspace = true}
+mork-frontend = {workspace = true}
 distr-combinators = {git = "https://github.com/luketpeterson/distr-combinators.git"}
 rand = "0.9.1" # the api is still depending on the old version
 mork-expr = { workspace=true }
+pathmap = { workspace = true, features = ["nightly"] }

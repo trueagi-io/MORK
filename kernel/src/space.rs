@@ -122,12 +122,14 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
 
             match byte_item(e_byte) {
                 Tag::NewVar => {
-                    if e.n == 0 {
-                        references.push(loc.path().len() as u32);
-                    } else {
-                        trace!(target: "coref trans", "not putting {} {}", e.n, e.show());
-                        // trace!(target: "coref trans", "not putting against {:?}", loc.child_mask());
-                    }
+                    let restore = if e.n == 0 {
+                        let idx = e.v as usize;
+                        if references.len() <= idx { references.resize(idx + 1, u32::MAX) }
+                        let prev = references[idx];
+                        references[idx] = loc.path().len() as u32;
+                        Some((idx, prev))
+                    } else { None };
+
                     vs!(e, true);
 
                     let m = loc.child_mask().and(&ByteMask(SIZES));
@@ -158,11 +160,10 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         if !loc.ascend_byte() { unreachable_unchecked() };
                     }
 
-                    if e.n == 0 { references.pop(); }
+                    if let Some((idx, prev)) = restore { references[idx] = prev; }
                 }
                 Tag::VarRef(i) => {
-                    // let addition = if e.n == 0 && references[i as usize] != u32::MAX {
-                    let addition = if e.n == 0 {
+                    let addition = if e.n == 0 && (i as usize) < references.len() && references[i as usize] != u32::MAX {
                         if i as usize >= references.len() {
                             trace!(target: "coref trans", "i {i} #references {}", references.len());
                             stack.push(e);
@@ -938,12 +939,12 @@ impl Space {
                     buffer.clear();
 
                     let (oi, ni, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0, pattern, bindings, buffer, stack, assignments)
-                    else { break 'query false};
+                    else { break 'query true};
 
                     buffer.clear();
 
                     let (_,_,true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni, template, bindings, buffer, stack, assignments)
-                    else { break 'query false;};
+                    else { break 'query true;};
                 }
             }
 
@@ -1377,7 +1378,7 @@ impl Space {
                     let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
                         mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query false;};
+                    }) else {break 'query true;};
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
@@ -1452,7 +1453,7 @@ impl Space {
                     let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
                         mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query false;};
+                    }) else {break 'query true;};
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
@@ -1535,7 +1536,7 @@ impl Space {
                     let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
                         mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query false;};
+                    }) else {break 'query true;};
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
@@ -1621,7 +1622,7 @@ impl Space {
                     let (mut oi, ni, true) = ({
                         let mut void = std::io::sink();
                         mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query false;};
+                    }) else {break 'query true;};
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };

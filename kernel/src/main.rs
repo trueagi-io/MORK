@@ -758,6 +758,48 @@ fn func_type_unification() {
     assert!(res.contains("(c OK)\n"));
 }
 
+fn coref_absorbed_by_data_varref() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(f $a $a y)
+(exec 0 (, (f $w (g $x) $x)) (, (RESULT $w $x)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let steps = s.metta_calculus(1000000000000000);
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("coref_absorbed_by_data_varref steps {} result:\n{res}", steps);
+    assert!(res.contains("(RESULT (g y) y)\n"));
+}
+
+fn data_varref_absorbs_query_compound_newvars() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(→ $a $a)
+(h y)
+(exec 0
+      (, (→ $w (g $x))
+         (h $x))
+      (, OK))
+"#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    s.metta_calculus(1000000000000000);
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    assert!(res.contains("OK\n"));
+}
+
 fn issue_43() {
     let mut s = Space::new();
 
@@ -6051,7 +6093,9 @@ fn main() {
             two_positive_equal();
             two_positive_equal_crossed();
             two_bipolar_equal_crossed();
-            // func_type_unification(); // failing!
+            func_type_unification();
+            coref_absorbed_by_data_varref();
+            data_varref_absorbs_query_compound_newvars();
             top_level_match();
             large_statement();
 

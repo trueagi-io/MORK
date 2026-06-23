@@ -6,7 +6,8 @@ use crate::arrangements::{
 use crate::binding_env::MAX_BINDING_SLOTS;
 use crate::binding_space::{
     generic_join, trie_join, trie_join_trace, BindingRelation, BindingRelationError, BindingVar,
-    TrieJoinStats, TrieJoinTrace, TrieJoinTraceReplayDiff, TrieJoinTraceShapeError,
+    TrieJoinCursorContract, TrieJoinStats, TrieJoinTrace, TrieJoinTraceReplayDiff,
+    TrieJoinTraceShapeError,
 };
 use crate::expression_trie::{ExpressionTrieError, ExpressionTrieIndex};
 use crate::term_identity::{TermId, TermIdentitySidecar};
@@ -180,6 +181,16 @@ pub struct BindingSidecarTrieTraceDiffReport {
     pub new: BindingSidecarTrieTraceReport,
     /// Replay-shape diff when both snapshots select the trie-backed kernel.
     pub replay_diff: Option<TrieJoinTraceReplayDiff>,
+}
+
+/// Explain-only cursor contract for a selected trie-backed sidecar execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarTrieCursorContractReport {
+    /// Planner analysis and selected execution kernel.
+    pub execution: BindingSidecarExecutionReport,
+    /// Per-factor cursor contract when the selected kernel is trie-backed;
+    /// `None` when the selector conservatively keeps Generic Join.
+    pub cursor_contract: Option<TrieJoinCursorContract>,
 }
 
 /// Analysis of a sidecar join plan before choosing a production join kernel.
@@ -462,6 +473,30 @@ impl BindingSidecarPlan {
             old,
             new,
             replay_diff,
+        })
+    }
+
+    /// Explains the selected execution and, when trie-backed, returns the
+    /// per-factor cursor contract a future PathMap/ReadZipper-backed kernel
+    /// must reproduce.
+    ///
+    /// The final join is not executed. This is a bridge artifact between the
+    /// sidecar LFTJ trace and a future physical zipper-factor implementation.
+    pub fn explain_selected_trie_cursor_contract(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarTrieCursorContractReport, BindingSidecarPlanError> {
+        let report = self.explain_selected_trie_trace(sidecar)?;
+        let cursor_contract = report
+            .trie_trace
+            .as_ref()
+            .map(TrieJoinTrace::cursor_contract)
+            .transpose()
+            .map_err(BindingSidecarPlanError::TraceShape)?;
+
+        Ok(BindingSidecarTrieCursorContractReport {
+            execution: report.execution,
+            cursor_contract,
         })
     }
 
@@ -1021,6 +1056,72 @@ mod tests {
     }
 
     #[test]
+    fn selected_trie_cursor_contract_names_factor_replay_contexts_without_joining() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice Bob)
+(edge Bob Carol)
+(edge Alice Dana)
+(edge Dana Carol)
+(edge Carol Erin)
+(edge X Y)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let edge = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
+            .unwrap();
+
+        let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
+        let xy = BindingAccessPlan::Arrangement {
+            descriptor: descriptor.clone(),
+            projection: ArrangementProjection::new(2, [BindingVar(0), BindingVar(1)], [0, 1])
+                .unwrap(),
+        };
+        let yz = BindingAccessPlan::Arrangement {
+            descriptor,
+            projection: ArrangementProjection::new(2, [BindingVar(1), BindingVar(2)], [0, 1])
+                .unwrap(),
+        };
+        let plan = BindingSidecarPlan::new([xy, yz], [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let report = plan
+            .explain_selected_trie_cursor_contract(&sidecar)
+            .unwrap();
+        let product_pattern = crate::expr!(space, "[3] , [3] edge $ $ [3] edge _2 $");
+        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+        let contract = report.cursor_contract.unwrap();
+
+        assert_eq!(
+            report.execution.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(report.execution.analysis.stats.output_rows, 0);
+        assert_eq!(contract.summary.candidate_bindings, product_count);
+        assert_eq!(contract.relation_indexes, 2);
+        assert_eq!(contract.factor_requirements.len(), 2);
+        assert_eq!(contract.factor_requirements[0].relation_index, 0);
+        assert_eq!(contract.factor_requirements[0].domain_contexts, 4);
+        assert_eq!(contract.factor_requirements[1].relation_index, 1);
+        assert_eq!(contract.factor_requirements[1].domain_contexts, 5);
+        assert_eq!(
+            contract.factor_requirements[0].contexts[0]
+                .bound_prefix
+                .as_ref(),
+            []
+        );
+        assert_eq!(
+            contract.factor_requirements[0].contexts[0].variable,
+            BindingVar(1)
+        );
+    }
+
+    #[test]
     fn selected_trie_trace_diff_compares_sidecar_snapshots_without_joining() {
         let (mut space, old_sidecar, edge) = transitive_edge_sidecar();
         let alice = old_sidecar
@@ -1101,6 +1202,15 @@ mod tests {
             BindingSidecarExecutionReason::SmallExplicitInput
         );
         assert_eq!(report.trie_trace, None);
+
+        let cursor_report = plan
+            .explain_selected_trie_cursor_contract(&sidecar)
+            .unwrap();
+        assert_eq!(
+            cursor_report.execution.choice.kernel,
+            BindingSidecarExecutionKernel::GenericJoin
+        );
+        assert_eq!(cursor_report.cursor_contract, None);
     }
 
     #[test]

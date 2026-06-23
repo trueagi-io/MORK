@@ -279,6 +279,55 @@ pub struct TrieJoinTraceSummary {
     pub cursor_nexts: usize,
 }
 
+/// Cursor contract extracted from a validated trie-join trace.
+///
+/// This is the checklist a future PathMap/ReadZipper-backed relation factor
+/// must satisfy for the same variable order: for each relation index, open the
+/// listed bound-prefix contexts and expose ordered domains with the recorded
+/// cardinalities. The contract is diagnostic only; it does not execute or
+/// maintain join answers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinCursorContract {
+    /// Aggregate trace summary validated before the contract was built.
+    pub summary: TrieJoinTraceSummary,
+    /// Number of relation factors represented by the trace.
+    pub relation_indexes: usize,
+    /// Per-relation cursor requirements.
+    pub factor_requirements: Box<[TrieJoinFactorCursorRequirement]>,
+}
+
+/// Cursor contexts required from one relation factor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinFactorCursorRequirement {
+    /// Relation/factor index in the opened sidecar plan.
+    pub relation_index: usize,
+    /// Domain contexts this factor must expose during replay.
+    pub contexts: Box<[TrieJoinFactorCursorContext]>,
+    /// Number of domain contexts for this factor.
+    pub domain_contexts: usize,
+    /// Total domain values observed across those contexts.
+    pub domain_values: usize,
+    /// Largest domain required from this factor.
+    pub max_domain_len: usize,
+}
+
+/// One variable-depth domain opening required from a relation factor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinFactorCursorContext {
+    /// Original trace step index.
+    pub step_index: usize,
+    /// Depth in the global variable order.
+    pub level: usize,
+    /// Variable whose ordered domain is opened at this context.
+    pub variable: BindingVar,
+    /// Values already bound before opening this domain.
+    pub bound_prefix: BindingRow,
+    /// Number of values the factor exposed before intersection.
+    pub domain_len: usize,
+    /// Number of values that survived the multi-factor intersection.
+    pub intersection_len: usize,
+}
+
 /// Replayable prefix tree reconstructed from a trie-join trace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrieJoinTraceReplayShape {
@@ -833,6 +882,62 @@ impl TrieJoinTrace {
         Ok(TrieJoinTraceReplayShape {
             summary,
             root: Some(root),
+        })
+    }
+
+    /// Builds the per-factor cursor contract implied by this trace.
+    ///
+    /// This first reconstructs the replay shape, so callers get the stronger
+    /// preorder and candidate-count validation rather than only step-local
+    /// metadata checks.
+    pub fn cursor_contract(&self) -> Result<TrieJoinCursorContract, TrieJoinTraceShapeError> {
+        let replay = self.replay_shape()?;
+        let mut contexts_by_relation = BTreeMap::<usize, Vec<TrieJoinFactorCursorContext>>::new();
+
+        for (step_index, step) in self.steps.iter().enumerate() {
+            for (&relation_index, &domain_len) in step
+                .participating_relations
+                .iter()
+                .zip(step.relation_domain_lens.iter())
+            {
+                contexts_by_relation
+                    .entry(relation_index)
+                    .or_default()
+                    .push(TrieJoinFactorCursorContext {
+                        step_index,
+                        level: step.level,
+                        variable: step.variable,
+                        bound_prefix: step.bound_prefix.clone(),
+                        domain_len,
+                        intersection_len: step.intersection.len(),
+                    });
+            }
+        }
+
+        let factor_requirements = contexts_by_relation
+            .into_iter()
+            .map(|(relation_index, contexts)| {
+                let domain_values = contexts.iter().map(|context| context.domain_len).sum();
+                let max_domain_len = contexts
+                    .iter()
+                    .map(|context| context.domain_len)
+                    .max()
+                    .unwrap_or(0);
+                TrieJoinFactorCursorRequirement {
+                    relation_index,
+                    domain_contexts: contexts.len(),
+                    contexts: contexts.into_boxed_slice(),
+                    domain_values,
+                    max_domain_len,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
+        Ok(TrieJoinCursorContract {
+            summary: replay.summary,
+            relation_indexes: self.relation_indexes,
+            factor_requirements,
         })
     }
 
@@ -1782,6 +1887,55 @@ mod tests {
 
         assert_eq!(replay.impact_for_bound_prefix(&[t(20)]), None);
         assert_eq!(replay.impact_for_bound_prefix(&[t(10), t(3)]), None);
+    }
+
+    #[test]
+    fn trie_join_trace_cursor_contract_lists_per_factor_replay_contexts() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10], &[3, 20]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101], &[30, 300]]);
+        let variable_order = [v(1), v(0), v(2)];
+
+        let trace = trie_join_trace(&[left, right], &variable_order).unwrap();
+        let contract = trace.cursor_contract().unwrap();
+
+        assert_eq!(contract.summary, trace.summarize().unwrap());
+        assert_eq!(contract.relation_indexes, 2);
+        assert_eq!(contract.factor_requirements.len(), 2);
+
+        let left_factor = &contract.factor_requirements[0];
+        assert_eq!(left_factor.relation_index, 0);
+        assert_eq!(left_factor.domain_contexts, 2);
+        assert_eq!(left_factor.domain_values, 4);
+        assert_eq!(left_factor.max_domain_len, 2);
+        assert_eq!(left_factor.contexts[0].step_index, 0);
+        assert_eq!(left_factor.contexts[0].variable, v(1));
+        assert_eq!(left_factor.contexts[0].bound_prefix.as_ref(), []);
+        assert_eq!(left_factor.contexts[0].domain_len, 2);
+        assert_eq!(left_factor.contexts[0].intersection_len, 1);
+        assert_eq!(left_factor.contexts[1].step_index, 1);
+        assert_eq!(left_factor.contexts[1].variable, v(0));
+        assert_eq!(left_factor.contexts[1].bound_prefix.as_ref(), [t(10)]);
+
+        let right_factor = &contract.factor_requirements[1];
+        assert_eq!(right_factor.relation_index, 1);
+        assert_eq!(right_factor.domain_contexts, 3);
+        assert_eq!(right_factor.domain_values, 6);
+        assert_eq!(right_factor.max_domain_len, 2);
+        assert_eq!(right_factor.contexts[0].step_index, 0);
+        assert_eq!(right_factor.contexts[0].variable, v(1));
+        assert_eq!(right_factor.contexts[0].bound_prefix.as_ref(), []);
+        assert_eq!(right_factor.contexts[1].step_index, 2);
+        assert_eq!(right_factor.contexts[1].variable, v(2));
+        assert_eq!(
+            right_factor.contexts[1].bound_prefix.as_ref(),
+            [t(10), t(1)]
+        );
+        assert_eq!(right_factor.contexts[2].step_index, 3);
+        assert_eq!(right_factor.contexts[2].variable, v(2));
+        assert_eq!(
+            right_factor.contexts[2].bound_prefix.as_ref(),
+            [t(10), t(2)]
+        );
     }
 
     #[test]

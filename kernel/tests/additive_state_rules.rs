@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use mork::critical_pairs::{
-    Term, ground_facts_from_mm2_program, saturate_additive_state, state_rule_successors,
-    state_rules_from_mm2_program,
+    Term, ground_facts_from_mm2_program, saturate_additive_state, saturate_additive_state_report,
+    state_rule_successors, state_rules_from_mm2_program,
 };
 
 fn fact(name: &str, args: &[&str]) -> Term {
@@ -103,4 +103,32 @@ fn mm2_state_rule_analyzer_saturates_transitive_program_facts() {
     assert!(saturated.contains(&fact("edge", &["london", "istanbul"])));
     assert!(saturated.contains(&fact("edge", &["st-petersburg", "paris"])));
     assert!(saturated.contains(&fact("triangle", &["paris", "st-petersburg", "london"],)));
+}
+
+#[test]
+fn additive_saturation_report_tracks_convergence_and_growth() {
+    let program = r#"
+(edge a b)
+(edge b c)
+
+(exec transitive
+  (, (edge $x $y) (edge $y $z))
+  (O (+ (edge $x $z))))
+"#;
+    let rules = state_rules_from_mm2_program(program).expect("program should parse");
+    let initial = ground_facts_from_mm2_program(program).expect("initial facts should parse");
+
+    let report = saturate_additive_state_report(initial.clone(), &rules, 4);
+    let truncated = saturate_additive_state_report(initial, &rules, 0);
+
+    assert_eq!(report.initial_facts, 2);
+    assert_eq!(report.final_facts, 3);
+    assert_eq!(report.derived_facts, 1);
+    assert_eq!(report.rounds_executed, 2);
+    assert!(report.converged);
+    assert!(report.state.contains(&fact("edge", &["a", "c"])));
+
+    assert_eq!(truncated.final_facts, 2);
+    assert_eq!(truncated.rounds_executed, 0);
+    assert!(!truncated.converged);
 }

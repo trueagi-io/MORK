@@ -175,6 +175,16 @@ pub struct StateStep {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdditiveSaturationReport {
+    pub state: BTreeSet<Term>,
+    pub initial_facts: usize,
+    pub final_facts: usize,
+    pub derived_facts: usize,
+    pub rounds_executed: usize,
+    pub converged: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CriticalPairWitness {
     pub outer_rule: String,
     pub inner_rule: String,
@@ -358,20 +368,43 @@ pub fn saturate_additive_state(
     rules: &[StateRule],
     max_rounds: usize,
 ) -> BTreeSet<Term> {
+    saturate_additive_state_report(initial, rules, max_rounds).state
+}
+
+pub fn saturate_additive_state_report(
+    initial: impl IntoIterator<Item = Term>,
+    rules: &[StateRule],
+    max_rounds: usize,
+) -> AdditiveSaturationReport {
     let mut state = initial.into_iter().collect::<BTreeSet<_>>();
+    let initial_facts = state.len();
+    let mut rounds_executed = 0;
+    let mut converged = false;
+
     for _ in 0..max_rounds {
+        rounds_executed += 1;
         let mut next = state.clone();
         for rule in rules.iter().filter(|rule| rule.remove.is_empty()) {
             for step in state_rule_successors(&state, rule) {
-                next.extend(step.after);
+                next.extend(step.add);
             }
         }
         if next == state {
+            converged = true;
             break;
         }
         state = next;
     }
-    state
+
+    let final_facts = state.len();
+    AdditiveSaturationReport {
+        state,
+        initial_facts,
+        final_facts,
+        derived_facts: final_facts.saturating_sub(initial_facts),
+        rounds_executed,
+        converged,
+    }
 }
 
 fn unify(lhs: &Term, rhs: &Term, subst: &mut Subst) -> bool {

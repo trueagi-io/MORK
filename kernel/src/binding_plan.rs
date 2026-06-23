@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::arrangements::{
     ArrangementDescriptor, ArrangementError, ArrangementIndex, ArrangementProjection,
 };
@@ -32,6 +34,33 @@ pub struct BindingSidecarResult {
     pub relation: BindingRelation,
     /// Execution counters for checking that the sidecar plan shape is visible.
     pub stats: BindingSidecarStats,
+}
+
+/// Analysis of a sidecar join plan before choosing a production join kernel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarAnalysis {
+    /// Counters collected while opening the planned sidecar factors.
+    pub stats: BindingSidecarStats,
+    /// Root-level variable domains visible before any binding is chosen.
+    pub variables: Box<[BindingVariableDomainStats]>,
+    /// Heuristic variable order suitable for Generic Join and trie cursors.
+    pub suggested_variable_order: Box<[BindingVar]>,
+}
+
+/// Root-level domain statistics for one BindingSpace variable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BindingVariableDomainStats {
+    /// Query variable.
+    pub variable: BindingVar,
+    /// Number of factors containing this variable.
+    pub factor_count: usize,
+    /// Size of the intersection of positive domains from all containing
+    /// factors, before any earlier variable is bound.
+    pub root_domain_len: usize,
+    /// Smallest positive domain contributed by one containing factor.
+    pub min_factor_domain_len: usize,
+    /// Largest positive domain contributed by one containing factor.
+    pub max_factor_domain_len: usize,
 }
 
 /// Coarse execution counters for sidecar plans.
@@ -75,7 +104,7 @@ impl BindingSidecarPlan {
         &self.factors
     }
 
-    /// Variable order consumed by Generic Join / future LFTJ kernels.
+    /// Variable order consumed by Generic Join and trie-backed kernels.
     pub fn variable_order(&self) -> &[BindingVar] {
         &self.variable_order
     }
@@ -85,6 +114,29 @@ impl BindingSidecarPlan {
         &self,
         sidecar: &TermIdentitySidecar,
     ) -> Result<BindingSidecarResult, BindingSidecarPlanError> {
+        let (relations, mut stats) = self.open_relations(sidecar)?;
+
+        let relation = generic_join(&relations, &self.variable_order)
+            .map_err(BindingSidecarPlanError::Binding)?;
+        stats.output_rows = relation.positive_rows().count();
+
+        Ok(BindingSidecarResult { relation, stats })
+    }
+
+    /// Opens all sidecar factors and reports root-domain statistics. This is a
+    /// planning aid; it does not mutate the canonical PathMap/ACT storage.
+    pub fn analyze(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarAnalysis, BindingSidecarPlanError> {
+        let (relations, stats) = self.open_relations(sidecar)?;
+        Ok(analyze_relations(&relations, stats))
+    }
+
+    fn open_relations(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<(Vec<BindingRelation>, BindingSidecarStats), BindingSidecarPlanError> {
         let mut stats = BindingSidecarStats::default();
         let mut relations = Vec::with_capacity(self.factors.len());
 
@@ -95,11 +147,7 @@ impl BindingSidecarPlan {
             relations.push(relation);
         }
 
-        let relation = generic_join(&relations, &self.variable_order)
-            .map_err(BindingSidecarPlanError::Binding)?;
-        stats.output_rows = relation.positive_rows().count();
-
-        Ok(BindingSidecarResult { relation, stats })
+        Ok((relations, stats))
     }
 }
 
@@ -127,14 +175,143 @@ impl BindingAccessPlan {
     }
 }
 
+fn analyze_relations(
+    relations: &[BindingRelation],
+    stats: BindingSidecarStats,
+) -> BindingSidecarAnalysis {
+    let variable_stats = variable_domain_stats(relations);
+    let suggested_variable_order = suggest_variable_order(relations, &variable_stats);
+
+    BindingSidecarAnalysis {
+        stats,
+        variables: variable_stats.into_boxed_slice(),
+        suggested_variable_order: suggested_variable_order.into_boxed_slice(),
+    }
+}
+
+fn variable_domain_stats(relations: &[BindingRelation]) -> Vec<BindingVariableDomainStats> {
+    let mut domains_by_variable = BTreeMap::<BindingVar, Vec<BTreeSet<_>>>::new();
+
+    for relation in relations {
+        for (index, &variable) in relation.schema().iter().enumerate() {
+            let domain = relation
+                .positive_rows()
+                .map(|row| row[index])
+                .collect::<BTreeSet<_>>();
+            domains_by_variable
+                .entry(variable)
+                .or_default()
+                .push(domain);
+        }
+    }
+
+    domains_by_variable
+        .into_iter()
+        .map(|(variable, domains)| {
+            let root_domain_len = intersect_domain_len(&domains);
+            let min_factor_domain_len = domains.iter().map(BTreeSet::len).min().unwrap_or(0);
+            let max_factor_domain_len = domains.iter().map(BTreeSet::len).max().unwrap_or(0);
+
+            BindingVariableDomainStats {
+                variable,
+                factor_count: domains.len(),
+                root_domain_len,
+                min_factor_domain_len,
+                max_factor_domain_len,
+            }
+        })
+        .collect()
+}
+
+fn intersect_domain_len(domains: &[BTreeSet<crate::term_identity::TermId>]) -> usize {
+    let Some((first, rest)) = domains.split_first() else {
+        return 0;
+    };
+
+    let mut intersection = first.clone();
+    for domain in rest {
+        intersection = intersection
+            .intersection(domain)
+            .copied()
+            .collect::<BTreeSet<_>>();
+    }
+    intersection.len()
+}
+
+fn suggest_variable_order(
+    relations: &[BindingRelation],
+    stats: &[BindingVariableDomainStats],
+) -> Vec<BindingVar> {
+    let stats_by_variable = stats
+        .iter()
+        .map(|stats| (stats.variable, *stats))
+        .collect::<BTreeMap<_, _>>();
+    let factor_schemas = relations
+        .iter()
+        .map(|relation| relation.schema().iter().copied().collect::<BTreeSet<_>>())
+        .collect::<Vec<_>>();
+    let mut remaining = stats.iter().map(|stats| stats.variable).collect::<Vec<_>>();
+    let mut order = Vec::with_capacity(remaining.len());
+
+    while !remaining.is_empty() {
+        let has_connected = !order.is_empty()
+            && remaining
+                .iter()
+                .any(|&variable| variable_connects_to_bound(variable, &order, &factor_schemas));
+        let has_non_lonely = remaining
+            .iter()
+            .any(|variable| stats_by_variable[variable].factor_count > 1);
+
+        remaining.sort_by(|&left, &right| {
+            let left_connected = variable_connects_to_bound(left, &order, &factor_schemas);
+            let right_connected = variable_connects_to_bound(right, &order, &factor_schemas);
+            if has_connected && left_connected != right_connected {
+                return right_connected.cmp(&left_connected);
+            }
+
+            let left_stats = stats_by_variable[&left];
+            let right_stats = stats_by_variable[&right];
+            let left_lonely = left_stats.factor_count == 1;
+            let right_lonely = right_stats.factor_count == 1;
+            if has_non_lonely && left_lonely != right_lonely {
+                return left_lonely.cmp(&right_lonely);
+            }
+
+            left_stats
+                .root_domain_len
+                .cmp(&right_stats.root_domain_len)
+                .then_with(|| right_stats.factor_count.cmp(&left_stats.factor_count))
+                .then_with(|| left.cmp(&right))
+        });
+
+        order.push(remaining.remove(0));
+    }
+
+    order
+}
+
+fn variable_connects_to_bound(
+    variable: BindingVar,
+    bound: &[BindingVar],
+    factor_schemas: &[BTreeSet<BindingVar>],
+) -> bool {
+    factor_schemas.iter().any(|schema| {
+        schema.contains(&variable)
+            && bound
+                .iter()
+                .any(|bound_variable| schema.contains(bound_variable))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_sidecar_queries::{transitive_edge_product_count, transitive_edge_sidecar};
 
-    #[test]
-    fn arrangement_sidecar_plan_matches_transitive_product_query() {
-        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+    fn transitive_edge_plan(
+        edge: crate::term_identity::TermId,
+        variable_order: impl Into<Box<[BindingVar]>>,
+    ) -> BindingSidecarPlan {
         let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
         let xy = BindingAccessPlan::Arrangement {
             descriptor: descriptor.clone(),
@@ -146,7 +323,14 @@ mod tests {
             projection: ArrangementProjection::new(2, [BindingVar(1), BindingVar(2)], [0, 1])
                 .unwrap(),
         };
-        let plan = BindingSidecarPlan::new([xy, yz], [BindingVar(1), BindingVar(0), BindingVar(2)]);
+
+        BindingSidecarPlan::new([xy, yz], variable_order)
+    }
+
+    #[test]
+    fn arrangement_sidecar_plan_matches_transitive_product_query() {
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(1), BindingVar(0), BindingVar(2)]);
 
         let result = plan.execute(&sidecar).unwrap();
         let product_count = transitive_edge_product_count(&mut space);
@@ -162,6 +346,45 @@ mod tests {
                 projected_rows: 12,
                 output_rows: 4,
             }
+        );
+    }
+
+    #[test]
+    fn analysis_suggests_selective_connected_variable_order() {
+        let (_, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let analysis = plan.analyze(&sidecar).unwrap();
+
+        assert_eq!(
+            analysis.suggested_variable_order.as_ref(),
+            [BindingVar(1), BindingVar(0), BindingVar(2)]
+        );
+        assert_eq!(
+            analysis.variables.as_ref(),
+            [
+                BindingVariableDomainStats {
+                    variable: BindingVar(0),
+                    factor_count: 1,
+                    root_domain_len: 5,
+                    min_factor_domain_len: 5,
+                    max_factor_domain_len: 5,
+                },
+                BindingVariableDomainStats {
+                    variable: BindingVar(1),
+                    factor_count: 2,
+                    root_domain_len: 3,
+                    min_factor_domain_len: 5,
+                    max_factor_domain_len: 5,
+                },
+                BindingVariableDomainStats {
+                    variable: BindingVar(2),
+                    factor_count: 1,
+                    root_domain_len: 5,
+                    min_factor_domain_len: 5,
+                    max_factor_domain_len: 5,
+                },
+            ]
         );
     }
 }

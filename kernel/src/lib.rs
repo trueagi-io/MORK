@@ -4,6 +4,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(more_float_constants)]
 
+pub mod formal_lowering;
 pub mod space;
 mod sources;
 mod sinks;

@@ -6,7 +6,7 @@ use crate::arrangements::{
 use crate::binding_env::MAX_BINDING_SLOTS;
 use crate::binding_space::{
     generic_join, trie_join, trie_join_trace, BindingRelation, BindingRelationError, BindingVar,
-    TrieJoinStats, TrieJoinTrace,
+    TrieJoinStats, TrieJoinTrace, TrieJoinTraceReplayDiff, TrieJoinTraceShapeError,
 };
 use crate::expression_trie::{ExpressionTrieError, ExpressionTrieIndex};
 use crate::term_identity::{TermId, TermIdentitySidecar};
@@ -171,6 +171,17 @@ pub struct BindingSidecarTrieTraceReport {
     pub trie_trace: Option<TrieJoinTrace>,
 }
 
+/// Explain-only diff between selected trie traces for two sidecar snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarTrieTraceDiffReport {
+    /// Selected trace report for the previous snapshot.
+    pub old: BindingSidecarTrieTraceReport,
+    /// Selected trace report for the newer snapshot.
+    pub new: BindingSidecarTrieTraceReport,
+    /// Replay-shape diff when both snapshots select the trie-backed kernel.
+    pub replay_diff: Option<TrieJoinTraceReplayDiff>,
+}
+
 /// Analysis of a sidecar join plan before choosing a production join kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingSidecarAnalysis {
@@ -234,6 +245,8 @@ pub enum BindingSidecarPlanError {
     ExpressionTrie(ExpressionTrieError),
     /// A BindingSpace relation operation failed.
     Binding(BindingRelationError),
+    /// A generated trie trace failed replay-shape validation.
+    TraceShape(TrieJoinTraceShapeError),
     /// Pattern projection schema and user-slot list have different lengths.
     PatternProjectionArityMismatch { schema_len: usize, slots_len: usize },
     /// Pattern projection requested a slot outside MORK's six-bit domain.
@@ -416,6 +429,39 @@ impl BindingSidecarPlan {
         Ok(BindingSidecarTrieTraceReport {
             execution,
             trie_trace,
+        })
+    }
+
+    /// Explains and diffs selected trie traces across two immutable snapshots.
+    ///
+    /// The final join is still not executed. If either snapshot keeps the
+    /// Generic Join kernel, `replay_diff` is `None` because there is no trie
+    /// replay shape to compare.
+    pub fn explain_selected_trie_trace_diff(
+        &self,
+        old_sidecar: &TermIdentitySidecar,
+        new_sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarTrieTraceDiffReport, BindingSidecarPlanError> {
+        let old = self.explain_selected_trie_trace(old_sidecar)?;
+        let new = self.explain_selected_trie_trace(new_sidecar)?;
+
+        let replay_diff = match (&old.trie_trace, &new.trie_trace) {
+            (Some(old_trace), Some(new_trace)) => {
+                let old_shape = old_trace
+                    .replay_shape()
+                    .map_err(BindingSidecarPlanError::TraceShape)?;
+                let new_shape = new_trace
+                    .replay_shape()
+                    .map_err(BindingSidecarPlanError::TraceShape)?;
+                Some(old_shape.diff(&new_shape))
+            }
+            _ => None,
+        };
+
+        Ok(BindingSidecarTrieTraceDiffReport {
+            old,
+            new,
+            replay_diff,
         })
     }
 
@@ -972,6 +1018,51 @@ mod tests {
         assert_eq!(summary.candidate_bindings, product_count);
         assert_eq!(summary.max_participating_relations, 2);
         assert_eq!(summary.empty_intersections, 0);
+    }
+
+    #[test]
+    fn selected_trie_trace_diff_compares_sidecar_snapshots_without_joining() {
+        let (mut space, old_sidecar, edge) = transitive_edge_sidecar();
+        let alice = old_sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "Alice"))
+            .unwrap();
+        let bob = old_sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "Bob"))
+            .unwrap();
+
+        let mut new_sidecar = old_sidecar.clone();
+        new_sidecar
+            .insert_fact(&encoded_expr(&mut space, "[3] edge Bob Erin"))
+            .unwrap();
+
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let report = plan
+            .explain_selected_trie_trace_diff(&old_sidecar, &new_sidecar)
+            .unwrap();
+        let diff = report.replay_diff.as_ref().unwrap();
+
+        assert_eq!(
+            report.old.execution.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(
+            report.new.execution.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(report.old.execution.analysis.stats.output_rows, 0);
+        assert_eq!(report.new.execution.analysis.stats.output_rows, 0);
+        assert!(!diff.is_empty());
+        assert_eq!(diff.changed_contexts, 1);
+        assert_eq!(diff.added_contexts, 0);
+        assert_eq!(diff.removed_contexts, 0);
+        assert_eq!(diff.frontier_contexts, 1);
+        assert_eq!(diff.old_replay_steps_touched, 1);
+        assert_eq!(diff.new_replay_steps_touched, 1);
+        assert_eq!(diff.old_candidate_bindings_touched, 1);
+        assert_eq!(diff.new_candidate_bindings_touched, 2);
+        assert_eq!(diff.entries.len(), 1);
+        assert_eq!(diff.entries[0].bound_prefix.as_ref(), [bob, alice]);
     }
 
     #[test]

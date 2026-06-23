@@ -850,7 +850,7 @@ impl Space {
                     else { self.btm.remove(data); }
                 }
                 Err(ParserError::InputFinished) => { break }
-                Err(other) => { panic!("{:?}", other) }
+                Err(other) => { return Err(format!("{:?}", other)) }
             }
             i += 1;
             it.variables.clear();

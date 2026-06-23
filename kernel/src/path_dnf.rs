@@ -249,6 +249,17 @@ mod tests {
         );
     }
 
+    fn assert_overlap_stats(stats: DnfPathSetStats, join_ops: usize, peak_result_values: usize) {
+        assert_eq!(stats.join_ops, join_ops);
+        assert_eq!(stats.distinct_factor_refs, 3);
+        assert_eq!(stats.repeated_factor_refs, 1);
+        assert_eq!(stats.factor_input_values, 11);
+        assert_eq!(stats.clause_output_values, 2);
+        assert_eq!(stats.duplicate_clause_values, 0);
+        assert_eq!(stats.peak_clause_values, 2);
+        assert_eq!(stats.peak_result_values, peak_result_values);
+    }
+
     #[test]
     fn dnf_single_clause_matches_multiway_meet() {
         let trie1 = map(SMALL_TRIE_1);
@@ -326,14 +337,7 @@ mod tests {
         assert_eq!(result.stats.short_circuit_skipped_clauses, 0);
         assert_eq!(result.stats.factors, 4);
         assert_eq!(result.stats.meet_ops, 2);
-        assert_eq!(result.stats.join_ops, 1);
-        assert_eq!(result.stats.distinct_factor_refs, 3);
-        assert_eq!(result.stats.repeated_factor_refs, 1);
-        assert_eq!(result.stats.factor_input_values, 11);
-        assert_eq!(result.stats.clause_output_values, 2);
-        assert_eq!(result.stats.duplicate_clause_values, 0);
-        assert_eq!(result.stats.peak_clause_values, 2);
-        assert_eq!(result.stats.peak_result_values, 2);
+        assert_overlap_stats(result.stats, 1, 2);
     }
 
     #[test]
@@ -365,13 +369,6 @@ mod tests {
         assert_eq!(result.stats.singleton_clauses, 1);
         assert_eq!(result.stats.multi_factor_clauses, 1);
         assert_eq!(result.stats.meet_ops, 2);
-        assert_eq!(result.stats.join_ops, 0);
-        assert_eq!(result.stats.distinct_factor_refs, 3);
-        assert_eq!(result.stats.repeated_factor_refs, 1);
-        assert_eq!(result.stats.factor_input_values, 11);
-        assert_eq!(result.stats.clause_output_values, 2);
-        assert_eq!(result.stats.duplicate_clause_values, 0);
-        assert_eq!(result.stats.peak_clause_values, 2);
-        assert_eq!(result.stats.peak_result_values, 0);
+        assert_overlap_stats(result.stats, 0, 0);
     }
 }

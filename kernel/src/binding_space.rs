@@ -180,19 +180,81 @@ pub fn generic_join(
     relations: &[BindingRelation],
     variable_order: &[BindingVar],
 ) -> Result<BindingRelation, BindingRelationError> {
-    let all_variables = relations
-        .iter()
-        .flat_map(|relation| relation.schema().iter().copied())
-        .collect::<BTreeSet<_>>();
-    let ordered = variable_order.iter().copied().collect::<BTreeSet<_>>();
-    if all_variables != ordered || all_variables.len() != variable_order.len() {
-        return Err(BindingRelationError::InvalidVariableOrder);
-    }
+    validate_variable_order(relations, variable_order)?;
 
     let mut out = BindingRelation::new(variable_order.to_vec());
     let mut binding = BTreeMap::<BindingVar, TermId>::new();
     generic_join_recurse(relations, variable_order, 0, &mut binding, &mut out)?;
     Ok(out)
+}
+
+/// Result of executing a trie-backed variable-at-a-time join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinResult {
+    /// Flat relation in the requested variable order.
+    pub relation: BindingRelation,
+    /// Physical work counters for the trie-backed executor.
+    pub stats: TrieJoinStats,
+}
+
+/// Counters from the trie-backed variable-at-a-time join.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrieJoinStats {
+    /// Input relation indexes constructed for the join.
+    pub relation_indexes: usize,
+    /// Positive rows retained across all relation indexes.
+    pub indexed_rows: usize,
+    /// Distinct trie prefixes with outgoing children across all indexes.
+    pub trie_nodes: usize,
+    /// Variable-domain intersections performed during traversal.
+    pub domain_intersections: usize,
+    /// Relation domains participating in those intersections.
+    pub domain_sources: usize,
+    /// Domain values presented to leapfrog intersection.
+    pub domain_values: usize,
+    /// Final relation row-weight probes.
+    pub weight_lookups: usize,
+    /// Positive rows emitted by the join.
+    pub output_rows: usize,
+}
+
+/// Trie-backed variable-at-a-time join over positive BindingSpace rows.
+///
+/// This is the first physical LFTJ-style sidecar kernel: each input relation is
+/// re-keyed as a trie compatible with the global `variable_order`, then the
+/// executor synchronizes the current variable's sorted domains and recurses.
+pub fn trie_join(
+    relations: &[BindingRelation],
+    variable_order: &[BindingVar],
+) -> Result<TrieJoinResult, BindingRelationError> {
+    validate_variable_order(relations, variable_order)?;
+
+    let mut stats = TrieJoinStats {
+        relation_indexes: relations.len(),
+        ..TrieJoinStats::default()
+    };
+    let indexes = relations
+        .iter()
+        .map(|relation| RelationTrieIndex::build(relation, variable_order))
+        .collect::<Result<Vec<_>, _>>()?;
+    for index in &indexes {
+        stats.indexed_rows += index.weights.len();
+        stats.trie_nodes += index.children_by_prefix.len();
+    }
+
+    let mut relation = BindingRelation::new(variable_order.to_vec());
+    let mut binding = BTreeMap::<BindingVar, TermId>::new();
+    trie_join_recurse(
+        &indexes,
+        variable_order,
+        0,
+        &mut binding,
+        &mut relation,
+        &mut stats,
+    )?;
+    stats.output_rows = relation.positive_rows().count();
+
+    Ok(TrieJoinResult { relation, stats })
 }
 
 fn generic_join_recurse(
@@ -255,6 +317,150 @@ fn generic_join_recurse(
     for value in leapfrog_intersection(&domains) {
         binding.insert(variable, value);
         generic_join_recurse(relations, variable_order, level + 1, binding, out)?;
+    }
+    binding.remove(&variable);
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct RelationTrieIndex {
+    schema: Box<[BindingVar]>,
+    positions: BTreeMap<BindingVar, usize>,
+    children_by_prefix: BTreeMap<BindingRow, Box<[TermId]>>,
+    weights: BTreeMap<BindingRow, i64>,
+}
+
+impl RelationTrieIndex {
+    fn build(
+        relation: &BindingRelation,
+        variable_order: &[BindingVar],
+    ) -> Result<Self, BindingRelationError> {
+        if has_duplicates(relation.schema()) {
+            return Err(BindingRelationError::InvalidVariableOrder);
+        }
+
+        let schema = variable_order
+            .iter()
+            .copied()
+            .filter(|variable| relation.schema().contains(variable))
+            .collect::<Vec<_>>();
+        let source_indexes = indexes(relation, &schema)?;
+
+        let mut child_sets = BTreeMap::<Vec<TermId>, BTreeSet<TermId>>::new();
+        let mut weights = BTreeMap::<BindingRow, i64>::new();
+        for (row, weight) in relation.rows() {
+            if weight <= 0 {
+                continue;
+            }
+
+            let ordered_row = source_indexes
+                .iter()
+                .map(|&index| row[index])
+                .collect::<Vec<_>>();
+            let entry = weights
+                .entry(ordered_row.clone().into_boxed_slice())
+                .or_default();
+            *entry = entry.saturating_add(weight);
+
+            for depth in 0..ordered_row.len() {
+                child_sets
+                    .entry(ordered_row[..depth].to_vec())
+                    .or_default()
+                    .insert(ordered_row[depth]);
+            }
+        }
+
+        let positions = schema
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, variable)| (variable, index))
+            .collect::<BTreeMap<_, _>>();
+        let children_by_prefix = child_sets
+            .into_iter()
+            .map(|(prefix, children)| {
+                (
+                    prefix.into_boxed_slice(),
+                    children.into_iter().collect::<Vec<_>>().into_boxed_slice(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        Ok(Self {
+            schema: schema.into_boxed_slice(),
+            positions,
+            children_by_prefix,
+            weights,
+        })
+    }
+
+    fn domain(
+        &self,
+        variable: BindingVar,
+        binding: &BTreeMap<BindingVar, TermId>,
+    ) -> Option<&[TermId]> {
+        let position = *self.positions.get(&variable)?;
+        let mut prefix = Vec::with_capacity(position);
+        for &prefix_variable in &self.schema[..position] {
+            let value = binding.get(&prefix_variable)?;
+            prefix.push(*value);
+        }
+
+        Some(
+            self.children_by_prefix
+                .get(prefix.as_slice())
+                .map_or(&[], Box::as_ref),
+        )
+    }
+
+    fn weight(&self, binding: &BTreeMap<BindingVar, TermId>) -> i64 {
+        let row = self
+            .schema
+            .iter()
+            .map(|variable| binding[variable])
+            .collect::<Vec<_>>();
+        self.weights.get(row.as_slice()).copied().unwrap_or(0)
+    }
+}
+
+fn trie_join_recurse(
+    indexes: &[RelationTrieIndex],
+    variable_order: &[BindingVar],
+    level: usize,
+    binding: &mut BTreeMap<BindingVar, TermId>,
+    out: &mut BindingRelation,
+    stats: &mut TrieJoinStats,
+) -> Result<(), BindingRelationError> {
+    if level == variable_order.len() {
+        let mut weight = 1i64;
+        for index in indexes {
+            stats.weight_lookups += 1;
+            weight = weight.saturating_mul(index.weight(binding));
+        }
+        if weight != 0 {
+            out.add(
+                variable_order
+                    .iter()
+                    .map(|variable| binding[variable])
+                    .collect::<Vec<_>>(),
+                weight,
+            )?;
+        }
+        return Ok(());
+    }
+
+    let variable = variable_order[level];
+    let domains = indexes
+        .iter()
+        .filter_map(|index| index.domain(variable, binding))
+        .collect::<Vec<_>>();
+    if domains.is_empty() {
+        return Err(BindingRelationError::InvalidVariableOrder);
+    }
+
+    for value in leapfrog_intersection_slices(&domains, stats) {
+        binding.insert(variable, value);
+        trie_join_recurse(indexes, variable_order, level + 1, binding, out, stats)?;
     }
     binding.remove(&variable);
     Ok(())
@@ -411,8 +617,53 @@ fn rows_from_set(rows: &BTreeSet<Vec<TermId>>) -> Box<[BindingRow]> {
         .into_boxed_slice()
 }
 
+fn validate_variable_order(
+    relations: &[BindingRelation],
+    variable_order: &[BindingVar],
+) -> Result<(), BindingRelationError> {
+    if has_duplicates(variable_order)
+        || relations
+            .iter()
+            .any(|relation| has_duplicates(relation.schema()))
+    {
+        return Err(BindingRelationError::InvalidVariableOrder);
+    }
+
+    let all_variables = relations
+        .iter()
+        .flat_map(|relation| relation.schema().iter().copied())
+        .collect::<BTreeSet<_>>();
+    let ordered = variable_order.iter().copied().collect::<BTreeSet<_>>();
+    if all_variables != ordered {
+        return Err(BindingRelationError::InvalidVariableOrder);
+    }
+
+    Ok(())
+}
+
+fn has_duplicates(variables: &[BindingVar]) -> bool {
+    let mut seen = BTreeSet::new();
+    variables
+        .iter()
+        .copied()
+        .any(|variable| !seen.insert(variable))
+}
+
 fn leapfrog_intersection(domains: &[Vec<TermId>]) -> Vec<TermId> {
-    if domains.is_empty() || domains.iter().any(Vec::is_empty) {
+    let domains = domains.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    leapfrog_intersection_inner(&domains)
+}
+
+fn leapfrog_intersection_slices(domains: &[&[TermId]], stats: &mut TrieJoinStats) -> Vec<TermId> {
+    stats.domain_intersections += 1;
+    stats.domain_sources += domains.len();
+    stats.domain_values += domains.iter().map(|domain| domain.len()).sum::<usize>();
+
+    leapfrog_intersection_inner(domains)
+}
+
+fn leapfrog_intersection_inner(domains: &[&[TermId]]) -> Vec<TermId> {
+    if domains.is_empty() || domains.iter().any(|domain| domain.is_empty()) {
         return Vec::new();
     }
 
@@ -490,6 +741,57 @@ mod tests {
 
         assert_eq!(generic_rows, normalized_natural);
         assert_eq!(generic_rows.len(), 4);
+    }
+
+    #[test]
+    fn trie_join_matches_generic_join_with_index_counters() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10], &[3, 20]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101], &[30, 300]]);
+
+        let generic = generic_join(&[left.clone(), right.clone()], &[v(1), v(0), v(2)]).unwrap();
+        let trie = trie_join(&[left, right], &[v(1), v(0), v(2)]).unwrap();
+
+        assert_eq!(trie.relation, generic);
+        assert_eq!(
+            trie.stats,
+            TrieJoinStats {
+                relation_indexes: 2,
+                indexed_rows: 6,
+                trie_nodes: 6,
+                domain_intersections: 4,
+                domain_sources: 5,
+                domain_values: 10,
+                weight_lookups: 8,
+                output_rows: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn trie_join_handles_cyclic_triangle_without_binary_intermediate() {
+        let xy = relation(&[0, 1], &[&[1, 2], &[1, 3], &[2, 3], &[3, 1]]);
+        let yz = relation(&[1, 2], &[&[2, 3], &[3, 1], &[3, 4], &[1, 2]]);
+        let zx = relation(&[2, 0], &[&[3, 1], &[1, 2], &[2, 3], &[4, 1]]);
+
+        let generic =
+            generic_join(&[xy.clone(), yz.clone(), zx.clone()], &[v(0), v(1), v(2)]).unwrap();
+        let trie = trie_join(&[xy, yz, zx], &[v(0), v(1), v(2)]).unwrap();
+
+        assert_eq!(trie.relation, generic);
+        assert_eq!(
+            trie.relation
+                .positive_rows()
+                .map(Vec::from)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                vec![t(1), t(2), t(3)],
+                vec![t(1), t(3), t(4)],
+                vec![t(2), t(3), t(1)],
+                vec![t(3), t(1), t(2)],
+            ])
+        );
+        assert_eq!(trie.stats.output_rows, 4);
+        assert!(trie.stats.domain_intersections < 10);
     }
 
     #[test]

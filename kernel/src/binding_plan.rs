@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::arrangements::{
     ArrangementDescriptor, ArrangementError, ArrangementIndex, ArrangementProjection,
 };
-use crate::binding_space::{generic_join, BindingRelation, BindingRelationError, BindingVar};
+use crate::binding_space::{
+    generic_join, trie_join, BindingRelation, BindingRelationError, BindingVar, TrieJoinStats,
+};
 use crate::term_identity::TermIdentitySidecar;
 
 /// Physical BindingSpace access selected by a compiled sidecar plan.
@@ -34,6 +36,17 @@ pub struct BindingSidecarResult {
     pub relation: BindingRelation,
     /// Execution counters for checking that the sidecar plan shape is visible.
     pub stats: BindingSidecarStats,
+}
+
+/// Result of executing a sidecar plan with the trie-backed join kernel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarTrieJoinResult {
+    /// Flat relation returned by the trie-backed variable-at-a-time join.
+    pub relation: BindingRelation,
+    /// Execution counters for physical factor opening.
+    pub stats: BindingSidecarStats,
+    /// Execution counters for the trie-backed join itself.
+    pub trie_stats: TrieJoinStats,
 }
 
 /// Analysis of a sidecar join plan before choosing a production join kernel.
@@ -121,6 +134,27 @@ impl BindingSidecarPlan {
         stats.output_rows = relation.positive_rows().count();
 
         Ok(BindingSidecarResult { relation, stats })
+    }
+
+    /// Executes the plan using the trie-backed variable-at-a-time join kernel.
+    ///
+    /// The opened factors are still derived sidecars over the term snapshot;
+    /// this does not change the canonical PathMap/ACT pathspace semantics.
+    pub fn execute_trie_join(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarTrieJoinResult, BindingSidecarPlanError> {
+        let (relations, mut stats) = self.open_relations(sidecar)?;
+
+        let joined = trie_join(&relations, &self.variable_order)
+            .map_err(BindingSidecarPlanError::Binding)?;
+        stats.output_rows = joined.relation.positive_rows().count();
+
+        Ok(BindingSidecarTrieJoinResult {
+            relation: joined.relation,
+            stats,
+            trie_stats: joined.stats,
+        })
     }
 
     /// Opens all sidecar factors and reports root-domain statistics. This is a
@@ -347,6 +381,23 @@ mod tests {
                 output_rows: 4,
             }
         );
+    }
+
+    #[test]
+    fn trie_sidecar_plan_matches_generic_and_product_query() {
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(1), BindingVar(0), BindingVar(2)]);
+
+        let generic = plan.execute(&sidecar).unwrap();
+        let trie = plan.execute_trie_join(&sidecar).unwrap();
+        let product_count = transitive_edge_product_count(&mut space);
+
+        assert_eq!(trie.relation, generic.relation);
+        assert_eq!(trie.relation.positive_rows().count(), product_count);
+        assert_eq!(trie.trie_stats.output_rows, product_count);
+        assert_eq!(trie.trie_stats.relation_indexes, 2);
+        assert_eq!(trie.trie_stats.indexed_rows, 12);
+        assert_eq!(trie.trie_stats.domain_intersections, 8);
     }
 
     #[test]

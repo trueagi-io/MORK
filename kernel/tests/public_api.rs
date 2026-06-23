@@ -1,4 +1,4 @@
-use mork::weighted_paths::{WeightedPathIndex, WeightedPathStats};
+use mork::weighted_paths::{WeightedPathIndex, WeightedPathStats, WeightedSelectionTreeStats};
 
 #[test]
 fn weighted_path_api_exposes_sidecar_and_stats() {
@@ -20,4 +20,22 @@ fn weighted_path_api_exposes_sidecar_and_stats() {
             updates: 1,
         }
     );
+}
+
+#[test]
+fn weighted_path_api_exposes_selection_tree() {
+    let mut index = WeightedPathIndex::new();
+
+    index.set_weight(b"a", 2);
+    index.set_weight(b"ab", 3);
+
+    let tree = index.selection_tree();
+    let stats: WeightedSelectionTreeStats = tree.stats();
+
+    assert_eq!(tree.total_positive_weight(), 5);
+    assert_eq!(tree.select_by_offset(0).as_deref(), Some(&b"a"[..]));
+    assert_eq!(tree.select_by_offset(2).as_deref(), Some(&b"ab"[..]));
+    assert_eq!(index.select_by_offset_tree(4).as_deref(), Some(&b"ab"[..]));
+    assert_eq!(stats.total_positive_weight, 5);
+    assert_eq!(stats.positive_value_nodes, 2);
 }

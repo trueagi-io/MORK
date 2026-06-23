@@ -212,6 +212,183 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
     }
 }
 
+/// A compiled pattern-match instruction for trie-backed pattern matching. The op
+/// sequence is the pattern in preorder; a compound's children are the following ops.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MatchOp {
+    /// `Tag::NewVar`: match any term here; `introduces` records a coreference path.
+    Any { introduces: bool },
+    /// `Tag::SymbolSize`: descend the exact symbol byte then its literal bytes.
+    Symbol { e_byte: u8, bytes: Box<[u8]> },
+    /// `Tag::Arity`: descend the arity byte; the following ops are its children.
+    Compound { e_byte: u8 },
+}
+
+/// Compiles the conjunction sources into a preorder `MatchOp` program. Returns
+/// `None` (caller falls back to the interpreter) when a factor contains a
+/// `VarRef`, i.e. an intra-term repeated variable.
+fn compile_match_program(sources: &[ExprEnv]) -> Option<Vec<MatchOp>> {
+    let mut ops = Vec::new();
+    for &source in sources {
+        compile_match_factor(source, &mut ops)?;
+    }
+    Some(ops)
+}
+
+fn compile_match_factor(e: ExprEnv, ops: &mut Vec<MatchOp>) -> Option<()> {
+    let ptr = e.subsexpr().ptr;
+    match unsafe { byte_item(*ptr) } {
+        Tag::NewVar => ops.push(MatchOp::Any { introduces: e.n == 0 }),
+        Tag::VarRef(_) => return None,
+        Tag::SymbolSize(s) => {
+            let bytes = unsafe {
+                slice_from_raw_parts(ptr.byte_add(1), s as usize)
+                    .as_ref()
+                    .unwrap()
+            }
+            .to_vec()
+            .into_boxed_slice();
+            ops.push(MatchOp::Symbol {
+                e_byte: unsafe { *ptr },
+                bytes,
+            });
+        }
+        Tag::Arity(_) => {
+            ops.push(MatchOp::Compound {
+                e_byte: unsafe { *ptr },
+            });
+            let mut args = Vec::new();
+            e.args(&mut args);
+            for arg in args {
+                compile_match_factor(arg, ops)?;
+            }
+        }
+    }
+    Some(())
+}
+
+/// Executes the compiled program against the trie cursor, producing exactly the
+/// same `f(loc)` callbacks as `coreferential_transition` for VarRef-free
+/// patterns. `pc` is the program counter; trie traversal and product-factor
+/// switching are identical to the interpreter because the same `loc` is reused.
+fn execute_match_program<Z, F>(
+    loc: &mut Z,
+    ops: &[MatchOp],
+    pc: usize,
+    references: &mut Vec<u32>,
+    f: &mut F,
+) where
+    Z: ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration,
+    F: FnMut(&mut Z) -> (),
+{
+    unsafe {
+        let Some(op) = ops.get(pc) else {
+            f(loc);
+            return;
+        };
+        match op {
+            MatchOp::Any { introduces } => {
+                if *introduces {
+                    references.push(loc.path().len() as u32);
+                }
+                match_any_term(loc, 1, ops, pc + 1, references, f);
+                if *introduces {
+                    references.pop();
+                }
+            }
+            MatchOp::Symbol { e_byte, bytes } => {
+                vs_match_program(loc, ops, pc + 1, references, f);
+                if loc.descend_to_existing_byte(*e_byte) {
+                    if loc.descend_to_check(&bytes[..]) {
+                        execute_match_program(loc, ops, pc + 1, references, f);
+                    }
+                    loc.ascend(bytes.len() + 1);
+                }
+            }
+            MatchOp::Compound { e_byte } => {
+                vs_match_program(loc, ops, pc + 1, references, f);
+                if loc.descend_to_existing_byte(*e_byte) {
+                    execute_match_program(loc, ops, pc + 1, references, f);
+                    loc.ascend_byte();
+                }
+            }
+        }
+    }
+}
+
+/// Mirrors the interpreter's `vs!`: a data variable at this position matches the
+/// current pattern op, so descend each data-variable byte and continue the rest
+/// of the program.
+fn vs_match_program<Z, F>(loc: &mut Z, ops: &[MatchOp], pc: usize, references: &mut Vec<u32>, f: &mut F)
+where
+    Z: ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration,
+    F: FnMut(&mut Z) -> (),
+{
+    let m = loc.child_mask().and(&ByteMask(VARS));
+    let mut it = m.iter();
+    while let Some(b) = it.next() {
+        loc.descend_to_byte(b);
+        execute_match_program(loc, ops, pc, references, f);
+        loc.ascend_byte();
+    }
+}
+
+/// Consumes `pending` whole data subtrees (the interpreter's NewVar "match any
+/// term"), then resumes the program at `pc_after`. A data symbol decrements
+/// pending; a data compound of arity `a` sets pending to `pending - 1 + a` (its
+/// children, then the rest), reproducing the interpreter's synthetic-NewVar pushes.
+fn match_any_term<Z, F>(
+    loc: &mut Z,
+    pending: usize,
+    ops: &[MatchOp],
+    pc_after: usize,
+    references: &mut Vec<u32>,
+    f: &mut F,
+) where
+    Z: ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration,
+    F: FnMut(&mut Z) -> (),
+{
+    unsafe {
+        if pending == 0 {
+            execute_match_program(loc, ops, pc_after, references, f);
+            return;
+        }
+        let cm = loc.child_mask();
+        let mut it = cm.and(&ByteMask(VARS)).iter();
+        while let Some(b) = it.next() {
+            loc.descend_to_byte(b);
+            match_any_term(loc, pending - 1, ops, pc_after, references, f);
+            loc.ascend_byte();
+        }
+        let mut it = cm.and(&ByteMask(SIZES)).iter();
+        while let Some(b) = it.next() {
+            let Tag::SymbolSize(size) = byte_item(b) else {
+                unreachable_unchecked()
+            };
+            loc.descend_to_byte(b);
+            if !loc.descend_first_k_path(size as _) {
+                unreachable_unchecked()
+            }
+            loop {
+                match_any_term(loc, pending - 1, ops, pc_after, references, f);
+                if !loc.to_next_k_path(size as _) {
+                    break;
+                }
+            }
+            loc.ascend_byte();
+        }
+        let mut it = cm.and(&ByteMask(ARITIES)).iter();
+        while let Some(b) = it.next() {
+            let Tag::Arity(a) = byte_item(b) else {
+                unreachable_unchecked()
+            };
+            loc.descend_to_byte(b);
+            match_any_term(loc, pending - 1 + a as usize, ops, pc_after, references, f);
+            loc.ascend_byte();
+        }
+    }
+}
+
 unsafe extern "C" {
     fn longjmp(env: &mut [u64; 64], status: i32);
     fn setjmp(env: &mut [u64; 64]) -> i32;
@@ -1224,7 +1401,7 @@ impl Space {
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                coreferential_transition(&mut prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },&mut |loc| {
+                let mut effect_fn = |loc: &mut &mut PZ| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1275,7 +1452,24 @@ impl Space {
                             unsafe { longjmp(a, 1) }
                         }
                     }
-                })
+                };
+                // Run the compiled program when the pattern lowers; the
+                // interpreted matcher remains the fallback and oracle.
+                match compile_match_program(sources) {
+                    Some(ops) => execute_match_program(
+                        &mut prz,
+                        &ops,
+                        0,
+                        unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },
+                        &mut effect_fn,
+                    ),
+                    None => coreferential_transition(
+                        &mut prz,
+                        &mut stack,
+                        unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },
+                        &mut effect_fn,
+                    ),
+                }
             }
         });
 
@@ -1784,5 +1978,56 @@ impl Drop for Space {
             // z3.terminate();
             drop(z3.stdin.take())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pattern_sources(space: &mut Space, pattern: &str) -> Vec<ExprEnv> {
+        let pattern = crate::expr!(space, pattern);
+        let mut args = Vec::new();
+        ExprEnv::new(0, pattern).args(&mut args);
+        args[1..].to_vec()
+    }
+
+    #[test]
+    fn compile_match_program_accepts_varref_free_sources() {
+        let mut space = Space::new();
+        let sources = pattern_sources(
+            &mut space,
+            "[3] , [3] edge a $ [3] edge b c",
+        );
+
+        let ops = compile_match_program(&sources).expect("VarRef-free pattern should compile");
+
+        assert_eq!(ops.len(), 8);
+        assert!(matches!(ops[0], MatchOp::Compound { .. }));
+        assert!(matches!(ops[3], MatchOp::Any { introduces: true }));
+    }
+
+    #[test]
+    fn compile_match_program_rejects_varref_sources() {
+        let mut space = Space::new();
+        let sources = pattern_sources(&mut space, "[2] , [3] same $ _1");
+
+        assert!(compile_match_program(&sources).is_none());
+    }
+
+    #[test]
+    fn query_multi_matches_varref_free_pattern_with_compiled_program() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(b"(edge a b)\n(edge b c)\n(edge a c)\n")
+            .unwrap();
+
+        let count = Space::query_multi(
+            &space.btm,
+            crate::expr!(space, "[2] , [3] edge a $"),
+            |_, _| true,
+        );
+
+        assert_eq!(count, 2);
     }
 }

@@ -163,6 +163,65 @@ pub enum FormalLoweringError {
     TooManyNewVars,
 }
 
+/// MeTTa special form recognized without executing the term.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormalMettaSpecialForm {
+    /// Special result/data atom from the MeTTa specification.
+    SpecialResult(FormalMettaSpecialResult),
+    /// Minimal MeTTa instruction with the exact specified arity.
+    MinimalInstruction(FormalMinimalInstruction),
+    /// Function definition form `(= call-template body-template)`.
+    FunctionDefinition,
+    /// Type assignment form `(: atom type)`.
+    TypeAssignment,
+    /// Function type form `(-> arg-types... ret-type)`.
+    FunctionType,
+}
+
+/// Special result atoms that must remain distinct during planning.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormalMettaSpecialResult {
+    /// `Empty`: the branch returned no results.
+    Empty,
+    /// `NotReducible`: the expression cannot reduce further.
+    NotReducible,
+    /// `()`: unit/side-effect result.
+    Unit,
+    /// `(Error atom message)`.
+    Error { atom: TermId, message: TermId },
+}
+
+/// Minimal MeTTa instruction recognized by the interpreter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FormalMinimalInstruction {
+    /// `(eval atom)`.
+    Eval,
+    /// `(evalc atom context-space)`.
+    Evalc,
+    /// `(chain atom var template)`.
+    Chain,
+    /// `(unify atom pattern then else)`.
+    Unify,
+    /// `(decons-atom expression)`.
+    DeconsAtom,
+    /// `(cons-atom head tail)`.
+    ConsAtom,
+    /// `(function body)`.
+    Function,
+    /// `(return atom)`.
+    Return,
+    /// `(collapse-bind atom)`.
+    CollapseBind,
+    /// `(superpose-bind collapsed-results)`.
+    SuperposeBind,
+    /// `(metta atom type space)`.
+    Metta,
+    /// `(context-space)`.
+    ContextSpace,
+    /// `(call-native function-name function-pointer arguments)`.
+    CallNative,
+}
+
 /// Lowers one canonical `exec` term into source/effect/context metadata.
 pub fn lower_exec(
     sidecar: &TermIdentitySidecar,
@@ -241,6 +300,86 @@ pub fn lower_exec(
         context_holes: context_holes.into_boxed_slice(),
         summary,
     })
+}
+
+/// Classifies MeTTa special forms without interpreting them.
+///
+/// Reserved symbols used with non-special arities intentionally return `None`;
+/// the MeTTa specification allows those symbols to appear as ordinary data in
+/// other contexts.
+pub fn metta_special_form(
+    sidecar: &TermIdentitySidecar,
+    term: TermId,
+) -> Result<Option<FormalMettaSpecialForm>, FormalLoweringError> {
+    let Some(record) = sidecar.get_term(term) else {
+        return Err(FormalLoweringError::UnknownTerm { term });
+    };
+
+    match record.kind {
+        TermKind::Symbol => match symbol_payload(record.encoded()) {
+            Some(b"Empty") => Ok(Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::Empty,
+            ))),
+            Some(b"NotReducible") => Ok(Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::NotReducible,
+            ))),
+            _ => Ok(None),
+        },
+        TermKind::Application { .. } => {
+            let children = record.children();
+            let Some((&head, args)) = children.split_first() else {
+                return Ok(Some(FormalMettaSpecialForm::SpecialResult(
+                    FormalMettaSpecialResult::Unit,
+                )));
+            };
+
+            let Some(name) = symbol_name(sidecar, head)? else {
+                return Ok(None);
+            };
+
+            if name == b"Error" && args.len() == 2 {
+                return Ok(Some(FormalMettaSpecialForm::SpecialResult(
+                    FormalMettaSpecialResult::Error {
+                        atom: args[0],
+                        message: args[1],
+                    },
+                )));
+            }
+
+            if let Some(instruction) = minimal_instruction(name, args.len()) {
+                return Ok(Some(FormalMettaSpecialForm::MinimalInstruction(
+                    instruction,
+                )));
+            }
+
+            match (name, args.len()) {
+                (b"=", 2) => Ok(Some(FormalMettaSpecialForm::FunctionDefinition)),
+                (b":", 2) => Ok(Some(FormalMettaSpecialForm::TypeAssignment)),
+                (b"->", 1..) => Ok(Some(FormalMettaSpecialForm::FunctionType)),
+                _ => Ok(None),
+            }
+        }
+        TermKind::NewVar | TermKind::VarRef(_) => Ok(None),
+    }
+}
+
+fn minimal_instruction(name: &[u8], arity: usize) -> Option<FormalMinimalInstruction> {
+    match (name, arity) {
+        (b"eval", 1) => Some(FormalMinimalInstruction::Eval),
+        (b"evalc", 2) => Some(FormalMinimalInstruction::Evalc),
+        (b"chain", 3) => Some(FormalMinimalInstruction::Chain),
+        (b"unify", 4) => Some(FormalMinimalInstruction::Unify),
+        (b"decons-atom", 1) => Some(FormalMinimalInstruction::DeconsAtom),
+        (b"cons-atom", 2) => Some(FormalMinimalInstruction::ConsAtom),
+        (b"function", 1) => Some(FormalMinimalInstruction::Function),
+        (b"return", 1) => Some(FormalMinimalInstruction::Return),
+        (b"collapse-bind", 1) => Some(FormalMinimalInstruction::CollapseBind),
+        (b"superpose-bind", 1) => Some(FormalMinimalInstruction::SuperposeBind),
+        (b"metta", 3) => Some(FormalMinimalInstruction::Metta),
+        (b"context-space", 0) => Some(FormalMinimalInstruction::ContextSpace),
+        (b"call-native", 3) => Some(FormalMinimalInstruction::CallNative),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -476,11 +615,19 @@ fn symbol_is(
     term: TermId,
     expected: &[u8],
 ) -> Result<bool, FormalLoweringError> {
+    Ok(symbol_name(sidecar, term)? == Some(expected))
+}
+
+fn symbol_name<'a>(
+    sidecar: &'a TermIdentitySidecar,
+    term: TermId,
+) -> Result<Option<&'a [u8]>, FormalLoweringError> {
     let Some(record) = sidecar.get_term(term) else {
         return Err(FormalLoweringError::UnknownTerm { term });
     };
     Ok(matches!(record.kind, TermKind::Symbol)
-        && symbol_payload(record.encoded()) == Some(expected))
+        .then(|| symbol_payload(record.encoded()))
+        .flatten())
 }
 
 fn symbol_payload(encoded: &[u8]) -> Option<&[u8]> {
@@ -499,6 +646,17 @@ mod tests {
         let mut sidecar = TermIdentitySidecar::new();
         sidecar.extend_from_pathmap(&space.btm).unwrap();
         (space, sidecar)
+    }
+
+    fn encoded_expr(space: &mut Space, expr: &'static str) -> Vec<u8> {
+        let expr = crate::expr!(space, expr);
+        unsafe { expr.span().as_ref().unwrap() }.to_vec()
+    }
+
+    fn term_for(space: &mut Space, sidecar: &TermIdentitySidecar, expr: &'static str) -> TermId {
+        sidecar
+            .term_id_for_encoded(&encoded_expr(space, expr))
+            .unwrap_or_else(|| panic!("missing term {expr}"))
     }
 
     fn exec_by_location(sidecar: &TermIdentitySidecar, name: &[u8]) -> TermId {
@@ -600,5 +758,171 @@ mod tests {
                 && hole.path.as_ref() == [1, 1]
                 && hole.kind == FormalHoleKind::VarRef { slot: 0 }
         }));
+    }
+
+    #[test]
+    fn metta_special_form_distinguishes_result_atoms_from_unit_and_error() {
+        let (mut space, sidecar) = sidecar_for(
+            br#"
+Empty
+NotReducible
+()
+(Error bad message)
+"#,
+        );
+
+        assert_eq!(
+            metta_special_form(&sidecar, term_for(&mut space, &sidecar, "Empty")).unwrap(),
+            Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::Empty
+            ))
+        );
+        assert_eq!(
+            metta_special_form(&sidecar, term_for(&mut space, &sidecar, "NotReducible")).unwrap(),
+            Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::NotReducible
+            ))
+        );
+        assert_eq!(
+            metta_special_form(&sidecar, term_for(&mut space, &sidecar, "[0]")).unwrap(),
+            Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::Unit
+            ))
+        );
+
+        let error = term_for(&mut space, &sidecar, "[3] Error bad message");
+        let bad = term_for(&mut space, &sidecar, "bad");
+        let message = term_for(&mut space, &sidecar, "message");
+        assert_eq!(
+            metta_special_form(&sidecar, error).unwrap(),
+            Some(FormalMettaSpecialForm::SpecialResult(
+                FormalMettaSpecialResult::Error { atom: bad, message }
+            ))
+        );
+    }
+
+    #[test]
+    fn metta_special_form_recognizes_exact_arity_minimal_instructions() {
+        let (mut space, sidecar) = sidecar_for(
+            br#"
+(eval target)
+(evalc target ctx)
+(chain (eval target) $x $x)
+(unify $x Empty then else)
+(decons-atom (A B))
+(cons-atom A (B))
+(function (return Done))
+(collapse-bind (eval target))
+(superpose-bind ((target bindings)))
+(metta target Atom space)
+(context-space)
+(call-native name pointer args)
+(eval target extra)
+"#,
+        );
+
+        for (expr, instruction) in [
+            ("[2] eval target", FormalMinimalInstruction::Eval),
+            ("[3] evalc target ctx", FormalMinimalInstruction::Evalc),
+            (
+                "[4] chain [2] eval target $ _1",
+                FormalMinimalInstruction::Chain,
+            ),
+            (
+                "[5] unify $ Empty then else",
+                FormalMinimalInstruction::Unify,
+            ),
+            (
+                "[2] decons-atom [2] A B",
+                FormalMinimalInstruction::DeconsAtom,
+            ),
+            ("[3] cons-atom A [1] B", FormalMinimalInstruction::ConsAtom),
+            (
+                "[2] function [2] return Done",
+                FormalMinimalInstruction::Function,
+            ),
+            (
+                "[2] collapse-bind [2] eval target",
+                FormalMinimalInstruction::CollapseBind,
+            ),
+            (
+                "[2] superpose-bind [1] [2] target bindings",
+                FormalMinimalInstruction::SuperposeBind,
+            ),
+            (
+                "[4] metta target Atom space",
+                FormalMinimalInstruction::Metta,
+            ),
+            ("[1] context-space", FormalMinimalInstruction::ContextSpace),
+            (
+                "[4] call-native name pointer args",
+                FormalMinimalInstruction::CallNative,
+            ),
+        ] {
+            let term = term_for(&mut space, &sidecar, expr);
+            assert_eq!(
+                metta_special_form(&sidecar, term).unwrap(),
+                Some(FormalMettaSpecialForm::MinimalInstruction(instruction)),
+                "{expr}"
+            );
+        }
+
+        let return_term = term_for(&mut space, &sidecar, "[2] return Done");
+        assert_eq!(
+            metta_special_form(&sidecar, return_term).unwrap(),
+            Some(FormalMettaSpecialForm::MinimalInstruction(
+                FormalMinimalInstruction::Return
+            ))
+        );
+
+        let wrong_arity = term_for(&mut space, &sidecar, "[3] eval target extra");
+        assert_eq!(metta_special_form(&sidecar, wrong_arity).unwrap(), None);
+    }
+
+    #[test]
+    fn metta_special_form_recognizes_spec_forms_only_at_valid_arity() {
+        let (mut space, sidecar) = sidecar_for(
+            br#"
+(= (id $x) $x)
+(: id (-> Atom Atom))
+(-> Atom Atom)
+(= too many args here)
+plain
+"#,
+        );
+
+        assert_eq!(
+            metta_special_form(
+                &sidecar,
+                term_for(&mut space, &sidecar, "[3] = [2] id $ _1")
+            )
+            .unwrap(),
+            Some(FormalMettaSpecialForm::FunctionDefinition)
+        );
+        assert_eq!(
+            metta_special_form(
+                &sidecar,
+                term_for(&mut space, &sidecar, "[3] : id [3] -> Atom Atom")
+            )
+            .unwrap(),
+            Some(FormalMettaSpecialForm::TypeAssignment)
+        );
+        assert_eq!(
+            metta_special_form(&sidecar, term_for(&mut space, &sidecar, "[3] -> Atom Atom"))
+                .unwrap(),
+            Some(FormalMettaSpecialForm::FunctionType)
+        );
+        assert_eq!(
+            metta_special_form(
+                &sidecar,
+                term_for(&mut space, &sidecar, "[5] = too many args here")
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            metta_special_form(&sidecar, term_for(&mut space, &sidecar, "plain")).unwrap(),
+            None
+        );
     }
 }

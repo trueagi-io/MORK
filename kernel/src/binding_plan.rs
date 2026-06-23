@@ -398,6 +398,11 @@ mod tests {
         assert_eq!(trie.trie_stats.relation_indexes, 2);
         assert_eq!(trie.trie_stats.indexed_rows, 12);
         assert_eq!(trie.trie_stats.domain_intersections, 8);
+        assert_eq!(
+            trie.trie_stats.domain_cursor_opens,
+            trie.trie_stats.domain_sources
+        );
+        assert!(trie.trie_stats.domain_cursor_seeks >= trie.trie_stats.domain_cursor_opens);
     }
 
     #[test]

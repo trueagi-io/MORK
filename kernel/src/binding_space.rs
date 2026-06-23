@@ -212,10 +212,33 @@ pub struct TrieJoinStats {
     pub domain_sources: usize,
     /// Domain values presented to leapfrog intersection.
     pub domain_values: usize,
+    /// LFTJ-style domain cursors opened for variable intersections.
+    pub domain_cursor_opens: usize,
+    /// Monotone seek calls issued against domain cursors.
+    pub domain_cursor_seeks: usize,
+    /// Next calls issued after a cursor-aligned result is emitted.
+    pub domain_cursor_nexts: usize,
     /// Final relation row-weight probes.
     pub weight_lookups: usize,
     /// Positive rows emitted by the join.
     pub output_rows: usize,
+}
+
+/// Minimal LFTJ-style cursor over one ordered variable domain.
+///
+/// This is the physical contract for PathMap/ReadZipper-backed factors:
+/// ordered current key, monotone `seek`, linear `next`, and an end marker. The
+/// current implementation below adapts in-memory relation trie domains to the
+/// same contract.
+pub trait BindingDomainCursor {
+    /// Current key at this trie depth, or `None` at end.
+    fn key(&self) -> Option<TermId>;
+    /// Whether the cursor has exhausted its current domain.
+    fn at_end(&self) -> bool;
+    /// Advance to the next key in the current domain.
+    fn next(&mut self);
+    /// Advance to the least key greater than or equal to `target`.
+    fn seek(&mut self, target: TermId);
 }
 
 /// Trie-backed variable-at-a-time join over positive BindingSpace rows.
@@ -420,6 +443,45 @@ impl RelationTrieIndex {
             .map(|variable| binding[variable])
             .collect::<Vec<_>>();
         self.weights.get(row.as_slice()).copied().unwrap_or(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SliceDomainCursor<'a> {
+    domain: &'a [TermId],
+    position: usize,
+}
+
+impl<'a> SliceDomainCursor<'a> {
+    fn new(domain: &'a [TermId]) -> Self {
+        Self {
+            domain,
+            position: 0,
+        }
+    }
+}
+
+impl BindingDomainCursor for SliceDomainCursor<'_> {
+    fn key(&self) -> Option<TermId> {
+        self.domain.get(self.position).copied()
+    }
+
+    fn at_end(&self) -> bool {
+        self.position >= self.domain.len()
+    }
+
+    fn next(&mut self) {
+        if !self.at_end() {
+            self.position += 1;
+        }
+    }
+
+    fn seek(&mut self, target: TermId) {
+        if self.at_end() {
+            return;
+        }
+
+        self.position += self.domain[self.position..].partition_point(|&value| value < target);
     }
 }
 
@@ -651,7 +713,8 @@ fn has_duplicates(variables: &[BindingVar]) -> bool {
 
 fn leapfrog_intersection(domains: &[Vec<TermId>]) -> Vec<TermId> {
     let domains = domains.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    leapfrog_intersection_inner(&domains)
+    let mut stats = TrieJoinStats::default();
+    leapfrog_intersection_inner(&domains, &mut stats)
 }
 
 fn leapfrog_intersection_slices(domains: &[&[TermId]], stats: &mut TrieJoinStats) -> Vec<TermId> {
@@ -659,43 +722,63 @@ fn leapfrog_intersection_slices(domains: &[&[TermId]], stats: &mut TrieJoinStats
     stats.domain_sources += domains.len();
     stats.domain_values += domains.iter().map(|domain| domain.len()).sum::<usize>();
 
-    leapfrog_intersection_inner(domains)
+    leapfrog_intersection_inner(domains, stats)
 }
 
-fn leapfrog_intersection_inner(domains: &[&[TermId]]) -> Vec<TermId> {
+fn leapfrog_intersection_inner(domains: &[&[TermId]], stats: &mut TrieJoinStats) -> Vec<TermId> {
     if domains.is_empty() || domains.iter().any(|domain| domain.is_empty()) {
         return Vec::new();
     }
 
-    let mut positions = vec![0usize; domains.len()];
-    let mut target = domains
+    let mut cursors = domains
         .iter()
-        .map(|domain| domain[0])
+        .map(|&domain| SliceDomainCursor::new(domain))
+        .collect::<Vec<_>>();
+
+    leapfrog_intersection_cursors(&mut cursors, stats)
+}
+
+fn leapfrog_intersection_cursors<C: BindingDomainCursor>(
+    cursors: &mut [C],
+    stats: &mut TrieJoinStats,
+) -> Vec<TermId> {
+    stats.domain_cursor_opens += cursors.len();
+
+    if cursors.is_empty() || cursors.iter().any(BindingDomainCursor::at_end) {
+        return Vec::new();
+    }
+
+    let mut target = cursors
+        .iter()
+        .filter_map(BindingDomainCursor::key)
         .max()
-        .expect("domains are non-empty");
+        .expect("non-empty cursors have keys");
     let mut out = Vec::new();
 
     loop {
         let mut changed = false;
-        for (index, domain) in domains.iter().enumerate() {
-            while positions[index] < domain.len() && domain[positions[index]] < target {
-                positions[index] += 1;
-            }
-            if positions[index] >= domain.len() {
+        for cursor in cursors.iter_mut() {
+            stats.domain_cursor_seeks += 1;
+            cursor.seek(target);
+            if cursor.at_end() {
                 return out;
             }
-            if domain[positions[index]] > target {
-                target = domain[positions[index]];
+            let Some(key) = cursor.key() else {
+                return out;
+            };
+            if key > target {
+                target = key;
                 changed = true;
             }
         }
         if !changed {
             out.push(target);
-            positions[0] += 1;
-            if positions[0] >= domains[0].len() {
+            stats.domain_cursor_nexts += 1;
+            cursors[0].next();
+            if cursors[0].at_end() {
                 return out;
             }
-            target = domains[0][positions[0]];
+            target = cursors[0].key().expect("cursor just checked as not at end");
         }
     }
 }
@@ -761,10 +844,33 @@ mod tests {
                 domain_intersections: 4,
                 domain_sources: 5,
                 domain_values: 10,
+                domain_cursor_opens: 5,
+                domain_cursor_seeks: 11,
+                domain_cursor_nexts: 7,
                 weight_lookups: 8,
                 output_rows: 4,
             }
         );
+    }
+
+    #[test]
+    fn cursor_leapfrog_intersection_uses_monotone_seek_contract() {
+        let left = [t(1), t(3), t(5), t(8)];
+        let right = [t(2), t(3), t(5), t(9)];
+        let guard = [t(3), t(4), t(5), t(10)];
+        let mut cursors = [
+            SliceDomainCursor::new(&left),
+            SliceDomainCursor::new(&right),
+            SliceDomainCursor::new(&guard),
+        ];
+        let mut stats = TrieJoinStats::default();
+
+        let intersection = leapfrog_intersection_cursors(&mut cursors, &mut stats);
+
+        assert_eq!(intersection, vec![t(3), t(5)]);
+        assert_eq!(stats.domain_cursor_opens, 3);
+        assert_eq!(stats.domain_cursor_nexts, 2);
+        assert!(stats.domain_cursor_seeks >= stats.domain_cursor_opens);
     }
 
     #[test]

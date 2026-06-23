@@ -242,6 +242,96 @@ pub struct TrieJoinTrace {
     pub candidate_bindings: usize,
 }
 
+/// Aggregate counters and shape facts derived from a trie-join trace.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrieJoinTraceSummary {
+    /// Input relation indexes constructed for the trace.
+    pub relation_indexes: usize,
+    /// Positive rows retained across all relation indexes.
+    pub indexed_rows: usize,
+    /// Distinct trie prefixes with outgoing children across all indexes.
+    pub trie_nodes: usize,
+    /// Domain-intersection contexts visited in traversal order.
+    pub steps: usize,
+    /// Complete satisfying bindings reached by the traced traversal.
+    pub candidate_bindings: usize,
+    /// Variable-domain intersections represented by the trace.
+    pub domain_intersections: usize,
+    /// Relation domains participating in those intersections.
+    pub domain_sources: usize,
+    /// Domain values presented to leapfrog intersection.
+    pub domain_values: usize,
+    /// Values that survived all recorded intersections.
+    pub intersection_values: usize,
+    /// Intersections whose survivor set was empty.
+    pub empty_intersections: usize,
+    /// Largest bound-prefix depth represented by one step.
+    pub max_bound_prefix_len: usize,
+    /// Largest relation-domain fan-in represented by one step.
+    pub max_participating_relations: usize,
+    /// Largest survivor set represented by one step.
+    pub max_intersection_len: usize,
+    /// Cursor opens recorded across all trace steps.
+    pub cursor_opens: usize,
+    /// Cursor seeks recorded across all trace steps.
+    pub cursor_seeks: usize,
+    /// Cursor next calls recorded across all trace steps.
+    pub cursor_nexts: usize,
+}
+
+/// Shape error found while summarizing a trie-join trace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrieJoinTraceShapeError {
+    /// A step refers past the configured variable order.
+    InvalidStepLevel {
+        step: usize,
+        level: usize,
+        variable_count: usize,
+    },
+    /// A step variable does not match the trace's variable order at its level.
+    VariableMismatch {
+        step: usize,
+        expected: BindingVar,
+        actual: BindingVar,
+    },
+    /// Bound-prefix length must equal the variable depth.
+    BoundPrefixLengthMismatch {
+        step: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// A participating relation index is outside the trace relation set.
+    UnknownParticipatingRelation {
+        step: usize,
+        relation_index: usize,
+        relation_indexes: usize,
+    },
+    /// Participating relation IDs and domain lengths must align one-for-one.
+    ParticipationLengthMismatch {
+        step: usize,
+        participating_relations: usize,
+        relation_domain_lens: usize,
+    },
+    /// Aggregate domain-source count must match participating relation IDs.
+    DomainSourceMismatch {
+        step: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// Aggregate domain-value count must match summed relation-domain lengths.
+    DomainValueMismatch {
+        step: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// Non-empty domains open one cursor per participating relation.
+    CursorOpenMismatch {
+        step: usize,
+        expected: usize,
+        actual: usize,
+    },
+}
+
 /// One variable-depth domain intersection observed while tracing LFTJ traversal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrieJoinTraceStep {
@@ -270,6 +360,112 @@ pub struct TrieJoinTraceStep {
     pub cursor_seeks: usize,
     /// Cursor next calls issued after aligned values.
     pub cursor_nexts: usize,
+}
+
+impl TrieJoinTrace {
+    /// Validates step-local trace shape and returns aggregate replay counters.
+    pub fn summarize(&self) -> Result<TrieJoinTraceSummary, TrieJoinTraceShapeError> {
+        let mut summary = TrieJoinTraceSummary {
+            relation_indexes: self.relation_indexes,
+            indexed_rows: self.indexed_rows,
+            trie_nodes: self.trie_nodes,
+            steps: self.steps.len(),
+            candidate_bindings: self.candidate_bindings,
+            ..TrieJoinTraceSummary::default()
+        };
+
+        for (step_index, step) in self.steps.iter().enumerate() {
+            let Some(&expected_variable) = self.variable_order.get(step.level) else {
+                return Err(TrieJoinTraceShapeError::InvalidStepLevel {
+                    step: step_index,
+                    level: step.level,
+                    variable_count: self.variable_order.len(),
+                });
+            };
+
+            if step.variable != expected_variable {
+                return Err(TrieJoinTraceShapeError::VariableMismatch {
+                    step: step_index,
+                    expected: expected_variable,
+                    actual: step.variable,
+                });
+            }
+
+            if step.bound_prefix.len() != step.level {
+                return Err(TrieJoinTraceShapeError::BoundPrefixLengthMismatch {
+                    step: step_index,
+                    expected: step.level,
+                    actual: step.bound_prefix.len(),
+                });
+            }
+
+            for &relation_index in step.participating_relations.iter() {
+                if relation_index >= self.relation_indexes {
+                    return Err(TrieJoinTraceShapeError::UnknownParticipatingRelation {
+                        step: step_index,
+                        relation_index,
+                        relation_indexes: self.relation_indexes,
+                    });
+                }
+            }
+
+            if step.participating_relations.len() != step.relation_domain_lens.len() {
+                return Err(TrieJoinTraceShapeError::ParticipationLengthMismatch {
+                    step: step_index,
+                    participating_relations: step.participating_relations.len(),
+                    relation_domain_lens: step.relation_domain_lens.len(),
+                });
+            }
+
+            if step.domain_sources != step.participating_relations.len() {
+                return Err(TrieJoinTraceShapeError::DomainSourceMismatch {
+                    step: step_index,
+                    expected: step.participating_relations.len(),
+                    actual: step.domain_sources,
+                });
+            }
+
+            let domain_values = step.relation_domain_lens.iter().sum::<usize>();
+            if step.domain_values != domain_values {
+                return Err(TrieJoinTraceShapeError::DomainValueMismatch {
+                    step: step_index,
+                    expected: domain_values,
+                    actual: step.domain_values,
+                });
+            }
+
+            let expected_cursor_opens = if step.relation_domain_lens.iter().any(|&len| len == 0) {
+                0
+            } else {
+                step.participating_relations.len()
+            };
+            if step.cursor_opens != expected_cursor_opens {
+                return Err(TrieJoinTraceShapeError::CursorOpenMismatch {
+                    step: step_index,
+                    expected: expected_cursor_opens,
+                    actual: step.cursor_opens,
+                });
+            }
+
+            summary.domain_intersections += 1;
+            summary.domain_sources += step.domain_sources;
+            summary.domain_values += step.domain_values;
+            summary.intersection_values += step.intersection.len();
+            summary.empty_intersections += usize::from(step.intersection.is_empty());
+            summary.max_bound_prefix_len =
+                summary.max_bound_prefix_len.max(step.bound_prefix.len());
+            summary.max_participating_relations = summary
+                .max_participating_relations
+                .max(step.participating_relations.len());
+            summary.max_intersection_len =
+                summary.max_intersection_len.max(step.intersection.len());
+            summary.cursor_opens += step.cursor_opens;
+            summary.cursor_seeks += step.cursor_seeks;
+            summary.cursor_nexts += step.cursor_nexts;
+        }
+
+        Ok(summary)
+    }
 }
 
 /// Minimal LFTJ-style cursor over one ordered variable domain.
@@ -1038,6 +1234,27 @@ mod tests {
         assert_eq!(trace.relation_indexes, 2);
         assert_eq!(trace.indexed_rows, 6);
         assert_eq!(trace.trie_nodes, 6);
+        assert_eq!(
+            trace.summarize().unwrap(),
+            TrieJoinTraceSummary {
+                relation_indexes: 2,
+                indexed_rows: 6,
+                trie_nodes: 6,
+                steps: 4,
+                candidate_bindings: 4,
+                domain_intersections: 4,
+                domain_sources: 5,
+                domain_values: 10,
+                intersection_values: 7,
+                empty_intersections: 0,
+                max_bound_prefix_len: 2,
+                max_participating_relations: 2,
+                max_intersection_len: 2,
+                cursor_opens: 5,
+                cursor_seeks: 11,
+                cursor_nexts: 7,
+            }
+        );
 
         let root = &trace.steps[0];
         assert_eq!(root.level, 0);
@@ -1068,6 +1285,25 @@ mod tests {
                 && step.participating_relations.as_ref() == [1]
                 && step.relation_domain_lens.as_ref() == [2]
                 && step.intersection.as_ref() == [t(100), t(101)]));
+    }
+
+    #[test]
+    fn trie_join_trace_summary_rejects_inconsistent_domain_metadata() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let variable_order = [v(1), v(0), v(2)];
+        let mut trace = trie_join_trace(&[left, right], &variable_order).unwrap();
+
+        trace.steps[0].domain_values += 1;
+
+        assert_eq!(
+            trace.summarize().unwrap_err(),
+            TrieJoinTraceShapeError::DomainValueMismatch {
+                step: 0,
+                expected: 2,
+                actual: 3,
+            }
+        );
     }
 
     #[test]

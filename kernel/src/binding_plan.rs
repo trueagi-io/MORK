@@ -951,6 +951,7 @@ mod tests {
         let report = plan.explain_selected_trie_trace(&sidecar).unwrap();
         let product_count = transitive_edge_product_count(&mut space);
         let trace = report.trie_trace.unwrap();
+        let summary = trace.summarize().unwrap();
 
         assert_eq!(
             report.execution.choice.kernel,
@@ -968,6 +969,9 @@ mod tests {
         assert_eq!(trace.steps[0].relation_domain_lens.len(), 2);
         assert_eq!(trace.steps[0].domain_sources, 2);
         assert_eq!(trace.steps[0].intersection.len(), 3);
+        assert_eq!(summary.candidate_bindings, product_count);
+        assert_eq!(summary.max_participating_relations, 2);
+        assert_eq!(summary.empty_intersections, 0);
     }
 
     #[test]

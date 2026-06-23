@@ -13,6 +13,10 @@ pub mod binding_env;
 pub mod pattern_relations;
 pub mod arrangements;
 pub mod binding_space;
+pub mod binding_plan;
+
+#[cfg(test)]
+mod test_sidecar_queries;
 
 #[doc(hidden)]
 pub use mork_expr as __mork_expr;

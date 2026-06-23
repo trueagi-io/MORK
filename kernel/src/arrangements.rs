@@ -304,6 +304,7 @@ mod tests {
     use crate::binding_space::{generic_join, BindingVar};
     use crate::space::Space;
     use crate::term_identity::TermIdentitySidecar;
+    use crate::test_sidecar_queries::{transitive_edge_product_count, transitive_edge_sidecar};
     use std::collections::BTreeSet;
 
     fn encoded_roots(
@@ -387,26 +388,7 @@ mod tests {
 
     #[test]
     fn arrangement_projection_feeds_generic_join_for_transitive_edges() {
-        let mut space = Space::new();
-        space
-            .add_all_sexpr(
-                br#"
-(edge Alice Bob)
-(edge Bob Carol)
-(edge Alice Dana)
-(edge Dana Carol)
-(edge Carol Erin)
-(edge X Y)
-"#,
-            )
-            .unwrap();
-
-        let mut sidecar = TermIdentitySidecar::new();
-        sidecar.extend_from_pathmap(&space.btm).unwrap();
-        let edge = sidecar
-            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
-            .unwrap();
-
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
         let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
         let arrangement = ArrangementIndex::build(&sidecar, descriptor).unwrap();
         let xy = arrangement
@@ -424,8 +406,7 @@ mod tests {
         let joined =
             generic_join(&[xy, yz], &[BindingVar(1), BindingVar(0), BindingVar(2)]).unwrap();
 
-        let product_pattern = crate::expr!(space, "[3] , [3] edge $ $ [3] edge _2 $");
-        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+        let product_count = transitive_edge_product_count(&mut space);
 
         assert_eq!(product_count, 4);
         assert_eq!(joined.positive_rows().count(), product_count);

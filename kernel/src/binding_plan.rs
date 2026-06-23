@@ -127,6 +127,8 @@ pub struct BindingSidecarStats {
     pub facts_scanned: usize,
     /// Rows retained by constructed arrangements.
     pub arrangement_rows: usize,
+    /// Expression-trie indexes built while opening this plan.
+    pub expression_trie_builds: usize,
     /// Complete facts indexed into expression tries.
     pub expression_trie_facts_indexed: usize,
     /// Candidate facts returned by expression-trie prefix retrieval.
@@ -230,11 +232,12 @@ impl BindingSidecarPlan {
         sidecar: &TermIdentitySidecar,
     ) -> Result<(Vec<BindingRelation>, BindingSidecarStats), BindingSidecarPlanError> {
         let mut stats = BindingSidecarStats::default();
+        let mut context = BindingOpenContext::default();
         let mut relations = Vec::with_capacity(self.factors.len());
 
         for factor in self.factors.iter() {
             stats.factors += 1;
-            let relation = factor.open(sidecar, &mut stats)?;
+            let relation = factor.open(sidecar, &mut stats, &mut context)?;
             stats.projected_rows += relation.positive_rows().count();
             relations.push(relation);
         }
@@ -248,6 +251,7 @@ impl BindingAccessPlan {
         &self,
         sidecar: &TermIdentitySidecar,
         stats: &mut BindingSidecarStats,
+        context: &mut BindingOpenContext,
     ) -> Result<BindingRelation, BindingSidecarPlanError> {
         match self {
             BindingAccessPlan::Arrangement {
@@ -267,9 +271,7 @@ impl BindingAccessPlan {
                 pattern,
                 projection,
             } => {
-                let index = ExpressionTrieIndex::build(sidecar)
-                    .map_err(BindingSidecarPlanError::ExpressionTrie)?;
-                stats.expression_trie_facts_indexed += index.stats().facts_indexed;
+                let index = context.expression_trie(sidecar, stats)?;
                 let matches = index
                     .match_pattern(sidecar, *pattern)
                     .map_err(BindingSidecarPlanError::ExpressionTrie)?;
@@ -298,6 +300,32 @@ impl BindingAccessPlan {
                 Ok(relation)
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct BindingOpenContext {
+    expression_trie: Option<ExpressionTrieIndex>,
+}
+
+impl BindingOpenContext {
+    fn expression_trie<'a>(
+        &'a mut self,
+        sidecar: &TermIdentitySidecar,
+        stats: &mut BindingSidecarStats,
+    ) -> Result<&'a ExpressionTrieIndex, BindingSidecarPlanError> {
+        if self.expression_trie.is_none() {
+            let index = ExpressionTrieIndex::build(sidecar)
+                .map_err(BindingSidecarPlanError::ExpressionTrie)?;
+            stats.expression_trie_builds += 1;
+            stats.expression_trie_facts_indexed += index.stats().facts_indexed;
+            self.expression_trie = Some(index);
+        }
+
+        Ok(self
+            .expression_trie
+            .as_ref()
+            .expect("expression trie was initialized above"))
     }
 }
 
@@ -456,6 +484,44 @@ mod tests {
         BindingSidecarPlan::new([xy, yz], variable_order)
     }
 
+    fn colored_function_edges_sidecar() -> (
+        Space,
+        TermIdentitySidecar,
+        crate::term_identity::TermId,
+        crate::term_identity::TermId,
+        crate::term_identity::TermId,
+    ) {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice (f Alice))
+(edge Bob (f Bob))
+(edge Carol (f Carol))
+(edge Dave (f Eve))
+(color Alice red)
+(color Bob blue)
+(color Carol red)
+(color Eve red)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        let edge_pattern = sidecar
+            .insert_term(&encoded_expr(&mut space, "[3] edge $ [2] f _1"))
+            .unwrap();
+        let color_pattern = sidecar
+            .insert_term(&encoded_expr(&mut space, "[3] color $ $"))
+            .unwrap();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let color = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "color"))
+            .unwrap();
+
+        (space, sidecar, edge_pattern, color, color_pattern)
+    }
+
     #[test]
     fn arrangement_sidecar_plan_matches_transitive_product_query() {
         let (mut space, sidecar, edge) = transitive_edge_sidecar();
@@ -589,6 +655,7 @@ mod tests {
         assert_eq!(result.relation.positive_rows().count(), product_count);
         assert_eq!(projected, BTreeSet::from([alice, bob]));
         assert_eq!(result.stats.factors, 1);
+        assert_eq!(result.stats.expression_trie_builds, 1);
         assert_eq!(result.stats.expression_trie_facts_indexed, 7);
         assert_eq!(result.stats.expression_trie_candidates, 5);
         assert_eq!(result.stats.pattern_matches, 2);
@@ -598,30 +665,7 @@ mod tests {
 
     #[test]
     fn expression_trie_pattern_factor_joins_with_arrangement_factor() {
-        let mut space = Space::new();
-        space
-            .add_all_sexpr(
-                br#"
-(edge Alice (f Alice))
-(edge Bob (f Bob))
-(edge Carol (f Carol))
-(edge Dave (f Eve))
-(color Alice red)
-(color Bob blue)
-(color Carol red)
-(color Eve red)
-"#,
-            )
-            .unwrap();
-
-        let mut sidecar = TermIdentitySidecar::new();
-        let pattern = sidecar
-            .insert_term(&encoded_expr(&mut space, "[3] edge $ [2] f _1"))
-            .unwrap();
-        sidecar.extend_from_pathmap(&space.btm).unwrap();
-        let color = sidecar
-            .term_id_for_encoded(&encoded_expr(&mut space, "color"))
-            .unwrap();
+        let (mut space, sidecar, pattern, color, _) = colored_function_edges_sidecar();
         let descriptor = ArrangementDescriptor::new(color, 2, [0, 1]).unwrap();
         let plan = BindingSidecarPlan::new(
             [
@@ -650,9 +694,43 @@ mod tests {
         assert_eq!(product_count, 3);
         assert_eq!(trie.relation, generic.relation);
         assert_eq!(trie.relation.positive_rows().count(), product_count);
+        assert_eq!(trie.stats.expression_trie_builds, 1);
         assert_eq!(trie.stats.expression_trie_candidates, 4);
         assert_eq!(trie.stats.pattern_matches, 3);
         assert_eq!(trie.stats.arrangement_rows, 4);
         assert_eq!(trie.trie_stats.output_rows, product_count);
+    }
+
+    #[test]
+    fn expression_trie_pattern_factors_share_one_index_build() {
+        let (mut space, sidecar, edge_pattern, _, color_pattern) = colored_function_edges_sidecar();
+        let plan = BindingSidecarPlan::new(
+            [
+                BindingAccessPlan::Pattern {
+                    pattern: edge_pattern,
+                    projection: PatternProjection::new([BindingVar(0)], [0]).unwrap(),
+                },
+                BindingAccessPlan::Pattern {
+                    pattern: color_pattern,
+                    projection: PatternProjection::new([BindingVar(0), BindingVar(1)], [0, 1])
+                        .unwrap(),
+                },
+            ],
+            [BindingVar(0), BindingVar(1)],
+        );
+
+        let result = plan.execute_trie_join(&sidecar).unwrap();
+        let product_pattern = crate::expr!(space, "[3] , [3] edge $ [2] f _1 [3] color _1 $");
+        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+
+        assert_eq!(product_count, 3);
+        assert_eq!(result.relation.positive_rows().count(), product_count);
+        assert_eq!(result.stats.factors, 2);
+        assert_eq!(result.stats.expression_trie_builds, 1);
+        assert_eq!(result.stats.expression_trie_facts_indexed, 8);
+        assert_eq!(result.stats.expression_trie_candidates, 8);
+        assert_eq!(result.stats.pattern_matches, 7);
+        assert_eq!(result.stats.projected_rows, 7);
+        assert_eq!(result.trie_stats.output_rows, product_count);
     }
 }

@@ -2027,8 +2027,7 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
                     stack.push((_x, _y));
                 }
-                _ if !encountered.contains(&(_x, _y)) => {
-                    encountered.insert((_x, _y));
+                _ if encountered.insert((_x, _y)) => {
                     stack.push((_x, _y));
                 }
                 _ => {}
@@ -2064,6 +2063,11 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
         }
         let dt1: ExprEnv = step!(derefBound xpop);
         let dt2: ExprEnv = step!(derefBound ypop);
+
+        // A term unifies with itself without adding bindings.
+        if dt1 == dt2 {
+            continue 'popping;
+        }
 
         match (dt1.var_opt(), dt2.var_opt()) {
             (None, None) => {

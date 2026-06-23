@@ -309,6 +309,62 @@ pub struct TrieJoinTraceImpact {
     pub max_level: usize,
 }
 
+/// One bound-prefix context changed between two replay shapes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceReplayDiffEntry {
+    /// Bound-prefix context compared between replay shapes.
+    pub bound_prefix: BindingRow,
+    /// Kind of replay-shape change at this exact context.
+    pub kind: TrieJoinTraceReplayDiffKind,
+    /// Previous trace-local impact, absent for newly added contexts.
+    pub old_impact: Option<TrieJoinTraceImpact>,
+    /// New trace-local impact, absent for removed contexts.
+    pub new_impact: Option<TrieJoinTraceImpact>,
+}
+
+/// Replay-shape change kind for one bound-prefix context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrieJoinTraceReplayDiffKind {
+    /// Context exists only in the new replay shape.
+    Added,
+    /// Context exists only in the old replay shape.
+    Removed,
+    /// Context exists in both shapes but its local intersection metadata changed.
+    Changed,
+}
+
+/// Trace-local diff between two replay shapes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrieJoinTraceReplayDiff {
+    /// Bound-prefix contexts present in both shapes with identical local metadata.
+    pub unchanged_contexts: usize,
+    /// Bound-prefix contexts present in both shapes with changed local metadata.
+    pub changed_contexts: usize,
+    /// Bound-prefix contexts present only in the new shape.
+    pub added_contexts: usize,
+    /// Bound-prefix contexts present only in the old shape.
+    pub removed_contexts: usize,
+    /// Non-overlapping changed-context roots used for touched-work estimates.
+    pub frontier_contexts: usize,
+    /// Old replay steps under the non-overlapping change frontier.
+    pub old_replay_steps_touched: usize,
+    /// New replay steps under the non-overlapping change frontier.
+    pub new_replay_steps_touched: usize,
+    /// Old candidate bindings under the non-overlapping change frontier.
+    pub old_candidate_bindings_touched: usize,
+    /// New candidate bindings under the non-overlapping change frontier.
+    pub new_candidate_bindings_touched: usize,
+    /// Exact changed, added, and removed contexts.
+    pub entries: Box<[TrieJoinTraceReplayDiffEntry]>,
+}
+
+impl TrieJoinTraceReplayDiff {
+    /// Returns true when the two replay shapes expose the same local contexts.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// One replay node for a variable-depth domain intersection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrieJoinTraceReplayNode {
@@ -360,6 +416,77 @@ impl TrieJoinTraceReplayShape {
             .find_bound_prefix(bound_prefix)
             .map(TrieJoinTraceReplayNode::impact)
     }
+
+    /// Compares two replay shapes at exact bound-prefix contexts.
+    ///
+    /// This is an edit-distance-style diagnostic for traces. It does not apply
+    /// deltas or decide semantic equivalence of the underlying relations.
+    pub fn diff(&self, newer: &Self) -> TrieJoinTraceReplayDiff {
+        let mut old_nodes = BTreeMap::new();
+        let mut new_nodes = BTreeMap::new();
+        self.collect_nodes(&mut old_nodes);
+        newer.collect_nodes(&mut new_nodes);
+
+        let prefixes = old_nodes
+            .keys()
+            .chain(new_nodes.keys())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut entries = Vec::new();
+        let mut diff = TrieJoinTraceReplayDiff::default();
+
+        for prefix in prefixes {
+            match (old_nodes.get(&prefix), new_nodes.get(&prefix)) {
+                (Some(old), Some(new)) if old.local_context_eq(new) => {
+                    diff.unchanged_contexts += 1;
+                }
+                (Some(old), Some(new)) => {
+                    diff.changed_contexts += 1;
+                    entries.push(TrieJoinTraceReplayDiffEntry {
+                        bound_prefix: prefix,
+                        kind: TrieJoinTraceReplayDiffKind::Changed,
+                        old_impact: Some(old.impact()),
+                        new_impact: Some(new.impact()),
+                    });
+                }
+                (Some(old), None) => {
+                    diff.removed_contexts += 1;
+                    entries.push(TrieJoinTraceReplayDiffEntry {
+                        bound_prefix: prefix,
+                        kind: TrieJoinTraceReplayDiffKind::Removed,
+                        old_impact: Some(old.impact()),
+                        new_impact: None,
+                    });
+                }
+                (None, Some(new)) => {
+                    diff.added_contexts += 1;
+                    entries.push(TrieJoinTraceReplayDiffEntry {
+                        bound_prefix: prefix,
+                        kind: TrieJoinTraceReplayDiffKind::Added,
+                        old_impact: None,
+                        new_impact: Some(new.impact()),
+                    });
+                }
+                (None, None) => {}
+            }
+        }
+
+        entries.sort_by(|left, right| {
+            left.bound_prefix
+                .len()
+                .cmp(&right.bound_prefix.len())
+                .then_with(|| left.bound_prefix.as_ref().cmp(right.bound_prefix.as_ref()))
+        });
+        diff.add_frontier_estimate(&entries);
+        diff.entries = entries.into_boxed_slice();
+        diff
+    }
+
+    fn collect_nodes<'a>(&'a self, nodes: &mut BTreeMap<BindingRow, &'a TrieJoinTraceReplayNode>) {
+        if let Some(root) = &self.root {
+            root.collect_nodes(nodes);
+        }
+    }
 }
 
 impl TrieJoinTraceReplayNode {
@@ -407,6 +534,48 @@ impl TrieJoinTraceReplayNode {
                 child.accumulate_impact(impact, step_indexes);
             } else {
                 impact.candidate_bindings += 1;
+            }
+        }
+    }
+
+    fn collect_nodes<'a>(&'a self, nodes: &mut BTreeMap<BindingRow, &'a TrieJoinTraceReplayNode>) {
+        nodes.insert(self.bound_prefix.clone(), self);
+        for branch in self.branches.iter() {
+            if let Some(child) = branch.child.as_deref() {
+                child.collect_nodes(nodes);
+            }
+        }
+    }
+
+    fn local_context_eq(&self, other: &Self) -> bool {
+        self.level == other.level
+            && self.variable == other.variable
+            && self.participating_relations == other.participating_relations
+            && self.relation_domain_lens == other.relation_domain_lens
+            && self.intersection == other.intersection
+    }
+}
+
+impl TrieJoinTraceReplayDiff {
+    fn add_frontier_estimate(&mut self, entries: &[TrieJoinTraceReplayDiffEntry]) {
+        let mut frontier_prefixes = Vec::<BindingRow>::new();
+        for entry in entries {
+            if frontier_prefixes
+                .iter()
+                .any(|prefix| entry.bound_prefix.starts_with(prefix.as_ref()))
+            {
+                continue;
+            }
+
+            frontier_prefixes.push(entry.bound_prefix.clone());
+            self.frontier_contexts += 1;
+            if let Some(impact) = &entry.old_impact {
+                self.old_replay_steps_touched += impact.steps;
+                self.old_candidate_bindings_touched += impact.candidate_bindings;
+            }
+            if let Some(impact) = &entry.new_impact {
+                self.new_replay_steps_touched += impact.steps;
+                self.new_candidate_bindings_touched += impact.candidate_bindings;
             }
         }
     }
@@ -1613,6 +1782,63 @@ mod tests {
 
         assert_eq!(replay.impact_for_bound_prefix(&[t(20)]), None);
         assert_eq!(replay.impact_for_bound_prefix(&[t(10), t(3)]), None);
+    }
+
+    #[test]
+    fn trie_join_trace_replay_diff_reports_context_edits_without_nested_double_counting() {
+        let old_left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let new_left = relation(&[0, 1], &[&[1, 10], &[2, 10], &[3, 10]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let variable_order = [v(1), v(0), v(2)];
+
+        let old_replay = trie_join_trace(&[old_left, right.clone()], &variable_order)
+            .unwrap()
+            .replay_shape()
+            .unwrap();
+        let new_replay = trie_join_trace(&[new_left, right], &variable_order)
+            .unwrap()
+            .replay_shape()
+            .unwrap();
+
+        let diff = old_replay.diff(&new_replay);
+
+        assert!(!diff.is_empty());
+        assert_eq!(diff.unchanged_contexts, 3);
+        assert_eq!(diff.changed_contexts, 1);
+        assert_eq!(diff.added_contexts, 1);
+        assert_eq!(diff.removed_contexts, 0);
+        assert_eq!(diff.frontier_contexts, 1);
+        assert_eq!(diff.old_replay_steps_touched, 3);
+        assert_eq!(diff.new_replay_steps_touched, 4);
+        assert_eq!(diff.old_candidate_bindings_touched, 4);
+        assert_eq!(diff.new_candidate_bindings_touched, 6);
+        assert_eq!(diff.entries.len(), 2);
+
+        let changed_x = &diff.entries[0];
+        assert_eq!(changed_x.kind, TrieJoinTraceReplayDiffKind::Changed);
+        assert_eq!(changed_x.bound_prefix.as_ref(), [t(10)]);
+        assert_eq!(
+            changed_x.old_impact.as_ref().unwrap().step_indexes.as_ref(),
+            [1, 2, 3]
+        );
+        assert_eq!(
+            changed_x.new_impact.as_ref().unwrap().step_indexes.as_ref(),
+            [1, 2, 3, 4]
+        );
+
+        let added_x3 = &diff.entries[1];
+        assert_eq!(added_x3.kind, TrieJoinTraceReplayDiffKind::Added);
+        assert_eq!(added_x3.bound_prefix.as_ref(), [t(10), t(3)]);
+        assert_eq!(added_x3.old_impact, None);
+        assert_eq!(added_x3.new_impact.as_ref().unwrap().candidate_bindings, 2);
+
+        let reverse = new_replay.diff(&old_replay);
+        assert_eq!(reverse.added_contexts, 0);
+        assert_eq!(reverse.removed_contexts, 1);
+        assert_eq!(reverse.changed_contexts, 1);
+        assert_eq!(reverse.frontier_contexts, 1);
+        assert_eq!(reverse.old_candidate_bindings_touched, 6);
+        assert_eq!(reverse.new_candidate_bindings_touched, 4);
     }
 
     #[test]

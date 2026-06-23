@@ -216,6 +216,8 @@ pub struct TrieJoinStats {
     pub domain_cursor_opens: usize,
     /// Monotone seek calls issued against domain cursors.
     pub domain_cursor_seeks: usize,
+    /// Domain values skipped by monotone seek calls.
+    pub domain_cursor_skips: usize,
     /// Next calls issued after a cursor-aligned result is emitted.
     pub domain_cursor_nexts: usize,
     /// Final relation row-weight probes.
@@ -275,6 +277,8 @@ pub struct TrieJoinTraceSummary {
     pub cursor_opens: usize,
     /// Cursor seeks recorded across all trace steps.
     pub cursor_seeks: usize,
+    /// Cursor-skipped values recorded across all trace steps.
+    pub cursor_skips: usize,
     /// Cursor next calls recorded across all trace steps.
     pub cursor_nexts: usize,
 }
@@ -766,6 +770,8 @@ pub struct TrieJoinTraceStep {
     pub cursor_opens: usize,
     /// Cursor seeks issued for this intersection.
     pub cursor_seeks: usize,
+    /// Domain values skipped by cursor seeks for this intersection.
+    pub cursor_skips: usize,
     /// Cursor next calls issued after aligned values.
     pub cursor_nexts: usize,
 }
@@ -923,6 +929,7 @@ impl TrieJoinTrace {
                 summary.max_intersection_len.max(step.intersection.len());
             summary.cursor_opens += step.cursor_opens;
             summary.cursor_seeks += step.cursor_seeks;
+            summary.cursor_skips += step.cursor_skips;
             summary.cursor_nexts += step.cursor_nexts;
         }
 
@@ -1114,7 +1121,9 @@ pub trait BindingDomainCursor {
     /// Advance to the next key in the current domain.
     fn next(&mut self);
     /// Advance to the least key greater than or equal to `target`.
-    fn seek(&mut self, target: TermId);
+    ///
+    /// Returns the number of domain values skipped while advancing.
+    fn seek(&mut self, target: TermId) -> usize;
 }
 
 /// Trie-backed variable-at-a-time join over positive BindingSpace rows.
@@ -1381,6 +1390,14 @@ impl<'a> SliceDomainCursor<'a> {
     }
 }
 
+fn lower_bound_from(domain: &[TermId], start: usize, target: TermId) -> usize {
+    if start >= domain.len() {
+        return domain.len();
+    }
+
+    start + domain[start..].partition_point(|&value| value < target)
+}
+
 impl BindingDomainCursor for SliceDomainCursor<'_> {
     fn key(&self) -> Option<TermId> {
         self.domain.get(self.position).copied()
@@ -1396,12 +1413,15 @@ impl BindingDomainCursor for SliceDomainCursor<'_> {
         }
     }
 
-    fn seek(&mut self, target: TermId) {
+    fn seek(&mut self, target: TermId) -> usize {
         if self.at_end() {
-            return;
+            return 0;
         }
 
-        self.position += self.domain[self.position..].partition_point(|&value| value < target);
+        let next_position = lower_bound_from(self.domain, self.position, target);
+        let skipped = next_position - self.position;
+        self.position = next_position;
+        skipped
     }
 }
 
@@ -1513,6 +1533,7 @@ fn trie_join_trace_recurse(
         intersection: intersection.clone().into_boxed_slice(),
         cursor_opens: stats.domain_cursor_opens,
         cursor_seeks: stats.domain_cursor_seeks,
+        cursor_skips: stats.domain_cursor_skips,
         cursor_nexts: stats.domain_cursor_nexts,
     });
 
@@ -1762,7 +1783,7 @@ fn leapfrog_intersection_cursors<C: BindingDomainCursor>(
         let mut changed = false;
         for cursor in cursors.iter_mut() {
             stats.domain_cursor_seeks += 1;
-            cursor.seek(target);
+            stats.domain_cursor_skips += cursor.seek(target);
             if cursor.at_end() {
                 return out;
             }
@@ -1849,6 +1870,7 @@ mod tests {
                 domain_values: 10,
                 domain_cursor_opens: 5,
                 domain_cursor_seeks: 11,
+                domain_cursor_skips: 2,
                 domain_cursor_nexts: 7,
                 weight_lookups: 8,
                 output_rows: 4,
@@ -1892,6 +1914,7 @@ mod tests {
                 max_intersection_len: 2,
                 cursor_opens: 5,
                 cursor_seeks: 11,
+                cursor_skips: 2,
                 cursor_nexts: 7,
             }
         );
@@ -1912,6 +1935,7 @@ mod tests {
         assert_eq!(root.intersection.as_ref(), [t(10)]);
         assert_eq!(root.cursor_opens, 2);
         assert!(root.cursor_seeks >= root.cursor_opens);
+        assert_eq!(root.cursor_skips, 2);
         assert_eq!(root.cursor_nexts, 1);
 
         assert_eq!(
@@ -2235,6 +2259,20 @@ mod tests {
         assert_eq!(stats.domain_cursor_opens, 3);
         assert_eq!(stats.domain_cursor_nexts, 2);
         assert!(stats.domain_cursor_seeks >= stats.domain_cursor_opens);
+        assert_eq!(stats.domain_cursor_skips, 8);
+    }
+
+    #[test]
+    fn lower_bound_from_reports_first_value_at_or_after_target() {
+        let domain = [t(1), t(3), t(5), t(8)];
+
+        assert_eq!(lower_bound_from(&domain, 0, t(0)), 0);
+        assert_eq!(lower_bound_from(&domain, 0, t(1)), 0);
+        assert_eq!(lower_bound_from(&domain, 0, t(2)), 1);
+        assert_eq!(lower_bound_from(&domain, 1, t(5)), 2);
+        assert_eq!(lower_bound_from(&domain, 2, t(6)), 3);
+        assert_eq!(lower_bound_from(&domain, 3, t(9)), domain.len());
+        assert_eq!(lower_bound_from(&domain, domain.len(), t(9)), domain.len());
     }
 
     #[test]

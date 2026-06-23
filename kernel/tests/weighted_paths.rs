@@ -1,12 +1,13 @@
-use mork::weighted_paths::{WeightedPathIndex, WeightedPathStats};
+use mork::weighted_paths::{WeightedPathError, WeightedPathIndex, WeightedPathStats};
 
 #[test]
-fn weighted_path_index_keeps_weights_outside_authoritative_atom_store() {
+fn weighted_path_index_keeps_weights_outside_authoritative_atom_store(
+) -> Result<(), WeightedPathError> {
     let mut index = WeightedPathIndex::new();
 
-    index.apply_delta(b"(foo 1)", 4);
-    index.apply_delta(b"(bar 1)", 1);
-    index.apply_delta(b"(foo 1)", -1);
+    index.apply_delta(b"(foo 1)", 4)?;
+    index.apply_delta(b"(bar 1)", 1)?;
+    index.apply_delta(b"(foo 1)", -1)?;
 
     assert_eq!(index.weight(b"(foo 1)"), 3);
     assert_eq!(index.total_positive_weight(), 4);
@@ -23,4 +24,5 @@ fn weighted_path_index_keeps_weights_outside_authoritative_atom_store() {
             updates: 3,
         }
     );
+    Ok(())
 }

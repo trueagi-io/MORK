@@ -53,3 +53,13 @@ fn huge_fractional_exponent_reports_depth_limit() {
 
     assert_eq!(parse_error(&input), Error::ExceededDepthLimit);
 }
+
+#[test]
+fn truncated_string_reports_unexpected_end() {
+    assert_eq!(parse_error(r#""unterminated"#), Error::UnexpectedEndOfJson);
+}
+
+#[test]
+fn truncated_unicode_escape_reports_unexpected_end() {
+    assert_eq!(parse_error(r#"{"bad": "\u12"#), Error::UnexpectedEndOfJson);
+}

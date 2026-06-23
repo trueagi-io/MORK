@@ -481,16 +481,19 @@ impl<'a> Parser<'a> {
     // is virtually irrelevant.
     #[inline(always)]
     fn read_byte(&mut self) -> u8 {
-        debug_assert!(self.index < self.length, "Reading out of bounds");
+        assert!(self.index < self.length, "Reading out of bounds");
 
-        unsafe { *self.byte_ptr.offset(self.index as isize) }
+        // SAFETY: `index < length` is asserted above, and `byte_ptr` points to
+        // the source string for this parser's lifetime.
+        unsafe { *self.byte_ptr.add(self.index) }
     }
 
     // Manually increment the index. Calling `read_byte` and then `bump`
     // is equivalent to consuming a byte on an iterator.
     #[inline(always)]
     fn bump(&mut self) {
-        self.index = self.index.wrapping_add(1);
+        assert!(self.index < self.length, "Advancing beyond end of input");
+        self.index += 1;
     }
 
     // So we got an unexpected character, now what? Well, figure out where

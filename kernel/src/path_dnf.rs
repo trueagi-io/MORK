@@ -85,6 +85,8 @@ pub enum DnfPathSetError {
     /// An empty conjunction would denote the universal pathset, which is not a
     /// finite `PathMap<()>` value.
     EmptyClause { clause_index: usize },
+    /// Exact count aggregation exceeded the representable `usize` range.
+    CardinalityOverflow { left: usize, right: usize },
 }
 
 /// Evaluates a finite pathset expression in disjunctive normal form.
@@ -112,7 +114,7 @@ pub fn evaluate_pathmap_dnf_exists(
     let mut exists = false;
     let stats = evaluate_clauses(clauses, |clause_result, _| {
         exists = clause_result.values > 0;
-        exists
+        Ok(exists)
     })?;
 
     Ok(DnfPathSetExistenceResult {
@@ -145,8 +147,8 @@ pub fn evaluate_pathmap_dnf_count(
 ) -> Result<DnfPathSetCountResult, DnfPathSetError> {
     let mut accumulated = DnfPathSetCountAccumulator::new();
     let mut stats = evaluate_clauses(clauses, |clause_result, stats| {
-        accumulated.push(clause_result, stats);
-        false
+        accumulated.push(clause_result, stats)?;
+        Ok(false)
     })?;
     finish_accumulated_count(accumulated.count(), &mut stats);
 
@@ -163,7 +165,7 @@ fn evaluate_accumulated_dnf(
     let mut accumulated = DnfPathSetAccumulator::new();
     let mut stats = evaluate_clauses(clauses, |clause_result, stats| {
         accumulated.push(clause_result, stats);
-        false
+        Ok(false)
     })?;
     finish_accumulated_count(accumulated.count(), &mut stats);
 
@@ -172,14 +174,14 @@ fn evaluate_accumulated_dnf(
 
 fn evaluate_clauses(
     clauses: &[&[&PathMap<()>]],
-    mut consume: impl FnMut(ClauseEvaluation, &mut DnfPathSetStats) -> bool,
+    mut consume: impl FnMut(ClauseEvaluation, &mut DnfPathSetStats) -> Result<bool, DnfPathSetError>,
 ) -> Result<DnfPathSetStats, DnfPathSetError> {
     let (mut stats, mut distinct_factor_refs) = evaluator_state(clauses);
 
     for (clause_index, clause) in clauses.iter().enumerate() {
         let clause_result =
             evaluate_clause(clause_index, clause, &mut stats, &mut distinct_factor_refs)?;
-        if consume(clause_result, &mut stats) {
+        if consume(clause_result, &mut stats)? {
             stats.short_circuit_skipped_clauses = clauses.len().saturating_sub(clause_index + 1);
             break;
         }
@@ -248,27 +250,33 @@ impl DnfPathSetCountAccumulator {
         }
     }
 
-    fn push(&mut self, clause_result: ClauseEvaluation, stats: &mut DnfPathSetStats) {
+    fn push(
+        &mut self,
+        clause_result: ClauseEvaluation,
+        stats: &mut DnfPathSetStats,
+    ) -> Result<(), DnfPathSetError> {
         if clause_result.values == 0 {
-            return;
+            return Ok(());
         }
 
         if self.materialized.has_result {
             self.materialized.push(clause_result, stats);
-            return;
+            return Ok(());
         } else if self.fragments.is_empty() {
             self.fragment_count = clause_result.values;
             self.fragments.push(clause_result.map);
         } else if self.is_disjoint_from_fragments(&clause_result.map, stats) {
-            self.fragment_count += clause_result.values;
+            self.fragment_count =
+                checked_path_count_add(self.fragment_count, clause_result.values)?;
             stats.count_disjoint_clause_additions += 1;
             self.fragments.push(clause_result.map);
         } else {
             self.materialize_fragments_with(clause_result, stats);
-            return;
+            return Ok(());
         }
 
         stats.peak_result_values = stats.peak_result_values.max(self.fragment_count);
+        Ok(())
     }
 
     fn is_disjoint_from_fragments(
@@ -311,6 +319,11 @@ impl DnfPathSetCountAccumulator {
     fn final_output_materialized(&self) -> bool {
         self.materialized.has_result
     }
+}
+
+fn checked_path_count_add(left: usize, right: usize) -> Result<usize, DnfPathSetError> {
+    left.checked_add(right)
+        .ok_or(DnfPathSetError::CardinalityOverflow { left, right })
 }
 
 struct ClauseEvaluation {
@@ -708,6 +721,17 @@ mod tests {
             [
                 2, 2, 0, 2, 2, 0, 2, 0, 0, 0, 2, 0, 6, 6, 0, 0, 2, 1, 1, 4, 6,
             ],
+        );
+    }
+
+    #[test]
+    fn dnf_count_disjoint_addition_rejects_usize_overflow() {
+        assert_eq!(
+            checked_path_count_add(usize::MAX, 1).unwrap_err(),
+            DnfPathSetError::CardinalityOverflow {
+                left: usize::MAX,
+                right: 1,
+            }
         );
     }
 

@@ -167,28 +167,18 @@ impl TermIdentitySidecar {
         Self::default()
     }
 
+    /// Interns one complete encoded term and all of its subterms without adding
+    /// a complete fact record.
+    pub fn insert_term(&mut self, encoded: &[u8]) -> Result<TermId, TermParseError> {
+        let (parsed, _) = self.intern_complete(encoded)?;
+        Ok(parsed.id)
+    }
+
     /// Interns one complete encoded fact and all of its subterms.
     ///
     /// Re-inserting the same complete fact returns the existing [`FactId`].
     pub fn insert_fact(&mut self, encoded: &[u8]) -> Result<FactId, TermParseError> {
-        let mark = self.mark();
-        let parsed = match self.intern_at(encoded, 0) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                self.rollback_to(mark);
-                return Err(error);
-            }
-        };
-        if parsed.end != encoded.len() {
-            self.rollback_to(mark);
-            return Err(TermParseError {
-                offset: parsed.end,
-                kind: TermParseErrorKind::TrailingBytes {
-                    parsed_len: parsed.end,
-                    total_len: encoded.len(),
-                },
-            });
-        }
+        let (parsed, mark) = self.intern_complete(encoded)?;
 
         if let Some(&fact) = self.fact_by_term.get(&parsed.id) {
             return Ok(fact);
@@ -220,6 +210,32 @@ impl TermIdentitySidecar {
         Ok(fact.id)
     }
 
+    fn intern_complete(
+        &mut self,
+        encoded: &[u8],
+    ) -> Result<(ParsedTerm, SidecarMark), TermParseError> {
+        let mark = self.mark();
+        let parsed = match self.intern_at(encoded, 0) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.rollback_to(mark);
+                return Err(error);
+            }
+        };
+        if parsed.end != encoded.len() {
+            self.rollback_to(mark);
+            return Err(TermParseError {
+                offset: parsed.end,
+                kind: TermParseErrorKind::TrailingBytes {
+                    parsed_len: parsed.end,
+                    total_len: encoded.len(),
+                },
+            });
+        }
+
+        Ok((parsed, mark))
+    }
+
     /// Interns every value path from a `PathMap<()>` snapshot.
     pub fn extend_from_pathmap(&mut self, map: &PathMap<()>) -> Result<usize, TermParseError> {
         let mut inserted = 0usize;
@@ -242,6 +258,11 @@ impl TermIdentitySidecar {
     /// Returns a fact record by identity.
     pub fn get_fact(&self, id: FactId) -> Option<&FactRecord> {
         self.facts.get(id.0 as usize)
+    }
+
+    /// Returns complete fact records in insertion order.
+    pub fn facts(&self) -> &[FactRecord] {
+        &self.facts
     }
 
     /// Returns the existing identity for `encoded` if it has already been interned.
@@ -557,6 +578,23 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(sidecar.stats().facts, 1);
         assert_eq!(sidecar.stats().terms, 3);
+    }
+
+    #[test]
+    fn insert_term_does_not_create_fact_record() {
+        let mut encoded = vec![item_byte(Tag::Arity(2))];
+        encoded.extend(sym(b"pattern"));
+        encoded.push(item_byte(Tag::NewVar));
+
+        let mut sidecar = TermIdentitySidecar::new();
+        let root = sidecar.insert_term(&encoded).unwrap();
+
+        assert_eq!(
+            sidecar.get_term(root).unwrap().kind,
+            TermKind::Application { arity: 2 }
+        );
+        assert_eq!(sidecar.stats().facts, 0);
+        assert!(sidecar.facts().is_empty());
     }
 
     #[test]

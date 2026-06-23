@@ -964,6 +964,8 @@ mod tests {
         assert_eq!(trace.candidate_bindings, product_count);
         assert_eq!(trace.relation_indexes, 2);
         assert_eq!(trace.steps[0].variable, BindingVar(1));
+        assert_eq!(trace.steps[0].participating_relations.as_ref(), [0, 1]);
+        assert_eq!(trace.steps[0].relation_domain_lens.len(), 2);
         assert_eq!(trace.steps[0].domain_sources, 2);
         assert_eq!(trace.steps[0].intersection.len(), 3);
     }

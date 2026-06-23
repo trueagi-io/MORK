@@ -252,6 +252,12 @@ pub struct TrieJoinTraceStep {
     /// Values already bound for variables before `level`, in variable-order
     /// prefix order.
     pub bound_prefix: BindingRow,
+    /// Relation index numbers whose trie domains constrained this variable at
+    /// the current bound prefix.
+    pub participating_relations: Box<[usize]>,
+    /// Domain length contributed by each participating relation, in
+    /// `participating_relations` order.
+    pub relation_domain_lens: Box<[usize]>,
     /// Relation domains that constrained this variable in the current context.
     pub domain_sources: usize,
     /// Total values exposed by those relation domains before intersection.
@@ -628,9 +634,18 @@ fn trie_join_trace_recurse(
     }
 
     let variable = variable_order[level];
-    let domains = indexes
+    let domain_entries = indexes
         .iter()
-        .filter_map(|index| index.domain(variable, binding))
+        .enumerate()
+        .filter_map(|(relation_index, index)| {
+            index
+                .domain(variable, binding)
+                .map(|domain| (relation_index, domain))
+        })
+        .collect::<Vec<_>>();
+    let domains = domain_entries
+        .iter()
+        .map(|(_, domain)| *domain)
         .collect::<Vec<_>>();
     if domains.is_empty() {
         return Err(BindingRelationError::InvalidVariableOrder);
@@ -647,6 +662,16 @@ fn trie_join_trace_recurse(
         level,
         variable,
         bound_prefix: bound_prefix.into_boxed_slice(),
+        participating_relations: domain_entries
+            .iter()
+            .map(|(relation_index, _)| *relation_index)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        relation_domain_lens: domain_entries
+            .iter()
+            .map(|(_, domain)| domain.len())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
         domain_sources: domains.len(),
         domain_values: domains.iter().map(|domain| domain.len()).sum(),
         intersection: intersection.clone().into_boxed_slice(),
@@ -1018,6 +1043,8 @@ mod tests {
         assert_eq!(root.level, 0);
         assert_eq!(root.variable, v(1));
         assert!(root.bound_prefix.is_empty());
+        assert_eq!(root.participating_relations.as_ref(), [0, 1]);
+        assert_eq!(root.relation_domain_lens.as_ref(), [2, 2]);
         assert_eq!(root.domain_sources, 2);
         assert_eq!(root.domain_values, 4);
         assert_eq!(root.intersection.as_ref(), [t(10)]);
@@ -1038,6 +1065,8 @@ mod tests {
             .iter()
             .filter(|step| step.variable == v(2))
             .all(|step| step.bound_prefix.len() == 2
+                && step.participating_relations.as_ref() == [1]
+                && step.relation_domain_lens.as_ref() == [2]
                 && step.intersection.as_ref() == [t(100), t(101)]));
     }
 

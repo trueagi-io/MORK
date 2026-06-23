@@ -5,7 +5,7 @@ use pathmap::zipper::*;
 use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
 use mork_expr::macros::SerializableExpr;
 
-pub(crate) enum ResourceRequest {
+pub enum ResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
     Z3(&'static str)

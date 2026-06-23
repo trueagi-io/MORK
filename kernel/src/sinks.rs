@@ -33,7 +33,7 @@ use crate::{expr, pure};
 use crate::space::ACT_PATH;
 
 #[derive(Eq, PartialEq, Debug)]
-pub(crate) enum WriteResourceRequest {
+pub enum WriteResourceRequest {
     BTM(&'static [u8]),
     ACT(&'static str),
     Z3(&'static str),

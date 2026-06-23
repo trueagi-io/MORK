@@ -448,6 +448,50 @@ impl Space {
         Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
     }
 
+    pub fn fork_empty(&self) -> Self {
+        Self {
+            btm: PathMap::new(),
+            sm: self.sm.clone(),
+            mmaps: HashMap::new(),
+            z3s: HashMap::new(),
+            last_merkleize: Instant::now(),
+            timing: false,
+        }
+    }
+
+    pub fn shares_symbol_table_with(&self, other: &Self) -> bool {
+        std::ptr::eq::<SharedMapping>(&*self.sm, &*other.sm)
+    }
+
+    fn ensure_compatible_atom_trie(&self, other: &Self) -> Result<(), String> {
+        if self.shares_symbol_table_with(other) {
+            Ok(())
+        } else {
+            Err("cannot combine atom tries from spaces with different symbol tables".to_string())
+        }
+    }
+
+    fn fork_with_btm(&self, btm: PathMap<()>) -> Self {
+        let mut space = self.fork_empty();
+        space.btm = btm;
+        space
+    }
+
+    pub fn atom_union(&self, other: &Self) -> Result<Self, String> {
+        self.ensure_compatible_atom_trie(other)?;
+        Ok(self.fork_with_btm(self.btm.join(&other.btm)))
+    }
+
+    pub fn atom_intersection(&self, other: &Self) -> Result<Self, String> {
+        self.ensure_compatible_atom_trie(other)?;
+        Ok(self.fork_with_btm(self.btm.meet(&other.btm)))
+    }
+
+    pub fn atom_subtract(&self, other: &Self) -> Result<Self, String> {
+        self.ensure_compatible_atom_trie(other)?;
+        Ok(self.fork_with_btm(self.btm.subtract(&other.btm)))
+    }
+
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
         let mut it = Context::new(r);
         let mut parser = ParDataParser::new(&self.sm);

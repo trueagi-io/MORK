@@ -93,6 +93,61 @@ pub struct BindingSidecarTrieJoinResult {
     pub trie_stats: TrieJoinStats,
 }
 
+/// Kernel selected for one sidecar execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindingSidecarExecutionKernel {
+    /// Reference variable-at-a-time Generic Join over opened relations.
+    GenericJoin,
+    /// Trie-backed LFTJ-style join using the root-domain suggested order.
+    TrieJoinSuggested,
+}
+
+/// Why the sidecar planner selected an execution kernel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindingSidecarExecutionReason {
+    /// A single factor does not need a multiway trie join.
+    SingleFactor,
+    /// No variable occurs in more than one factor, so there is no domain
+    /// intersection to exploit before producing the Cartesian product.
+    NoSharedVariables,
+    /// The explicit opened sidecar input is too small to justify building
+    /// trie indexes for this experimental kernel.
+    SmallExplicitInput,
+    /// Shared-variable domains are visible and the opened input is large
+    /// enough that LFTJ-style pruning is the better physical experiment.
+    SharedVariablePruning,
+}
+
+/// Planner-visible sidecar execution choice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarExecutionChoice {
+    /// Selected physical kernel.
+    pub kernel: BindingSidecarExecutionKernel,
+    /// Human-readable planner reason encoded as a stable enum.
+    pub reason: BindingSidecarExecutionReason,
+    /// Variable order consumed by the selected kernel.
+    pub variable_order: Box<[BindingVar]>,
+    /// Positive rows available across opened factor projections.
+    pub projected_rows: usize,
+    /// Variables appearing in more than one factor.
+    pub shared_variables: usize,
+    /// Smallest root-domain intersection across shared variables.
+    pub min_shared_root_domain_len: Option<usize>,
+}
+
+/// Result of executing the sidecar plan through its selected kernel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarSelectedResult {
+    /// Flat relation returned by the selected kernel.
+    pub relation: BindingRelation,
+    /// Planner choice used for this execution.
+    pub choice: BindingSidecarExecutionChoice,
+    /// Execution counters for physical factor opening.
+    pub stats: BindingSidecarStats,
+    /// Trie counters when the trie-backed kernel was selected.
+    pub trie_stats: Option<TrieJoinStats>,
+}
+
 /// Analysis of a sidecar join plan before choosing a production join kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingSidecarAnalysis {
@@ -144,6 +199,8 @@ pub struct BindingSidecarStats {
     /// Positive rows emitted by the final join.
     pub output_rows: usize,
 }
+
+const MIN_TRIE_SIDE_INPUT_ROWS: usize = 8;
 
 /// Error from sidecar plan execution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,6 +303,63 @@ impl BindingSidecarPlan {
         })
     }
 
+    /// Chooses the physical sidecar kernel from opened-factor statistics.
+    ///
+    /// This selection is deliberately conservative. It keeps the reference
+    /// Generic Join for one-factor, disconnected, and tiny sidecar inputs, and
+    /// only selects the trie-backed LFTJ-style kernel when shared-variable
+    /// domain pruning can pay for query-specific index construction.
+    pub fn choose_execution(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarExecutionChoice, BindingSidecarPlanError> {
+        let (relations, stats) = self.open_relations(sidecar)?;
+        Ok(select_execution_choice(
+            &relations,
+            &self.variable_order,
+            stats,
+        ))
+    }
+
+    /// Executes the sidecar plan through the selected physical kernel.
+    ///
+    /// This is still a derived sidecar path over the immutable term snapshot;
+    /// it does not alter the canonical PathMap/ACT matching semantics.
+    pub fn execute_selected(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarSelectedResult, BindingSidecarPlanError> {
+        let (relations, mut stats) = self.open_relations(sidecar)?;
+        let choice = select_execution_choice(&relations, &self.variable_order, stats);
+
+        match choice.kernel {
+            BindingSidecarExecutionKernel::GenericJoin => {
+                let relation = generic_join(&relations, &choice.variable_order)
+                    .map_err(BindingSidecarPlanError::Binding)?;
+                stats.output_rows = relation.positive_rows().count();
+
+                Ok(BindingSidecarSelectedResult {
+                    relation,
+                    choice,
+                    stats,
+                    trie_stats: None,
+                })
+            }
+            BindingSidecarExecutionKernel::TrieJoinSuggested => {
+                let joined = trie_join(&relations, &choice.variable_order)
+                    .map_err(BindingSidecarPlanError::Binding)?;
+                stats.output_rows = joined.relation.positive_rows().count();
+
+                Ok(BindingSidecarSelectedResult {
+                    relation: joined.relation,
+                    choice,
+                    stats,
+                    trie_stats: Some(joined.stats),
+                })
+            }
+        }
+    }
+
     /// Opens all sidecar factors and reports root-domain statistics. This is a
     /// planning aid; it does not mutate the canonical PathMap/ACT storage.
     pub fn analyze(
@@ -272,6 +386,59 @@ impl BindingSidecarPlan {
         }
 
         Ok((relations, stats))
+    }
+}
+
+fn select_execution_choice(
+    relations: &[BindingRelation],
+    planned_order: &[BindingVar],
+    stats: BindingSidecarStats,
+) -> BindingSidecarExecutionChoice {
+    let variable_stats = variable_domain_stats(relations);
+    let shared_variables = variable_stats
+        .iter()
+        .filter(|stats| stats.factor_count > 1)
+        .count();
+    let min_shared_root_domain_len = variable_stats
+        .iter()
+        .filter(|stats| stats.factor_count > 1)
+        .map(|stats| stats.root_domain_len)
+        .min();
+    let suggested_order = suggest_variable_order(relations, &variable_stats);
+
+    let (kernel, reason, variable_order) = if relations.len() <= 1 {
+        (
+            BindingSidecarExecutionKernel::GenericJoin,
+            BindingSidecarExecutionReason::SingleFactor,
+            planned_order.to_vec(),
+        )
+    } else if shared_variables == 0 {
+        (
+            BindingSidecarExecutionKernel::GenericJoin,
+            BindingSidecarExecutionReason::NoSharedVariables,
+            planned_order.to_vec(),
+        )
+    } else if stats.projected_rows <= MIN_TRIE_SIDE_INPUT_ROWS {
+        (
+            BindingSidecarExecutionKernel::GenericJoin,
+            BindingSidecarExecutionReason::SmallExplicitInput,
+            planned_order.to_vec(),
+        )
+    } else {
+        (
+            BindingSidecarExecutionKernel::TrieJoinSuggested,
+            BindingSidecarExecutionReason::SharedVariablePruning,
+            suggested_order,
+        )
+    };
+
+    BindingSidecarExecutionChoice {
+        kernel,
+        reason,
+        variable_order: variable_order.into_boxed_slice(),
+        projected_rows: stats.projected_rows,
+        shared_variables,
+        min_shared_root_domain_len,
     }
 }
 
@@ -634,6 +801,71 @@ mod tests {
             rows_in_order(&suggested.relation, plan.variable_order()),
             rows_in_order(&manual.relation, plan.variable_order())
         );
+    }
+
+    #[test]
+    fn selected_execution_uses_suggested_trie_join_for_shared_domains() {
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let selected = plan.execute_selected(&sidecar).unwrap();
+        let product_count = transitive_edge_product_count(&mut space);
+
+        assert_eq!(
+            selected.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(
+            selected.choice.reason,
+            BindingSidecarExecutionReason::SharedVariablePruning
+        );
+        assert_eq!(
+            selected.choice.variable_order.as_ref(),
+            [BindingVar(1), BindingVar(0), BindingVar(2)]
+        );
+        assert_eq!(selected.choice.projected_rows, 12);
+        assert_eq!(selected.choice.shared_variables, 1);
+        assert_eq!(selected.choice.min_shared_root_domain_len, Some(3));
+        assert_eq!(selected.relation.positive_rows().count(), product_count);
+        assert_eq!(selected.trie_stats.unwrap().output_rows, product_count);
+    }
+
+    #[test]
+    fn selected_execution_keeps_generic_join_for_single_factor() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice Bob)
+(edge Bob Carol)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let edge = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
+            .unwrap();
+        let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
+        let plan = BindingSidecarPlan::new(
+            [BindingAccessPlan::Arrangement {
+                descriptor,
+                projection: ArrangementProjection::new(2, [BindingVar(0), BindingVar(1)], [0, 1])
+                    .unwrap(),
+            }],
+            [BindingVar(0), BindingVar(1)],
+        );
+
+        let choice = plan.choose_execution(&sidecar).unwrap();
+        let selected = plan.execute_selected(&sidecar).unwrap();
+
+        assert_eq!(choice.kernel, BindingSidecarExecutionKernel::GenericJoin);
+        assert_eq!(choice.reason, BindingSidecarExecutionReason::SingleFactor);
+        assert_eq!(choice.variable_order.as_ref(), plan.variable_order());
+        assert_eq!(selected.choice, choice);
+        assert_eq!(selected.relation.positive_rows().count(), 2);
+        assert_eq!(selected.trie_stats, None);
     }
 
     #[test]

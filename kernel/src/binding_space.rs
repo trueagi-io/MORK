@@ -279,6 +279,45 @@ pub struct TrieJoinTraceSummary {
     pub cursor_nexts: usize,
 }
 
+/// Replayable prefix tree reconstructed from a trie-join trace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceReplayShape {
+    /// Locally validated aggregate trace summary.
+    pub summary: TrieJoinTraceSummary,
+    /// Root variable-depth context, absent only for zero-variable traces.
+    pub root: Option<TrieJoinTraceReplayNode>,
+}
+
+/// One replay node for a variable-depth domain intersection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceReplayNode {
+    /// Original trace step index.
+    pub step_index: usize,
+    /// Depth in the global variable order.
+    pub level: usize,
+    /// Variable intersected at this depth.
+    pub variable: BindingVar,
+    /// Values already bound before this depth.
+    pub bound_prefix: BindingRow,
+    /// Relation index numbers whose trie domains constrained this variable.
+    pub participating_relations: Box<[usize]>,
+    /// Domain length contributed by each participating relation.
+    pub relation_domain_lens: Box<[usize]>,
+    /// Values that survived the intersection at this context.
+    pub intersection: Box<[TermId]>,
+    /// Per-survivor continuation in traversal order.
+    pub branches: Box<[TrieJoinTraceReplayBranch]>,
+}
+
+/// One survivor from a replay node's domain intersection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceReplayBranch {
+    /// Bound value for the node variable.
+    pub value: TermId,
+    /// Child context after binding `value`, or `None` at leaf depth.
+    pub child: Option<Box<TrieJoinTraceReplayNode>>,
+}
+
 /// Shape error found while summarizing a trie-join trace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrieJoinTraceShapeError {
@@ -330,6 +369,28 @@ pub enum TrieJoinTraceShapeError {
         expected: usize,
         actual: usize,
     },
+    /// A replay step appears at a different variable depth than traversal order expects.
+    ReplayLevelMismatch {
+        step: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// A replay step is missing for a reachable bound prefix.
+    MissingReplayStep {
+        level: usize,
+        bound_prefix_len: usize,
+    },
+    /// A locally valid step belongs to a different bound-prefix branch.
+    BoundPrefixValueMismatch {
+        step: usize,
+        position: usize,
+        expected: TermId,
+        actual: TermId,
+    },
+    /// Steps remain after replaying every reachable branch.
+    TrailingReplayStep { step: usize },
+    /// Leaf replay count disagrees with the trace candidate total.
+    CandidateBindingMismatch { expected: usize, actual: usize },
 }
 
 /// One variable-depth domain intersection observed while tracing LFTJ traversal.
@@ -465,6 +526,122 @@ impl TrieJoinTrace {
         }
 
         Ok(summary)
+    }
+
+    /// Reconstructs the variable-prefix replay tree represented by this trace.
+    ///
+    /// `summarize` checks each step independently. This method additionally
+    /// checks that the steps form the preorder traversal that an LFTJ-style
+    /// cursor would replay: each survivor at a non-leaf depth must be followed
+    /// by exactly one child context whose bound prefix extends the parent.
+    pub fn replay_shape(&self) -> Result<TrieJoinTraceReplayShape, TrieJoinTraceShapeError> {
+        let summary = self.summarize()?;
+
+        if self.variable_order.is_empty() {
+            if !self.steps.is_empty() {
+                return Err(TrieJoinTraceShapeError::TrailingReplayStep { step: 0 });
+            }
+            if self.candidate_bindings != 1 {
+                return Err(TrieJoinTraceShapeError::CandidateBindingMismatch {
+                    expected: self.candidate_bindings,
+                    actual: 1,
+                });
+            }
+            return Ok(TrieJoinTraceReplayShape {
+                summary,
+                root: None,
+            });
+        }
+
+        let mut step_index = 0;
+        let mut candidate_bindings = 0;
+        let root = self.replay_node(0, &[], &mut step_index, &mut candidate_bindings)?;
+
+        if step_index != self.steps.len() {
+            return Err(TrieJoinTraceShapeError::TrailingReplayStep { step: step_index });
+        }
+        if candidate_bindings != self.candidate_bindings {
+            return Err(TrieJoinTraceShapeError::CandidateBindingMismatch {
+                expected: self.candidate_bindings,
+                actual: candidate_bindings,
+            });
+        }
+
+        Ok(TrieJoinTraceReplayShape {
+            summary,
+            root: Some(root),
+        })
+    }
+
+    fn replay_node(
+        &self,
+        level: usize,
+        expected_prefix: &[TermId],
+        step_index: &mut usize,
+        candidate_bindings: &mut usize,
+    ) -> Result<TrieJoinTraceReplayNode, TrieJoinTraceShapeError> {
+        let current_step = *step_index;
+        let Some(step) = self.steps.get(current_step) else {
+            return Err(TrieJoinTraceShapeError::MissingReplayStep {
+                level,
+                bound_prefix_len: expected_prefix.len(),
+            });
+        };
+
+        if step.level != level {
+            return Err(TrieJoinTraceShapeError::ReplayLevelMismatch {
+                step: current_step,
+                expected: level,
+                actual: step.level,
+            });
+        }
+
+        for (position, (&expected, &actual)) in expected_prefix
+            .iter()
+            .zip(step.bound_prefix.iter())
+            .enumerate()
+        {
+            if expected != actual {
+                return Err(TrieJoinTraceShapeError::BoundPrefixValueMismatch {
+                    step: current_step,
+                    position,
+                    expected,
+                    actual,
+                });
+            }
+        }
+
+        *step_index += 1;
+        let leaf = level + 1 == self.variable_order.len();
+        let mut branches = Vec::with_capacity(step.intersection.len());
+        for &value in step.intersection.iter() {
+            let child = if leaf {
+                *candidate_bindings += 1;
+                None
+            } else {
+                let mut child_prefix = Vec::with_capacity(expected_prefix.len() + 1);
+                child_prefix.extend_from_slice(expected_prefix);
+                child_prefix.push(value);
+                Some(Box::new(self.replay_node(
+                    level + 1,
+                    &child_prefix,
+                    step_index,
+                    candidate_bindings,
+                )?))
+            };
+            branches.push(TrieJoinTraceReplayBranch { value, child });
+        }
+
+        Ok(TrieJoinTraceReplayNode {
+            step_index: current_step,
+            level: step.level,
+            variable: step.variable,
+            bound_prefix: step.bound_prefix.clone(),
+            participating_relations: step.participating_relations.clone(),
+            relation_domain_lens: step.relation_domain_lens.clone(),
+            intersection: step.intersection.clone(),
+            branches: branches.into_boxed_slice(),
+        })
     }
 }
 
@@ -1285,6 +1462,30 @@ mod tests {
                 && step.participating_relations.as_ref() == [1]
                 && step.relation_domain_lens.as_ref() == [2]
                 && step.intersection.as_ref() == [t(100), t(101)]));
+
+        let replay = trace.replay_shape().unwrap();
+        assert_eq!(replay.summary, trace.summarize().unwrap());
+        let root = replay.root.as_ref().unwrap();
+        assert_eq!(root.step_index, 0);
+        assert_eq!(root.variable, v(1));
+        assert_eq!(root.intersection.as_ref(), [t(10)]);
+        assert_eq!(root.branches.len(), 1);
+        assert_eq!(root.branches[0].value, t(10));
+
+        let x_node = root.branches[0].child.as_ref().unwrap();
+        assert_eq!(x_node.step_index, 1);
+        assert_eq!(x_node.variable, v(0));
+        assert_eq!(x_node.bound_prefix.as_ref(), [t(10)]);
+        assert_eq!(x_node.intersection.as_ref(), [t(1), t(2)]);
+        assert_eq!(x_node.branches.len(), 2);
+
+        for branch in x_node.branches.iter() {
+            let z_node = branch.child.as_ref().unwrap();
+            assert_eq!(z_node.variable, v(2));
+            assert_eq!(z_node.bound_prefix.as_ref(), [t(10), branch.value]);
+            assert_eq!(z_node.intersection.as_ref(), [t(100), t(101)]);
+            assert!(z_node.branches.iter().all(|leaf| leaf.child.is_none()));
+        }
     }
 
     #[test]
@@ -1302,6 +1503,45 @@ mod tests {
                 step: 0,
                 expected: 2,
                 actual: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn trie_join_trace_replay_rejects_missing_child_context() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let variable_order = [v(1), v(0), v(2)];
+        let mut trace = trie_join_trace(&[left, right], &variable_order).unwrap();
+
+        trace.steps = trace.steps[..trace.steps.len() - 1]
+            .to_vec()
+            .into_boxed_slice();
+
+        assert_eq!(
+            trace.replay_shape().unwrap_err(),
+            TrieJoinTraceShapeError::MissingReplayStep {
+                level: 2,
+                bound_prefix_len: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn trie_join_trace_replay_rejects_wrong_bound_prefix_branch() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let variable_order = [v(1), v(0), v(2)];
+        let mut trace = trie_join_trace(&[left, right], &variable_order).unwrap();
+        trace.steps[2].bound_prefix[1] = t(2);
+
+        assert_eq!(
+            trace.replay_shape().unwrap_err(),
+            TrieJoinTraceShapeError::BoundPrefixValueMismatch {
+                step: 2,
+                position: 1,
+                expected: t(1),
+                actual: t(2),
             }
         );
     }

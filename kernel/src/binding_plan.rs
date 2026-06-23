@@ -5,7 +5,8 @@ use crate::arrangements::{
 };
 use crate::binding_env::MAX_BINDING_SLOTS;
 use crate::binding_space::{
-    generic_join, trie_join, BindingRelation, BindingRelationError, BindingVar, TrieJoinStats,
+    generic_join, trie_join, trie_join_trace, BindingRelation, BindingRelationError, BindingVar,
+    TrieJoinStats, TrieJoinTrace,
 };
 use crate::expression_trie::{ExpressionTrieError, ExpressionTrieIndex};
 use crate::term_identity::{TermId, TermIdentitySidecar};
@@ -158,6 +159,16 @@ pub struct BindingSidecarExecutionReport {
     pub analysis: BindingSidecarAnalysis,
     /// Planner choice derived from the analysis.
     pub choice: BindingSidecarExecutionChoice,
+}
+
+/// Non-materializing trace for the selected trie-backed sidecar execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarTrieTraceReport {
+    /// Planner analysis and selected execution kernel.
+    pub execution: BindingSidecarExecutionReport,
+    /// BindingRelation trie traversal trace when the selected kernel is
+    /// trie-backed; `None` when the selector conservatively keeps Generic Join.
+    pub trie_trace: Option<TrieJoinTrace>,
 }
 
 /// Analysis of a sidecar join plan before choosing a production join kernel.
@@ -384,6 +395,28 @@ impl BindingSidecarPlan {
             &self.variable_order,
             stats,
         ))
+    }
+
+    /// Explains the selected execution and, when applicable, traces the
+    /// trie-backed variable-domain traversal without materializing join rows.
+    pub fn explain_selected_trie_trace(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarTrieTraceReport, BindingSidecarPlanError> {
+        let (relations, stats) = self.open_relations(sidecar)?;
+        let execution = explain_execution_choice(&relations, &self.variable_order, stats);
+        let trie_trace = match execution.choice.kernel {
+            BindingSidecarExecutionKernel::GenericJoin => None,
+            BindingSidecarExecutionKernel::TrieJoinSuggested => Some(
+                trie_join_trace(&relations, &execution.choice.variable_order)
+                    .map_err(BindingSidecarPlanError::Binding)?,
+            ),
+        };
+
+        Ok(BindingSidecarTrieTraceReport {
+            execution,
+            trie_trace,
+        })
     }
 
     /// Opens all sidecar factors and reports root-domain statistics. This is a
@@ -911,6 +944,31 @@ mod tests {
     }
 
     #[test]
+    fn selected_trie_trace_matches_product_query_count_without_materializing_relation() {
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let report = plan.explain_selected_trie_trace(&sidecar).unwrap();
+        let product_count = transitive_edge_product_count(&mut space);
+        let trace = report.trie_trace.unwrap();
+
+        assert_eq!(
+            report.execution.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(report.execution.analysis.stats.output_rows, 0);
+        assert_eq!(
+            trace.variable_order.as_ref(),
+            [BindingVar(1), BindingVar(0), BindingVar(2)]
+        );
+        assert_eq!(trace.candidate_bindings, product_count);
+        assert_eq!(trace.relation_indexes, 2);
+        assert_eq!(trace.steps[0].variable, BindingVar(1));
+        assert_eq!(trace.steps[0].domain_sources, 2);
+        assert_eq!(trace.steps[0].intersection.len(), 3);
+    }
+
+    #[test]
     fn execution_report_keeps_generic_join_for_tiny_shared_input() {
         let (_, sidecar, edge) = small_edge_sidecar();
         let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
@@ -928,6 +986,24 @@ mod tests {
         assert_eq!(report.choice.projected_rows, 4);
         assert_eq!(report.choice.shared_variables, 1);
         assert_eq!(report.choice.min_shared_root_domain_len, Some(1));
+    }
+
+    #[test]
+    fn selected_trie_trace_is_absent_when_selector_keeps_generic_join() {
+        let (_, sidecar, edge) = small_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let report = plan.explain_selected_trie_trace(&sidecar).unwrap();
+
+        assert_eq!(
+            report.execution.choice.kernel,
+            BindingSidecarExecutionKernel::GenericJoin
+        );
+        assert_eq!(
+            report.execution.choice.reason,
+            BindingSidecarExecutionReason::SmallExplicitInput
+        );
+        assert_eq!(report.trie_trace, None);
     }
 
     #[test]

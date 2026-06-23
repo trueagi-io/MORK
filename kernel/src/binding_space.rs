@@ -224,6 +224,48 @@ pub struct TrieJoinStats {
     pub output_rows: usize,
 }
 
+/// Non-materializing trace of a trie-backed variable-at-a-time join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTrace {
+    /// Variable order used by the traced traversal.
+    pub variable_order: Box<[BindingVar]>,
+    /// Input relation indexes constructed for the trace.
+    pub relation_indexes: usize,
+    /// Positive rows retained across all relation indexes.
+    pub indexed_rows: usize,
+    /// Distinct trie prefixes with outgoing children across all indexes.
+    pub trie_nodes: usize,
+    /// Domain-intersection contexts visited in traversal order.
+    pub steps: Box<[TrieJoinTraceStep]>,
+    /// Complete satisfying bindings reached by domain traversal before relation
+    /// materialization or row-weight probing.
+    pub candidate_bindings: usize,
+}
+
+/// One variable-depth domain intersection observed while tracing LFTJ traversal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceStep {
+    /// Depth in the global variable order.
+    pub level: usize,
+    /// Variable intersected at this depth.
+    pub variable: BindingVar,
+    /// Values already bound for variables before `level`, in variable-order
+    /// prefix order.
+    pub bound_prefix: BindingRow,
+    /// Relation domains that constrained this variable in the current context.
+    pub domain_sources: usize,
+    /// Total values exposed by those relation domains before intersection.
+    pub domain_values: usize,
+    /// Values that survived leapfrog intersection at this context.
+    pub intersection: Box<[TermId]>,
+    /// Cursor opens issued for this intersection.
+    pub cursor_opens: usize,
+    /// Cursor seeks issued for this intersection.
+    pub cursor_seeks: usize,
+    /// Cursor next calls issued after aligned values.
+    pub cursor_nexts: usize,
+}
+
 /// Minimal LFTJ-style cursor over one ordered variable domain.
 ///
 /// This is the physical contract for PathMap/ReadZipper-backed factors:
@@ -278,6 +320,50 @@ pub fn trie_join(
     stats.output_rows = relation.positive_rows().count();
 
     Ok(TrieJoinResult { relation, stats })
+}
+
+/// Traces the trie-backed variable-at-a-time traversal without materializing
+/// the final joined relation.
+///
+/// The trace records each variable-depth domain intersection a cursor-backed
+/// factor must reproduce: bound prefix, constraining domain count, presented
+/// domain values, surviving intersection values, and cursor operation counts.
+pub fn trie_join_trace(
+    relations: &[BindingRelation],
+    variable_order: &[BindingVar],
+) -> Result<TrieJoinTrace, BindingRelationError> {
+    validate_variable_order(relations, variable_order)?;
+
+    let indexes = relations
+        .iter()
+        .map(|relation| RelationTrieIndex::build(relation, variable_order))
+        .collect::<Result<Vec<_>, _>>()?;
+    let indexed_rows = indexes.iter().map(|index| index.weights.len()).sum();
+    let trie_nodes = indexes
+        .iter()
+        .map(|index| index.children_by_prefix.len())
+        .sum();
+
+    let mut binding = BTreeMap::<BindingVar, TermId>::new();
+    let mut steps = Vec::new();
+    let mut candidate_bindings = 0;
+    trie_join_trace_recurse(
+        &indexes,
+        variable_order,
+        0,
+        &mut binding,
+        &mut steps,
+        &mut candidate_bindings,
+    )?;
+
+    Ok(TrieJoinTrace {
+        variable_order: variable_order.to_vec().into_boxed_slice(),
+        relation_indexes: indexes.len(),
+        indexed_rows,
+        trie_nodes,
+        steps: steps.into_boxed_slice(),
+        candidate_bindings,
+    })
 }
 
 fn generic_join_recurse(
@@ -523,6 +609,62 @@ fn trie_join_recurse(
     for value in leapfrog_intersection_slices(&domains, stats) {
         binding.insert(variable, value);
         trie_join_recurse(indexes, variable_order, level + 1, binding, out, stats)?;
+    }
+    binding.remove(&variable);
+    Ok(())
+}
+
+fn trie_join_trace_recurse(
+    indexes: &[RelationTrieIndex],
+    variable_order: &[BindingVar],
+    level: usize,
+    binding: &mut BTreeMap<BindingVar, TermId>,
+    steps: &mut Vec<TrieJoinTraceStep>,
+    candidate_bindings: &mut usize,
+) -> Result<(), BindingRelationError> {
+    if level == variable_order.len() {
+        *candidate_bindings += 1;
+        return Ok(());
+    }
+
+    let variable = variable_order[level];
+    let domains = indexes
+        .iter()
+        .filter_map(|index| index.domain(variable, binding))
+        .collect::<Vec<_>>();
+    if domains.is_empty() {
+        return Err(BindingRelationError::InvalidVariableOrder);
+    }
+
+    let mut stats = TrieJoinStats::default();
+    let intersection = leapfrog_intersection_slices(&domains, &mut stats);
+    let bound_prefix = variable_order[..level]
+        .iter()
+        .map(|variable| binding[variable])
+        .collect::<Vec<_>>();
+
+    steps.push(TrieJoinTraceStep {
+        level,
+        variable,
+        bound_prefix: bound_prefix.into_boxed_slice(),
+        domain_sources: domains.len(),
+        domain_values: domains.iter().map(|domain| domain.len()).sum(),
+        intersection: intersection.clone().into_boxed_slice(),
+        cursor_opens: stats.domain_cursor_opens,
+        cursor_seeks: stats.domain_cursor_seeks,
+        cursor_nexts: stats.domain_cursor_nexts,
+    });
+
+    for value in intersection {
+        binding.insert(variable, value);
+        trie_join_trace_recurse(
+            indexes,
+            variable_order,
+            level + 1,
+            binding,
+            steps,
+            candidate_bindings,
+        )?;
     }
     binding.remove(&variable);
     Ok(())
@@ -851,6 +993,52 @@ mod tests {
                 output_rows: 4,
             }
         );
+    }
+
+    #[test]
+    fn trie_join_trace_records_variable_depth_domain_contexts_without_materializing() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10], &[3, 20]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101], &[30, 300]]);
+        let variable_order = [v(1), v(0), v(2)];
+
+        let trace = trie_join_trace(&[left.clone(), right.clone()], &variable_order).unwrap();
+        let trie = trie_join(&[left, right], &variable_order).unwrap();
+
+        assert_eq!(trace.variable_order.as_ref(), variable_order);
+        assert_eq!(
+            trace.candidate_bindings,
+            trie.relation.positive_rows().count()
+        );
+        assert_eq!(trace.steps.len(), 4);
+        assert_eq!(trace.relation_indexes, 2);
+        assert_eq!(trace.indexed_rows, 6);
+        assert_eq!(trace.trie_nodes, 6);
+
+        let root = &trace.steps[0];
+        assert_eq!(root.level, 0);
+        assert_eq!(root.variable, v(1));
+        assert!(root.bound_prefix.is_empty());
+        assert_eq!(root.domain_sources, 2);
+        assert_eq!(root.domain_values, 4);
+        assert_eq!(root.intersection.as_ref(), [t(10)]);
+        assert_eq!(root.cursor_opens, 2);
+        assert!(root.cursor_seeks >= root.cursor_opens);
+        assert_eq!(root.cursor_nexts, 1);
+
+        assert_eq!(
+            trace
+                .steps
+                .iter()
+                .filter(|step| step.variable == v(2))
+                .count(),
+            2
+        );
+        assert!(trace
+            .steps
+            .iter()
+            .filter(|step| step.variable == v(2))
+            .all(|step| step.bound_prefix.len() == 2
+                && step.intersection.as_ref() == [t(100), t(101)]));
     }
 
     #[test]

@@ -143,6 +143,38 @@ impl Rule {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StateRule {
+    pub name: String,
+    pub patterns: Vec<Term>,
+    pub remove: Vec<Term>,
+    pub add: Vec<Term>,
+}
+
+impl StateRule {
+    pub fn new(
+        name: impl Into<String>,
+        patterns: Vec<Term>,
+        remove: Vec<Term>,
+        add: Vec<Term>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            patterns,
+            remove,
+            add,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct StateStep {
+    pub rule: String,
+    pub remove: Vec<Term>,
+    pub add: Vec<Term>,
+    pub after: Vec<Term>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CriticalPairWitness {
     pub outer_rule: String,
     pub inner_rule: String,
@@ -269,6 +301,79 @@ pub fn rules_from_mm2_program(program: &str) -> Result<Vec<Rule>, RuleExtraction
         .collect())
 }
 
+pub fn state_rules_from_mm2_program(program: &str) -> Result<Vec<StateRule>, RuleExtractionError> {
+    let sexprs = Parser::new(program).parse_all()?;
+    Ok(sexprs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, sexpr)| state_rule_from_exec(index, sexpr))
+        .collect())
+}
+
+pub fn ground_facts_from_mm2_program(program: &str) -> Result<BTreeSet<Term>, RuleExtractionError> {
+    let sexprs = Parser::new(program).parse_all()?;
+    Ok(sexprs
+        .iter()
+        .filter(|sexpr| !is_exec(sexpr))
+        .filter_map(term_from_sexpr)
+        .filter(Term::is_ground)
+        .collect())
+}
+
+pub fn state_rule_successors(state: &BTreeSet<Term>, rule: &StateRule) -> Vec<StateStep> {
+    if rule.patterns.is_empty() {
+        return Vec::new();
+    }
+
+    let facts = state.iter().collect::<Vec<_>>();
+    let mut substitutions = Vec::new();
+    collect_state_matches(&rule.patterns, &facts, 0, &Subst::new(), &mut substitutions);
+
+    substitutions
+        .into_iter()
+        .filter_map(|subst| {
+            let remove = instantiate_ground_terms(&rule.remove, &subst)?;
+            let add = instantiate_ground_terms(&rule.add, &subst)?;
+            let mut after = state.clone();
+            for term in &remove {
+                after.remove(term);
+            }
+            for term in &add {
+                after.insert(term.clone());
+            }
+            (after != *state).then(|| StateStep {
+                rule: rule.name.clone(),
+                remove,
+                add,
+                after: after.into_iter().collect(),
+            })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub fn saturate_additive_state(
+    initial: impl IntoIterator<Item = Term>,
+    rules: &[StateRule],
+    max_rounds: usize,
+) -> BTreeSet<Term> {
+    let mut state = initial.into_iter().collect::<BTreeSet<_>>();
+    for _ in 0..max_rounds {
+        let mut next = state.clone();
+        for rule in rules.iter().filter(|rule| rule.remove.is_empty()) {
+            for step in state_rule_successors(&state, rule) {
+                next.extend(step.after);
+            }
+        }
+        if next == state {
+            break;
+        }
+        state = next;
+    }
+    state
+}
+
 fn unify(lhs: &Term, rhs: &Term, subst: &mut Subst) -> bool {
     let lhs = lhs.apply(subst);
     let rhs = rhs.apply(subst);
@@ -377,6 +482,38 @@ fn rules_from_exec(index: usize, sexpr: &Sexpr) -> Vec<Rule> {
         .collect()
 }
 
+fn state_rule_from_exec(index: usize, sexpr: &Sexpr) -> Option<StateRule> {
+    let Sexpr::List(items) = sexpr else {
+        return None;
+    };
+    if items.len() != 4 || items[0].atom() != Some("exec") {
+        return None;
+    }
+
+    let patterns = collect_group_args(&items[2], ",")?
+        .into_iter()
+        .map(term_from_sexpr)
+        .collect::<Option<Vec<_>>>()?;
+    let (remove, add) = template_effects(&items[3])?;
+    if patterns.is_empty() || remove.is_empty() && add.is_empty() {
+        return None;
+    }
+
+    Some(StateRule::new(
+        items[1].to_rule_name(index),
+        patterns,
+        remove,
+        add,
+    ))
+}
+
+fn is_exec(sexpr: &Sexpr) -> bool {
+    matches!(
+        sexpr,
+        Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some("exec")
+    )
+}
+
 fn collect_group_args<'a>(sexpr: &'a Sexpr, head: &str) -> Option<Vec<&'a Sexpr>> {
     match sexpr {
         Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some(head) => {
@@ -387,16 +524,8 @@ fn collect_group_args<'a>(sexpr: &'a Sexpr, head: &str) -> Option<Vec<&'a Sexpr>
 }
 
 fn positive_templates(sexpr: &Sexpr) -> Vec<Term> {
-    let args = match sexpr {
-        Sexpr::List(items)
-            if matches!(items.first().and_then(Sexpr::atom), Some(",") | Some("O")) =>
-        {
-            &items[1..]
-        }
-        _ => std::slice::from_ref(sexpr),
-    };
-
-    args.iter()
+    template_args(sexpr)
+        .iter()
         .filter_map(|arg| match arg {
             Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some("+") => (items.len()
                 == 2)
@@ -404,6 +533,71 @@ fn positive_templates(sexpr: &Sexpr) -> Vec<Term> {
                 .flatten(),
             Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some("-") => None,
             other => term_from_sexpr(other),
+        })
+        .collect()
+}
+
+fn template_effects(sexpr: &Sexpr) -> Option<(Vec<Term>, Vec<Term>)> {
+    let mut remove = Vec::new();
+    let mut add = Vec::new();
+    for arg in template_args(sexpr) {
+        match arg {
+            Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some("+") => {
+                let [_, term] = items.as_slice() else {
+                    return None;
+                };
+                add.push(term_from_sexpr(term)?);
+            }
+            Sexpr::List(items) if items.first().and_then(Sexpr::atom) == Some("-") => {
+                let [_, term] = items.as_slice() else {
+                    return None;
+                };
+                remove.push(term_from_sexpr(term)?);
+            }
+            other => add.push(term_from_sexpr(other)?),
+        }
+    }
+
+    Some((remove, add))
+}
+
+fn template_args(sexpr: &Sexpr) -> &[Sexpr] {
+    match sexpr {
+        Sexpr::List(items)
+            if matches!(items.first().and_then(Sexpr::atom), Some(",") | Some("O")) =>
+        {
+            &items[1..]
+        }
+        _ => std::slice::from_ref(sexpr),
+    }
+}
+
+fn collect_state_matches(
+    patterns: &[Term],
+    facts: &[&Term],
+    pattern_index: usize,
+    subst: &Subst,
+    matches: &mut Vec<Subst>,
+) {
+    let Some(pattern) = patterns.get(pattern_index) else {
+        matches.push(subst.clone());
+        return;
+    };
+
+    for fact in facts {
+        let mut next = subst.clone();
+        if unify(pattern, fact, &mut next) {
+            collect_state_matches(patterns, facts, pattern_index + 1, &next, matches);
+        }
+    }
+}
+
+fn instantiate_ground_terms(terms: &[Term], subst: &Subst) -> Option<Vec<Term>> {
+    terms
+        .iter()
+        .map(|term| {
+            let instantiated = term.apply(subst);
+            instantiated.is_ground().then_some(instantiated)
         })
         .collect()
 }

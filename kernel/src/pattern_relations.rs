@@ -1,5 +1,5 @@
 use crate::binding_env::MAX_BINDING_SLOTS;
-use crate::term_identity::{TermId, TermIdentitySidecar, TermKind};
+use crate::term_identity::{FactId, TermId, TermIdentitySidecar, TermKind};
 
 /// Query-planner variable identity produced by relationalized pattern lowering.
 #[repr(transparent)]
@@ -124,6 +124,8 @@ pub struct PatternRelationMatches {
 /// Errors from executing a relationalized sidecar plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PatternRelationMatchError {
+    /// The sidecar is missing a requested complete fact record.
+    UnknownFact { fact: FactId },
     /// The plan refers to a variable outside its variable table.
     UnknownVariable { variable: PlanVariable },
     /// The sidecar is missing a candidate term referenced by a fact or binding.
@@ -160,10 +162,26 @@ pub fn match_facts(
     sidecar: &TermIdentitySidecar,
     plan: &PatternRelationPlan,
 ) -> Result<PatternRelationMatches, PatternRelationMatchError> {
+    match_fact_ids(sidecar, plan, sidecar.facts().iter().map(|fact| fact.id))
+}
+
+/// Executes a lowered pattern against an explicit candidate set of fact IDs.
+///
+/// This is the exact filtering boundary used by derived indexes. Candidate
+/// generation may be approximate, but every emitted row still passes through the
+/// same canonical `TermId` equality checks as [`match_facts`].
+pub fn match_fact_ids(
+    sidecar: &TermIdentitySidecar,
+    plan: &PatternRelationPlan,
+    facts: impl IntoIterator<Item = FactId>,
+) -> Result<PatternRelationMatches, PatternRelationMatchError> {
     let mut matcher = FactMatcher::new(sidecar, plan)?;
     let mut result = PatternRelationMatches::default();
 
-    for fact in sidecar.facts() {
+    for fact_id in facts {
+        let Some(fact) = sidecar.get_fact(fact_id) else {
+            return Err(PatternRelationMatchError::UnknownFact { fact: fact_id });
+        };
         result.stats.facts_scanned += 1;
         let mut state = MatchState::new(plan.variables.len(), plan.atoms.len());
         if matcher.match_root(&mut state, fact.root, &mut result.stats)? {
@@ -414,30 +432,11 @@ mod tests {
     use super::*;
     use crate::space::Space;
     use crate::term_identity::TermIdentitySidecar;
-    use mork_expr::{item_byte, Tag};
+    use crate::test_exprs::{
+        add_repeated_edge_facts, app, repeated_edge_pattern, repeated_edge_product_roots, sym, var,
+        var_ref,
+    };
     use std::collections::BTreeSet;
-
-    fn sym(bytes: &[u8]) -> Vec<u8> {
-        let mut out = vec![item_byte(Tag::SymbolSize(bytes.len() as u8))];
-        out.extend_from_slice(bytes);
-        out
-    }
-
-    fn app(children: &[Vec<u8>]) -> Vec<u8> {
-        let mut out = vec![item_byte(Tag::Arity(children.len() as u8))];
-        for child in children {
-            out.extend_from_slice(child);
-        }
-        out
-    }
-
-    fn var() -> Vec<u8> {
-        vec![item_byte(Tag::NewVar)]
-    }
-
-    fn var_ref(slot: u8) -> Vec<u8> {
-        vec![item_byte(Tag::VarRef(slot))]
-    }
 
     fn lower_fact_pattern(
         pattern: Vec<u8>,
@@ -521,33 +520,16 @@ mod tests {
     #[test]
     fn sidecar_matcher_preserves_product_query_roots_for_repeated_variable_pattern() {
         let mut space = Space::new();
-        space
-            .add_all_sexpr(
-                br#"
-(edge Alice (f Alice))
-(edge Alice (f Bob))
-(edge Bob (f Bob))
-(edge Carol (g Carol))
-(edge Dave (f Eve))
-"#,
-            )
-            .unwrap();
+        add_repeated_edge_facts(&mut space, b"");
 
-        let pattern = app(&[sym(b"edge"), var(), app(&[sym(b"f"), var_ref(0)])]);
+        let pattern = repeated_edge_pattern();
         let mut sidecar = TermIdentitySidecar::new();
         let pattern_root = sidecar.insert_term(&pattern).unwrap();
         sidecar.extend_from_pathmap(&space.btm).unwrap();
         let plan = lower_pattern(&sidecar, pattern_root).unwrap();
         let sidecar_matches = match_facts(&sidecar, &plan).unwrap();
 
-        let product_pattern = crate::expr!(space, "[2] , [3] edge $ [2] f _1");
-        let mut product_roots = BTreeSet::new();
-        let product_count = Space::query_multi(&space.btm, product_pattern, |_, loc| {
-            let span = unsafe { loc.span().as_ref().unwrap() };
-            product_roots.insert(span.to_vec());
-            true
-        });
-
+        let (product_count, product_roots) = repeated_edge_product_roots(&space);
         let sidecar_roots = sidecar_matches
             .rows
             .iter()

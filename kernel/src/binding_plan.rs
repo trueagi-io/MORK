@@ -148,6 +148,18 @@ pub struct BindingSidecarSelectedResult {
     pub trie_stats: Option<TrieJoinStats>,
 }
 
+/// Explain-only sidecar execution report.
+///
+/// This reports the physical kernel choice and the opened-factor statistics
+/// used to choose it, but deliberately does not execute the final join.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingSidecarExecutionReport {
+    /// Root-domain and factor statistics gathered while opening the plan.
+    pub analysis: BindingSidecarAnalysis,
+    /// Planner choice derived from the analysis.
+    pub choice: BindingSidecarExecutionChoice,
+}
+
 /// Analysis of a sidecar join plan before choosing a production join kernel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingSidecarAnalysis {
@@ -313,12 +325,7 @@ impl BindingSidecarPlan {
         &self,
         sidecar: &TermIdentitySidecar,
     ) -> Result<BindingSidecarExecutionChoice, BindingSidecarPlanError> {
-        let (relations, stats) = self.open_relations(sidecar)?;
-        Ok(select_execution_choice(
-            &relations,
-            &self.variable_order,
-            stats,
-        ))
+        Ok(self.explain_execution(sidecar)?.choice)
     }
 
     /// Executes the sidecar plan through the selected physical kernel.
@@ -329,8 +336,10 @@ impl BindingSidecarPlan {
         &self,
         sidecar: &TermIdentitySidecar,
     ) -> Result<BindingSidecarSelectedResult, BindingSidecarPlanError> {
-        let (relations, mut stats) = self.open_relations(sidecar)?;
-        let choice = select_execution_choice(&relations, &self.variable_order, stats);
+        let (relations, stats) = self.open_relations(sidecar)?;
+        let report = explain_execution_choice(&relations, &self.variable_order, stats);
+        let choice = report.choice;
+        let mut stats = report.analysis.stats;
 
         match choice.kernel {
             BindingSidecarExecutionKernel::GenericJoin => {
@@ -358,6 +367,23 @@ impl BindingSidecarPlan {
                 })
             }
         }
+    }
+
+    /// Explains the selected physical sidecar kernel without running the join.
+    ///
+    /// This is the BindingSidecar analogue of an optimizer explain plan: it
+    /// opens the immutable snapshot factors to gather estimated/cardinality
+    /// evidence, but leaves `output_rows` at zero because no result is emitted.
+    pub fn explain_execution(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarExecutionReport, BindingSidecarPlanError> {
+        let (relations, stats) = self.open_relations(sidecar)?;
+        Ok(explain_execution_choice(
+            &relations,
+            &self.variable_order,
+            stats,
+        ))
     }
 
     /// Opens all sidecar factors and reports root-domain statistics. This is a
@@ -389,24 +415,35 @@ impl BindingSidecarPlan {
     }
 }
 
-fn select_execution_choice(
+fn explain_execution_choice(
     relations: &[BindingRelation],
     planned_order: &[BindingVar],
     stats: BindingSidecarStats,
+) -> BindingSidecarExecutionReport {
+    let analysis = analyze_relations(relations, stats);
+    let choice = select_execution_choice(relations.len(), planned_order, &analysis);
+
+    BindingSidecarExecutionReport { analysis, choice }
+}
+
+fn select_execution_choice(
+    relation_count: usize,
+    planned_order: &[BindingVar],
+    analysis: &BindingSidecarAnalysis,
 ) -> BindingSidecarExecutionChoice {
-    let variable_stats = variable_domain_stats(relations);
-    let shared_variables = variable_stats
+    let shared_variables = analysis
+        .variables
         .iter()
         .filter(|stats| stats.factor_count > 1)
         .count();
-    let min_shared_root_domain_len = variable_stats
+    let min_shared_root_domain_len = analysis
+        .variables
         .iter()
         .filter(|stats| stats.factor_count > 1)
         .map(|stats| stats.root_domain_len)
         .min();
-    let suggested_order = suggest_variable_order(relations, &variable_stats);
 
-    let (kernel, reason, variable_order) = if relations.len() <= 1 {
+    let (kernel, reason, variable_order) = if relation_count <= 1 {
         (
             BindingSidecarExecutionKernel::GenericJoin,
             BindingSidecarExecutionReason::SingleFactor,
@@ -418,7 +455,7 @@ fn select_execution_choice(
             BindingSidecarExecutionReason::NoSharedVariables,
             planned_order.to_vec(),
         )
-    } else if stats.projected_rows <= MIN_TRIE_SIDE_INPUT_ROWS {
+    } else if analysis.stats.projected_rows <= MIN_TRIE_SIDE_INPUT_ROWS {
         (
             BindingSidecarExecutionKernel::GenericJoin,
             BindingSidecarExecutionReason::SmallExplicitInput,
@@ -428,7 +465,7 @@ fn select_execution_choice(
         (
             BindingSidecarExecutionKernel::TrieJoinSuggested,
             BindingSidecarExecutionReason::SharedVariablePruning,
-            suggested_order,
+            analysis.suggested_variable_order.to_vec(),
         )
     };
 
@@ -436,7 +473,7 @@ fn select_execution_choice(
         kernel,
         reason,
         variable_order: variable_order.into_boxed_slice(),
-        projected_rows: stats.projected_rows,
+        projected_rows: analysis.stats.projected_rows,
         shared_variables,
         min_shared_root_domain_len,
     }
@@ -680,6 +717,26 @@ mod tests {
         BindingSidecarPlan::new([xy, yz], variable_order)
     }
 
+    fn small_edge_sidecar() -> (Space, TermIdentitySidecar, crate::term_identity::TermId) {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice Bob)
+(edge Bob Carol)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let edge = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
+            .unwrap();
+
+        (space, sidecar, edge)
+    }
+
     fn colored_function_edges_sidecar() -> (
         Space,
         TermIdentitySidecar,
@@ -831,22 +888,51 @@ mod tests {
     }
 
     #[test]
-    fn selected_execution_keeps_generic_join_for_single_factor() {
-        let mut space = Space::new();
-        space
-            .add_all_sexpr(
-                br#"
-(edge Alice Bob)
-(edge Bob Carol)
-"#,
-            )
-            .unwrap();
+    fn execution_report_explains_selected_kernel_without_joining() {
+        let (_, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
 
-        let mut sidecar = TermIdentitySidecar::new();
-        sidecar.extend_from_pathmap(&space.btm).unwrap();
-        let edge = sidecar
-            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
-            .unwrap();
+        let report = plan.explain_execution(&sidecar).unwrap();
+
+        assert_eq!(
+            report.choice.kernel,
+            BindingSidecarExecutionKernel::TrieJoinSuggested
+        );
+        assert_eq!(
+            report.choice.variable_order.as_ref(),
+            [BindingVar(1), BindingVar(0), BindingVar(2)]
+        );
+        assert_eq!(report.analysis.stats.projected_rows, 12);
+        assert_eq!(report.analysis.stats.output_rows, 0);
+        assert_eq!(
+            report.analysis.suggested_variable_order.as_ref(),
+            report.choice.variable_order.as_ref()
+        );
+    }
+
+    #[test]
+    fn execution_report_keeps_generic_join_for_tiny_shared_input() {
+        let (_, sidecar, edge) = small_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let report = plan.explain_execution(&sidecar).unwrap();
+
+        assert_eq!(
+            report.choice.kernel,
+            BindingSidecarExecutionKernel::GenericJoin
+        );
+        assert_eq!(
+            report.choice.reason,
+            BindingSidecarExecutionReason::SmallExplicitInput
+        );
+        assert_eq!(report.choice.projected_rows, 4);
+        assert_eq!(report.choice.shared_variables, 1);
+        assert_eq!(report.choice.min_shared_root_domain_len, Some(1));
+    }
+
+    #[test]
+    fn selected_execution_keeps_generic_join_for_single_factor() {
+        let (_, sidecar, edge) = small_edge_sidecar();
         let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
         let plan = BindingSidecarPlan::new(
             [BindingAccessPlan::Arrangement {

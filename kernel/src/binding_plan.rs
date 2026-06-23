@@ -85,6 +85,8 @@ pub struct BindingSidecarResult {
 pub struct BindingSidecarTrieJoinResult {
     /// Flat relation returned by the trie-backed variable-at-a-time join.
     pub relation: BindingRelation,
+    /// Variable order used by the trie-backed join.
+    pub variable_order: Box<[BindingVar]>,
     /// Execution counters for physical factor opening.
     pub stats: BindingSidecarStats,
     /// Execution counters for the trie-backed join itself.
@@ -212,6 +214,33 @@ impl BindingSidecarPlan {
 
         Ok(BindingSidecarTrieJoinResult {
             relation: joined.relation,
+            variable_order: self.variable_order.clone(),
+            stats,
+            trie_stats: joined.stats,
+        })
+    }
+
+    /// Executes the plan with a root-domain heuristic variable order.
+    ///
+    /// This is still a sidecar experiment over opened `BindingRelation`s, not a
+    /// replacement for the live ProductZipper matcher. It removes the need for
+    /// tests and prototypes to hand-author the global LFTJ order when the plan
+    /// already has exact root-domain evidence.
+    pub fn execute_trie_join_suggested(
+        &self,
+        sidecar: &TermIdentitySidecar,
+    ) -> Result<BindingSidecarTrieJoinResult, BindingSidecarPlanError> {
+        let (relations, mut stats) = self.open_relations(sidecar)?;
+        let variable_stats = variable_domain_stats(&relations);
+        let variable_order = suggest_variable_order(&relations, &variable_stats);
+
+        let joined =
+            trie_join(&relations, &variable_order).map_err(BindingSidecarPlanError::Binding)?;
+        stats.output_rows = joined.relation.positive_rows().count();
+
+        Ok(BindingSidecarTrieJoinResult {
+            relation: joined.relation,
+            variable_order: variable_order.into_boxed_slice(),
             stats,
             trie_stats: joined.stats,
         })
@@ -522,6 +551,24 @@ mod tests {
         (space, sidecar, edge_pattern, color, color_pattern)
     }
 
+    fn rows_in_order(relation: &BindingRelation, order: &[BindingVar]) -> BTreeSet<Vec<TermId>> {
+        let positions = order
+            .iter()
+            .map(|variable| {
+                relation
+                    .schema()
+                    .iter()
+                    .position(|candidate| candidate == variable)
+                    .expect("requested variable should be present in relation schema")
+            })
+            .collect::<Vec<_>>();
+
+        relation
+            .positive_rows()
+            .map(|row| positions.iter().map(|&position| row[position]).collect())
+            .collect()
+    }
+
     #[test]
     fn arrangement_sidecar_plan_matches_transitive_product_query() {
         let (mut space, sidecar, edge) = transitive_edge_sidecar();
@@ -565,6 +612,28 @@ mod tests {
             trie.trie_stats.domain_sources
         );
         assert!(trie.trie_stats.domain_cursor_seeks >= trie.trie_stats.domain_cursor_opens);
+    }
+
+    #[test]
+    fn suggested_trie_join_order_preserves_rows_and_uses_small_shared_domain() {
+        let (mut space, sidecar, edge) = transitive_edge_sidecar();
+        let plan = transitive_edge_plan(edge, [BindingVar(0), BindingVar(1), BindingVar(2)]);
+
+        let manual = plan.execute_trie_join(&sidecar).unwrap();
+        let suggested = plan.execute_trie_join_suggested(&sidecar).unwrap();
+        let product_count = transitive_edge_product_count(&mut space);
+
+        assert_eq!(
+            suggested.variable_order.as_ref(),
+            [BindingVar(1), BindingVar(0), BindingVar(2)]
+        );
+        assert_eq!(manual.variable_order.as_ref(), plan.variable_order());
+        assert_eq!(suggested.relation.positive_rows().count(), product_count);
+        assert_eq!(suggested.trie_stats.output_rows, product_count);
+        assert_eq!(
+            rows_in_order(&suggested.relation, plan.variable_order()),
+            rows_in_order(&manual.relation, plan.variable_order())
+        );
     }
 
     #[test]

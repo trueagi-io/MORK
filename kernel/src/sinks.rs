@@ -32,6 +32,40 @@ use mork_expr::macros::SerializableExpr;
 use crate::{expr, pure};
 use crate::space::ACT_PATH;
 
+/// Default Wasmtime linear-memory reservation for MORK WASM sinks.
+pub const WASM_LINEAR_MEMORY_RESERVATION_BYTES: u64 = 1 << 32;
+/// Default end-guard size for MORK WASM sink linear memories.
+pub const WASM_LINEAR_MEMORY_GUARD_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Runtime memory policy used when MORK is built with the `wasm` sink feature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WasmLinearMemoryPolicy {
+    /// Bytes reserved for each linear memory.
+    pub reservation_bytes: u64,
+    /// Bytes reserved as the end guard after each linear memory.
+    pub guard_bytes: u64,
+    /// Whether Wasmtime's multi-memory proposal support is enabled.
+    pub multi_memory_enabled: bool,
+    /// Whether Wasmtime can use signal traps for memory faults.
+    pub signals_based_traps_enabled: bool,
+}
+
+/// Returns the default linear-memory policy used by MORK WASM sinks.
+pub const fn wasm_linear_memory_policy() -> WasmLinearMemoryPolicy {
+    WasmLinearMemoryPolicy {
+        reservation_bytes: WASM_LINEAR_MEMORY_RESERVATION_BYTES,
+        guard_bytes: WASM_LINEAR_MEMORY_GUARD_BYTES,
+        multi_memory_enabled: true,
+        signals_based_traps_enabled: true,
+    }
+}
+
+impl Default for WasmLinearMemoryPolicy {
+    fn default() -> Self {
+        wasm_linear_memory_policy()
+    }
+}
+
 #[derive(Eq, PartialEq, Debug)]
 pub enum WriteResourceRequest {
     BTM(&'static [u8]),
@@ -434,12 +468,13 @@ pub struct WASMSink { e: Expr, skip: usize, changed: bool, module: wasmtime::Mod
 
 #[cfg(feature = "wasm")]
 static ENGINE_LINKER: LazyLock<(wasmtime::Engine, wasmtime::Linker<()>)> = LazyLock::new(|| {
+    let memory_policy = wasm_linear_memory_policy();
     let mut config = wasmtime::Config::new();
-    config.wasm_multi_memory(true);
+    config.wasm_multi_memory(memory_policy.multi_memory_enabled);
     config.strategy(wasmtime::Strategy::Cranelift);
-    config.signals_based_traps(true);
-    config.memory_reservation(1 << 32);
-    config.memory_guard_size(1 << 32);
+    config.signals_based_traps(memory_policy.signals_based_traps_enabled);
+    config.memory_reservation(memory_policy.reservation_bytes);
+    config.memory_guard_size(memory_policy.guard_bytes);
     #[cfg(all(target_feature = "avx2"))]
     unsafe {
         config.cranelift_flag_enable("has_sse3");
@@ -1390,5 +1425,27 @@ impl Sink for ASink {
             ASink::FMaxSink(s) => { s.finalize(it) }
             ASink::FProdSink(s) => { s.finalize(it) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wasm_memory_policy_exposes_runtime_tunables() {
+        let policy = wasm_linear_memory_policy();
+
+        assert_eq!(
+            policy.reservation_bytes,
+            WASM_LINEAR_MEMORY_RESERVATION_BYTES
+        );
+        assert_eq!(policy.guard_bytes, WASM_LINEAR_MEMORY_GUARD_BYTES);
+        assert_eq!(policy.reservation_bytes, 1 << 32);
+        assert_eq!(policy.guard_bytes, 32 * 1024 * 1024);
+        assert!(policy.guard_bytes < policy.reservation_bytes);
+        assert!(policy.multi_memory_enabled);
+        assert!(policy.signals_based_traps_enabled);
+        assert_eq!(WasmLinearMemoryPolicy::default(), policy);
     }
 }

@@ -11,3 +11,7 @@ mod pure;
 
 pub use sinks::WriteResourceRequest;
 pub use sources::ResourceRequest;
+pub use sinks::{
+    wasm_linear_memory_policy, WasmLinearMemoryPolicy, WASM_LINEAR_MEMORY_GUARD_BYTES,
+    WASM_LINEAR_MEMORY_RESERVATION_BYTES,
+};

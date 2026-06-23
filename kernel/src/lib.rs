@@ -8,3 +8,7 @@ pub mod space;
 mod sources;
 mod sinks;
 mod pure;
+pub mod term_identity;
+
+#[doc(hidden)]
+pub use mork_expr as __mork_expr;

@@ -4,6 +4,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(more_float_constants)]
 
+pub mod path_space_ops;
 pub mod space;
 mod sources;
 mod sinks;

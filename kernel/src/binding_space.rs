@@ -288,6 +288,27 @@ pub struct TrieJoinTraceReplayShape {
     pub root: Option<TrieJoinTraceReplayNode>,
 }
 
+/// Trace-local work affected by replaying from one bound-prefix context.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrieJoinTraceImpact {
+    /// Bound-prefix context whose replay subtree was found.
+    pub bound_prefix: BindingRow,
+    /// Original trace step indexes covered by this replay subtree.
+    pub step_indexes: Box<[usize]>,
+    /// Domain-intersection steps covered by this replay subtree.
+    pub steps: usize,
+    /// Complete satisfying bindings below this replay subtree.
+    pub candidate_bindings: usize,
+    /// Relation domains participating below this replay subtree.
+    pub domain_sources: usize,
+    /// Domain values exposed before leapfrog intersection below this subtree.
+    pub domain_values: usize,
+    /// Values that survived intersection below this replay subtree.
+    pub intersection_values: usize,
+    /// Deepest variable-order level reached by this replay subtree.
+    pub max_level: usize,
+}
+
 /// One replay node for a variable-depth domain intersection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrieJoinTraceReplayNode {
@@ -316,6 +337,79 @@ pub struct TrieJoinTraceReplayBranch {
     pub value: TermId,
     /// Child context after binding `value`, or `None` at leaf depth.
     pub child: Option<Box<TrieJoinTraceReplayNode>>,
+}
+
+impl TrieJoinTraceReplayShape {
+    /// Returns the replay subtree affected at `bound_prefix`, if this trace
+    /// visited that exact variable-prefix context.
+    ///
+    /// This is a trace-local sensitivity summary. It identifies the existing
+    /// replay work under a bound prefix, but it does not maintain or recompute
+    /// join answers for a changed relation.
+    pub fn impact_for_bound_prefix(&self, bound_prefix: &[TermId]) -> Option<TrieJoinTraceImpact> {
+        if bound_prefix.is_empty() && self.root.is_none() {
+            return Some(TrieJoinTraceImpact {
+                bound_prefix: Vec::new().into_boxed_slice(),
+                candidate_bindings: self.summary.candidate_bindings,
+                ..TrieJoinTraceImpact::default()
+            });
+        }
+
+        self.root
+            .as_ref()?
+            .find_bound_prefix(bound_prefix)
+            .map(TrieJoinTraceReplayNode::impact)
+    }
+}
+
+impl TrieJoinTraceReplayNode {
+    fn find_bound_prefix(&self, bound_prefix: &[TermId]) -> Option<&TrieJoinTraceReplayNode> {
+        if self.bound_prefix.as_ref() == bound_prefix {
+            return Some(self);
+        }
+        if bound_prefix.len() <= self.bound_prefix.len()
+            || !bound_prefix.starts_with(self.bound_prefix.as_ref())
+        {
+            return None;
+        }
+
+        let next_value = bound_prefix[self.bound_prefix.len()];
+        self.branches
+            .iter()
+            .find(|branch| branch.value == next_value)?
+            .child
+            .as_deref()?
+            .find_bound_prefix(bound_prefix)
+    }
+
+    fn impact(&self) -> TrieJoinTraceImpact {
+        let mut impact = TrieJoinTraceImpact {
+            bound_prefix: self.bound_prefix.clone(),
+            max_level: self.level,
+            ..TrieJoinTraceImpact::default()
+        };
+        let mut step_indexes = Vec::new();
+        self.accumulate_impact(&mut impact, &mut step_indexes);
+        impact.steps = step_indexes.len();
+        impact.step_indexes = step_indexes.into_boxed_slice();
+        impact
+    }
+
+    fn accumulate_impact(&self, impact: &mut TrieJoinTraceImpact, step_indexes: &mut Vec<usize>) {
+        step_indexes.push(self.step_index);
+        impact.domain_sources += self.participating_relations.len();
+        impact.domain_values += self.relation_domain_lens.iter().sum::<usize>();
+        impact.intersection_values += self.intersection.len();
+        impact.max_level = impact.max_level.max(self.level);
+
+        for branch in self.branches.iter() {
+            if let Some(child) = branch.child.as_deref() {
+                child.accumulate_impact(impact, step_indexes);
+            } else {
+                impact.candidate_bindings += 1;
+            }
+        }
+    }
 }
 
 /// Shape error found while summarizing a trie-join trace.
@@ -1486,6 +1580,39 @@ mod tests {
             assert_eq!(z_node.intersection.as_ref(), [t(100), t(101)]);
             assert!(z_node.branches.iter().all(|leaf| leaf.child.is_none()));
         }
+
+        let root_impact = replay.impact_for_bound_prefix(&[]).unwrap();
+        assert_eq!(root_impact.bound_prefix.as_ref(), []);
+        assert_eq!(root_impact.step_indexes.as_ref(), [0, 1, 2, 3]);
+        assert_eq!(root_impact.steps, 4);
+        assert_eq!(root_impact.candidate_bindings, 4);
+        assert_eq!(root_impact.domain_sources, 5);
+        assert_eq!(root_impact.domain_values, 10);
+        assert_eq!(root_impact.intersection_values, 7);
+        assert_eq!(root_impact.max_level, 2);
+
+        let y10_impact = replay.impact_for_bound_prefix(&[t(10)]).unwrap();
+        assert_eq!(y10_impact.bound_prefix.as_ref(), [t(10)]);
+        assert_eq!(y10_impact.step_indexes.as_ref(), [1, 2, 3]);
+        assert_eq!(y10_impact.steps, 3);
+        assert_eq!(y10_impact.candidate_bindings, 4);
+        assert_eq!(y10_impact.domain_sources, 3);
+        assert_eq!(y10_impact.domain_values, 6);
+        assert_eq!(y10_impact.intersection_values, 6);
+        assert_eq!(y10_impact.max_level, 2);
+
+        let x1_impact = replay.impact_for_bound_prefix(&[t(10), t(1)]).unwrap();
+        assert_eq!(x1_impact.bound_prefix.as_ref(), [t(10), t(1)]);
+        assert_eq!(x1_impact.step_indexes.as_ref(), [2]);
+        assert_eq!(x1_impact.steps, 1);
+        assert_eq!(x1_impact.candidate_bindings, 2);
+        assert_eq!(x1_impact.domain_sources, 1);
+        assert_eq!(x1_impact.domain_values, 2);
+        assert_eq!(x1_impact.intersection_values, 2);
+        assert_eq!(x1_impact.max_level, 2);
+
+        assert_eq!(replay.impact_for_bound_prefix(&[t(20)]), None);
+        assert_eq!(replay.impact_for_bound_prefix(&[t(10), t(3)]), None);
     }
 
     #[test]

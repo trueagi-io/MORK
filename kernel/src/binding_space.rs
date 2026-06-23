@@ -105,6 +105,18 @@ impl BindingRelation {
         Ok(())
     }
 
+    /// Signed difference: subtract every row weight from `other`.
+    pub fn signed_difference(&self, other: &Self) -> Result<Self, BindingRelationError> {
+        if self.schema != other.schema {
+            return Err(BindingRelationError::SchemaMismatch);
+        }
+        let mut out = self.clone();
+        for (row, weight) in &other.weights {
+            out.add(row.clone(), -*weight)?;
+        }
+        Ok(out)
+    }
+
     /// Presence difference: positive rows from `self` that are not visible in
     /// `other`.
     pub fn difference_presence(&self, other: &Self) -> Result<Self, BindingRelationError> {
@@ -171,6 +183,18 @@ pub fn natural_join(
         }
     }
 
+    Ok(out)
+}
+
+/// Differential natural join: Δ(A ⋈ B) = ΔA ⋈ B' + A ⋈ ΔB.
+pub fn delta_join(
+    old_left: &BindingRelation,
+    new_right: &BindingRelation,
+    delta_left: &BindingRelation,
+    delta_right: &BindingRelation,
+) -> Result<BindingRelation, BindingRelationError> {
+    let mut out = natural_join(delta_left, new_right)?;
+    out.union_assign(&natural_join(old_left, delta_right)?)?;
     Ok(out)
 }
 
@@ -1609,6 +1633,17 @@ mod tests {
         relation
     }
 
+    fn signed_relation(schema: &[u8], rows: &[(&[u64], i64)]) -> BindingRelation {
+        let mut relation =
+            BindingRelation::new(schema.iter().copied().map(BindingVar).collect::<Vec<_>>());
+        for (row, weight) in rows {
+            relation
+                .add(row.iter().copied().map(TermId).collect::<Vec<_>>(), *weight)
+                .unwrap();
+        }
+        relation
+    }
+
     #[test]
     fn natural_and_generic_join_agree_on_variable_order() {
         let left = relation(&[0, 1], &[&[1, 10], &[2, 10], &[3, 20]]);
@@ -1970,6 +2005,44 @@ mod tests {
         let joined = natural_join(&left, &right).unwrap();
 
         assert_eq!(joined.weight(&[t(1)]), -1);
+    }
+
+    #[test]
+    fn signed_difference_subtracts_weights_without_presence_semantics() {
+        let left = signed_relation(&[0], &[(&[1], 3), (&[2], -2)]);
+        let right = signed_relation(&[0], &[(&[1], 1), (&[2], -2), (&[3], 5)]);
+
+        let diff = left.signed_difference(&right).unwrap();
+
+        assert_eq!(diff.weight(&[t(1)]), 2);
+        assert_eq!(diff.weight(&[t(2)]), 0);
+        assert_eq!(diff.weight(&[t(3)]), -5);
+    }
+
+    #[test]
+    fn delta_join_matches_full_recomputation_with_signed_deletions() {
+        let old_left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let delta_left = relation(&[0, 1], &[&[3, 10]]);
+        let old_right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let delta_right = signed_relation(&[1, 2], &[(&[10, 100], -1), (&[10, 102], 1)]);
+        let mut new_left = old_left.clone();
+        new_left.union_assign(&delta_left).unwrap();
+        let mut new_right = old_right.clone();
+        new_right.union_assign(&delta_right).unwrap();
+
+        let delta = delta_join(&old_left, &new_right, &delta_left, &delta_right).unwrap();
+        let recomputed = natural_join(&new_left, &new_right)
+            .unwrap()
+            .signed_difference(&natural_join(&old_left, &old_right).unwrap())
+            .unwrap();
+
+        assert_eq!(delta, recomputed);
+        assert_eq!(delta.weight(&[t(1), t(10), t(100)]), -1);
+        assert_eq!(delta.weight(&[t(2), t(10), t(100)]), -1);
+        assert_eq!(delta.weight(&[t(1), t(10), t(102)]), 1);
+        assert_eq!(delta.weight(&[t(2), t(10), t(102)]), 1);
+        assert_eq!(delta.weight(&[t(3), t(10), t(101)]), 1);
+        assert_eq!(delta.weight(&[t(3), t(10), t(102)]), 1);
     }
 
     #[test]

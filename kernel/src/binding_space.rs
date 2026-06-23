@@ -284,8 +284,8 @@ pub struct TrieJoinTraceSummary {
 /// This is the checklist a future PathMap/ReadZipper-backed relation factor
 /// must satisfy for the same variable order: for each relation index, open the
 /// listed bound-prefix contexts and expose ordered domains with the recorded
-/// cardinalities. The contract is diagnostic only; it does not execute or
-/// maintain join answers.
+/// values and cardinalities. The contract is diagnostic only; it does not
+/// execute or maintain join answers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrieJoinCursorContract {
     /// Aggregate trace summary validated before the contract was built.
@@ -322,6 +322,8 @@ pub struct TrieJoinFactorCursorContext {
     pub variable: BindingVar,
     /// Values already bound before opening this domain.
     pub bound_prefix: BindingRow,
+    /// Ordered values this factor exposed before intersection.
+    pub domain: BindingRow,
     /// Number of values the factor exposed before intersection.
     pub domain_len: usize,
     /// Number of values that survived the multi-factor intersection.
@@ -429,6 +431,8 @@ pub struct TrieJoinTraceReplayNode {
     pub participating_relations: Box<[usize]>,
     /// Domain length contributed by each participating relation.
     pub relation_domain_lens: Box<[usize]>,
+    /// Exact relation domains contributed at this context.
+    pub relation_domains: Box<[TrieJoinTraceFactorDomain]>,
     /// Values that survived the intersection at this context.
     pub intersection: Box<[TermId]>,
     /// Per-survivor continuation in traversal order.
@@ -601,6 +605,7 @@ impl TrieJoinTraceReplayNode {
             && self.variable == other.variable
             && self.participating_relations == other.participating_relations
             && self.relation_domain_lens == other.relation_domain_lens
+            && self.relation_domains == other.relation_domains
             && self.intersection == other.intersection
     }
 }
@@ -663,6 +668,33 @@ pub enum TrieJoinTraceShapeError {
         participating_relations: usize,
         relation_domain_lens: usize,
     },
+    /// Participating relation IDs and exact relation domains must align one-for-one.
+    RelationDomainCountMismatch {
+        step: usize,
+        participating_relations: usize,
+        relation_domains: usize,
+    },
+    /// Exact relation-domain metadata must preserve participating-relation order.
+    RelationDomainIndexMismatch {
+        step: usize,
+        position: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// Exact relation-domain values must agree with the recorded domain length.
+    RelationDomainLengthMismatch {
+        step: usize,
+        relation_index: usize,
+        expected: usize,
+        actual: usize,
+    },
+    /// Exact relation-domain values must be unique and strictly ordered.
+    RelationDomainOrderMismatch {
+        step: usize,
+        relation_index: usize,
+        previous: TermId,
+        actual: TermId,
+    },
     /// Aggregate domain-source count must match participating relation IDs.
     DomainSourceMismatch {
         step: usize,
@@ -721,6 +753,9 @@ pub struct TrieJoinTraceStep {
     /// Domain length contributed by each participating relation, in
     /// `participating_relations` order.
     pub relation_domain_lens: Box<[usize]>,
+    /// Exact domains contributed by each participating relation, in
+    /// `participating_relations` order.
+    pub relation_domains: Box<[TrieJoinTraceFactorDomain]>,
     /// Relation domains that constrained this variable in the current context.
     pub domain_sources: usize,
     /// Total values exposed by those relation domains before intersection.
@@ -733,6 +768,15 @@ pub struct TrieJoinTraceStep {
     pub cursor_seeks: usize,
     /// Cursor next calls issued after aligned values.
     pub cursor_nexts: usize,
+}
+
+/// Exact ordered domain that one relation factor exposed at a trace step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrieJoinTraceFactorDomain {
+    /// Relation/factor index in the opened sidecar plan.
+    pub relation_index: usize,
+    /// Ordered unique domain values exposed before intersection.
+    pub values: BindingRow,
 }
 
 impl TrieJoinTrace {
@@ -788,6 +832,51 @@ impl TrieJoinTrace {
                     participating_relations: step.participating_relations.len(),
                     relation_domain_lens: step.relation_domain_lens.len(),
                 });
+            }
+
+            if step.participating_relations.len() != step.relation_domains.len() {
+                return Err(TrieJoinTraceShapeError::RelationDomainCountMismatch {
+                    step: step_index,
+                    participating_relations: step.participating_relations.len(),
+                    relation_domains: step.relation_domains.len(),
+                });
+            }
+
+            for (position, ((&relation_index, &domain_len), relation_domain)) in step
+                .participating_relations
+                .iter()
+                .zip(step.relation_domain_lens.iter())
+                .zip(step.relation_domains.iter())
+                .enumerate()
+            {
+                if relation_domain.relation_index != relation_index {
+                    return Err(TrieJoinTraceShapeError::RelationDomainIndexMismatch {
+                        step: step_index,
+                        position,
+                        expected: relation_index,
+                        actual: relation_domain.relation_index,
+                    });
+                }
+                if relation_domain.values.len() != domain_len {
+                    return Err(TrieJoinTraceShapeError::RelationDomainLengthMismatch {
+                        step: step_index,
+                        relation_index,
+                        expected: domain_len,
+                        actual: relation_domain.values.len(),
+                    });
+                }
+                if let Some(window) = relation_domain
+                    .values
+                    .windows(2)
+                    .find(|window| window[0] >= window[1])
+                {
+                    return Err(TrieJoinTraceShapeError::RelationDomainOrderMismatch {
+                        step: step_index,
+                        relation_index,
+                        previous: window[0],
+                        actual: window[1],
+                    });
+                }
             }
 
             if step.domain_sources != step.participating_relations.len() {
@@ -895,20 +984,17 @@ impl TrieJoinTrace {
         let mut contexts_by_relation = BTreeMap::<usize, Vec<TrieJoinFactorCursorContext>>::new();
 
         for (step_index, step) in self.steps.iter().enumerate() {
-            for (&relation_index, &domain_len) in step
-                .participating_relations
-                .iter()
-                .zip(step.relation_domain_lens.iter())
-            {
+            for relation_domain in step.relation_domains.iter() {
                 contexts_by_relation
-                    .entry(relation_index)
+                    .entry(relation_domain.relation_index)
                     .or_default()
                     .push(TrieJoinFactorCursorContext {
                         step_index,
                         level: step.level,
                         variable: step.variable,
                         bound_prefix: step.bound_prefix.clone(),
-                        domain_len,
+                        domain: relation_domain.values.clone(),
+                        domain_len: relation_domain.values.len(),
                         intersection_len: step.intersection.len(),
                     });
             }
@@ -1007,6 +1093,7 @@ impl TrieJoinTrace {
             bound_prefix: step.bound_prefix.clone(),
             participating_relations: step.participating_relations.clone(),
             relation_domain_lens: step.relation_domain_lens.clone(),
+            relation_domains: step.relation_domains.clone(),
             intersection: step.intersection.clone(),
             branches: branches.into_boxed_slice(),
         })
@@ -1413,6 +1500,14 @@ fn trie_join_trace_recurse(
             .map(|(_, domain)| domain.len())
             .collect::<Vec<_>>()
             .into_boxed_slice(),
+        relation_domains: domain_entries
+            .iter()
+            .map(|(relation_index, domain)| TrieJoinTraceFactorDomain {
+                relation_index: *relation_index,
+                values: domain.to_vec().into_boxed_slice(),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
         domain_sources: domains.len(),
         domain_values: domains.iter().map(|domain| domain.len()).sum(),
         intersection: intersection.clone().into_boxed_slice(),
@@ -1807,6 +1902,11 @@ mod tests {
         assert!(root.bound_prefix.is_empty());
         assert_eq!(root.participating_relations.as_ref(), [0, 1]);
         assert_eq!(root.relation_domain_lens.as_ref(), [2, 2]);
+        assert_eq!(root.relation_domains.len(), 2);
+        assert_eq!(root.relation_domains[0].relation_index, 0);
+        assert_eq!(root.relation_domains[0].values.as_ref(), [t(10), t(20)]);
+        assert_eq!(root.relation_domains[1].relation_index, 1);
+        assert_eq!(root.relation_domains[1].values.as_ref(), [t(10), t(30)]);
         assert_eq!(root.domain_sources, 2);
         assert_eq!(root.domain_values, 4);
         assert_eq!(root.intersection.as_ref(), [t(10)]);
@@ -1910,11 +2010,13 @@ mod tests {
         assert_eq!(left_factor.contexts[0].step_index, 0);
         assert_eq!(left_factor.contexts[0].variable, v(1));
         assert_eq!(left_factor.contexts[0].bound_prefix.as_ref(), []);
+        assert_eq!(left_factor.contexts[0].domain.as_ref(), [t(10), t(20)]);
         assert_eq!(left_factor.contexts[0].domain_len, 2);
         assert_eq!(left_factor.contexts[0].intersection_len, 1);
         assert_eq!(left_factor.contexts[1].step_index, 1);
         assert_eq!(left_factor.contexts[1].variable, v(0));
         assert_eq!(left_factor.contexts[1].bound_prefix.as_ref(), [t(10)]);
+        assert_eq!(left_factor.contexts[1].domain.as_ref(), [t(1), t(2)]);
 
         let right_factor = &contract.factor_requirements[1];
         assert_eq!(right_factor.relation_index, 1);
@@ -1924,18 +2026,21 @@ mod tests {
         assert_eq!(right_factor.contexts[0].step_index, 0);
         assert_eq!(right_factor.contexts[0].variable, v(1));
         assert_eq!(right_factor.contexts[0].bound_prefix.as_ref(), []);
+        assert_eq!(right_factor.contexts[0].domain.as_ref(), [t(10), t(30)]);
         assert_eq!(right_factor.contexts[1].step_index, 2);
         assert_eq!(right_factor.contexts[1].variable, v(2));
         assert_eq!(
             right_factor.contexts[1].bound_prefix.as_ref(),
             [t(10), t(1)]
         );
+        assert_eq!(right_factor.contexts[1].domain.as_ref(), [t(100), t(101)]);
         assert_eq!(right_factor.contexts[2].step_index, 3);
         assert_eq!(right_factor.contexts[2].variable, v(2));
         assert_eq!(
             right_factor.contexts[2].bound_prefix.as_ref(),
             [t(10), t(2)]
         );
+        assert_eq!(right_factor.contexts[2].domain.as_ref(), [t(100), t(101)]);
     }
 
     #[test]
@@ -1996,6 +2101,45 @@ mod tests {
     }
 
     #[test]
+    fn trie_join_trace_replay_diff_compares_exact_factor_domains() {
+        let old_left = relation(&[0, 1], &[&[1, 10], &[3, 20]]);
+        let new_left = relation(&[0, 1], &[&[1, 10], &[3, 25]]);
+        let right = relation(&[1, 2], &[&[10, 100]]);
+        let variable_order = [v(1), v(0), v(2)];
+
+        let old_replay = trie_join_trace(&[old_left, right.clone()], &variable_order)
+            .unwrap()
+            .replay_shape()
+            .unwrap();
+        let new_replay = trie_join_trace(&[new_left, right], &variable_order)
+            .unwrap()
+            .replay_shape()
+            .unwrap();
+
+        let diff = old_replay.diff(&new_replay);
+
+        assert!(!diff.is_empty());
+        assert_eq!(diff.unchanged_contexts, 2);
+        assert_eq!(diff.changed_contexts, 1);
+        assert_eq!(diff.added_contexts, 0);
+        assert_eq!(diff.removed_contexts, 0);
+        assert_eq!(diff.frontier_contexts, 1);
+        assert_eq!(diff.old_candidate_bindings_touched, 1);
+        assert_eq!(diff.new_candidate_bindings_touched, 1);
+        assert_eq!(diff.entries.len(), 1);
+        assert_eq!(diff.entries[0].bound_prefix.as_ref(), []);
+        assert_eq!(diff.entries[0].kind, TrieJoinTraceReplayDiffKind::Changed);
+        assert_eq!(
+            old_replay.summary.candidate_bindings,
+            new_replay.summary.candidate_bindings
+        );
+        assert_eq!(
+            old_replay.root.as_ref().unwrap().intersection,
+            new_replay.root.as_ref().unwrap().intersection
+        );
+    }
+
+    #[test]
     fn trie_join_trace_summary_rejects_inconsistent_domain_metadata() {
         let left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
         let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
@@ -2010,6 +2154,26 @@ mod tests {
                 step: 0,
                 expected: 2,
                 actual: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn trie_join_trace_summary_rejects_unordered_exact_domain_values() {
+        let left = relation(&[0, 1], &[&[1, 10], &[2, 10]]);
+        let right = relation(&[1, 2], &[&[10, 100], &[10, 101]]);
+        let variable_order = [v(1), v(0), v(2)];
+        let mut trace = trie_join_trace(&[left, right], &variable_order).unwrap();
+
+        trace.steps[1].relation_domains[0].values = vec![t(2), t(1)].into_boxed_slice();
+
+        assert_eq!(
+            trace.summarize().unwrap_err(),
+            TrieJoinTraceShapeError::RelationDomainOrderMismatch {
+                step: 1,
+                relation_index: 0,
+                previous: t(2),
+                actual: t(1),
             }
         );
     }

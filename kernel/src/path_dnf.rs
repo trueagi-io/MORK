@@ -15,6 +15,20 @@ pub struct DnfPathSetStats {
     pub meet_ops: usize,
     /// Exact `PathMap::join` operations used to union clause results.
     pub join_ops: usize,
+    /// Distinct factor references observed by pointer identity.
+    pub distinct_factor_refs: usize,
+    /// Repeated factor references beyond the first occurrence.
+    pub repeated_factor_refs: usize,
+    /// Sum of input factor value counts across all clause positions.
+    pub factor_input_values: usize,
+    /// Sum of materialized clause-result value counts before final union.
+    pub clause_output_values: usize,
+    /// Clause-result values eliminated by duplicate-removing final union.
+    pub duplicate_clause_values: usize,
+    /// Largest materialized clause-result value count.
+    pub peak_clause_values: usize,
+    /// Largest materialized accumulated result value count.
+    pub peak_result_values: usize,
 }
 
 /// Result of evaluating a finite pathset expression in disjunctive normal form.
@@ -49,6 +63,7 @@ pub fn evaluate_pathmap_dnf(
     };
     let mut result = PathMap::new();
     let mut has_result = false;
+    let mut distinct_factor_refs = Vec::new();
 
     for (clause_index, clause) in clauses.iter().enumerate() {
         if clause.is_empty() {
@@ -56,6 +71,17 @@ pub fn evaluate_pathmap_dnf(
         }
 
         stats.factors += clause.len();
+        for factor in *clause {
+            stats.factor_input_values += factor.val_count();
+            let factor_ref = std::ptr::from_ref(*factor).cast::<()>();
+            if distinct_factor_refs.contains(&factor_ref) {
+                stats.repeated_factor_refs += 1;
+            } else {
+                distinct_factor_refs.push(factor_ref);
+                stats.distinct_factor_refs += 1;
+            }
+        }
+
         if clause.len() == 1 {
             stats.singleton_clauses += 1;
         } else {
@@ -67,6 +93,9 @@ pub fn evaluate_pathmap_dnf(
             clause_map = clause_map.meet(factor);
             stats.meet_ops += 1;
         }
+        let clause_values = clause_map.val_count();
+        stats.clause_output_values += clause_values;
+        stats.peak_clause_values = stats.peak_clause_values.max(clause_values);
 
         if has_result {
             result = result.join(&clause_map);
@@ -75,7 +104,11 @@ pub fn evaluate_pathmap_dnf(
             result = clause_map;
             has_result = true;
         }
+        stats.peak_result_values = stats.peak_result_values.max(result.val_count());
     }
+    stats.duplicate_clause_values = stats
+        .clause_output_values
+        .saturating_sub(result.val_count());
 
     Ok(DnfPathSetResult { map: result, stats })
 }
@@ -147,6 +180,13 @@ mod tests {
         assert_eq!(result.stats.factors, 3);
         assert_eq!(result.stats.meet_ops, 2);
         assert_eq!(result.stats.join_ops, 0);
+        assert_eq!(result.stats.distinct_factor_refs, 3);
+        assert_eq!(result.stats.repeated_factor_refs, 0);
+        assert_eq!(result.stats.factor_input_values, 9);
+        assert_eq!(result.stats.clause_output_values, 0);
+        assert_eq!(result.stats.duplicate_clause_values, 0);
+        assert_eq!(result.stats.peak_clause_values, 0);
+        assert_eq!(result.stats.peak_result_values, 0);
     }
 
     #[test]
@@ -175,6 +215,13 @@ mod tests {
         assert_eq!(result.stats.multi_factor_clauses, 0);
         assert_eq!(result.stats.meet_ops, 0);
         assert_eq!(result.stats.join_ops, 2);
+        assert_eq!(result.stats.distinct_factor_refs, 3);
+        assert_eq!(result.stats.repeated_factor_refs, 0);
+        assert_eq!(result.stats.factor_input_values, 9);
+        assert_eq!(result.stats.clause_output_values, 9);
+        assert_eq!(result.stats.duplicate_clause_values, 2);
+        assert_eq!(result.stats.peak_clause_values, 4);
+        assert_eq!(result.stats.peak_result_values, 7);
     }
 
     #[test]
@@ -191,6 +238,13 @@ mod tests {
         assert_eq!(result.stats.factors, 4);
         assert_eq!(result.stats.meet_ops, 2);
         assert_eq!(result.stats.join_ops, 1);
+        assert_eq!(result.stats.distinct_factor_refs, 3);
+        assert_eq!(result.stats.repeated_factor_refs, 1);
+        assert_eq!(result.stats.factor_input_values, 11);
+        assert_eq!(result.stats.clause_output_values, 2);
+        assert_eq!(result.stats.duplicate_clause_values, 0);
+        assert_eq!(result.stats.peak_clause_values, 2);
+        assert_eq!(result.stats.peak_result_values, 2);
     }
 
     #[test]

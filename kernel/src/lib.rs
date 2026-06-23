@@ -9,6 +9,7 @@ mod sources;
 mod sinks;
 mod pure;
 pub mod term_identity;
+pub mod binding_env;
 
 #[doc(hidden)]
 pub use mork_expr as __mork_expr;

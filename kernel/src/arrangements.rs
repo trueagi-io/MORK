@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::binding_space::{BindingRelation, BindingRelationError, BindingVar};
 use crate::term_identity::{FactId, TermId, TermIdentitySidecar, TermKind};
 
 /// Physical argument-order sidecar for relation-like facts.
@@ -40,6 +41,47 @@ pub struct ArrangementRow {
     pub root: TermId,
 }
 
+/// Projection from arranged facts into a BindingSpace relation schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArrangementProjection {
+    /// Output BindingSpace schema.
+    pub schema: Box<[BindingVar]>,
+    /// Argument positions for each schema variable, zero-based after the
+    /// relation/functor child.
+    pub argument_positions: Box<[u8]>,
+}
+
+impl ArrangementProjection {
+    /// Creates a projection after validating arity and argument positions.
+    pub fn new(
+        argument_count: u8,
+        schema: impl Into<Box<[BindingVar]>>,
+        argument_positions: impl Into<Box<[u8]>>,
+    ) -> Result<Self, ArrangementError> {
+        let schema = schema.into();
+        let argument_positions = argument_positions.into();
+        if schema.len() != argument_positions.len() {
+            return Err(ArrangementError::ProjectionArityMismatch {
+                schema_len: schema.len(),
+                positions_len: argument_positions.len(),
+            });
+        }
+        for &position in argument_positions.iter() {
+            if position >= argument_count {
+                return Err(ArrangementError::InvalidKeyPosition {
+                    position,
+                    argument_count,
+                });
+            }
+        }
+
+        Ok(Self {
+            schema,
+            argument_positions,
+        })
+    }
+}
+
 /// Snapshot-local arrangement index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArrangementIndex {
@@ -76,6 +118,11 @@ pub enum ArrangementError {
     UnknownTerm { term: TermId },
     /// Encoded arity would overflow when adding the relation/functor child.
     ArityOverflow { argument_count: u8 },
+    /// Projection schema and argument-position list have different lengths.
+    ProjectionArityMismatch {
+        schema_len: usize,
+        positions_len: usize,
+    },
 }
 
 impl ArrangementIndex {
@@ -168,6 +215,69 @@ impl ArrangementIndex {
     pub fn get_exact(&self, key: &[TermId]) -> &[ArrangementRow] {
         self.rows_by_key.get(key).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    /// Projects arranged facts into a BindingSpace relation.
+    pub fn project_bindings(
+        &self,
+        sidecar: &TermIdentitySidecar,
+        projection: &ArrangementProjection,
+    ) -> Result<BindingRelation, ArrangementError> {
+        let mut relation = BindingRelation::new(projection.schema.clone());
+
+        for row in self.rows_by_key.values().flatten() {
+            let arguments = self.root_arguments(sidecar, row.root)?;
+            let binding_row = projection
+                .argument_positions
+                .iter()
+                .map(|&position| arguments[usize::from(position)])
+                .collect::<Vec<_>>();
+            relation.add(binding_row, 1).map_err(|error| match error {
+                BindingRelationError::ArityMismatch { expected, actual } => {
+                    ArrangementError::ProjectionArityMismatch {
+                        schema_len: expected,
+                        positions_len: actual,
+                    }
+                }
+                BindingRelationError::SchemaMismatch
+                | BindingRelationError::UnknownVariable { .. }
+                | BindingRelationError::InvalidVariableOrder => {
+                    ArrangementError::ProjectionArityMismatch {
+                        schema_len: projection.schema.len(),
+                        positions_len: projection.argument_positions.len(),
+                    }
+                }
+            })?;
+        }
+
+        Ok(relation)
+    }
+
+    fn root_arguments<'a>(
+        &self,
+        sidecar: &'a TermIdentitySidecar,
+        root: TermId,
+    ) -> Result<&'a [TermId], ArrangementError> {
+        let Some(record) = sidecar.get_term(root) else {
+            return Err(ArrangementError::UnknownTerm { term: root });
+        };
+        let encoded_arity = self.descriptor.argument_count.checked_add(1).ok_or(
+            ArrangementError::ArityOverflow {
+                argument_count: self.descriptor.argument_count,
+            },
+        )?;
+        if record.kind
+            != (TermKind::Application {
+                arity: encoded_arity,
+            })
+        {
+            return Err(ArrangementError::UnknownTerm { term: root });
+        }
+        let children = record.children();
+        if children.first().copied() != Some(self.descriptor.relation) {
+            return Err(ArrangementError::UnknownTerm { term: root });
+        }
+        Ok(&children[1..])
+    }
 }
 
 fn validate_key_order(argument_count: u8, key_order: &[u8]) -> Result<(), ArrangementError> {
@@ -191,6 +301,7 @@ fn validate_key_order(argument_count: u8, key_order: &[u8]) -> Result<(), Arrang
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binding_space::{generic_join, BindingVar};
     use crate::space::Space;
     use crate::term_identity::TermIdentitySidecar;
     use std::collections::BTreeSet;
@@ -272,5 +383,51 @@ mod tests {
             ArrangementDescriptor::new(TermId(0), 2, [1, 1]),
             Err(ArrangementError::DuplicateKeyPosition { position: 1 })
         );
+    }
+
+    #[test]
+    fn arrangement_projection_feeds_generic_join_for_transitive_edges() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice Bob)
+(edge Bob Carol)
+(edge Alice Dana)
+(edge Dana Carol)
+(edge Carol Erin)
+(edge X Y)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let edge = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "edge"))
+            .unwrap();
+
+        let descriptor = ArrangementDescriptor::new(edge, 2, [0, 1]).unwrap();
+        let arrangement = ArrangementIndex::build(&sidecar, descriptor).unwrap();
+        let xy = arrangement
+            .project_bindings(
+                &sidecar,
+                &ArrangementProjection::new(2, [BindingVar(0), BindingVar(1)], [0, 1]).unwrap(),
+            )
+            .unwrap();
+        let yz = arrangement
+            .project_bindings(
+                &sidecar,
+                &ArrangementProjection::new(2, [BindingVar(1), BindingVar(2)], [0, 1]).unwrap(),
+            )
+            .unwrap();
+        let joined =
+            generic_join(&[xy, yz], &[BindingVar(1), BindingVar(0), BindingVar(2)]).unwrap();
+
+        let product_pattern = crate::expr!(space, "[3] , [3] edge $ $ [3] edge _2 $");
+        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+
+        assert_eq!(product_count, 4);
+        assert_eq!(joined.positive_rows().count(), product_count);
     }
 }

@@ -375,18 +375,19 @@ impl <'a, 'c> mork_frontend::json_parser::ATranscriber<&'static [u8]> for ASpace
 #[macro_export]
 macro_rules! prefix {
     ($space:ident, $s:literal) => {{
-        let mut src = parse!($s);
-        let q = Expr{ ptr: src.as_mut_ptr() };
-        let mut pdp = ParDataParser::new(&$space.sm);
+        let mut src = $crate::__mork_expr::parse!($s);
+        let q = $crate::__mork_expr::Expr{ ptr: src.as_mut_ptr() };
+        let table = $space.sym_table();
+        let mut pdp = $crate::space::ParDataParser::new(&table);
         let mut buf = [0u8; 2048];
-        let p = Expr{ ptr: buf.as_mut_ptr() };
-        let used = q.substitute_symbols(&mut ExprZipper::new(p), |x| pdp.tokenizer(x));
-        let correction = 1; // hack to allow the re-use of substitute_symbols on something that's not a complete expression
-        unsafe {
-            let b = std::alloc::alloc(std::alloc::Layout::array::<u8>(used.len()-correction).unwrap());
-            std::ptr::copy_nonoverlapping(p.ptr, b, used.len()-correction);
-            crate::prefix::Prefix::<'static> { slice: std::ptr::slice_from_raw_parts(b, used.len()-correction).as_ref().unwrap() }
-        }
+        let p = $crate::__mork_expr::Expr{ ptr: buf.as_mut_ptr() };
+        q.substitute_symbols(
+            &mut $crate::__mork_expr::ExprZipper::new(p),
+            |x| <_ as $crate::__mork_frontend::bytestring_parser::Parser>::tokenizer(&mut pdp, x),
+        );
+        let prefix = unsafe { p.prefix_non_proper().as_ref().unwrap() };
+        let prefix: &'static [u8] = Box::leak(prefix.to_vec().into_boxed_slice());
+        $crate::prefix::Prefix::<'static> { slice: prefix }
     }};
 }
 

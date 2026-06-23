@@ -12,6 +12,7 @@ pub mod term_identity;
 pub mod binding_env;
 pub mod pattern_relations;
 pub mod arrangements;
+pub mod binding_space;
 
 #[doc(hidden)]
 pub use mork_expr as __mork_expr;

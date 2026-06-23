@@ -38,6 +38,10 @@ pub struct DnfPathSetStats {
     pub empty_clause_results: usize,
     /// Evaluated clauses that produced at least one path.
     pub non_empty_clause_results: usize,
+    /// Non-empty count clauses added directly after exact disjointness checks.
+    pub count_disjoint_clause_additions: usize,
+    /// Exact `PathMap::meet` operations used to check count-clause overlap.
+    pub count_overlap_check_ops: usize,
     /// Largest materialized clause-result value count.
     pub peak_clause_values: usize,
     /// Largest materialized accumulated result value count.
@@ -105,25 +109,14 @@ pub fn evaluate_pathmap_dnf(
 pub fn evaluate_pathmap_dnf_exists(
     clauses: &[&[&PathMap<()>]],
 ) -> Result<DnfPathSetExistenceResult, DnfPathSetError> {
-    let (mut stats, mut distinct_factor_refs) = evaluator_state(clauses);
-
-    for (clause_index, clause) in clauses.iter().enumerate() {
-        let clause_result =
-            evaluate_clause(clause_index, clause, &mut stats, &mut distinct_factor_refs)?;
-
-        if clause_result.values > 0 {
-            stats.short_circuit_skipped_clauses = clauses.len().saturating_sub(clause_index + 1);
-
-            return Ok(DnfPathSetExistenceResult {
-                exists: true,
-                stats,
-                final_output_materialized: false,
-            });
-        }
-    }
+    let mut exists = false;
+    let stats = evaluate_clauses(clauses, |clause_result, _| {
+        exists = clause_result.values > 0;
+        exists
+    })?;
 
     Ok(DnfPathSetExistenceResult {
-        exists: false,
+        exists,
         stats,
         final_output_materialized: false,
     })
@@ -144,12 +137,18 @@ fn evaluator_state(clauses: &[&[&PathMap<()>]]) -> (DnfPathSetStats, Vec<*const 
 /// Exact set count over DNF clauses is duplicate-sensitive because clauses may
 /// overlap. This path avoids returning the final map, and avoids building a
 /// duplicate-eliminating accumulated map when zero or one non-empty clause is
-/// observed. Once multiple non-empty clauses appear, it unions those clauses to
-/// preserve exact set semantics.
+/// observed, or when every non-empty clause output is proven disjoint from the
+/// prior outputs. Once overlap appears, it unions those clauses to preserve
+/// exact set semantics.
 pub fn evaluate_pathmap_dnf_count(
     clauses: &[&[&PathMap<()>]],
 ) -> Result<DnfPathSetCountResult, DnfPathSetError> {
-    let (accumulated, stats) = evaluate_accumulated_dnf(clauses)?;
+    let mut accumulated = DnfPathSetCountAccumulator::new();
+    let mut stats = evaluate_clauses(clauses, |clause_result, stats| {
+        accumulated.push(clause_result, stats);
+        false
+    })?;
+    finish_accumulated_count(accumulated.count(), &mut stats);
 
     Ok(DnfPathSetCountResult {
         count: accumulated.count(),
@@ -161,26 +160,42 @@ pub fn evaluate_pathmap_dnf_count(
 fn evaluate_accumulated_dnf(
     clauses: &[&[&PathMap<()>]],
 ) -> Result<(DnfPathSetAccumulator, DnfPathSetStats), DnfPathSetError> {
-    let (mut stats, mut distinct_factor_refs) = evaluator_state(clauses);
     let mut accumulated = DnfPathSetAccumulator::new();
+    let mut stats = evaluate_clauses(clauses, |clause_result, stats| {
+        accumulated.push(clause_result, stats);
+        false
+    })?;
+    finish_accumulated_count(accumulated.count(), &mut stats);
+
+    Ok((accumulated, stats))
+}
+
+fn evaluate_clauses(
+    clauses: &[&[&PathMap<()>]],
+    mut consume: impl FnMut(ClauseEvaluation, &mut DnfPathSetStats) -> bool,
+) -> Result<DnfPathSetStats, DnfPathSetError> {
+    let (mut stats, mut distinct_factor_refs) = evaluator_state(clauses);
 
     for (clause_index, clause) in clauses.iter().enumerate() {
         let clause_result =
             evaluate_clause(clause_index, clause, &mut stats, &mut distinct_factor_refs)?;
-        accumulated.push(clause_result, &mut stats);
+        if consume(clause_result, &mut stats) {
+            stats.short_circuit_skipped_clauses = clauses.len().saturating_sub(clause_index + 1);
+            break;
+        }
     }
-    stats.duplicate_clause_values = stats
-        .clause_output_values
-        .saturating_sub(accumulated.count());
 
-    Ok((accumulated, stats))
+    Ok(stats)
+}
+
+fn finish_accumulated_count(count: usize, stats: &mut DnfPathSetStats) {
+    stats.duplicate_clause_values = stats.clause_output_values.saturating_sub(count);
 }
 
 struct DnfPathSetAccumulator {
     map: PathMap<()>,
     has_result: bool,
     count: usize,
-    final_output_materialized: bool,
 }
 
 impl DnfPathSetAccumulator {
@@ -189,7 +204,6 @@ impl DnfPathSetAccumulator {
             map: PathMap::new(),
             has_result: false,
             count: 0,
-            final_output_materialized: false,
         }
     }
 
@@ -201,7 +215,6 @@ impl DnfPathSetAccumulator {
         if self.has_result {
             self.map = self.map.join(&clause_result.map);
             stats.join_ops += 1;
-            self.final_output_materialized = true;
             self.count = self.map.val_count();
         } else {
             self.count = clause_result.values;
@@ -215,12 +228,88 @@ impl DnfPathSetAccumulator {
         self.count
     }
 
-    fn final_output_materialized(&self) -> bool {
-        self.final_output_materialized
-    }
-
     fn into_map(self) -> PathMap<()> {
         self.map
+    }
+}
+
+struct DnfPathSetCountAccumulator {
+    fragments: Vec<PathMap<()>>,
+    fragment_count: usize,
+    materialized: DnfPathSetAccumulator,
+}
+
+impl DnfPathSetCountAccumulator {
+    fn new() -> Self {
+        Self {
+            fragments: Vec::new(),
+            fragment_count: 0,
+            materialized: DnfPathSetAccumulator::new(),
+        }
+    }
+
+    fn push(&mut self, clause_result: ClauseEvaluation, stats: &mut DnfPathSetStats) {
+        if clause_result.values == 0 {
+            return;
+        }
+
+        if self.materialized.has_result {
+            self.materialized.push(clause_result, stats);
+            return;
+        } else if self.fragments.is_empty() {
+            self.fragment_count = clause_result.values;
+            self.fragments.push(clause_result.map);
+        } else if self.is_disjoint_from_fragments(&clause_result.map, stats) {
+            self.fragment_count += clause_result.values;
+            stats.count_disjoint_clause_additions += 1;
+            self.fragments.push(clause_result.map);
+        } else {
+            self.materialize_fragments_with(clause_result, stats);
+            return;
+        }
+
+        stats.peak_result_values = stats.peak_result_values.max(self.fragment_count);
+    }
+
+    fn is_disjoint_from_fragments(
+        &self,
+        candidate: &PathMap<()>,
+        stats: &mut DnfPathSetStats,
+    ) -> bool {
+        self.fragments.iter().all(|fragment| {
+            stats.count_overlap_check_ops += 1;
+            fragment.meet(candidate).is_empty()
+        })
+    }
+
+    fn materialize_fragments_with(
+        &mut self,
+        overlapping_clause: ClauseEvaluation,
+        stats: &mut DnfPathSetStats,
+    ) {
+        for fragment in self.fragments.drain(..) {
+            let values = fragment.val_count();
+            self.materialized.push(
+                ClauseEvaluation {
+                    map: fragment,
+                    values,
+                },
+                stats,
+            );
+        }
+        self.materialized.push(overlapping_clause, stats);
+    }
+
+    fn count(&self) -> usize {
+        if self.materialized.has_result {
+            self.materialized.count()
+        } else {
+            self.fragment_count
+        }
+    }
+
+    fn final_output_materialized(&self) -> bool {
+        self.materialized.has_result
     }
 }
 
@@ -367,8 +456,8 @@ mod tests {
         );
     }
 
-    fn assert_stats(actual: DnfPathSetStats, expected: [usize; 19]) {
-        let [clauses, clauses_evaluated, short_circuit_skipped_clauses, factors, factors_evaluated, short_circuit_skipped_factors, singleton_clauses, multi_factor_clauses, meet_ops, join_ops, distinct_factor_refs, repeated_factor_refs, factor_input_values, clause_output_values, duplicate_clause_values, empty_clause_results, non_empty_clause_results, peak_clause_values, peak_result_values] =
+    fn assert_stats(actual: DnfPathSetStats, expected: [usize; 21]) {
+        let [clauses, clauses_evaluated, short_circuit_skipped_clauses, factors, factors_evaluated, short_circuit_skipped_factors, singleton_clauses, multi_factor_clauses, meet_ops, join_ops, distinct_factor_refs, repeated_factor_refs, factor_input_values, clause_output_values, duplicate_clause_values, empty_clause_results, non_empty_clause_results, count_disjoint_clause_additions, count_overlap_check_ops, peak_clause_values, peak_result_values] =
             expected;
 
         assert_eq!(
@@ -391,6 +480,8 @@ mod tests {
                 duplicate_clause_values,
                 empty_clause_results,
                 non_empty_clause_results,
+                count_disjoint_clause_additions,
+                count_overlap_check_ops,
                 peak_clause_values,
                 peak_result_values,
             }
@@ -597,7 +688,26 @@ mod tests {
         assert!(!result.final_output_materialized);
         assert_stats(
             result.stats,
-            [2, 2, 0, 4, 3, 1, 1, 1, 1, 0, 2, 1, 4, 2, 0, 1, 1, 2, 2],
+            [
+                2, 2, 0, 4, 3, 1, 1, 1, 1, 0, 2, 1, 4, 2, 0, 1, 1, 0, 0, 2, 2,
+            ],
+        );
+    }
+
+    #[test]
+    fn dnf_count_adds_disjoint_non_empty_clauses_without_final_union() {
+        let trie1 = map(SMALL_TRIE_1);
+        let trie2 = map(SMALL_TRIE_2);
+
+        let result = evaluate_pathmap_dnf_count(&[&[&trie1], &[&trie2]]).unwrap();
+
+        assert_eq!(result.count, trie1.join(&trie2).val_count());
+        assert!(!result.final_output_materialized);
+        assert_stats(
+            result.stats,
+            [
+                2, 2, 0, 2, 2, 0, 2, 0, 0, 0, 2, 0, 6, 6, 0, 0, 2, 1, 1, 4, 6,
+            ],
         );
     }
 
@@ -612,7 +722,9 @@ mod tests {
         assert!(result.final_output_materialized);
         assert_stats(
             result.stats,
-            [2, 2, 0, 2, 2, 0, 2, 0, 0, 1, 2, 0, 5, 5, 2, 0, 2, 3, 3],
+            [
+                2, 2, 0, 2, 2, 0, 2, 0, 0, 1, 2, 0, 5, 5, 2, 0, 2, 0, 1, 3, 3,
+            ],
         );
     }
 }

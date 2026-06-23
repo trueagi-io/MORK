@@ -1,7 +1,7 @@
 use crate::space::Space;
 use crate::term_identity::{TermId, TermIdentitySidecar};
 
-fn encoded_expr(space: &mut Space, expr: &'static str) -> Vec<u8> {
+pub(crate) fn encoded_expr(space: &mut Space, expr: &'static str) -> Vec<u8> {
     let expr = crate::expr!(space, expr);
     unsafe { expr.span().as_ref().unwrap() }.to_vec()
 }

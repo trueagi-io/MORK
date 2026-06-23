@@ -3,10 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::arrangements::{
     ArrangementDescriptor, ArrangementError, ArrangementIndex, ArrangementProjection,
 };
+use crate::binding_env::MAX_BINDING_SLOTS;
 use crate::binding_space::{
     generic_join, trie_join, BindingRelation, BindingRelationError, BindingVar, TrieJoinStats,
 };
-use crate::term_identity::TermIdentitySidecar;
+use crate::expression_trie::{ExpressionTrieError, ExpressionTrieIndex};
+use crate::term_identity::{TermId, TermIdentitySidecar};
 
 /// Physical BindingSpace access selected by a compiled sidecar plan.
 ///
@@ -20,6 +22,46 @@ pub enum BindingAccessPlan {
         descriptor: ArrangementDescriptor,
         projection: ArrangementProjection,
     },
+    /// Use the typed expression trie to retrieve candidate facts for one
+    /// pattern, exact-filter them, then project user-visible slots into a
+    /// BindingSpace relation.
+    Pattern {
+        pattern: TermId,
+        projection: PatternProjection,
+    },
+}
+
+/// Projection from a matched pattern row into a BindingSpace relation schema.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatternProjection {
+    /// Output BindingSpace schema.
+    pub schema: Box<[BindingVar]>,
+    /// User-visible pattern slots for each schema variable.
+    pub user_slots: Box<[u8]>,
+}
+
+impl PatternProjection {
+    /// Creates a projection after validating arity and six-bit slot bounds.
+    pub fn new(
+        schema: impl Into<Box<[BindingVar]>>,
+        user_slots: impl Into<Box<[u8]>>,
+    ) -> Result<Self, BindingSidecarPlanError> {
+        let schema = schema.into();
+        let user_slots = user_slots.into();
+        if schema.len() != user_slots.len() {
+            return Err(BindingSidecarPlanError::PatternProjectionArityMismatch {
+                schema_len: schema.len(),
+                slots_len: user_slots.len(),
+            });
+        }
+        for &slot in user_slots.iter() {
+            if usize::from(slot) >= MAX_BINDING_SLOTS {
+                return Err(BindingSidecarPlanError::InvalidPatternSlot { slot });
+            }
+        }
+
+        Ok(Self { schema, user_slots })
+    }
 }
 
 /// Sidecar join plan over derived BindingSpace relations.
@@ -85,6 +127,14 @@ pub struct BindingSidecarStats {
     pub facts_scanned: usize,
     /// Rows retained by constructed arrangements.
     pub arrangement_rows: usize,
+    /// Complete facts indexed into expression tries.
+    pub expression_trie_facts_indexed: usize,
+    /// Candidate facts returned by expression-trie prefix retrieval.
+    pub expression_trie_candidates: usize,
+    /// Application atoms checked by exact relationalized pattern filters.
+    pub pattern_app_atoms_checked: usize,
+    /// Exact pattern matches before BindingSpace projection.
+    pub pattern_matches: usize,
     /// Positive BindingSpace rows produced by factor projections.
     pub projected_rows: usize,
     /// Positive rows emitted by the final join.
@@ -96,8 +146,16 @@ pub struct BindingSidecarStats {
 pub enum BindingSidecarPlanError {
     /// A physical arrangement could not be built or projected.
     Arrangement(ArrangementError),
+    /// Expression-trie candidate retrieval or exact filtering failed.
+    ExpressionTrie(ExpressionTrieError),
     /// A BindingSpace relation operation failed.
     Binding(BindingRelationError),
+    /// Pattern projection schema and user-slot list have different lengths.
+    PatternProjectionArityMismatch { schema_len: usize, slots_len: usize },
+    /// Pattern projection requested a slot outside MORK's six-bit domain.
+    InvalidPatternSlot { slot: u8 },
+    /// Exact pattern matching did not bind a projected user slot.
+    MissingPatternBinding { slot: u8 },
 }
 
 impl BindingSidecarPlan {
@@ -204,6 +262,40 @@ impl BindingAccessPlan {
                 arrangement
                     .project_bindings(sidecar, projection)
                     .map_err(BindingSidecarPlanError::Arrangement)
+            }
+            BindingAccessPlan::Pattern {
+                pattern,
+                projection,
+            } => {
+                let index = ExpressionTrieIndex::build(sidecar)
+                    .map_err(BindingSidecarPlanError::ExpressionTrie)?;
+                stats.expression_trie_facts_indexed += index.stats().facts_indexed;
+                let matches = index
+                    .match_pattern(sidecar, *pattern)
+                    .map_err(BindingSidecarPlanError::ExpressionTrie)?;
+                stats.expression_trie_candidates += matches.candidates.facts.len();
+                stats.pattern_app_atoms_checked += matches.exact.stats.app_atoms_checked;
+                stats.pattern_matches += matches.exact.stats.matches;
+
+                let mut relation = BindingRelation::new(projection.schema.clone());
+                for row in matches.exact.rows {
+                    let binding_row = projection
+                        .user_slots
+                        .iter()
+                        .map(|&slot| {
+                            row.user_bindings
+                                .iter()
+                                .find_map(|&(binding_slot, term)| {
+                                    (binding_slot == slot).then_some(term)
+                                })
+                                .ok_or(BindingSidecarPlanError::MissingPatternBinding { slot })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    relation
+                        .add(binding_row, 1)
+                        .map_err(BindingSidecarPlanError::Binding)?;
+                }
+                Ok(relation)
             }
         }
     }
@@ -340,7 +432,10 @@ fn variable_connects_to_bound(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_sidecar_queries::{transitive_edge_product_count, transitive_edge_sidecar};
+    use crate::space::Space;
+    use crate::test_sidecar_queries::{
+        encoded_expr, transitive_edge_product_count, transitive_edge_sidecar,
+    };
 
     fn transitive_edge_plan(
         edge: crate::term_identity::TermId,
@@ -379,6 +474,7 @@ mod tests {
                 arrangement_rows: 12,
                 projected_rows: 12,
                 output_rows: 4,
+                ..BindingSidecarStats::default()
             }
         );
     }
@@ -442,5 +538,121 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn expression_trie_pattern_factor_projects_repeated_variable_bindings() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice (f Alice))
+(edge Alice (f Bob))
+(edge Bob (f Bob))
+(edge Carol (g Carol))
+(edge Dave (f Eve))
+(node Alice)
+(tag Bob)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        let pattern = sidecar
+            .insert_term(&encoded_expr(&mut space, "[3] edge $ [2] f _1"))
+            .unwrap();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let plan = BindingSidecarPlan::new(
+            [BindingAccessPlan::Pattern {
+                pattern,
+                projection: PatternProjection::new([BindingVar(0)], [0]).unwrap(),
+            }],
+            [BindingVar(0)],
+        );
+
+        let result = plan.execute_trie_join(&sidecar).unwrap();
+        let product_pattern = crate::expr!(space, "[2] , [3] edge $ [2] f _1");
+        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+        let alice = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "Alice"))
+            .unwrap();
+        let bob = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "Bob"))
+            .unwrap();
+        let projected = result
+            .relation
+            .positive_rows()
+            .map(|row| row[0])
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(product_count, 2);
+        assert_eq!(result.relation.positive_rows().count(), product_count);
+        assert_eq!(projected, BTreeSet::from([alice, bob]));
+        assert_eq!(result.stats.factors, 1);
+        assert_eq!(result.stats.expression_trie_facts_indexed, 7);
+        assert_eq!(result.stats.expression_trie_candidates, 5);
+        assert_eq!(result.stats.pattern_matches, 2);
+        assert_eq!(result.stats.projected_rows, 2);
+        assert_eq!(result.trie_stats.output_rows, 2);
+    }
+
+    #[test]
+    fn expression_trie_pattern_factor_joins_with_arrangement_factor() {
+        let mut space = Space::new();
+        space
+            .add_all_sexpr(
+                br#"
+(edge Alice (f Alice))
+(edge Bob (f Bob))
+(edge Carol (f Carol))
+(edge Dave (f Eve))
+(color Alice red)
+(color Bob blue)
+(color Carol red)
+(color Eve red)
+"#,
+            )
+            .unwrap();
+
+        let mut sidecar = TermIdentitySidecar::new();
+        let pattern = sidecar
+            .insert_term(&encoded_expr(&mut space, "[3] edge $ [2] f _1"))
+            .unwrap();
+        sidecar.extend_from_pathmap(&space.btm).unwrap();
+        let color = sidecar
+            .term_id_for_encoded(&encoded_expr(&mut space, "color"))
+            .unwrap();
+        let descriptor = ArrangementDescriptor::new(color, 2, [0, 1]).unwrap();
+        let plan = BindingSidecarPlan::new(
+            [
+                BindingAccessPlan::Pattern {
+                    pattern,
+                    projection: PatternProjection::new([BindingVar(0)], [0]).unwrap(),
+                },
+                BindingAccessPlan::Arrangement {
+                    descriptor,
+                    projection: ArrangementProjection::new(
+                        2,
+                        [BindingVar(0), BindingVar(1)],
+                        [0, 1],
+                    )
+                    .unwrap(),
+                },
+            ],
+            [BindingVar(0), BindingVar(1)],
+        );
+
+        let generic = plan.execute(&sidecar).unwrap();
+        let trie = plan.execute_trie_join(&sidecar).unwrap();
+        let product_pattern = crate::expr!(space, "[3] , [3] edge $ [2] f _1 [3] color _1 $");
+        let product_count = Space::query_multi(&space.btm, product_pattern, |_, _| true);
+
+        assert_eq!(product_count, 3);
+        assert_eq!(trie.relation, generic.relation);
+        assert_eq!(trie.relation.positive_rows().count(), product_count);
+        assert_eq!(trie.stats.expression_trie_candidates, 4);
+        assert_eq!(trie.stats.pattern_matches, 3);
+        assert_eq!(trie.stats.arrangement_rows, 4);
+        assert_eq!(trie.trie_stats.output_rows, product_count);
     }
 }

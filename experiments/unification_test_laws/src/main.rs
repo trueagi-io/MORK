@@ -125,22 +125,22 @@ fn main() {
         ]);
         
         let diff_proc = |dir| std::process::Command::new("diff").args([&mork, &results_dir(dir)]).output();
-        if let Ok(proc) = diff_proc("whole_set")
+        if let Ok(proc) = diff_proc("whole_set") && run_in_mork_space_config.whole_set
         {
             let diff =  core::str::from_utf8(&proc.stdout).unwrap();
             println!("\nMORK-MORK_SPACE_WHOLE_SET\nBEGIN DIFF\n{}END DIFF", diff);
         }
-        if let Ok(proc) = diff_proc("iterate_left")
+        if let Ok(proc) = diff_proc("iterate_left") && run_in_mork_space_config.iterate_left
         {
             let diff =  core::str::from_utf8(&proc.stdout).unwrap();
             println!("\nMORK-MORK_SPACE_ITERATE_LEFT\nBEGIN DIFF\n{}END DIFF", diff);
         }
-        if let Ok(proc) = diff_proc("iterate_right")
+        if let Ok(proc) = diff_proc("iterate_right") && run_in_mork_space_config.iterate_right
         {
             let diff =  core::str::from_utf8(&proc.stdout).unwrap();
             println!("\nMORK-MORK_SPACE_ITERATE_RIGHT\nBEGIN DIFF\n{}END DIFF", diff);
         }
-        if let Ok(proc) = diff_proc("iterate_left_right")
+        if let Ok(proc) = diff_proc("iterate_left_right") && run_in_mork_space_config.iterate_left_right
         {
             let diff =  core::str::from_utf8(&proc.stdout).unwrap();
             println!("\nMORK-MORK_SPACE_ITERATE_LEFT_RIGHT\nBEGIN DIFF\n{}END DIFF", diff);

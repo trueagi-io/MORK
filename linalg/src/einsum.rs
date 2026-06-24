@@ -242,6 +242,53 @@ pub struct Program {
     sparse_value_source: Vec<Option<usize>>,
 }
 
+/// Infer output shapes for an explicit einsum spec from input shapes.
+///
+/// This follows the same explicit `lhs->rhs` contract used by [`einsum`]:
+/// every input subscript labels one input axis, repeated labels must have the
+/// same dimension, and each output subscript must be bound by an input.
+pub fn infer_output_shapes(
+    spec_str: &str,
+    input_shapes: &[&[usize]],
+) -> Result<Vec<Vec<usize>>, InvalidSpec> {
+    let spec = parse_spec(spec_str, input_shapes.len())?;
+    let mut dims = [0usize; 26];
+    let mut dim_set = [false; 26];
+
+    for (pi, inp_spec) in spec.inputs.iter().enumerate() {
+        let shape = input_shapes[pi];
+        if shape.len() != inp_spec.len() {
+            return Err(InvalidSpec::InputNdimMismatch {
+                input: pi,
+                array_ndim: shape.len(),
+                spec_ndim: inp_spec.len(),
+            });
+        }
+        for (pos, &s) in inp_spec.iter().enumerate() {
+            let si = s as usize;
+            let d = shape[pos];
+            if dim_set[si] {
+                if dims[si] != d {
+                    return Err(InvalidSpec::DimensionMismatch {
+                        index: slot_to_char(s),
+                        expected: dims[si],
+                        got: d,
+                    });
+                }
+            } else {
+                dims[si] = d;
+                dim_set[si] = true;
+            }
+        }
+    }
+
+    Ok(spec
+        .outputs
+        .iter()
+        .map(|out| out.iter().map(|&s| dims[s as usize]).collect())
+        .collect())
+}
+
 /// Compile an einsum spec into a [`Program`] for the given input shapes.
 ///
 /// Only the dimensionality and sparsity of each input matters here — the
@@ -926,6 +973,25 @@ impl fmt::Display for Program {
 mod tests {
     use super::*;
     use crate::dense::Dense;
+
+    #[test]
+    fn infer_output_shapes_from_explicit_spec() {
+        let shapes = infer_output_shapes("ab,bc->ac", &[&[2, 3], &[3, 4]]).unwrap();
+        assert_eq!(shapes, vec![vec![2, 4]]);
+    }
+
+    #[test]
+    fn infer_output_shapes_reports_dimension_mismatch() {
+        let err = infer_output_shapes("ab,bc->ac", &[&[2, 3], &[4, 4]]).unwrap_err();
+        assert_eq!(
+            err,
+            InvalidSpec::DimensionMismatch {
+                index: 'b',
+                expected: 3,
+                got: 4
+            }
+        );
+    }
 
     #[test]
     fn matmul_dense_dense() {

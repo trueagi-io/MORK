@@ -5,6 +5,7 @@
 #![feature(more_float_constants)]
 
 pub mod space;
+pub mod shard_zipper;
 mod sources;
 mod sinks;
 mod pure;

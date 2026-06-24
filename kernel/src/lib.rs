@@ -15,6 +15,7 @@ mod pure;
 
 pub use sinks::WriteResourceRequest;
 pub use sources::ResourceRequest;
+pub mod egraph;
 pub mod term_identity;
 
 #[doc(hidden)]

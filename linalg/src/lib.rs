@@ -51,6 +51,9 @@ pub mod tensor;
 #[cfg(feature = "dense")]
 pub mod dense;
 
+#[cfg(feature = "blas")]
+pub mod blas_backend;
+
 #[cfg(feature = "csr")]
 pub mod csr;
 

@@ -26,7 +26,7 @@
 
 use std::time::Instant;
 
-use linalg::blocked::{attention, Blocked16, Blocked8};
+use linalg::blocked::{Blocked8, Blocked16, attention};
 use linalg::csr::Csr;
 use linalg::tensor::NDIndex;
 
@@ -79,11 +79,19 @@ fn time_us<F: FnMut()>(mut f: F) -> f64 {
 }
 
 fn fmt_us(t: f64) -> String {
-    if t.is_nan() { String::new() } else { format!("{t:.0}") }
+    if t.is_nan() {
+        String::new()
+    } else {
+        format!("{t:.0}")
+    }
 }
 
 fn fmt_ratio(t: f64) -> String {
-    if t.is_nan() { String::new() } else { format!("{t:.3}") }
+    if t.is_nan() {
+        String::new()
+    } else {
+        format!("{t:.3}")
+    }
 }
 
 /// Log-log interpolate the density where the sparse/BLAS time ratio
@@ -143,7 +151,10 @@ fn validate_matmul(r: &Csr<u32, f32>, c: &[f32], n: usize) {
             max_rel = max_rel.max((v - d).abs() / denom);
         }
     }
-    assert!(max_rel < 1e-3, "SpGEMM vs sgemm mismatch: max_rel = {max_rel}");
+    assert!(
+        max_rel < 1e-3,
+        "SpGEMM vs sgemm mismatch: max_rel = {max_rel}"
+    );
 }
 
 #[cfg(feature = "rayon")]
@@ -162,7 +173,11 @@ fn section_matmul(large: bool) {
     println!("\n=== 1. SpGEMM (Csr<u32,f32>) vs BLAS sgemm — density sweep ===");
     println!("n,density,nnz,csr_us,csr_par_us,blas_us,seq_ratio,par_ratio");
 
-    let ns: &[usize] = if large { &[256, 512, 1024, 2048, 4096] } else { &[256, 512, 1024] };
+    let ns: &[usize] = if large {
+        &[256, 512, 1024, 2048, 4096]
+    } else {
+        &[256, 512, 1024]
+    };
 
     for &n in ns {
         let mut seq_pts: Vec<(f64, f64)> = Vec::new();
@@ -323,7 +338,10 @@ fn validate_attention(batch: usize, seq: usize, heads: usize, dim: usize) {
             }
         }
     }
-    assert!(max_rel < 1e-3, "blocked vs BLAS attention mismatch: max_rel = {max_rel}");
+    assert!(
+        max_rel < 1e-3,
+        "blocked vs BLAS attention mismatch: max_rel = {max_rel}"
+    );
 }
 
 fn section_attention(large: bool) {

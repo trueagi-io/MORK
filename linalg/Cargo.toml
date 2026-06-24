@@ -19,7 +19,7 @@ jit = [
     "dep:cranelift-native",
 ]
 # BLAS baseline for the crossover bench (links the system OpenBLAS).
-blas = ["dep:blas", "dep:blas-src", "dep:openblas-src"]
+blas = ["dense", "dep:blas", "dep:blas-src", "dep:openblas-src"]
 
 [dependencies]
 rayon = { version = "1", optional = true }

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use mork_expr::{maybe_byte_item, Tag};
-use pathmap::PathMap;
+use mork_expr::{Tag, maybe_byte_item};
 
 /// Canonical identity for an encoded MORK term or subterm.
 #[repr(transparent)]
@@ -154,11 +153,24 @@ pub enum TermParseErrorKind {
 pub struct TermIdentitySidecar {
     terms: Vec<TermRecord>,
     facts: Vec<FactRecord>,
+    /// Liveness weight per fact, parallel to `facts` and indexed by `FactId`. A
+    /// fact is present iff its weight is positive. Removal tombstones (sets the
+    /// weight to 0) instead of compacting, so postings keyed on `FactId` stay
+    /// valid; this is the Lucene "live documents" deletion model. Re-insertion
+    /// revives the fact.
+    fact_weight: Vec<i64>,
     hash_buckets: HashMap<u128, Vec<TermId>>,
     fact_by_term: HashMap<TermId, FactId>,
     encoded_bytes: usize,
     max_depth: u16,
     generation: u32,
+    /// Facts grouped by relation head (the root term's first child). Lets a
+    /// consumer (`EGraph::from_equalities`, `RelationAdjacency::from_sidecar`)
+    /// scan one relation's facts instead of the whole sidecar. Entries are never
+    /// removed (a tombstoned or rolled-back `FactId` stays), because consumers
+    /// already filter by liveness and by head, so stale entries are skipped, not
+    /// wrong.
+    facts_by_relation: HashMap<TermId, Vec<FactId>>,
 }
 
 impl TermIdentitySidecar {
@@ -167,30 +179,27 @@ impl TermIdentitySidecar {
         Self::default()
     }
 
+    /// Interns one complete encoded term and all of its subterms without adding
+    /// a complete fact record.
+    pub fn insert_term(&mut self, encoded: &[u8]) -> Result<TermId, TermParseError> {
+        let (parsed, _) = self.intern_complete(encoded)?;
+        Ok(parsed.id)
+    }
+
     /// Interns one complete encoded fact and all of its subterms.
     ///
     /// Re-inserting the same complete fact returns the existing [`FactId`].
     pub fn insert_fact(&mut self, encoded: &[u8]) -> Result<FactId, TermParseError> {
-        let mark = self.mark();
-        let parsed = match self.intern_at(encoded, 0) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                self.rollback_to(mark);
-                return Err(error);
-            }
-        };
-        if parsed.end != encoded.len() {
-            self.rollback_to(mark);
-            return Err(TermParseError {
-                offset: parsed.end,
-                kind: TermParseErrorKind::TrailingBytes {
-                    parsed_len: parsed.end,
-                    total_len: encoded.len(),
-                },
-            });
-        }
+        let (parsed, mark) = self.intern_complete(encoded)?;
 
         if let Some(&fact) = self.fact_by_term.get(&parsed.id) {
+            // Revive a tombstoned fact on re-insert. Set semantics: presence is
+            // binary, so clamp the weight at 1 rather than counting derivations.
+            let weight = &mut self.fact_weight[fact.0 as usize];
+            if *weight <= 0 {
+                *weight = 1;
+                self.generation = self.generation.saturating_add(1);
+            }
             return Ok(fact);
         }
 
@@ -207,6 +216,7 @@ impl TermIdentitySidecar {
         self.generation = self.generation.saturating_add(1);
 
         let root = self.term(parsed.id);
+        let relation_head = root.children().first().copied();
         let fact = FactRecord {
             id: FactId(fact_index),
             root: parsed.id,
@@ -216,22 +226,58 @@ impl TermIdentitySidecar {
         };
 
         self.facts.push(fact);
+        self.fact_weight.push(1);
         self.fact_by_term.insert(parsed.id, fact.id);
+        if let Some(head) = relation_head {
+            self.facts_by_relation
+                .entry(head)
+                .or_default()
+                .push(fact.id);
+        }
         Ok(fact.id)
     }
 
-    /// Interns every value path from a `PathMap<()>` snapshot.
-    pub fn extend_from_pathmap(&mut self, map: &PathMap<()>) -> Result<usize, TermParseError> {
-        let mut inserted = 0usize;
+    /// Removes a fact, tombstoning it if it is present and live. Returns `true`
+    /// when the fact was live and is now removed, `false` when it was absent or
+    /// already dead. The `FactRecord` and `FactId` are retained (weight set to 0)
+    /// so arrangement and trie postings keyed on `FactId` stay valid; a later
+    /// `insert_fact` of the same fact revives the same `FactId`. This is the
+    /// Lucene "live documents" deletion model (flip a liveness bit, leave the
+    /// immutable postings, reclaim space only on an optional later compaction)
+    /// and the counting algorithm for multiset view maintenance (Gupta, Mumick,
+    /// Subrahmanian, "Maintaining Views Incrementally", SIGMOD 1993).
+    pub fn remove_fact(&mut self, encoded: &[u8]) -> bool {
+        let Some(term) = self.term_id_for_encoded(encoded) else {
+            return false;
+        };
+        let Some(&fact) = self.fact_by_term.get(&term) else {
+            return false;
+        };
+        let weight = &mut self.fact_weight[fact.0 as usize];
+        if *weight <= 0 {
+            return false;
+        }
+        *weight = 0;
+        self.generation = self.generation.saturating_add(1);
+        true
+    }
 
-        map.try_for_each_value(|path, _| {
-            let before = self.facts.len();
-            self.insert_fact(path)?;
-            inserted += usize::from(self.facts.len() != before);
-            Ok(())
-        })?;
+    /// Whether a fact is currently live (present in the snapshot). A tombstoned
+    /// fact is retained for `FactId` stability but is not live; consumers that
+    /// scan `facts()` must skip dead facts via this check.
+    pub fn is_fact_live(&self, fact: FactId) -> bool {
+        self.fact_weight
+            .get(fact.0 as usize)
+            .is_some_and(|&weight| weight > 0)
+    }
 
-        Ok(inserted)
+    /// Count of live facts. Tombstoned facts still occupy a `FactId` slot but are
+    /// not counted.
+    pub fn live_fact_count(&self) -> usize {
+        self.fact_weight
+            .iter()
+            .filter(|&&weight| weight > 0)
+            .count()
     }
 
     /// Returns a term record by identity.
@@ -242,6 +288,20 @@ impl TermIdentitySidecar {
     /// Returns a fact record by identity.
     pub fn get_fact(&self, id: FactId) -> Option<&FactRecord> {
         self.facts.get(id.0 as usize)
+    }
+
+    /// Returns complete fact records in insertion order.
+    pub fn facts(&self) -> &[FactRecord] {
+        &self.facts
+    }
+
+    /// Fact ids under a relation head (the root term's first child): the bounded
+    /// scan set for arrangement build. Empty for an unknown relation. May contain
+    /// tombstoned or stale ids, which the caller filters by liveness and head.
+    pub fn facts_for_relation(&self, relation: TermId) -> &[FactId] {
+        self.facts_by_relation
+            .get(&relation)
+            .map_or(&[][..], |facts| facts.as_slice())
     }
 
     /// Returns the existing identity for `encoded` if it has already been interned.
@@ -288,6 +348,33 @@ impl TermIdentitySidecar {
             .expect("TermId should refer to an interned record")
     }
 
+    fn intern_complete(
+        &mut self,
+        encoded: &[u8],
+    ) -> Result<(ParsedTerm, SidecarMark), TermParseError> {
+        let mark = self.mark();
+        let parsed = match self.intern_at(encoded, 0) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.rollback_to(mark);
+                return Err(error);
+            }
+        };
+
+        if parsed.end != encoded.len() {
+            self.rollback_to(mark);
+            return Err(TermParseError {
+                offset: parsed.end,
+                kind: TermParseErrorKind::TrailingBytes {
+                    parsed_len: parsed.end,
+                    total_len: encoded.len(),
+                },
+            });
+        }
+
+        Ok((parsed, mark))
+    }
+
     fn mark(&self) -> SidecarMark {
         SidecarMark {
             terms: self.terms.len(),
@@ -322,6 +409,7 @@ impl TermIdentitySidecar {
             };
             self.fact_by_term.remove(&fact.root);
         }
+        self.fact_weight.truncate(self.facts.len());
 
         self.encoded_bytes = mark.encoded_bytes;
         self.max_depth = mark.max_depth;
@@ -498,7 +586,7 @@ pub fn structural_hash(encoded: &[u8]) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mork_expr::{item_byte, Tag};
+    use mork_expr::{Tag, item_byte};
 
     fn sym(bytes: &[u8]) -> Vec<u8> {
         let mut out = vec![item_byte(Tag::SymbolSize(bytes.len() as u8))];
@@ -557,6 +645,23 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(sidecar.stats().facts, 1);
         assert_eq!(sidecar.stats().terms, 3);
+    }
+
+    #[test]
+    fn insert_term_does_not_create_fact_record() {
+        let mut encoded = vec![item_byte(Tag::Arity(2))];
+        encoded.extend(sym(b"pattern"));
+        encoded.push(item_byte(Tag::NewVar));
+
+        let mut sidecar = TermIdentitySidecar::new();
+        let root = sidecar.insert_term(&encoded).unwrap();
+
+        assert_eq!(
+            sidecar.get_term(root).unwrap().kind,
+            TermKind::Application { arity: 2 }
+        );
+        assert_eq!(sidecar.stats().facts, 0);
+        assert!(sidecar.facts().is_empty());
     }
 
     #[test]

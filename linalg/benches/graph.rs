@@ -77,9 +77,12 @@ fn lattice_csr(s: usize, target_epn: f64, torus: bool, seed: u64) -> M {
                             nz.rem_euclid(s as i32),
                         )
                     } else {
-                        if nx < 0 || nx >= s as i32
-                            || ny < 0 || ny >= s as i32
-                            || nz < 0 || nz >= s as i32
+                        if nx < 0
+                            || nx >= s as i32
+                            || ny < 0
+                            || ny >= s as i32
+                            || nz < 0
+                            || nz >= s as i32
                         {
                             continue;
                         }
@@ -259,7 +262,11 @@ fn section_repeated_exponentiation(large: bool) {
         }
         let t_par = t0.elapsed().as_micros() / ITERS as u128;
 
-        let speedup = if t_par > 0 { t_seq as f64 / t_par as f64 } else { f64::INFINITY };
+        let speedup = if t_par > 0 {
+            t_seq as f64 / t_par as f64
+        } else {
+            f64::INFINITY
+        };
         println!("{step},{},{t_seq},{t_par},{speedup:.2}", r_seq.nnz());
         prev = r_seq;
     }

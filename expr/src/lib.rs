@@ -568,6 +568,81 @@ impl Expr {
         }
     }
     
+    pub fn substitute_len(self, substitutions: &[Expr]) -> usize {
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0;
+        let mut len = 0usize;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    len += unsafe {
+                        substitutions[var_count]
+                            .span()
+                            .as_ref()
+                            .map_or(1, |span| span.len())
+                    };
+                    var_count += 1;
+                }
+                Tag::VarRef(r) => {
+                    len += unsafe {
+                        substitutions[r as usize]
+                            .span()
+                            .as_ref()
+                            .map_or(1, |span| span.len())
+                    };
+                }
+                Tag::SymbolSize(s) => {
+                    len += s as usize + 1;
+                }
+                Tag::Arity(_) => {
+                    len += 1;
+                }
+            }
+
+            if !ez.next() {
+                return len;
+            }
+        }
+    }
+
+    pub fn substitute_one_de_bruijn_len(self, idx: u8, substitution: Expr) -> usize {
+        let mut var: u8 = item_byte(Tag::NewVar);
+        let nvs = self.newvars();
+        let mut vars = vec![Expr { ptr: &mut var }; nvs];
+        vars[idx as usize] = substitution;
+        self.substitute_de_bruijn_len(&vars[..])
+    }
+
+    pub fn substitute_de_bruijn_len(self, substitutions: &[Expr]) -> usize {
+        self.substitute_len(substitutions)
+    }
+
+    pub fn transformDataInto(
+        self,
+        pattern: Expr,
+        template: Expr,
+        output: &mut Vec<u8>,
+    ) -> Result<(), ExtractFailure> {
+        let mut ez = ExprZipper::new(self);
+        let bindings = pattern.extract_data(&mut ez)?;
+        let len = template.substitute_len(&bindings);
+
+        output.clear();
+        output.reserve(len);
+        let mut oz = ExprZipper::new(Expr {
+            ptr: output.as_mut_ptr(),
+        });
+        template.substitute(&bindings, &mut oz);
+        debug_assert_eq!(oz.loc, len);
+        // SAFETY: `reserve(len)` ensured capacity for `len` bytes, and
+        // `template.substitute` initialized exactly `oz.loc` bytes through the
+        // zipper before the vector length is exposed.
+        unsafe {
+            output.set_len(oz.loc);
+        }
+        Ok(())
+    }
+
     pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut additions = vec![0u8; substitutions.len()];

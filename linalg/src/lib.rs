@@ -48,6 +48,8 @@
 
 pub mod tensor;
 
+pub mod scalar;
+
 #[cfg(feature = "dense")]
 pub mod dense;
 

@@ -48,6 +48,10 @@ name = "graph"
 harness = false
 
 [[bench]]
+name = "scalar"
+harness = false
+
+[[bench]]
 name = "crossover"
 harness = false
 required-features = ["blas"]

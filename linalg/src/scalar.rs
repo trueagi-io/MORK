@@ -2,8 +2,14 @@
 //!
 //! [`ScalarTransform`] applies a unary math function to every stored element
 //! of a tensor, in place. It is implemented for [`Dense`](crate::dense::Dense)
-//! and [`Csr`](crate::csr::Csr), both of which keep their elements in one
-//! contiguous `Vec`, so each transform reduces to a single pass over a slice.
+//! and [`Csr`](crate::csr::Csr).
+//!
+//! An implementor exposes its elements as one or more **contiguous chunks**
+//! (via [`for_each_chunk`](ScalarTransform::for_each_chunk)), not a single
+//! flat slice — so storage that is not one buffer (e.g. the block-sparse
+//! [`Blocked`](crate::blocked::Blocked), strided views, tiled/padded layouts)
+//! can participate too. A single-buffer tensor simply yields one chunk; MKL
+//! still sees the whole array.
 //!
 //! For a sparse [`Csr`](crate::csr::Csr) the transform only touches the
 //! **stored non-zeros** — structural zeros are left implicit and unchanged.
@@ -263,9 +269,10 @@ impl_math_scalar!(
 
 /// In-place element-wise math transforms for a tensor of [`MathScalar`].
 ///
-/// Implementors only provide [`values_mut`](ScalarTransform::values_mut) — the
-/// contiguous slice of stored elements — and inherit every transform. Each
-/// method rewrites that slice in place and returns `&mut Self`, so calls chain:
+/// Implementors provide one method — [`for_each_chunk`](Self::for_each_chunk),
+/// which hands the callback each contiguous run of stored elements — and
+/// inherit every transform. Each transform rewrites the elements in place and
+/// returns `&mut Self`, so calls chain:
 ///
 /// ```
 /// use linalg::dense::Dense;
@@ -277,82 +284,88 @@ impl_math_scalar!(
 /// assert_eq!(a.data, vec![1.0, 0.5, 1.0]);
 /// ```
 pub trait ScalarTransform<T: MathScalar> {
-    /// The contiguous slice of stored elements to transform.
+    /// Invoke `f` on every contiguous chunk of stored elements, in order.
     ///
-    /// For a dense tensor this is every element; for a sparse tensor it is the
-    /// stored non-zeros only (structural zeros are not materialised).
-    fn values_mut(&mut self) -> &mut [T];
+    /// A single-buffer tensor yields exactly one chunk (the whole element
+    /// slice); a multi-buffer tensor (e.g. block-sparse) yields one chunk per
+    /// stored buffer. For a sparse tensor the chunks cover the stored
+    /// non-zeros only — structural zeros are not materialised.
+    ///
+    /// Each `MathScalar` slice op is dispatched once per chunk, so the MKL
+    /// batch kernels still run on whole runs rather than element-by-element.
+    fn for_each_chunk(&mut self, f: impl FnMut(&mut [T]));
 
     /// `x ← |x|`
     #[inline]
-    fn abs(&mut self) -> &mut Self { T::abs(self.values_mut()); self }
-    /// `x ← min(x, v)` — element-wise lower-bounding cap.
+    fn abs(&mut self) -> &mut Self { self.for_each_chunk(T::abs); self }
+    /// `x ← min(x, v)` — element-wise upper-bounding cap.
     #[inline]
-    fn min(&mut self, v: T) -> &mut Self { T::min(self.values_mut(), v); self }
+    fn min(&mut self, v: T) -> &mut Self { self.for_each_chunk(|c| T::min(c, v)); self }
     /// `x ← max(x, v)` — element-wise floor (e.g. `max(0.0)` is a ReLU).
     #[inline]
-    fn max(&mut self, v: T) -> &mut Self { T::max(self.values_mut(), v); self }
+    fn max(&mut self, v: T) -> &mut Self { self.for_each_chunk(|c| T::max(c, v)); self }
     /// `x ← clamp(x, lo, hi)`
     #[inline]
-    fn clamp(&mut self, lo: T, hi: T) -> &mut Self { T::clamp(self.values_mut(), lo, hi); self }
+    fn clamp(&mut self, lo: T, hi: T) -> &mut Self { self.for_each_chunk(|c| T::clamp(c, lo, hi)); self }
 
     /// `x ← sin(x)`
     #[inline]
-    fn sin(&mut self) -> &mut Self { T::sin(self.values_mut()); self }
+    fn sin(&mut self) -> &mut Self { self.for_each_chunk(T::sin); self }
     /// `x ← cos(x)`
     #[inline]
-    fn cos(&mut self) -> &mut Self { T::cos(self.values_mut()); self }
+    fn cos(&mut self) -> &mut Self { self.for_each_chunk(T::cos); self }
     /// `x ← tan(x)`
     #[inline]
-    fn tan(&mut self) -> &mut Self { T::tan(self.values_mut()); self }
+    fn tan(&mut self) -> &mut Self { self.for_each_chunk(T::tan); self }
     /// `x ← asin(x)`
     #[inline]
-    fn asin(&mut self) -> &mut Self { T::asin(self.values_mut()); self }
+    fn asin(&mut self) -> &mut Self { self.for_each_chunk(T::asin); self }
     /// `x ← acos(x)`
     #[inline]
-    fn acos(&mut self) -> &mut Self { T::acos(self.values_mut()); self }
+    fn acos(&mut self) -> &mut Self { self.for_each_chunk(T::acos); self }
     /// `x ← atan(x)`
     #[inline]
-    fn atan(&mut self) -> &mut Self { T::atan(self.values_mut()); self }
+    fn atan(&mut self) -> &mut Self { self.for_each_chunk(T::atan); self }
     /// `x ← atan2(x, v)`
     #[inline]
-    fn atan2(&mut self, v: T) -> &mut Self { T::atan2(self.values_mut(), v); self }
+    fn atan2(&mut self, v: T) -> &mut Self { self.for_each_chunk(|c| T::atan2(c, v)); self }
 
     /// `x ← √x`
     #[inline]
-    fn sqrt(&mut self) -> &mut Self { T::sqrt(self.values_mut()); self }
+    fn sqrt(&mut self) -> &mut Self { self.for_each_chunk(T::sqrt); self }
     /// `x ← ∛x`
     #[inline]
-    fn cbrt(&mut self) -> &mut Self { T::cbrt(self.values_mut()); self }
+    fn cbrt(&mut self) -> &mut Self { self.for_each_chunk(T::cbrt); self }
     /// `x ← ln(x)`
     #[inline]
-    fn ln(&mut self) -> &mut Self { T::ln(self.values_mut()); self }
+    fn ln(&mut self) -> &mut Self { self.for_each_chunk(T::ln); self }
     /// `x ← eˣ`
     #[inline]
-    fn exp(&mut self) -> &mut Self { T::exp(self.values_mut()); self }
+    fn exp(&mut self) -> &mut Self { self.for_each_chunk(T::exp); self }
 
     /// `x ← xᵛ` (real exponent)
     #[inline]
-    fn powf(&mut self, v: T) -> &mut Self { T::powf(self.values_mut(), v); self }
+    fn powf(&mut self, v: T) -> &mut Self { self.for_each_chunk(|c| T::powf(c, v)); self }
     /// `x ← xⁿ` (integer exponent)
     #[inline]
-    fn powi(&mut self, n: i32) -> &mut Self { T::powi(self.values_mut(), n); self }
+    fn powi(&mut self, n: i32) -> &mut Self { self.for_each_chunk(|c| T::powi(c, n)); self }
 }
 
 #[cfg(feature = "dense")]
 impl<T: MathScalar> ScalarTransform<T> for crate::dense::Dense<T> {
+    /// One chunk: the whole element buffer.
     #[inline]
-    fn values_mut(&mut self) -> &mut [T] {
-        &mut self.data
+    fn for_each_chunk(&mut self, mut f: impl FnMut(&mut [T])) {
+        f(&mut self.data);
     }
 }
 
 #[cfg(feature = "csr")]
 impl<I, T: MathScalar> ScalarTransform<T> for crate::csr::Csr<I, T> {
-    /// Transforms the stored non-zeros only; structural zeros stay implicit.
+    /// One chunk: the stored non-zeros. Structural zeros stay implicit.
     #[inline]
-    fn values_mut(&mut self) -> &mut [T] {
-        &mut self.values
+    fn for_each_chunk(&mut self, mut f: impl FnMut(&mut [T])) {
+        f(&mut self.values);
     }
 }
 

@@ -25,8 +25,10 @@
 //! functions loop over [`std`] math methods. With the `intel-mkl` feature the
 //! unary transcendentals and [`powf`](ScalarTransform::powf) are dispatched to
 //! Intel MKL's Vector Math Library (VML) batch kernels (`vsSin`, `vdExp`,
-//! `vsPowx`, …), which evaluate a whole array at once. Enabling the feature
-//! requires the MKL runtime (`mkl_rt`) to be available at link time.
+//! `vsPowx`, …), which evaluate a whole array at once. The `intel-mkl-src`
+//! build dependency provisions and statically links MKL automatically (it
+//! downloads a redistributable build on first compile), so the feature needs
+//! no system MKL install or link-time configuration.
 //!
 //! # Example
 //!
@@ -45,13 +47,19 @@
 // MKL VML bindings (only when the `intel-mkl` feature is on)
 // ─────────────────────────────────────────────────────────────────────────
 
+// Pull in `intel-mkl-src`: its build script downloads and links a
+// redistributable MKL, providing the symbols declared below. The `as _`
+// import exists only to force the linkage (the crate exposes no items).
+#[cfg(feature = "intel-mkl")]
+use intel_mkl_src as _;
+
 #[cfg(feature = "intel-mkl")]
 mod mkl {
     //! Raw bindings to the subset of Intel MKL's Vector Math Library used
     //! here. Each `v?Fn(n, a, y)` computes `y[i] = fn(a[i])` for `i in 0..n`;
     //! in-place evaluation (`a == y`) is supported by VML. `v?Powx` takes a
-    //! scalar exponent. `MKL_INT` is 32-bit in the default LP64 interface.
-    #[link(name = "mkl_rt")]
+    //! scalar exponent. `MKL_INT` is 32-bit under the LP64 interface that the
+    //! `intel-mkl` feature selects (`mkl-dynamic-lp64-iomp`).
     unsafe extern "C" {
         pub fn vsAbs(n: i32, a: *const f32, y: *mut f32);
         pub fn vsSin(n: i32, a: *const f32, y: *mut f32);

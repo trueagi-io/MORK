@@ -10,8 +10,11 @@ csr = []
 blocked = []
 rayon = ["dep:rayon"]
 # Use Intel MKL's Vector Math Library for the scalar tensor transforms
-# (`linalg::scalar`). Requires the MKL runtime (`mkl_rt`) at link time.
-intel-mkl = []
+# (`linalg::scalar`). `intel-mkl-src` provisions and links MKL itself
+# (downloading a redistributable build on first compile), so no manual setup
+# is needed. Pinned to the LP64 interface so `MKL_INT` stays 32-bit, matching
+# the FFI declarations in `scalar.rs`.
+intel-mkl = ["dep:intel-mkl-src"]
 jit = [
     "dense",
     "csr",
@@ -34,6 +37,9 @@ cranelift-module = { version = "0.132", optional = true }
 cranelift-frontend = { version = "0.132", optional = true }
 cranelift-codegen = { version = "0.132", optional = true }
 cranelift-native = { version = "0.132", optional = true }
+# Static config so `intel-mkl-src` downloads and links a self-contained MKL
+# (ocipkg only auto-fetches for static link types); LP64 keeps MKL_INT 32-bit.
+intel-mkl-src = { version = "0.8", optional = true, default-features = false, features = ["mkl-static-lp64-iomp"] }
 
 [dev-dependencies]
 rand = "0.9"

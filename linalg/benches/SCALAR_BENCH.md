@@ -13,25 +13,25 @@ refresh subtracted out.
 cargo bench -p linalg --bench scalar
 
 # Intel MKL VML
-cargo bench -p linalg --bench scalar --features intel-mkl   # + the env from below
+cargo bench -p linalg --bench scalar --features intel-mkl
 ```
 
 Env overrides: `SCALAR_N` (element count), `SCALAR_ITERS` (timed iterations).
+Thread control for the MKL path: `MKL_NUM_THREADS=1` for a single-core run
+(fair vs the single-threaded std path), or leave it unset to let VML thread.
 
-### Getting MKL (no root needed)
+### Getting MKL
 
-The `mkl`/`mkl-devel` wheels ship `libmkl_rt` and its dependencies:
+Nothing to install. The `intel-mkl` feature pulls in the `intel-mkl-src` build
+dependency, which downloads a redistributable MKL and **statically links** it —
+no system package, no `MKLROOT`, no `LD_LIBRARY_PATH`. The first build with the
+feature is slower (it fetches MKL once, then caches it).
 
-```sh
-uv venv mklenv
-uv pip install --python mklenv/bin/python mkl mkl-devel
-LIB=$(pwd)/mklenv/lib
-ln -sf libmkl_rt.so.3 $LIB/libmkl_rt.so     # linker wants the unversioned name
-
-export RUSTFLAGS="-L native=$LIB"           # link time
-export LD_LIBRARY_PATH=$LIB                  # run time
-export MKL_THREADING_LAYER=SEQUENTIAL        # single-core, fair vs std; drop for threaded
-```
+> The static config matters: `intel-mkl-src` only auto-downloads for `static`
+> link types. A `dynamic` config instead expects MKL already on the system
+> (e.g. `apt-get install intel-mkl`, found via pkg-config), since the loader
+> can't see the downloaded archive without `LD_LIBRARY_PATH`. We pin
+> `mkl-static-lp64-iomp` (LP64 keeps `MKL_INT` 32-bit, matching the FFI).
 
 ## Representative results
 

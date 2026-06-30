@@ -5860,6 +5860,84 @@ fn mm2_bc_v3() {
     }
 }
 
+fn bfc(size: usize) {
+    let mut s = Space::new();
+
+    let mut map = std::collections::HashMap::new();
+    // id
+    map.insert(5, ("(target 5 (C (> p p) $x))", "(C (> p p) (1 (1 (2 (M (M I))))))\n"));
+    // pm2.43
+    map.insert(7, ("(target 7 (C (> (> p (> p s)) (> p s)) $x))", "(C (> (> p (> p s)) (> p s)) (1 (2 (M (2 (2 (M (M I))))))))\n"));
+    // jarr
+    map.insert(13, ("(target 13 (C (> (> (> p s) x) (> s x)) $x))", "(C (> (> (> p s) x) (> s x)) (1 (1 (1 (M (2 (2 (M (M (1 (M (2 (M (M I))))))))))))))\n(C (> (> (> p s) x) (> s x)) (1 (1 (M (1 (2 (1 (M (2 (M (M (2 (M (M I))))))))))))))\n"));
+    // imim1
+    map.insert(15, ("(target 15 (C (> (> p s) (> (> s x) (> p x))) $x))", "(C (> (> p s) (> (> s x) (> p x))) (1 (1 (2 (1 (M (2 (M (M (2 (M (1 (M (2 (M (M I))))))))))))))))\n"));
+    // loowoz
+    map.insert(19, ("(target 19 (C (> (> (> p s) (> p x)) (> (> s p) (> s x))) $x))", "(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (1 (M (2 (2 (M (M (1 (M (2 (M (M (2 (1 (M (2 (M (M I))))))))))))))))))))\n(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (1 (M (2 (2 (M (M (2 (1 (M (2 (M (M (1 (M (2 (M (M I))))))))))))))))))))\n(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (M (1 (2 (1 (M (2 (M (M (2 (M (M (2 (1 (M (2 (M (M I))))))))))))))))))))\n"));
+    // pm2.83
+    map.insert(25, ("(target 25 (C (> (> p (> s x)) (> (> p (> x o)) (> p (> s o)))) $x))", ""));
+    // loolin
+    map.insert(26, ("(target 26 (C (> (> (> p s) (> s p)) (> s p)) $x))", ""));
+
+    const SPACE_EXPRS: &str = r#"
+(axiom 1 (> $p (> $s $p)))
+(axiom 2 (> (> $p (> $s $x)) (> (> $p $s) (> $p $x))))
+(axiom 3 (> (> (! $p) (! $s)) (> $s $p)))
+
+(exec (2)
+    (, (target $mps (C $ta $tx)))
+    (, ;; Initialize source
+       (sol $mps 1 (C (/ $ta $ta) I))
+       ;; Expand one step forward
+       (exec (2 $mps)
+            (, ;; Capture inner self
+               (exec (2 $ski) $ptrn $tplt)
+               (dec $ski $ki)
+               (gte $ki $hi)
+               (inc $hi $shi)
+               ;; for each axiom
+               (axiom $r $constraint))
+            (, ;; Apply current proof to axiom-$r
+               (exec (3 $r)
+                    (, (sol $ski $shi (C (/ $constraint $b) $f)))
+                    (, (sol $ki $hi (C $b ($r $f)))))
+               ;; Apply mp^i to current proof
+               (exec (4 0)
+                    (, (sol $ski $hi (C (/ $b $c) $f)))
+                    (, (sol $ki $shi (C (/ (> $a $b) (/ $a $c)) (M $f)))))
+               ;; Respawn inner self
+               (exec (7 0)
+                    (, (lte 0 0))
+                    (, (exec (2 $ki) $ptrn $tplt)))))))
+
+;; Unify solution with target when maximum depth and hypotheses count
+;; falls to Z.
+(exec (3 0 0)
+      (, (target $mps (C $ta $tx))
+         (sol 0 0 (C $ta $tx)))
+      (, (final 0 0 (C $ta $tx))))
+"#;
+
+    s.add_all_sexpr(map[&size].0.as_bytes()).unwrap();
+    let mut OFF1: String = (1..=26).map(|x| format!("(dec {} {})\n(inc {} {})\n", x, x-1, x-1, x)).collect();
+    s.add_all_sexpr(OFF1.as_bytes()).unwrap();
+    let mut CMP: String = (0..=26).flat_map(|x| (0..=x).map(move |y| format!("(lte {y} {x})\n(gte {x} {y})\n"))).collect();
+    s.add_all_sexpr(CMP.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v);
+    s.dump_sexpr(expr!(s, "[4] final 0 0 $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, map[&size].1);
+}
+
 fn parse_csv() {
     let csv_input = "10,123,foo\n11,321,bar\n";
     let reconstruction = "(0 10 123 foo)\n(1 11 321 bar)\n";
@@ -6053,8 +6131,8 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states"]) }
-            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states"]) }
+            if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states", "bfc"]) }
+            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc"]) }
             if selected.remove("sinks") { selected.extend(&["taxi_lts", "odd_even_sort"]) }
 
             for b in selected {
@@ -6073,6 +6151,7 @@ fn main() {
                     "flybase" => { bench_flybase() }
                     "tile_puzzle_states" => { bench_tile_puzzle_states() }
                     "taxi_lts" => { bench_taxi_lts() }
+                    "bfc" => { bfc(19) }
                     s => { println!("bench not known: {s}") }
                 }
             }
@@ -6109,6 +6188,7 @@ fn main() {
 
             ctl();
             bc0();
+            bfc(7);
 
             source_space_two_bipolar_equal_crossed();
             source_act_two_bipolar_equal_crossed();

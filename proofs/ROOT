@@ -1,0 +1,5 @@
+session "WcoProofs" = HOL +
+  description "Soundness of the routing gate (RoutingSafe) and the zipper-native union-find unifier (ZipperUnifySafe)."
+  theories
+    RoutingSafe
+    ZipperUnifySafe

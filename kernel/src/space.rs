@@ -115,6 +115,12 @@ thread_local! {
     pub(crate) static VARREF_FAST_RECHECK: std::cell::Cell<bool> =
         const { std::cell::Cell::new(true) };
 
+    /// Reusable buffer for the fast path's copy of the bound value (the copy is needed because
+    /// descending can grow the zipper's path buffer under the span). Taken at entry and put back
+    /// before the recursion, so nested re-checks reuse the same allocation instead of paying a
+    /// malloc per re-check, which showed up on ground-heavy workloads with tiny bound values.
+    static VARREF_SCRATCH: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+
     /// Selects the fused single-word-walk in the NewVar arm of `coreferential_transition` over
     /// the original three `ByteMask::and` + iterator passes. Both produce byte-identical match
     /// results in the same visit order; the toggle only exists so the differential oracle test
@@ -283,29 +289,74 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         // data branches on a variable child, byte comparison is incomplete (its
                         // Theorem 3), so fall back to the recursive re-match for the whole
                         // subterm. The toggle drives the differential oracle test.
-                        if VARREF_FAST_RECHECK.with(|c| c.get()) && bound.is_ground() {
-                            let bytes: Vec<u8> = (&*bound.span()).to_vec();
-                            vs!(e, false);
+                        // The fast path takes over only when the start node has no variable
+                        // children, so the `vs!` it skips is a no-op there and the original
+                        // ordering (push the bound value, then `vs!`, then recurse) is preserved
+                        // byte for byte on every node that has any. Checking after `vs!` instead
+                        // ran the variable branches with the bound value missing from the stack,
+                        // which mismatched the recursive path.
+                        if VARREF_FAST_RECHECK.with(|c| c.get())
+                            && bound.is_ground()
+                            && loc.child_mask().and(&ByteMask(VARS)).iter().next().is_none()
+                        {
+                            let mut bytes = VARREF_SCRATCH.with(|c| c.take());
+                            bytes.clear();
+                            bytes.extend_from_slice(&*bound.span());
+                            // Subterm-aware descent: a data variable can only branch where a
+                            // subterm starts, so read the child mask once per subterm, never per
+                            // byte, and bulk-descend a symbol's payload (payload bytes are
+                            // opaque, and a payload byte that merely looks like a variable tag
+                            // is not one).
                             let mut k = 0usize;
+                            let mut remaining = 1usize;
                             let mut variable_branch = false;
-                            while k < bytes.len() {
-                                if loc.child_mask().and(&ByteMask(VARS)).iter().next().is_some() {
+                            let mut mismatch = false;
+                            while remaining > 0 {
+                                if k > 0
+                                    && loc.child_mask().and(&ByteMask(VARS)).iter().next().is_some()
+                                {
                                     variable_branch = true;
                                     break;
                                 }
-                                if loc.descend_to_existing_byte(bytes[k]) {
-                                    k += 1;
-                                } else {
-                                    break; // ground data, literal absent: a real mismatch
+                                let b = bytes[k];
+                                if !loc.descend_to_existing_byte(b) {
+                                    mismatch = true; // ground data, literal absent: a real mismatch
+                                    break;
+                                }
+                                k += 1;
+                                remaining -= 1;
+                                match byte_item(b) {
+                                    Tag::Arity(a) => remaining += a as usize,
+                                    Tag::SymbolSize(s) => {
+                                        // descend_to_check consumes the payload bytes whether or
+                                        // not the path exists, so k advances either way.
+                                        let ok = loc.descend_to_check(&bytes[k..k + s as usize]);
+                                        k += s as usize;
+                                        if !ok {
+                                            mismatch = true;
+                                            break;
+                                        }
+                                    }
+                                    // The bound value is ground: no variable tags inside it.
+                                    Tag::NewVar | Tag::VarRef(_) => unreachable_unchecked(),
                                 }
                             }
+                            // The buffer's last read is above; put it back before recursing so a
+                            // nested re-check reuses it.
+                            let blen = bytes.len();
+                            VARREF_SCRATCH.with(|c| c.set(bytes));
                             if variable_branch {
+                                // A variable child below the start: hand the whole subterm to the
+                                // structural re-match, whose per-level arms visit it with the
+                                // bound value on the stack. The start node has no variable
+                                // children, so the original path's `vs!` here would do nothing.
                                 loc.ascend(k);
                                 stack.push(ExprEnv{ n: 254, v: 0, offset: 0, base: bound });
                                 coreferential_transition(loc, stack, references, f);
                                 stack.pop();
                             } else {
-                                if k == bytes.len() {
+                                if !mismatch {
+                                    debug_assert_eq!(k, blen);
                                     coreferential_transition(loc, stack, references, f);
                                 }
                                 loc.ascend(k);
@@ -1968,6 +2019,15 @@ mod tests {
             "(rel a 1)\n(rel2 b $w)\n(exec 0 (, (rel $x $v) (rel2 $y $v)) (, (m $x $y)))\n",
             // nested variable in data at the coreferenced slot
             "(p k (S Z))\n(q (S $u))\n(exec 0 (, (p $a $v) (q $v)) (, (r $a)))\n",
+            // THE TILE-PUZZLE SHAPE: the re-checked position holds schematic facts whose
+            // boards are almost all data variables, coreferent across the two sides. The
+            // fast path must hand these to the structural re-match with the bound value
+            // already on the stack; running the variable branches without it produced
+            // wrong boards on `bench tile_puzzle_states`, and wrong boards breed more
+            // boards. Distilled to a two-cell puzzle, two steps deep.
+            "(move (X $a) ($a X))\n(move ($a X) (X $a))\n(st (X b))\n\
+             (exec 0 (, (st $s) (move $s $n)) (, (st2 $n)))\n\
+             (exec 1 (, (st2 $s) (move $s $n)) (, (st3 $n)))\n",
         ];
         for prog in programs {
             let mut fast = Space::new();

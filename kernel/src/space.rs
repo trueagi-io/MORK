@@ -1156,7 +1156,8 @@ impl Space {
 
     #[cfg(feature="no_search")]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw_with_unification_sources<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, search_sources: &[ExprEnv], unify_sources: &[ExprEnv], mut effect: F) -> usize {
+        let _ = search_sources;
         let mut candidate = 0;
 
         while prz.to_next_val() {
@@ -1171,9 +1172,9 @@ impl Space {
             unsafe { unifications += 1; }
             // if e.variables() != 0 {
 
-            let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+            let mut pairs = vec![(unify_sources[0], ExprEnv::new(1, e))];
 
-            for (&pa, &other_i) in sources[1..].iter().zip(prz.path_indices()) {
+            for (&pa, &other_i) in unify_sources[1..].iter().zip(prz.path_indices()) {
                 let fe = ExprEnv::new((pairs.len() + 1) as u8,
                                       Expr { ptr: unsafe { prz.origin_path().as_ptr().cast_mut().add(other_i) } });
                 pairs.push((pa, fe))
@@ -1213,8 +1214,8 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
-        let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
+    pub fn query_multi_raw_with_unification_sources<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, search_sources: &[ExprEnv], unify_sources: &[ExprEnv], mut effect: F) -> usize {
+        let mut stack = search_sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
         let mut candidate = 0;
@@ -1235,9 +1236,9 @@ impl Space {
                     unsafe { unifications += 1; }
                     // if e.variables() != 0 {
                     if true {
-                        let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+                        let mut pairs = vec![(unify_sources[0], ExprEnv::new(1, e))];
 
-                        for (&pa, &other_i) in sources[1..].iter().zip(loc.path_indices()) {
+                        for (&pa, &other_i) in unify_sources[1..].iter().zip(loc.path_indices()) {
                             let fe = ExprEnv::new((pairs.len() + 1) as u8,
                                                   Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
                             pairs.push((pa, fe))
@@ -1280,6 +1281,122 @@ impl Space {
         });
 
         candidate
+    }
+
+
+    /// The identity-sourced form: descend and unify against the same factor list.
+    /// The `_with_unification_sources` variant lets a caller descend RENORMALIZED
+    /// factors (reordered, variables renumbered) while unifying and keying the
+    /// bindings in the ORIGINAL pattern namespace.
+    #[inline(always)]
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(prz: &mut PZ, sources: &[ExprEnv], effect: F) -> usize {
+        Self::query_multi_raw_with_unification_sources(prz, sources, sources, effect)
+    }
+
+
+    fn append_renormalized_query_var(
+        out: &mut Vec<u8>,
+        var_map: &mut [u8; 64],
+        next_var: &mut u8,
+        original_var: usize,
+    ) -> Option<()> {
+        if original_var >= var_map.len() {
+            return None;
+        }
+        match var_map[original_var] {
+            u8::MAX => {
+                if (*next_var as usize) >= var_map.len() {
+                    return None;
+                }
+                var_map[original_var] = *next_var;
+                *next_var += 1;
+                out.push(item_byte(Tag::NewVar));
+            }
+            planned_var => out.push(item_byte(Tag::VarRef(planned_var))),
+        }
+        Some(())
+    }
+
+    fn append_renormalized_query_factor(
+        source: ExprEnv,
+        var_map: &mut [u8; 64],
+        next_var: &mut u8,
+        out: &mut Vec<u8>,
+    ) -> Option<()> {
+        let mut ez = ExprZipper::new(source.subsexpr());
+        let mut local_newvars = source.v;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    Self::append_renormalized_query_var(
+                        out,
+                        var_map,
+                        next_var,
+                        local_newvars as usize,
+                    )?;
+                    local_newvars = local_newvars.checked_add(1)?;
+                }
+                Tag::VarRef(original_var) => {
+                    Self::append_renormalized_query_var(
+                        out,
+                        var_map,
+                        next_var,
+                        original_var as usize,
+                    )?;
+                }
+                Tag::SymbolSize(size) => unsafe {
+                    out.extend_from_slice(
+                        slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), size as usize + 1)
+                            .as_ref()
+                            .unwrap(),
+                    );
+                },
+                Tag::Arity(arity) => out.push(item_byte(Tag::Arity(arity))),
+            }
+            if !ez.next() {
+                break;
+            }
+        }
+        Some(())
+    }
+
+    /// Re-encodes `sources` in `plan` order with variables renumbered to that order:
+    /// the first factor's variables become the leading NewVars and later factors'
+    /// shared variables become VarRefs back to them, so a reordered descent keeps
+    /// coreference intact. Returns the backing buffers plus the re-based ExprEnvs, or
+    /// None when the renumbering does not re-encode (>= 64 distinct variables).
+    fn renormalize_query_factors(
+        sources: &[ExprEnv],
+        plan: &[usize],
+    ) -> Option<(Vec<Vec<u8>>, Vec<ExprEnv>)> {
+        let mut var_map = [u8::MAX; 64];
+        let mut next_var = 0;
+        let mut buffers = Vec::with_capacity(plan.len());
+        let mut bases = Vec::with_capacity(plan.len());
+
+        for &source_idx in plan {
+            let source = sources[source_idx];
+            let capacity = unsafe { source.subsexpr().span().as_ref().unwrap().len() };
+            let mut buffer = Vec::with_capacity(capacity);
+            let base = next_var;
+            Self::append_renormalized_query_factor(source, &mut var_map, &mut next_var, &mut buffer)?;
+            buffers.push(buffer);
+            bases.push(base);
+        }
+
+        let planned_sources = buffers
+            .iter()
+            .zip(bases)
+            .map(|(buffer, v)| ExprEnv {
+                n: 0,
+                v,
+                offset: 0,
+                base: Expr {
+                    ptr: buffer.as_ptr().cast_mut(),
+                },
+            })
+            .collect();
+        Some((buffers, planned_sources))
     }
 
     pub fn prefix_subsumption(prefixes: &[&[u8]]) -> Vec<usize> {

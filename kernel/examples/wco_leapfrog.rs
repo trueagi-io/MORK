@@ -8,10 +8,17 @@
 //! cyclic assignments are rejected at emit. The router equals MORK's answers everywhere, and is
 //! worst-case-optimal on the conjunctive queries the leapfrog covers.
 //!
+//! The engine dispatches too: `metta_calculus`'s space-to-space transform routes these bodies to
+//! the join (`Space::query_multi_dispatch`), so every case below runs three ways, the stock
+//! ProductZipper path (the dispatch pinned off), the router over the module, and the wired
+//! engine, and all three must agree byte for byte.
+//!
 //!   RUSTFLAGS="-C target-cpu=native" cargo +nightly run -p mork --release --example wco_leapfrog
 
 use mork::space::Space;
-use mork::zipper_join::{unify_join_zipper_body_rows_rendered, unify_join_zipper_body_safe};
+use mork::zipper_join::{
+    set_leapfrog_dispatch, unify_join_zipper_body_rows_rendered, unify_join_zipper_body_safe,
+};
 use mork_expr::serialize;
 use pathmap::zipper::{ZipperIteration, ZipperMoving};
 use std::collections::BTreeSet;
@@ -83,11 +90,15 @@ fn ans_vars_of(patterns: &[&str]) -> Vec<String> {
     seen
 }
 
-/// MORK's ProductZipper answers to the body, the matcher `transitions` it spent, and microseconds.
-fn mork_productzipper(
+/// One full engine step on the body: the answers, the matcher `transitions` it spent, and
+/// microseconds. With `leapfrog` false the dispatch is pinned off for this run, so the step is
+/// MORK's stock ProductZipper path, the reference; with `leapfrog` true it is the wired engine,
+/// dispatching the body to the join inside `metta_calculus` itself.
+fn mork_engine(
     facts: &str,
     patterns: &[&str],
     ans: &[String],
+    leapfrog: bool,
 ) -> (BTreeSet<String>, usize, u128) {
     let mut space = Space::new();
     space.add_all_sexpr(facts.as_bytes()).unwrap();
@@ -99,9 +110,11 @@ fn mork_productzipper(
     );
     space.add_all_sexpr(exec.as_bytes()).unwrap();
     unsafe { mork::space::transitions = 0 };
+    set_leapfrog_dispatch(leapfrog);
     let t0 = std::time::Instant::now();
     space.metta_calculus(1);
     let us = t0.elapsed().as_micros();
+    set_leapfrog_dispatch(true);
     let transitions = unsafe { mork::space::transitions };
     let mut out = BTreeSet::new();
     let mut rz = space.btm.read_zipper();
@@ -147,7 +160,7 @@ fn router(
             .collect();
         return (out, "leapfrog-free", us);
     }
-    let (pz, _, us) = mork_productzipper(facts, patterns, ans);
+    let (pz, _, us) = mork_engine(facts, patterns, ans, false);
     (pz, "fallback", us)
 }
 
@@ -319,16 +332,17 @@ fn main() {
     ];
     for (name, facts, patterns) in corpus {
         let ans = ans_vars_of(patterns);
-        let (mork, _, _) = mork_productzipper(facts, patterns, &ans);
+        let (mork, _, _) = mork_engine(facts, patterns, &ans, false);
         let (rt, path, _) = router(facts, patterns, &ans);
-        let ok = mork == rt;
+        let (wired, _, _) = mork_engine(facts, patterns, &ans, true);
+        let ok = mork == rt && mork == wired;
         bad += !ok as usize;
         println!(
             "[{}] {name} (via {path})",
             if ok { "match" } else { "MISMATCH" }
         );
         if !ok {
-            println!("    MORK  : {mork:?}\n    router: {rt:?}");
+            println!("    MORK  : {mork:?}\n    router: {rt:?}\n    wired : {wired:?}");
         }
     }
 
@@ -342,13 +356,14 @@ fn main() {
         let (facts, patterns) = gen_case(&mut rng);
         let pats: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
         let ans = ans_vars_of(&pats);
-        let (mork, _, _) = mork_productzipper(&facts, &pats, &ans);
+        let (mork, _, _) = mork_engine(&facts, &pats, &ans, false);
         let (rt, path, _) = router(&facts, &pats, &ans);
-        if rt != mork {
+        let (wired, _, _) = mork_engine(&facts, &pats, &ans, true);
+        if rt != mork || wired != mork {
             bad += 1;
             if bad <= 5 {
                 println!(
-                    "MISMATCH trial {i} ({path})\n  facts={facts:?}\n  pats={patterns:?}\n  MORK={mork:?}\n  router={rt:?}"
+                    "MISMATCH trial {i} ({path})\n  facts={facts:?}\n  pats={patterns:?}\n  MORK={mork:?}\n  router={rt:?}\n  wired={wired:?}"
                 );
             }
         }
@@ -360,7 +375,7 @@ fn main() {
         nonempty += !mork.is_empty() as usize;
     }
     println!(
-        "{trials} random trials: {leapfrog} leapfrog (ground), {leapfrog_free} leapfrog (free-var), {fallback} fallback, {nonempty} non-empty, {bad} mismatches"
+        "{trials} random trials, each also through the wired engine: {leapfrog} leapfrog (ground), {leapfrog_free} leapfrog (free-var), {fallback} fallback, {nonempty} non-empty, {bad} mismatches"
     );
 
     println!(
@@ -369,27 +384,29 @@ fn main() {
     let tri = &["(e $x $y)", "(e $y $z)", "(e $x $z)"];
     let tri_ans = ans_vars_of(tri);
     println!(
-        "{:>5} {:>4} | {:>13} {:>11} | {:>11} | {:>9} {:>11}",
-        "s", "ans", "PZ transitions", "PZ us", "leapfrog us", "PZ/leapfrog", "PZ us/s^2"
+        "{:>5} {:>4} | {:>13} {:>11} | {:>11} {:>11} | {:>9} {:>11}",
+        "s", "ans", "PZ transitions", "PZ us", "leapfrog us", "wired us", "PZ/wired", "PZ us/s^2"
     );
     for &s in &[128usize, 256, 512, 1024, 2048, 4096] {
         let facts = triangle_space(s);
-        let (pz, pz_trans, pz_us) = mork_productzipper(&facts, tri, &tri_ans);
+        let (pz, pz_trans, pz_us) = mork_engine(&facts, tri, &tri_ans, false);
         let (rt, path, rt_us) = router(&facts, tri, &tri_ans);
+        let (wired, _, wired_us) = mork_engine(&facts, tri, &tri_ans, true);
         assert_eq!(pz, rt, "s={s}: router != ProductZipper");
+        assert_eq!(pz, wired, "s={s}: wired engine != ProductZipper");
         assert_eq!(
             path, "leapfrog",
             "s={s}: triangle must route to the leapfrog"
         );
         println!(
-            "{s:>5} {:>4} | {pz_trans:>13} {pz_us:>11} | {rt_us:>11} | {:>8.1}x {:>11.2}",
+            "{s:>5} {:>4} | {pz_trans:>13} {pz_us:>11} | {rt_us:>11} {wired_us:>11} | {:>8.1}x {:>11.2}",
             pz.len(),
-            pz_us as f64 / rt_us.max(1) as f64,
+            pz_us as f64 / wired_us.max(1) as f64,
             pz_us as f64 / (s * s) as f64
         );
     }
     println!(
-        "\nRouter answers == MORK everywhere; O(s) on the triangle where the ProductZipper is O(s^2)."
+        "\nRouter and wired engine == MORK everywhere; O(s) on the triangle where the ProductZipper\nis O(s^2). The wired column is the whole engine step through `metta_calculus`, dispatch on."
     );
     std::process::exit(if bad == 0 { 0 } else { 1 });
 }

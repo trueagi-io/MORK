@@ -1010,6 +1010,21 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
+    /// [`Space::query_multi`] behind the leapfrog dispatch: a nonempty relation-prefixed
+    /// conjunction routes to the worst-case-optimal join in [`crate::zipper_join`], which streams
+    /// the same matches through `effect`; any other body, or a disabled toggle
+    /// (`MORK_LEAPFROG=0`), takes the ProductZipper path below. Only the space-to-space transform
+    /// dispatches: interpreted sources and sinks and the pattern-directed dumps keep the stock
+    /// path and its enumeration order.
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        if crate::zipper_join::leapfrog_dispatch_enabled() {
+            if let Some(touched) = crate::zipper_join::query_multi_leapfrog(btm, pat_expr, &mut effect) {
+                return touched;
+            }
+        }
+        Self::query_multi(btm, pat_expr, effect)
+    }
+
     pub fn query_multi<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
@@ -1364,7 +1379,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {

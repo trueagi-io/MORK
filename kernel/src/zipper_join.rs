@@ -13,12 +13,12 @@
 //! here, then the zipper subterm cursor, then the unification leapfrog, gated against the
 //! ProductZipper.
 
-use mork_expr::{Expr, ExprEnv, ExprZipper, Tag, byte_item, item_byte, unify};
-use pathmap::PathMap;
+use mork_expr::{byte_item, item_byte, unify, Expr, ExprEnv, ExprZipper, Tag};
 use pathmap::utils::ByteMask;
 use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperValues};
+use pathmap::PathMap;
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const QUERY_NS: u8 = 0;
 const NEW_VAR_EXPR_BYTES: [u8; 1] = [item_byte(Tag::NewVar)];
@@ -196,7 +196,11 @@ impl<Z: Zipper + ZipperMoving> SubtermCursor<Z> {
 
     /// The current subterm bytes, or `None` when exhausted.
     pub fn key(&self) -> Option<&[u8]> {
-        if self.at_end { None } else { Some(&self.key) }
+        if self.at_end {
+            None
+        } else {
+            Some(&self.key)
+        }
     }
 
     pub fn at_end(&self) -> bool {
@@ -748,15 +752,17 @@ fn emit_reordered(items_by_col: &[Vec<Item>], new_order: &[usize]) -> Vec<u8> {
 }
 
 /// Re-index an inverted factor: copy its facts into a fresh PathMap with the columns permuted into
-/// `var_order` position order (variables renumbered to stay canonical). Returns that map and the new
-/// column-variable list, now non-decreasing, so the join seeks it like any compatible factor. This
-/// is the one partial materialization the cyclic case needs, and only the inverted factor pays it;
-/// re-keying into another attribute order is the standard worst-case-optimal answer to a cycle.
+/// `var_order` position order (variables renumbered to stay canonical). Returns that map, the new
+/// column-variable list, now non-decreasing, so the join seeks it like any compatible factor, and
+/// the permutation itself (`new_order[j]` = original column at re-indexed position `j`) so a leaf
+/// can reconstruct the stored fact's original bytes. This is the one partial materialization the
+/// cyclic case needs, and only the inverted factor pays it; re-keying into another attribute order
+/// is the standard worst-case-optimal answer to a cycle.
 fn build_reindex(
     map: &PathMap<()>,
     factor: &Factor,
     var_pos: &[usize],
-) -> (PathMap<()>, Vec<FactorColumn>) {
+) -> (PathMap<()>, Vec<FactorColumn>, Vec<usize>) {
     let ncols = factor.cols.len();
     let mut new_order: Vec<usize> = (0..ncols).collect();
     new_order.sort_by_key(|&c| match &factor.cols[c] {
@@ -778,7 +784,7 @@ fn build_reindex(
         let items = columns_to_items(&cols);
         reindex.insert(&emit_reordered(&items, &new_order), ());
     }
-    (reindex, new_cols)
+    (reindex, new_cols, new_order)
 }
 
 /// Worst-case-optimal leapfrog-UNIFICATION join directly on the PathMap byte-trie, returning the
@@ -828,9 +834,9 @@ fn unify_join_zipper_coordinated(
     run_unify_join(map, factors, var_order, nvars, true).coordinated
 }
 
-/// Build the join state and run it. When `want_coordinated`, also collect each answer as one
-/// variable-coordinated tuple encoding (see [`unify_join_zipper_coordinated`]).
-fn run_unify_join<'a>(
+/// Build the join state without running it. When `want_coordinated`, a run also collects each
+/// answer as one variable-coordinated tuple encoding (see [`unify_join_zipper_coordinated`]).
+fn join_state<'a>(
     map: &'a PathMap<()>,
     factors: &[Factor],
     var_order: &'a [usize],
@@ -848,10 +854,12 @@ fn run_unify_join<'a>(
     let mut owned: Vec<Factor> = Vec::with_capacity(nf);
     let mut reindexes: Vec<PathMap<()>> = Vec::new();
     let mut factor_src: Vec<Option<usize>> = Vec::with_capacity(nf);
+    let mut originals: Vec<Option<(Vec<u8>, Vec<usize>)>> = Vec::with_capacity(nf);
     for factor in factors {
         if is_inverted(factor, &var_pos) {
-            let (ri, new_cols) = build_reindex(map, factor, &var_pos);
+            let (ri, new_cols, new_order) = build_reindex(map, factor, &var_pos);
             factor_src.push(Some(reindexes.len()));
+            originals.push(Some((factor.prefix.clone(), new_order)));
             reindexes.push(ri);
             owned.push(Factor {
                 prefix: Vec::new(),
@@ -859,14 +867,16 @@ fn run_unify_join<'a>(
             });
         } else {
             factor_src.push(None);
+            originals.push(None);
             owned.push(factor.clone());
         }
     }
 
-    let mut state = UnifyJoin {
+    UnifyJoin {
         map,
         reindexes,
         factor_src,
+        originals,
         factors: owned,
         var_order,
         var_pos,
@@ -879,9 +889,36 @@ fn run_unify_join<'a>(
         out: BTreeSet::new(),
         want_coordinated,
         coordinated: BTreeSet::new(),
-    };
+        on_tuple: None,
+        stopped: false,
+    }
+}
+
+/// Build the join state and run it, collecting answer rows (and coordinated tuples when asked).
+fn run_unify_join<'a>(
+    map: &'a PathMap<()>,
+    factors: &[Factor],
+    var_order: &'a [usize],
+    nvars: usize,
+    want_coordinated: bool,
+) -> UnifyJoin<'a> {
+    let mut state = join_state(map, factors, var_order, nvars, want_coordinated);
     state.recurse(0);
     state
+}
+
+/// Run the join streaming each accepted assignment's per-factor original fact bytes to `on_tuple`
+/// instead of collecting rows; a `false` return stops the search early.
+fn run_unify_join_stream(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    on_tuple: &mut dyn FnMut(&[Vec<u8>]) -> bool,
+) {
+    let mut state = join_state(map, factors, var_order, nvars, false);
+    state.on_tuple = Some(on_tuple);
+    state.recurse(0);
 }
 
 /// Parse an encoded conjunction body `(, p1 .. pk)` into factors, threading the body's variable
@@ -1032,6 +1069,110 @@ pub fn unify_join_zipper_body_rows_rendered(
     .flatten()
 }
 
+/// The engine dispatch mode: off, the default intersecting-bodies policy, or every routable body
+/// (`MORK_LEAPFROG=all`, an experiment knob for workloads whose enumeration-shaped bodies happen
+/// to profit anyway).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DispatchMode {
+    Off,
+    Intersecting,
+    All,
+}
+
+thread_local! {
+    /// Per-thread engine dispatch mode, default the intersecting policy; `MORK_LEAPFROG=0` turns
+    /// dispatch off at thread start, `MORK_LEAPFROG=all` dispatches every routable body.
+    /// Thread-local rather than process-global so a differential can hold one run on the
+    /// ProductZipper while another thread runs dispatched, without racing parallel tests.
+    static LEAPFROG_DISPATCH: std::cell::Cell<DispatchMode> = std::cell::Cell::new(
+        match std::env::var("MORK_LEAPFROG").as_deref() {
+            Ok("0") => DispatchMode::Off,
+            Ok("all") => DispatchMode::All,
+            _ => DispatchMode::Intersecting,
+        },
+    );
+}
+
+/// Whether the space-to-space transform routes conjunctive bodies to the leapfrog join on this
+/// thread.
+pub fn leapfrog_dispatch_enabled() -> bool {
+    LEAPFROG_DISPATCH.with(|c| c.get()) != DispatchMode::Off
+}
+
+/// Turn the leapfrog dispatch on (the default intersecting-bodies policy) or off for this thread.
+/// The differentials use this to pin a reference run to the ProductZipper path.
+pub fn set_leapfrog_dispatch(on: bool) {
+    LEAPFROG_DISPATCH.with(|c| {
+        c.set(if on {
+            DispatchMode::Intersecting
+        } else {
+            DispatchMode::Off
+        })
+    })
+}
+
+/// The engine-facing dispatch entry: stream every product tuple the leapfrog accepts through the
+/// stock `query_multi` callback contract. Each accepted assignment reconstructs its per-factor
+/// stored facts, pairs them with the pattern factors exactly as `Space::query_multi_raw` does, and
+/// hands them to `mork_expr::unify`, so `effect` sees the bindings the ProductZipper path
+/// produces and the template emit downstream stays stock; occurs failures are skipped where stock
+/// skips them. Returns the successful-match count, or `None` for a body outside the nonempty
+/// relation-prefixed conjunction class (or if evaluation panicked), which the caller sends down
+/// the ProductZipper path. A `false` from `effect` stops the search, as it stops the stock scan.
+pub fn query_multi_leapfrog<F: FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(
+    map: &PathMap<()>,
+    pat_expr: Expr,
+    mut effect: F,
+) -> Option<usize> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let body = unsafe { pat_expr.span().as_ref().unwrap() };
+        let (factors, nvars) = parse_body_factors(body)?;
+        if !body_factors_routable_to_zipper_join(&factors) {
+            return None;
+        }
+        if LEAPFROG_DISPATCH.with(|c| c.get()) != DispatchMode::All
+            && !body_factors_profit_from_leapfrog(&factors, nvars)
+        {
+            return None;
+        }
+        let var_order: Vec<usize> = (0..nvars).collect();
+        let mut pat_args = Vec::new();
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+        let sources = &pat_args[1..];
+        debug_assert_eq!(sources.len(), factors.len());
+        let mut candidate = 0usize;
+        let mut on_tuple = |tuple: &[Vec<u8>]| -> bool {
+            unsafe { crate::space::unifications += 1 };
+            let e = Expr {
+                ptr: tuple[0].as_ptr().cast_mut(),
+            };
+            let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+            for (j, fact) in tuple.iter().enumerate().skip(1) {
+                pairs.push((
+                    sources[j],
+                    ExprEnv::new(
+                        (j + 1) as u8,
+                        Expr {
+                            ptr: fact.as_ptr().cast_mut(),
+                        },
+                    ),
+                ));
+            }
+            match unify(&mut pairs) {
+                Ok(bs) => {
+                    candidate += 1;
+                    effect(Err(bs), e)
+                }
+                Err(_) => true,
+            }
+        };
+        run_unify_join_stream(map, &factors, &var_order, nvars, &mut on_tuple);
+        Some(candidate)
+    }))
+    .ok()
+    .flatten()
+}
+
 /// The join owns every nonempty relation-prefixed conjunction: each column carries full
 /// `mork_expr::unify` with data-side capture, and an assignment that closes a cycle is rejected at
 /// emit, so no query or fact shape needs a decline. The check is parse-level and reads nothing
@@ -1041,11 +1182,44 @@ fn body_factors_routable_to_zipper_join(factors: &[Factor]) -> bool {
     !factors.is_empty()
 }
 
+/// The engine dispatch's performance policy, distinct from routability: dispatch only a body with
+/// a variable the leapfrog can seek on, one occurring as a whole column in two or more factors.
+/// In that class the seek prunes a product the ProductZipper walks (the triangle's 231x), and no
+/// stock workload loses. Elsewhere the join returns the same matches through its per-candidate
+/// machinery (fresh zipper descents, a bindings store), and `MORK_LEAPFROG=all`, which dispatches
+/// every routable body, measures how that goes: the counter machine's small hot
+/// enumeration-and-filter bodies run 3.4x slower (callgrind: 3.3x the instructions), a 10^6-tuple
+/// pure product runs 1.8x slower, and one body profits, the decision-tree gini step whose
+/// factors share variables inside compounds over a large `population` relation, 1.8x
+/// whole-program. Telling that body apart from the counter's statically is a cardinality
+/// question, not a shape question, so it is left to a cost-based dispatch rather than a broader
+/// static rule. The check is parse-level, and correctness never depends on it, since both paths
+/// return the same matches.
+fn body_factors_profit_from_leapfrog(factors: &[Factor], nvars: usize) -> bool {
+    let mut col_occurrences = vec![0usize; nvars];
+    for factor in factors {
+        for col in &factor.cols {
+            if let FactorColumn::Var(v) = col {
+                col_occurrences[*v] += 1;
+                if col_occurrences[*v] >= 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 struct UnifyJoin<'a> {
     map: &'a PathMap<()>,
     /// Re-indexed copies of inverted factors; `factor_src[f] = Some(i)` reads `reindexes[i]`.
     reindexes: Vec<PathMap<()>>,
     factor_src: Vec<Option<usize>>,
+    /// Per factor, `Some((original_prefix, new_order))` when re-indexed: the original relation
+    /// prefix and the column permutation `build_reindex` applied (`new_order[j]` = original column
+    /// at re-indexed position `j`), enough to reconstruct the stored fact's original bytes at a
+    /// leaf.
+    originals: Vec<Option<(Vec<u8>, Vec<usize>)>>,
     /// Owned because a re-indexed factor's prefix and columns differ from the input factor's.
     factors: Vec<Factor>,
     var_order: &'a [usize],
@@ -1065,6 +1239,12 @@ struct UnifyJoin<'a> {
     /// Answer tuples encoded through one shared intro map, so free-variable coreference across answer
     /// positions survives for the live renderer. Empty unless `want_coordinated`.
     coordinated: BTreeSet<Vec<u8>>,
+    /// When set, each accepted assignment streams its per-factor original fact bytes here instead
+    /// of collecting rows, and a `false` return stops the search. The engine dispatch uses this to
+    /// re-derive each match's bindings with `mork_expr::unify` on the stock path's terms.
+    on_tuple: Option<&'a mut dyn FnMut(&[Vec<u8>]) -> bool>,
+    /// Set when `on_tuple` asked to stop; the recursion unwinds without visiting more candidates.
+    stopped: bool,
 }
 
 impl UnifyJoin<'_> {
@@ -1073,8 +1253,26 @@ impl UnifyJoin<'_> {
     }
 
     fn recurse_after_catch_up(&mut self, i: usize) {
+        if self.stopped {
+            return;
+        }
         if i == self.var_order.len() {
             if !(0..self.factors.len()).all(|f| self.factor_has_value(f)) {
+                return;
+            }
+            if self.on_tuple.is_some() {
+                // The engine dispatch consumes tuples, not rows: reconstruct each factor's stored
+                // fact and let the caller re-derive the match's bindings with `mork_expr::unify`
+                // on the stock path's own terms, per product tuple, exactly as the ProductZipper
+                // path does. Occurs rejection then happens where stock does it, so none of the
+                // row or cycled bookkeeping below runs.
+                let tuple: Vec<Vec<u8>> = (0..self.factors.len())
+                    .map(|f| self.original_fact_bytes(f))
+                    .collect();
+                let cb = self.on_tuple.as_mut().unwrap();
+                if !cb(&tuple) {
+                    self.stopped = true;
+                }
                 return;
             }
             // Keep every component that resolved to a term, ground or schematic. A variable that is
@@ -1153,6 +1351,36 @@ impl UnifyJoin<'_> {
         let mut path = self.factors[f].prefix.clone();
         path.extend_from_slice(&self.bound[f]);
         path
+    }
+
+    /// The stored fact factor `f` sits on at a leaf, in its original encoding. A factor read from
+    /// the live map is its prefix plus the bound column bytes. A re-indexed factor's bound bytes
+    /// are its permuted, canonically renumbered columns; putting the columns back in original
+    /// order and renumbering again (first reference NewVar, later ones VarRef of the new index) is
+    /// exactly the stored encoding, because a stored fact is itself numbered canonically in column
+    /// order.
+    fn original_fact_bytes(&self, f: usize) -> Vec<u8> {
+        match &self.originals[f] {
+            None => self.factor_path(f),
+            Some((orig_prefix, new_order)) => {
+                let ncols = self.factors[f].cols.len();
+                let spans = split_columns(&self.bound[f], ncols);
+                let items = columns_to_items(&spans);
+                // `orig_positions[c]` = where original column `c` sits in the re-indexed layout,
+                // so emitting in that order restores the original column order.
+                let mut orig_positions = vec![0usize; ncols];
+                for (j, &c) in new_order.iter().enumerate() {
+                    orig_positions[c] = j;
+                }
+                let mut out = orig_prefix.clone();
+                out.extend_from_slice(&emit_reordered(&items, &orig_positions));
+                debug_assert!(
+                    self.map.read_zipper_at_path(&out).val().is_some(),
+                    "re-indexed leaf must reconstruct a fact stored in the source map"
+                );
+                out
+            }
+        }
     }
 
     fn factor_has_value(&self, f: usize) -> bool {
@@ -1379,6 +1607,9 @@ impl UnifyJoin<'_> {
     /// already bound by an earlier level, every factor seeks. The seek is what keeps a k-factor
     /// join O(answer) rather than O(relation^k); enumerating every factor made the triangle O(s^2).
     fn consume_var_parts(&mut self, parts: &[usize], pi: usize, v: usize, i: usize) {
+        if self.stopped {
+            return;
+        }
         if pi == parts.len() {
             self.recurse(i + 1);
             return;
@@ -1438,6 +1669,9 @@ impl UnifyJoin<'_> {
         bytes: &[u8],
         cont: &mut dyn FnMut(&mut Self),
     ) {
+        if self.stopped {
+            return;
+        }
         let saved_bindings = self.bindings.clone();
         let arena_mark = self.arena.len();
         let data_env = self.data_env_for(f, bytes);
@@ -1530,6 +1764,9 @@ impl UnifyJoin<'_> {
     /// earlier levels. Columns can branch because a stored data variable may capture the fixed query
     /// value or compound.
     fn catch_up(&mut self, i: usize, f: usize) {
+        if self.stopped {
+            return;
+        }
         if f == self.factors.len() {
             self.recurse_after_catch_up(i);
             return;
@@ -2794,5 +3031,350 @@ mod tests {
         let rows2 = unify_join_zipper_body_safe(&m2, &body2).expect("ground head routes");
         let expected2 = BTreeSet::from([vec![sym("b")], vec![sym("c")]]);
         assert_eq!(rows2, expected2, "wildcard stored head must be captured");
+    }
+
+    // ===== Engine dispatch differentials: the wired `metta_calculus` against the stock path =====
+
+    /// Encode one atom with MORK's own parser: insert it into a scratch space and read the key
+    /// back, so the bytes are exactly what the engine stores.
+    fn enc(sexpr: &str) -> Vec<u8> {
+        let mut s = crate::space::Space::new();
+        s.add_all_sexpr(sexpr.as_bytes()).unwrap();
+        let mut rz = s.btm.read_zipper();
+        assert!(rz.to_next_val(), "one atom expected in {sexpr:?}");
+        rz.path().to_vec()
+    }
+
+    fn space_paths(space: &crate::space::Space) -> BTreeSet<Vec<u8>> {
+        let mut set = BTreeSet::new();
+        let mut rz = space.btm.read_zipper();
+        while rz.to_next_val() {
+            set.insert(rz.path().to_vec());
+        }
+        set
+    }
+
+    /// Run `program` for `steps` with the dispatch pinned off, then on, returning
+    /// (performed steps, space paths) for each arm. Leaves the dispatch on, the default.
+    fn engine_both_ways(
+        program: &str,
+        steps: usize,
+    ) -> ((usize, BTreeSet<Vec<u8>>), (usize, BTreeSet<Vec<u8>>)) {
+        let mut run = |on: bool| {
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(program.as_bytes()).unwrap();
+            set_leapfrog_dispatch(on);
+            let performed = s.metta_calculus(steps);
+            set_leapfrog_dispatch(true);
+            (performed, space_paths(&s))
+        };
+        (run(false), run(true))
+    }
+
+    /// Every resource program, run to several depths with the dispatch off and on: the performed
+    /// step counts and the full space bytes must agree. The decision-tree programs and the sudoku
+    /// get a small step cap to keep the suite fast; the point here is the dispatch decision and
+    /// the emit on every body shape the corpus uses, and `run.sh` sweeps the full runs.
+    #[test]
+    fn engine_dispatch_matches_stock_on_resources() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).expect("resources dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("mm2") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+            let program = std::fs::read_to_string(&path).expect("readable resource");
+            let steps_list: &[usize] = if name.starts_with("decision_tree") || name == "ip_sudoku" {
+                &[1, 7]
+            } else {
+                &[1, 7, 40]
+            };
+            for &steps in steps_list {
+                let ((p0, s0), (p1, s1)) = engine_both_ways(&program, steps);
+                assert_eq!(p0, p1, "{name} steps={steps}: performed step counts differ");
+                assert_eq!(s0, s1, "{name} steps={steps}: spaces differ");
+            }
+            checked += 1;
+        }
+        assert!(
+            checked >= 8,
+            "expected the resource corpus, found {checked}"
+        );
+    }
+
+    /// The variables of the patterns in first-occurrence order, by `$name`.
+    fn dollar_vars_of(patterns: &[String]) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for p in patterns {
+            let b = p.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] == b'$' {
+                    let mut j = i + 1;
+                    while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                        j += 1;
+                    }
+                    let name = p[i..j].to_string();
+                    if !seen.contains(&name) {
+                        seen.push(name);
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        seen
+    }
+
+    fn pick<'x>(rng: &mut Lcg, xs: &[&'x str]) -> &'x str {
+        xs[rng.below(xs.len())]
+    }
+
+    /// A random pattern atom over relation or query-variable heads, constant, variable, and
+    /// compound columns, at total arity 2..=4. Unlike the example's generator there is no arity
+    /// constraint: both arms run full evaluation, so a variable-headed arity-4 pattern is free to
+    /// match the `(exec ..)` machinery and emitted rows, and the arms must still agree.
+    fn rand_pattern_atom(rng: &mut Lcg) -> String {
+        let rels = ["e", "p", "q"];
+        let qvars = ["$x", "$y", "$z"];
+        let consts = ["a", "b", "c"];
+        let head = if rng.below(8) == 0 {
+            pick(rng, &qvars).to_string()
+        } else {
+            pick(rng, &rels).to_string()
+        };
+        let arity = 1 + rng.below(3);
+        let args: Vec<String> = (0..arity)
+            .map(|_| {
+                let base = if rng.below(3) == 0 {
+                    pick(rng, &consts)
+                } else {
+                    pick(rng, &qvars)
+                }
+                .to_string();
+                if rng.below(6) == 0 {
+                    format!("(k {base})")
+                } else {
+                    base
+                }
+            })
+            .collect();
+        format!("({head} {})", args.join(" "))
+    }
+
+    /// A random stored fact: constants, data variables (schematic facts), compound columns, and a
+    /// wildcard head one time in eight.
+    fn rand_fact_atom(rng: &mut Lcg) -> String {
+        let rels = ["e", "p", "q"];
+        let dvars = ["$u", "$v"];
+        let consts = ["a", "b", "c", "d"];
+        let head = if rng.below(8) == 0 {
+            pick(rng, &dvars).to_string()
+        } else {
+            pick(rng, &rels).to_string()
+        };
+        let arity = 1 + rng.below(3);
+        let args: Vec<String> = (0..arity)
+            .map(|_| {
+                let base = if rng.below(4) == 0 {
+                    pick(rng, &dvars)
+                } else {
+                    pick(rng, &consts)
+                }
+                .to_string();
+                if rng.below(6) == 0 {
+                    format!("(k {base})")
+                } else {
+                    base
+                }
+            })
+            .collect();
+        format!("({head} {})", args.join(" "))
+    }
+
+    /// A random template: body variables, constants, fresh variables, compounds, or one time in
+    /// six a further `(exec ..)` atom whose body consumes this exec's output relation, so a later
+    /// step chains on the first one's writes.
+    fn rand_template(rng: &mut Lcg, body_vars: &[String], j: usize) -> String {
+        if rng.below(6) == 0 && !body_vars.is_empty() {
+            let v = &body_vars[rng.below(body_vars.len())];
+            return format!("(exec zc{j} (, (out{j} {v} $cw)) (, (chain{j} $cw {v})))");
+        }
+        let n = 1 + rng.below(3);
+        let parts: Vec<String> = (0..n)
+            .map(|_| {
+                let piece = if !body_vars.is_empty() && rng.below(3) != 0 {
+                    body_vars[rng.below(body_vars.len())].clone()
+                } else if rng.below(4) == 0 {
+                    "$fresh".to_string()
+                } else {
+                    pick(rng, &["a", "b", "c"]).to_string()
+                };
+                if rng.below(6) == 0 {
+                    format!("(k {piece})")
+                } else {
+                    piece
+                }
+            })
+            .collect();
+        format!("(out{j} {})", parts.join(" "))
+    }
+
+    /// A random whole program: facts, then one to three exec atoms with distinct priorities, each
+    /// with one to three patterns and one or two templates, run for one to five steps.
+    fn random_program(rng: &mut Lcg) -> (String, usize) {
+        let mut prog = String::new();
+        for _ in 0..rng.below(9) {
+            prog.push_str(&rand_fact_atom(rng));
+            prog.push('\n');
+        }
+        let nexec = 1 + rng.below(3);
+        for j in 0..nexec {
+            let npat = 1 + rng.below(3);
+            let pats: Vec<String> = (0..npat).map(|_| rand_pattern_atom(rng)).collect();
+            let vars = dollar_vars_of(&pats);
+            let ntpl = 1 + rng.below(2);
+            let tpls: Vec<String> = (0..ntpl)
+                .map(|t| rand_template(rng, &vars, j * 4 + t))
+                .collect();
+            prog.push_str(&format!(
+                "(exec pr{j} (, {}) (, {}))\n",
+                pats.join(" "),
+                tpls.join(" ")
+            ));
+        }
+        (prog, 1 + rng.below(5))
+    }
+
+    /// Whole random programs through full `metta_calculus`, dispatch off and on: multi-step runs,
+    /// chained exec atoms, machinery collisions and all, the arms must agree byte for byte.
+    /// `MORK_DISPATCH_N` scales the seed count; the sealing run used a much larger one.
+    #[test]
+    fn engine_dispatch_matches_stock_on_random_programs() {
+        let n: usize = std::env::var("MORK_DISPATCH_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
+        let mut rng = Lcg(0x9E3779B97F4A7C15);
+        for i in 0..n {
+            let (prog, steps) = random_program(&mut rng);
+            let ((p0, s0), (p1, s1)) = engine_both_ways(&prog, steps);
+            assert_eq!(p0, p1, "trial {i}: performed step counts differ on\n{prog}");
+            assert_eq!(s0, s1, "trial {i}: spaces differ on\n{prog}");
+        }
+    }
+
+    /// Bodies the router does not own (a bare-variable factor, the empty conjunction) must fall
+    /// back to the stock path and agree with it exactly; the bare variable also matches the exec
+    /// atom itself in the read copy, both ways.
+    #[test]
+    fn nonroutable_bodies_take_the_stock_path_identically() {
+        for (prog, steps) in [
+            ("(m a)\n(exec 0 (, $x) (, (saw $x)))\n", 1usize),
+            ("(m a)\n(exec 0 (,) (, (once)))\n", 1),
+        ] {
+            let ((p0, s0), (p1, s1)) = engine_both_ways(prog, steps);
+            assert_eq!(p0, p1, "performed step counts differ on\n{prog}");
+            assert_eq!(s0, s1, "spaces differ on\n{prog}");
+        }
+    }
+
+    /// An inverted factor is re-indexed with permuted, renumbered columns; a streamed leaf must
+    /// hand back the fact's original stored bytes, coreference included: `(f $u $u)` must come
+    /// back as NewVar then VarRef, not two fresh variables.
+    #[test]
+    fn streamed_tuples_reconstruct_reindexed_facts() {
+        let mut s = crate::space::Space::new();
+        s.add_all_sexpr("(e a a)\n(e b a)\n(f $u $u)\n(f a b)\n".as_bytes())
+            .unwrap();
+        let body = enc("(, (e $x $y) (f $y $x))");
+        let (factors, nvars) = parse_body_factors(&body).unwrap();
+        let var_order: Vec<usize> = (0..nvars).collect();
+        {
+            let mut var_pos = vec![0usize; nvars];
+            for (pos, &v) in var_order.iter().enumerate() {
+                var_pos[v] = pos;
+            }
+            assert!(
+                is_inverted(&factors[1], &var_pos),
+                "test premise: (f $y $x) is inverted under (x, y) order"
+            );
+        }
+        let mut tuples: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut cb = |t: &[Vec<u8>]| {
+            tuples.push(t.to_vec());
+            true
+        };
+        run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut cb);
+        tuples.sort();
+        assert_eq!(
+            tuples,
+            vec![
+                vec![enc("(e a a)"), enc("(f $u $u)")],
+                vec![enc("(e b a)"), enc("(f a b)")],
+            ],
+            "leaves must reconstruct the original stored facts"
+        );
+    }
+
+    /// The dispatched transform must agree with the stock transform on the match count `touched`
+    /// and the changed flag, not only on the final bytes: the join streams one callback per
+    /// product tuple, so the multiplicities match, including the cyclic assignment the emit-side
+    /// check skips after `unify` accepted it.
+    #[cfg(feature = "specialize_io")]
+    #[test]
+    fn dispatch_touched_parity_on_transform() {
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "(e a b)\n(e a c)\n(e b c)\n(e b d)\n",
+                "(, (e $x $y) (e $y $z) (e $x $z))",
+                "(, (outt $x $y $z))",
+            ),
+            (
+                "(r $d b)\n(r a b)\n",
+                "(, (r (a $p) b) (r (b) $p))",
+                "(, (outt $p))",
+            ),
+            (
+                "(e (k $s2) v0)\n(e $s1 $s1)\n(h $s0 $s0)\n(h junk junk)\n",
+                "(, (e (k $x0) $x1) (e (k $x1) $x2) (h $x2 $x0))",
+                "(, (outt $x0 $x1 $x2))",
+            ),
+            (
+                "(p a)\n(p b)\n(q a)\n(q $w)\n",
+                "(, (p $x) (q $x))",
+                "(, (outt $x))",
+            ),
+        ];
+        for (facts, body, tpl) in cases {
+            // One exec atom encoded whole, then destructured in place, so the template's VarRefs
+            // stay relative to the pattern's variables exactly as the engine sees them.
+            let atom = enc(&format!("(exec 0 {body} {tpl})"));
+            let head_len = 1 + expr_span_len(expr_from_bytes(&atom[1..]));
+            let loc_len = expr_span_len(expr_from_bytes(&atom[head_len..]));
+            let pat_off = head_len + loc_len;
+            let pat_len = expr_span_len(expr_from_bytes(&atom[pat_off..]));
+            let tpl_off = pat_off + pat_len;
+            let mut run = |on: bool| {
+                let mut s = crate::space::Space::new();
+                s.add_all_sexpr(facts.as_bytes()).unwrap();
+                let bytes = atom.clone();
+                set_leapfrog_dispatch(on);
+                let res = s.transform_multi_multi_(
+                    expr_from_bytes(&bytes[pat_off..]),
+                    expr_from_bytes(&bytes[tpl_off..]),
+                    expr_from_bytes(&bytes[..]),
+                );
+                set_leapfrog_dispatch(true);
+                (res, space_paths(&s))
+            };
+            let (r0, s0) = run(false);
+            let (r1, s1) = run(true);
+            assert_eq!(r0, r1, "(touched, any_new) differ on {body}");
+            assert_eq!(s0, s1, "spaces differ on {body}");
+        }
     }
 }

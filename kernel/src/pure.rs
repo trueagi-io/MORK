@@ -502,7 +502,7 @@ op!(num binary gt_i8(x: i8, y: i8) => (x > y) as i8);
 op!(num binary lte_i8(x: i8, y: i8) => (x <= y) as i8);
 op!(num binary gte_i8(x: i8, y: i8) => (x >= y) as i8);
 op!(num binary eq_i8(x: i8, y: i8) => (x == y) as i8);
-op!(num binary neq_i8(x: i8, y: i8) => (x != y) as i8);
+op!(num binary ne_i8(x: i8, y: i8) => (x != y) as i8);
 op!(num from_string i8_from_string<i8>);
 op!(num to_string i8_to_string<i8>);
 
@@ -530,7 +530,7 @@ op!(num binary gt_i16(x: i16, y: i16) => (x > y) as i8);
 op!(num binary lte_i16(x: i16, y: i16) => (x <= y) as i8);
 op!(num binary gte_i16(x: i16, y: i16) => (x >= y) as i8);
 op!(num binary eq_i16(x: i16, y: i16) => (x == y) as i8);
-op!(num binary neq_i16(x: i16, y: i16) => (x != y) as i8);
+op!(num binary ne_i16(x: i16, y: i16) => (x != y) as i8);
 op!(num from_string i16_from_string<i16>);
 op!(num to_string i16_to_string<i16>);
 
@@ -558,7 +558,7 @@ op!(num binary gt_i32(x: i32, y: i32) => (x > y) as i8);
 op!(num binary lte_i32(x: i32, y: i32) => (x <= y) as i8);
 op!(num binary gte_i32(x: i32, y: i32) => (x >= y) as i8);
 op!(num binary eq_i32(x: i32, y: i32) => (x == y) as i8);
-op!(num binary neq_i32(x: i32, y: i32) => (x != y) as i8);
+op!(num binary ne_i32(x: i32, y: i32) => (x != y) as i8);
 op!(num from_string i32_from_string<i32>);
 op!(num to_string i32_to_string<i32>);
 
@@ -586,7 +586,7 @@ op!(num binary gt_i64(x: i64, y: i64) => (x > y) as i8);
 op!(num binary lte_i64(x: i64, y: i64) => (x <= y) as i8);
 op!(num binary gte_i64(x: i64, y: i64) => (x >= y) as i8);
 op!(num binary eq_i64(x: i64, y: i64) => (x == y) as i8);
-op!(num binary neq_i64(x: i64, y: i64) => (x != y) as i8);
+op!(num binary ne_i64(x: i64, y: i64) => (x != y) as i8);
 op!(num from_string i64_from_string<i64>);
 op!(num to_string i64_to_string<i64>);
 
@@ -614,7 +614,7 @@ op!(num binary gt_i128(x: i128, y: i128) => (x > y) as i8);
 op!(num binary lte_i128(x: i128, y: i128) => (x <= y) as i8);
 op!(num binary gte_i128(x: i128, y: i128) => (x >= y) as i8);
 op!(num binary eq_i128(x: i128, y: i128) => (x == y) as i8);
-op!(num binary neq_i128(x: i128, y: i128) => (x != y) as i8);
+op!(num binary ne_i128(x: i128, y: i128) => (x != y) as i8);
 op!(num from_string i128_from_string<i128>);
 op!(num to_string i128_to_string<i128>);
 
@@ -678,7 +678,7 @@ op!(num binary gt_f64(x: f64, y: f64) => (x > y) as i8);
 op!(num binary lte_f64(x: f64, y: f64) => (x <= y) as i8);
 op!(num binary gte_f64(x: f64, y: f64) => (x >= y) as i8);
 op!(num binary eq_f64(x: f64, y: f64) => (x == y) as i8);
-op!(num binary neq_f64(x: f64, y: f64) => (x != y) as i8);
+op!(num binary ne_f64(x: f64, y: f64) => (x != y) as i8);
 op!(num from_string f64_from_string<f64>);
 op!(num to_string f64_to_string<f64>);
 
@@ -741,7 +741,7 @@ op!(num binary gt_f32(x: f32, y: f32) => (x > y) as i8);
 op!(num binary lte_f32(x: f32, y: f32) => (x <= y) as i8);
 op!(num binary gte_f32(x: f32, y: f32) => (x >= y) as i8);
 op!(num binary eq_f32(x: f32, y: f32) => (x == y) as i8);
-op!(num binary neq_f32(x: f32, y: f32) => (x != y) as i8);
+op!(num binary ne_f32(x: f32, y: f32) => (x != y) as i8);
 op!(num from_string f32_from_string<f32>);
 op!(num to_string f32_to_string<f32>);
 
@@ -1056,7 +1056,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_i8", lte_i8, FuncType::Pure);
     scope.add_func("gte_i8", gte_i8, FuncType::Pure);
     scope.add_func("eq_i8", eq_i8, FuncType::Pure);
-    scope.add_func("neq_i8", neq_i8, FuncType::Pure);
+    scope.add_func("ne_i8", ne_i8, FuncType::Pure);
     scope.add_func("i8_from_string", i8_from_string, FuncType::Pure);
     scope.add_func("i8_to_string", i8_to_string, FuncType::Pure);
 
@@ -1084,7 +1084,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_i16", lte_i16, FuncType::Pure);
     scope.add_func("gte_i16", gte_i16, FuncType::Pure);
     scope.add_func("eq_i16", eq_i16, FuncType::Pure);
-    scope.add_func("neq_i16", neq_i16, FuncType::Pure);
+    scope.add_func("ne_i16", ne_i16, FuncType::Pure);
     scope.add_func("i16_from_string", i16_from_string, FuncType::Pure);
     scope.add_func("i16_to_string", i16_to_string, FuncType::Pure);
 
@@ -1112,7 +1112,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_i32", lte_i32, FuncType::Pure);
     scope.add_func("gte_i32", gte_i32, FuncType::Pure);
     scope.add_func("eq_i32", eq_i32, FuncType::Pure);
-    scope.add_func("neq_i32", neq_i32, FuncType::Pure);
+    scope.add_func("ne_i32", ne_i32, FuncType::Pure);
     scope.add_func("i32_from_string", i32_from_string, FuncType::Pure);
     scope.add_func("i32_to_string", i32_to_string, FuncType::Pure);
 
@@ -1140,7 +1140,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_i64", lte_i64, FuncType::Pure);
     scope.add_func("gte_i64", gte_i64, FuncType::Pure);
     scope.add_func("eq_i64", eq_i64, FuncType::Pure);
-    scope.add_func("neq_i64", neq_i64, FuncType::Pure);
+    scope.add_func("ne_i64", ne_i64, FuncType::Pure);
     scope.add_func("i64_from_string", i64_from_string, FuncType::Pure);
     scope.add_func("i64_to_string", i64_to_string, FuncType::Pure);
 
@@ -1168,7 +1168,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_i128", lte_i128, FuncType::Pure);
     scope.add_func("gte_i128", gte_i128, FuncType::Pure);
     scope.add_func("eq_i128", eq_i128, FuncType::Pure);
-    scope.add_func("neq_i128", neq_i128, FuncType::Pure);
+    scope.add_func("ne_i128", ne_i128, FuncType::Pure);
     scope.add_func("i128_from_string", i128_from_string, FuncType::Pure);
     scope.add_func("i128_to_string", i128_to_string, FuncType::Pure);
 
@@ -1231,7 +1231,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_f64", lte_f64, FuncType::Pure);
     scope.add_func("gte_f64", gte_f64, FuncType::Pure);
     scope.add_func("eq_f64", eq_f64, FuncType::Pure);
-    scope.add_func("neq_f64", neq_f64, FuncType::Pure);
+    scope.add_func("ne_f64", ne_f64, FuncType::Pure);
     scope.add_func("f64_from_string", f64_from_string, FuncType::Pure);
     scope.add_func("f64_to_string", f64_to_string, FuncType::Pure);
 
@@ -1294,7 +1294,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("lte_f32", lte_f32, FuncType::Pure);
     scope.add_func("gte_f32", gte_f32, FuncType::Pure);
     scope.add_func("eq_f32", eq_f32, FuncType::Pure);
-    scope.add_func("neq_f32", neq_f32, FuncType::Pure);
+    scope.add_func("ne_f32", ne_f32, FuncType::Pure);
     scope.add_func("f32_from_string", f32_from_string, FuncType::Pure);
     scope.add_func("f32_to_string", f32_to_string, FuncType::Pure);
 }

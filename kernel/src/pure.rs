@@ -497,6 +497,7 @@ op!(num nary sum_i8(0i8, t: i8, x: i8) => t + x);
 op!(num nary product_i8(1i8, t: i8, x: i8) => t * x);
 op!(num nary max_i8(i8::MIN, t: i8, x: i8) => t.max(x));
 op!(num nary min_i8(i8::MAX, t: i8, x: i8) => t.min(x));
+op!(num binary lte_i8(x: i8, y: i8) => (x <= y) as i8);
 op!(num from_string i8_from_string<i8>);
 op!(num to_string i8_to_string<i8>);
 
@@ -1009,6 +1010,7 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("product_i8", product_i8, FuncType::Pure);
     scope.add_func("max_i8", max_i8, FuncType::Pure);
     scope.add_func("min_i8", min_i8, FuncType::Pure);
+    scope.add_func("lte_i8", lte_i8, FuncType::Pure);
     scope.add_func("i8_from_string", i8_from_string, FuncType::Pure);
     scope.add_func("i8_to_string", i8_to_string, FuncType::Pure);
 

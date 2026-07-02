@@ -2,12 +2,11 @@
 //! sound router, over MORK's live PathMap.
 //!
 //! MORK answers a conjunctive `(exec .. (, p1 p2 ..) ..)` with the ProductZipper, a
-//! relation-at-a-time join that is O(s^2) on the triangle. A router sends a body to the
-//! variable-at-a-time leapfrog when that join is byte-identical to the ProductZipper: the whole
-//! flat conjunctive fragment (ground answers and free-variable answers) and the compound-capture
-//! shapes the matcher handles. It falls back to the ProductZipper only for the one compound shape
-//! that would diverge. So the router equals MORK's answers everywhere, and is worst-case-optimal on
-//! the conjunctive queries the leapfrog covers.
+//! relation-at-a-time join that is O(s^2) on the triangle. A router sends every relation-prefixed
+//! conjunction to the variable-at-a-time leapfrog: ground and free-variable answers, compound
+//! capture in both directions, variable and wildcard heads, and the join-propagated capture whose
+//! cyclic assignments are rejected at emit. The router equals MORK's answers everywhere, and is
+//! worst-case-optimal on the conjunctive queries the leapfrog covers.
 //!
 //!   RUSTFLAGS="-C target-cpu=native" cargo +nightly run -p mork --release --example wco_leapfrog
 
@@ -21,7 +20,8 @@ use std::collections::BTreeSet;
 /// encoder, so the bytes are exactly what the ProductZipper sees.
 fn encode_body(patterns: &[&str]) -> Vec<u8> {
     let mut s = Space::new();
-    s.add_all_sexpr(format!("(, {})", patterns.join(" ")).as_bytes()).unwrap();
+    s.add_all_sexpr(format!("(, {})", patterns.join(" ")).as_bytes())
+        .unwrap();
     let mut rz = s.btm.read_zipper();
     rz.to_next_val();
     rz.path().to_vec()
@@ -84,11 +84,19 @@ fn ans_vars_of(patterns: &[&str]) -> Vec<String> {
 }
 
 /// MORK's ProductZipper answers to the body, the matcher `transitions` it spent, and microseconds.
-fn mork_productzipper(facts: &str, patterns: &[&str], ans: &[String]) -> (BTreeSet<String>, usize, u128) {
+fn mork_productzipper(
+    facts: &str,
+    patterns: &[&str],
+    ans: &[String],
+) -> (BTreeSet<String>, usize, u128) {
     let mut space = Space::new();
     space.add_all_sexpr(facts.as_bytes()).unwrap();
     let before = snapshot(&space);
-    let exec = format!("(exec 0 (, {}) (, (ans {})))\n", patterns.join(" "), ans.join(" "));
+    let exec = format!(
+        "(exec 0 (, {}) (, (ans {})))\n",
+        patterns.join(" "),
+        ans.join(" ")
+    );
     space.add_all_sexpr(exec.as_bytes()).unwrap();
     unsafe { mork::space::transitions = 0 };
     let t0 = std::time::Instant::now();
@@ -109,16 +117,17 @@ fn mork_productzipper(facts: &str, patterns: &[&str], ans: &[String]) -> (BTreeS
     (out, transitions, us)
 }
 
-/// The sound router: the WCO leapfrog when the join owns the body as byte-identical to the
-/// ProductZipper, else the ProductZipper. The self-contained `unify_join_zipper_body_safe` takes
-/// bodies whose answers are fully ground; a body whose answer carries a free variable takes the
-/// second entry, `unify_join_zipper_body_rows_rendered`, which coordinates a variable shared across
-/// answer positions so the render matches MORK's emit. Routable covers every flat conjunctive query
-/// and the compound-capture shapes the join handles, including a data variable that captures a query
-/// compound. Only the one compound shape that would diverge (a capture that both binds a compound
-/// and propagates it through the join) declines to the ProductZipper. Returns the answers, which
-/// path ran, and the join microseconds.
-fn router(facts: &str, patterns: &[&str], ans: &[String]) -> (BTreeSet<String>, &'static str, u128) {
+/// The router: the WCO leapfrog on every relation-prefixed conjunction, the ProductZipper only
+/// for bodies outside that class. `unify_join_zipper_body_safe` takes bodies whose answers are
+/// fully ground; a body whose answer carries a free or schematic component takes the second
+/// entry, `unify_join_zipper_body_rows_rendered`, which coordinates a variable shared across
+/// answer positions so the render matches MORK's emit. Returns the answers, which path ran, and
+/// the join microseconds.
+fn router(
+    facts: &str,
+    patterns: &[&str],
+    ans: &[String],
+) -> (BTreeSet<String>, &'static str, u128) {
     let body = encode_body(patterns);
     let mut space = Space::new();
     space.add_all_sexpr(facts.as_bytes()).unwrap();
@@ -132,7 +141,10 @@ fn router(facts: &str, patterns: &[&str], ans: &[String]) -> (BTreeSet<String>, 
     // positions, so render the coordinated tuples and compare to MORK's emit.
     if let Some(tuples) = unify_join_zipper_body_rows_rendered(&space.btm, &body) {
         let us = t0.elapsed().as_micros();
-        let out = tuples.iter().map(|t| ans_tuple_string(ans.len(), t)).collect();
+        let out = tuples
+            .iter()
+            .map(|t| ans_tuple_string(ans.len(), t))
+            .collect();
         return (out, "leapfrog-free", us);
     }
     let (pz, _, us) = mork_productzipper(facts, patterns, ans);
@@ -145,7 +157,9 @@ fn triangle_space(s: usize) -> String {
         prog.push_str(&format!("(e i{k} c)\n(e c o{k})\n"));
     }
     for t in 0..3 {
-        prog.push_str(&format!("(e p{t}a p{t}b)\n(e p{t}b p{t}c)\n(e p{t}a p{t}c)\n"));
+        prog.push_str(&format!(
+            "(e p{t}a p{t}b)\n(e p{t}b p{t}c)\n(e p{t}a p{t}c)\n"
+        ));
     }
     prog
 }
@@ -163,34 +177,51 @@ impl Rng {
     }
 }
 
-/// A random atom `(rel a0 a1 ..)`: arity 2 or 3, each argument drawn from `special` one time in
-/// `special_den`, otherwise from `common`. The rng call order matches the inline builders it
-/// replaces, so the generated corpus is unchanged.
+/// A random atom `(head a0 a1 ..)`: the head drawn from `heads` one time in eight and from
+/// `rels` otherwise, each argument drawn from `special` one time in `special_den` and from
+/// `common` otherwise, and any argument wrapped as the compound `(k ..)` one time in six. A
+/// variable-headed atom keeps 2 arguments (total arity 3): the evaluation space holds the
+/// harness's own `(exec 0 body template)` atom and this query's emitted `(ans ..)` rows, both
+/// total arity 4 when the query has three answer variables, and a variable head matches ANY
+/// head, so a total-arity-4 variable-headed pattern would query the machinery rather than the
+/// facts. That is real full-evaluation semantics, but not the single query the differential
+/// compares; the module's raw differential covers the shape against the naive reference, which
+/// has no machinery to collide with.
 fn random_atom(
     rng: &mut Rng,
     rels: &[&str],
+    heads: &[&str],
     special: &[&str],
     special_den: usize,
     common: &[&str],
 ) -> String {
-    let rel = rels[rng.below(rels.len())];
-    let arity = 2 + rng.below(2);
+    let var_head = rng.below(8) == 0;
+    let head = if var_head {
+        heads[rng.below(heads.len())].to_string()
+    } else {
+        rels[rng.below(rels.len())].to_string()
+    };
+    let arity = if var_head { 2 } else { 2 + rng.below(2) };
     let args: Vec<String> = (0..arity)
         .map(|_| {
-            if rng.below(special_den) == 0 {
+            let base = if rng.below(special_den) == 0 {
                 special[rng.below(special.len())].to_string()
             } else {
                 common[rng.below(common.len())].to_string()
+            };
+            if rng.below(6) == 0 {
+                format!("(k {base})")
+            } else {
+                base
             }
         })
         .collect();
-    format!("({} {})", rel, args.join(" "))
+    format!("({} {})", head, args.join(" "))
 }
 
-/// A random flat conjunctive query and fact set: relations over variable/constant columns, facts
-/// that may carry data variables (schematic). No compounds, so the whole body is the leapfrog's
-/// routable class: the constant columns, the data-variable facts that capture them, and the
-/// free-variable answers the coordinated renderer emits like MORK. None of it falls back.
+/// A random conjunctive query and fact set over the whole routed class: relation or VARIABLE
+/// heads, constant, variable, and compound `(k ..)` columns, and facts that may carry data
+/// variables anywhere, wildcard heads included. Everything routes; nothing falls back.
 fn gen_case(rng: &mut Rng) -> (String, Vec<String>) {
     let rels = ["e", "p", "q", "r"];
     let vars = ["$x", "$y", "$z"];
@@ -199,19 +230,27 @@ fn gen_case(rng: &mut Rng) -> (String, Vec<String>) {
     loop {
         let npat = 1 + rng.below(3);
         let mut patterns = Vec::new();
-        // A pattern column is a query variable, or a constant one time in three.
+        // A pattern column is a query variable, or a constant one time in three; the head is a
+        // query variable one time in eight.
         for _ in 0..npat {
-            patterns.push(random_atom(rng, &rels, &consts, 3, &vars));
+            patterns.push(random_atom(rng, &rels, &vars, &consts, 3, &vars));
         }
         let pats: Vec<&str> = patterns.iter().map(|s| s.as_str()).collect();
-        if ans_vars_of(&pats).is_empty() {
+        let nvars = ans_vars_of(&pats).len();
+        if nvars == 0 {
+            continue;
+        }
+        // See random_atom: with a variable-headed pattern in play, three answer variables keep
+        // the (ans ..) rows and the (exec ..) atom at total arity 4, out of its reach.
+        if patterns.iter().any(|p| p.starts_with("($")) && nvars != 3 {
             continue;
         }
         let nfacts = rng.below(8);
         let mut facts = String::new();
-        // A fact column is a constant, or a data variable one time in four (a schematic fact).
+        // A fact column is a constant, or a data variable one time in four (a schematic fact);
+        // the head is a data variable (a wildcard-headed fact) one time in eight.
         for _ in 0..nfacts {
-            facts.push_str(&random_atom(rng, &rels, &dvars, 4, &consts));
+            facts.push_str(&random_atom(rng, &rels, &dvars, &dvars, 4, &consts));
             facts.push('\n');
         }
         return (facts, patterns);
@@ -221,16 +260,57 @@ fn gen_case(rng: &mut Rng) -> (String, Vec<String>) {
 fn main() {
     let mut bad = 0;
 
-    println!("=== 1. Correctness: router vs MORK ProductZipper on a capture + compound corpus ===\n");
+    println!(
+        "=== 1. Correctness: router vs MORK ProductZipper on a capture + compound corpus ===\n"
+    );
     let corpus: &[(&str, &str, &[&str])] = &[
         ("capture query constant", "(rel a $w)\n", &["(rel $x b)"]),
-        ("witness: data var captures query compound (a $p)", "(r $d b)\n(r a b)\n", &["(r (a $p) b)", "(r (b) $p)"]),
-        ("cyclic compound capture", "(r $d v0)\n(s v0 v1)\n(t v1 b)\n(r (a v0) junk)\n", &["(r (a $x) $y)", "(s $y $z)", "(t $z $x)"]),
-        ("occurs-check compound (must be empty)", "(e $w $w)\n(e v0 (f v1))\n", &["(e $x (f $x))"]),
-        ("join-propagated capture (declines, sound)", "(e (k $s2) v0)\n(e $s1 $s1)\n(h $s0 $s0)\n(h junk junk)\n", &["(e (k $x0) $x1)", "(e (k $x1) $x2)", "(h $x2 $x0)"]),
-        ("ground + wildcard fact", "(p a)\n(p b)\n(q a)\n(q $w)\n", &["(p $x)", "(q $x)"]),
-        ("coreferent data fact (free-var answer)", "(e $u $u)\n(e a b)\n(e b c)\n", &["(e $x $y)", "(e $y $z)"]),
-        ("ground triangle", "(e a b)\n(e a c)\n(e b c)\n(e b d)\n", &["(e $x $y)", "(e $y $z)", "(e $x $z)"]),
+        (
+            "witness: data var captures query compound (a $p)",
+            "(r $d b)\n(r a b)\n",
+            &["(r (a $p) b)", "(r (b) $p)"],
+        ),
+        (
+            "cyclic compound capture",
+            "(r $d v0)\n(s v0 v1)\n(t v1 b)\n(r (a v0) junk)\n",
+            &["(r (a $x) $y)", "(s $y $z)", "(t $z $x)"],
+        ),
+        (
+            "occurs-check compound (must be empty)",
+            "(e $w $w)\n(e v0 (f v1))\n",
+            &["(e $x (f $x))"],
+        ),
+        (
+            "join-propagated capture (cycle rejected)",
+            "(e (k $s2) v0)\n(e $s1 $s1)\n(h $s0 $s0)\n(h junk junk)\n",
+            &["(e (k $x0) $x1)", "(e (k $x1) $x2)", "(h $x2 $x0)"],
+        ),
+        (
+            "ground + wildcard fact",
+            "(p a)\n(p b)\n(q a)\n(q $w)\n",
+            &["(p $x)", "(q $x)"],
+        ),
+        (
+            "coreferent data fact (free-var answer)",
+            "(e $u $u)\n(e a b)\n(e b c)\n",
+            &["(e $x $y)", "(e $y $z)"],
+        ),
+        (
+            "ground triangle",
+            "(e a b)\n(e a c)\n(e b c)\n(e b d)\n",
+            &["(e $x $y)", "(e $y $z)", "(e $x $z)"],
+        ),
+        (
+            "variable-headed query",
+            "(e a b)\n(f a c)\n",
+            &["($p a $x)"],
+        ),
+        ("wildcard-headed fact", "($u a b)\n(e a c)\n", &["(e a $x)"]),
+        (
+            "wildcard head meets variable head",
+            "($u $v w)\n",
+            &["($p a w)"],
+        ),
     ];
     for (name, facts, patterns) in corpus {
         let ans = ans_vars_of(patterns);
@@ -238,13 +318,18 @@ fn main() {
         let (rt, path, _) = router(facts, patterns, &ans);
         let ok = mork == rt;
         bad += !ok as usize;
-        println!("[{}] {name} (via {path})", if ok { "match" } else { "MISMATCH" });
+        println!(
+            "[{}] {name} (via {path})",
+            if ok { "match" } else { "MISMATCH" }
+        );
         if !ok {
             println!("    MORK  : {mork:?}\n    router: {rt:?}");
         }
     }
 
-    println!("\n=== 2. Correctness: router vs MORK over a random flat-conjunctive distribution ===\n");
+    println!(
+        "\n=== 2. Correctness: router vs MORK over a random flat-conjunctive distribution ===\n"
+    );
     let mut rng = Rng(0x243F6A8885A308D3);
     let trials = 4000;
     let (mut leapfrog, mut leapfrog_free, mut fallback, mut nonempty) = (0, 0, 0, 0);
@@ -257,7 +342,9 @@ fn main() {
         if rt != mork {
             bad += 1;
             if bad <= 5 {
-                println!("MISMATCH trial {i} ({path})\n  facts={facts:?}\n  pats={patterns:?}\n  MORK={mork:?}\n  router={rt:?}");
+                println!(
+                    "MISMATCH trial {i} ({path})\n  facts={facts:?}\n  pats={patterns:?}\n  MORK={mork:?}\n  router={rt:?}"
+                );
             }
         }
         match path {
@@ -267,18 +354,28 @@ fn main() {
         }
         nonempty += !mork.is_empty() as usize;
     }
-    println!("{trials} random trials: {leapfrog} leapfrog (ground), {leapfrog_free} leapfrog (free-var), {fallback} fallback, {nonempty} non-empty, {bad} mismatches");
+    println!(
+        "{trials} random trials: {leapfrog} leapfrog (ground), {leapfrog_free} leapfrog (free-var), {fallback} fallback, {nonempty} non-empty, {bad} mismatches"
+    );
 
-    println!("\n=== 3. Optimality: router (leapfrog) vs ProductZipper on the AGM-blowup triangle ===\n");
+    println!(
+        "\n=== 3. Optimality: router (leapfrog) vs ProductZipper on the AGM-blowup triangle ===\n"
+    );
     let tri = &["(e $x $y)", "(e $y $z)", "(e $x $z)"];
     let tri_ans = ans_vars_of(tri);
-    println!("{:>5} {:>4} | {:>13} {:>11} | {:>11} | {:>9} {:>11}", "s", "ans", "PZ transitions", "PZ us", "leapfrog us", "PZ/leapfrog", "PZ us/s^2");
+    println!(
+        "{:>5} {:>4} | {:>13} {:>11} | {:>11} | {:>9} {:>11}",
+        "s", "ans", "PZ transitions", "PZ us", "leapfrog us", "PZ/leapfrog", "PZ us/s^2"
+    );
     for &s in &[128usize, 256, 512, 1024, 2048, 4096] {
         let facts = triangle_space(s);
         let (pz, pz_trans, pz_us) = mork_productzipper(&facts, tri, &tri_ans);
         let (rt, path, rt_us) = router(&facts, tri, &tri_ans);
         assert_eq!(pz, rt, "s={s}: router != ProductZipper");
-        assert_eq!(path, "leapfrog", "s={s}: triangle must route to the leapfrog");
+        assert_eq!(
+            path, "leapfrog",
+            "s={s}: triangle must route to the leapfrog"
+        );
         println!(
             "{s:>5} {:>4} | {pz_trans:>13} {pz_us:>11} | {rt_us:>11} | {:>8.1}x {:>11.2}",
             pz.len(),
@@ -286,6 +383,8 @@ fn main() {
             pz_us as f64 / (s * s) as f64
         );
     }
-    println!("\nRouter answers == MORK everywhere; O(s) on the triangle where the ProductZipper is O(s^2).");
+    println!(
+        "\nRouter answers == MORK everywhere; O(s) on the triangle where the ProductZipper is O(s^2)."
+    );
     std::process::exit(if bad == 0 { 0 } else { 1 });
 }

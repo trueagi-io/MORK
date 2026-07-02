@@ -673,6 +673,12 @@ op!(num nary sum_f64(0f64, t: f64, x: f64) => t + x);
 op!(num nary product_f64(1f64, t: f64, x: f64) => t * x);
 op!(num nary max_f64(f64::NEG_INFINITY, t: f64, x: f64) => t.max(x));
 op!(num nary min_f64(f64::INFINITY, t: f64, x: f64) => t.min(x));
+op!(num binary lt_f64(x: f64, y: f64) => (x < y) as i8);
+op!(num binary gt_f64(x: f64, y: f64) => (x > y) as i8);
+op!(num binary lte_f64(x: f64, y: f64) => (x <= y) as i8);
+op!(num binary gte_f64(x: f64, y: f64) => (x >= y) as i8);
+op!(num binary eq_f64(x: f64, y: f64) => (x == y) as i8);
+op!(num binary neq_f64(x: f64, y: f64) => (x != y) as i8);
 op!(num from_string f64_from_string<f64>);
 op!(num to_string f64_to_string<f64>);
 
@@ -730,6 +736,12 @@ op!(num nary sum_f32(0f32, t: f32, x: f32) => t + x);
 op!(num nary product_f32(1f32, t: f32, x: f32) => t * x);
 op!(num nary max_f32(f32::NEG_INFINITY, t: f32, x: f32) => t.max(x));
 op!(num nary min_f32(f32::INFINITY, t: f32, x: f32) => t.min(x));
+op!(num binary lt_f32(x: f32, y: f32) => (x < y) as i8);
+op!(num binary gt_f32(x: f32, y: f32) => (x > y) as i8);
+op!(num binary lte_f32(x: f32, y: f32) => (x <= y) as i8);
+op!(num binary gte_f32(x: f32, y: f32) => (x >= y) as i8);
+op!(num binary eq_f32(x: f32, y: f32) => (x == y) as i8);
+op!(num binary neq_f32(x: f32, y: f32) => (x != y) as i8);
 op!(num from_string f32_from_string<f32>);
 op!(num to_string f32_to_string<f32>);
 
@@ -1214,6 +1226,12 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("product_f64", product_f64, FuncType::Pure);
     scope.add_func("max_f64", max_f64, FuncType::Pure);
     scope.add_func("min_f64", min_f64, FuncType::Pure);
+    scope.add_func("lt_f64", lt_f64, FuncType::Pure);
+    scope.add_func("gt_f64", gt_f64, FuncType::Pure);
+    scope.add_func("lte_f64", lte_f64, FuncType::Pure);
+    scope.add_func("gte_f64", gte_f64, FuncType::Pure);
+    scope.add_func("eq_f64", eq_f64, FuncType::Pure);
+    scope.add_func("neq_f64", neq_f64, FuncType::Pure);
     scope.add_func("f64_from_string", f64_from_string, FuncType::Pure);
     scope.add_func("f64_to_string", f64_to_string, FuncType::Pure);
 
@@ -1271,6 +1289,12 @@ pub fn register(scope: &mut EvalScope) {
     scope.add_func("product_f32", product_f32, FuncType::Pure);
     scope.add_func("max_f32", max_f32, FuncType::Pure);
     scope.add_func("min_f32", min_f32, FuncType::Pure);
+    scope.add_func("lt_f32", lt_f32, FuncType::Pure);
+    scope.add_func("gt_f32", gt_f32, FuncType::Pure);
+    scope.add_func("lte_f32", lte_f32, FuncType::Pure);
+    scope.add_func("gte_f32", gte_f32, FuncType::Pure);
+    scope.add_func("eq_f32", eq_f32, FuncType::Pure);
+    scope.add_func("neq_f32", neq_f32, FuncType::Pure);
     scope.add_func("f32_from_string", f32_from_string, FuncType::Pure);
     scope.add_func("f32_to_string", f32_to_string, FuncType::Pure);
 }

@@ -77,6 +77,21 @@ pub(crate) const VARS: [u64; 4] = {
     ret
 };
 
+// The child-mask word layout the fused match-any walk relies on: a mask is four u64 words, byte
+// `b` lives at word `b >> 6`, bit `b & 63`, so the byte is `(word << 6) | bit`. Each child tag
+// class occupies exactly one word:
+//   ARITY_WORD  : Arity(a)      bytes 0x00..0x3F -> byte = a (the bit index)
+//   VARREF_WORD : VarRef(i)     bytes 0x80..0xBF -> byte = VARREF_TAG_HI | bit
+//   HIGH_WORD   : NewVar 0xC0 (bit 0) + SymbolSize(s) 0xC1..0xFF (bits 1..63)
+//                                                -> byte = HIGH_TAG_HI | bit, size = bit
+const ARITY_WORD: usize = (item_byte(Tag::Arity(0)) >> 6) as usize;
+const VARREF_WORD: usize = (item_byte(Tag::VarRef(0)) >> 6) as usize;
+const HIGH_WORD: usize = (item_byte(Tag::NewVar) >> 6) as usize;
+const VARREF_TAG_HI: u8 = (VARREF_WORD << 6) as u8;
+const HIGH_TAG_HI: u8 = (HIGH_WORD << 6) as u8;
+const NEWVAR_BYTE: u8 = item_byte(Tag::NewVar);
+const NEWVAR_BIT: u64 = 1u64 << (NEWVAR_BYTE & 0b0011_1111);
+
 
 // future Adam: don't fall for the temptation of keeping references of data->pattern, you tried it twice already: it's not worth the complexity, it's incompatible due to the PZ de-Bruijn level non-well-foundedness, it doesn't occur in most queries, and the performance is not worth it
 // others: this code has haphephobia, contact Adam when you run into problems
@@ -99,6 +114,31 @@ thread_local! {
     /// non-ground witness). The toggle stays so the differential test can compare the two paths.
     pub(crate) static VARREF_FAST_RECHECK: std::cell::Cell<bool> =
         const { std::cell::Cell::new(true) };
+
+    /// Selects the fused single-word-walk in the NewVar arm of `coreferential_transition` over
+    /// the original three `ByteMask::and` + iterator passes. Both produce byte-identical match
+    /// results in the same visit order; the toggle only exists so the differential oracle test
+    /// `match_any_fused_equals_three_pass` can run the two paths against each other. Non-test
+    /// builds always fuse.
+    #[cfg(test)]
+    pub(crate) static MATCH_ANY_TERM_FUSED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(true) };
+}
+
+/// Whether to take the fused single-word-walk in the NewVar match-any-term descents. Always
+/// `true` outside tests (the fused path is the only one taken and the three-pass branch folds
+/// away); in tests it reads the `MATCH_ANY_TERM_FUSED` toggle so the differential oracle can
+/// compare fused against three-pass.
+#[cfg(test)]
+#[inline(always)]
+fn match_any_term_fused() -> bool {
+    MATCH_ANY_TERM_FUSED.with(|c| c.get())
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn match_any_term_fused() -> bool {
+    true
 }
 
 fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
@@ -142,34 +182,87 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         Some((idx, prev))
                     } else { None };
 
-                    vs!(e, true);
-
-                    let m = loc.child_mask().and(&ByteMask(SIZES));
-                    let mut it = m.iter();
-                    while let Some(b) = it.next() {
-                        let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
-                        loc.descend_to_byte(b);
-                        debug_assert!(loc.path_exists());
-                        if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
-                        loop {
-                            coreferential_transition(loc, stack, references, f);   
-                            if !loc.to_next_k_path(size as _) { break }
+                    let cm = loc.child_mask();
+                    debug_assert!(cm.0[1] == 0);
+                    if match_any_term_fused() {
+                        // Fused single-word-walk, byte-identical to the `vs!` + SIZES + ARITIES
+                        // passes below in the same visit order (VarRefs ascending, NewVar, symbol
+                        // sizes ascending, arities ascending). Each child-mask word is read once,
+                        // and the size or arity is the bit index itself, so the three
+                        // ByteMask::and passes, their iterators, and the per-child byte_item
+                        // re-decode all drop away. See the word-layout consts by VARS.
+                        let mut w = cm.0[VARREF_WORD];
+                        while w != 0 {
+                            let b = VARREF_TAG_HI | w.trailing_zeros() as u8;
+                            loc.descend_to_byte(b);
+                            debug_assert!(loc.path_exists());
+                            coreferential_transition(loc, stack, references, f);
+                            if !loc.ascend_byte() { unreachable_unchecked() };
+                            w &= w - 1;
                         }
-                        if !loc.ascend_byte() { unreachable_unchecked() }
-                    }
+                        if cm.0[HIGH_WORD] & NEWVAR_BIT != 0 {
+                            loc.descend_to_byte(NEWVAR_BYTE);
+                            debug_assert!(loc.path_exists());
+                            coreferential_transition(loc, stack, references, f);
+                            if !loc.ascend_byte() { unreachable_unchecked() };
+                        }
+                        let mut w = cm.0[HIGH_WORD] & !NEWVAR_BIT;
+                        while w != 0 {
+                            let size = w.trailing_zeros();
+                            let b = HIGH_TAG_HI | size as u8;
+                            loc.descend_to_byte(b);
+                            debug_assert!(loc.path_exists());
+                            if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
+                            loop {
+                                coreferential_transition(loc, stack, references, f);
+                                if !loc.to_next_k_path(size as _) { break }
+                            }
+                            if !loc.ascend_byte() { unreachable_unchecked() }
+                            w &= w - 1;
+                        }
+                        let mut w = cm.0[ARITY_WORD];
+                        while w != 0 {
+                            let a = w.trailing_zeros();
+                            loc.descend_to_byte(a as u8);
+                            debug_assert!(loc.path_exists());
+                            static nv2: u8 = item_byte(Tag::NewVar);
+                            let ol = stack.len();
+                            for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv2) as *const u8).cast_mut() })) }
+                            coreferential_transition(loc, stack, references, f);
+                            stack.truncate(ol);
+                            if !loc.ascend_byte() { unreachable_unchecked() };
+                            w &= w - 1;
+                        }
+                    } else {
+                        vs!(e, true);
 
-                    let m = loc.child_mask().and(&ByteMask(ARITIES));
-                    let mut it = m.iter();
-                    while let Some(b) = it.next() {
-                        let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
-                        loc.descend_to_byte(b);
-                        debug_assert!(loc.path_exists());
-                        static nv: u8 = item_byte(Tag::NewVar);
-                        let ol = stack.len();
-                        for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
-                        coreferential_transition(loc, stack, references, f);
-                        stack.truncate(ol);
-                        if !loc.ascend_byte() { unreachable_unchecked() };
+                        let m = loc.child_mask().and(&ByteMask(SIZES));
+                        let mut it = m.iter();
+                        while let Some(b) = it.next() {
+                            let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
+                            loc.descend_to_byte(b);
+                            debug_assert!(loc.path_exists());
+                            if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
+                            loop {
+                                coreferential_transition(loc, stack, references, f);
+                                if !loc.to_next_k_path(size as _) { break }
+                            }
+                            if !loc.ascend_byte() { unreachable_unchecked() }
+                        }
+
+                        let m = loc.child_mask().and(&ByteMask(ARITIES));
+                        let mut it = m.iter();
+                        while let Some(b) = it.next() {
+                            let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
+                            loc.descend_to_byte(b);
+                            debug_assert!(loc.path_exists());
+                            static nv: u8 = item_byte(Tag::NewVar);
+                            let ol = stack.len();
+                            for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                            coreferential_transition(loc, stack, references, f);
+                            stack.truncate(ol);
+                            if !loc.ascend_byte() { unreachable_unchecked() };
+                        }
                     }
 
                     if let Some((idx, prev)) = restore { references[idx] = prev; }
@@ -1898,5 +1991,47 @@ mod tests {
                 "VarRef fast path diverged from the recursive re-match on:\n{prog}"
             );
         }
+    }
+
+    /// The fused single-word-walk in the NewVar arm must equal the original three-pass
+    /// (`vs!` + SIZES + ARITIES) in results AND visit order, on data mixing every child tag
+    /// class at one node: data variables, symbols of several sizes, and compounds of several
+    /// arities, nested, coreferential, and deep.
+    #[test]
+    fn match_any_fused_equals_three_pass() {
+        let facts = "(m $u)\n(m a)\n(m bb)\n(m ccc)\n(m dddd)\n(m (p q))\n(m (p q r))\n\
+                     (m (a b c d e f g h i j k l))\n(m ($w $w))\n\
+                     (m (deep (deep (deep (deep end)))))\n(m (s (s (s z))))\n";
+        let mut s = Space::new();
+        s.add_all_sexpr(facts.as_bytes()).unwrap();
+        // Encode the one-factor conjunction (, (m $x)) with the parser itself; its argument is a
+        // bare variable, so the NewVar arm walks every child class of the data node.
+        let mut scratch = Space::new();
+        scratch.add_all_sexpr("(, (m $x))".as_bytes()).unwrap();
+        let mut rz = scratch.btm.read_zipper();
+        assert!(rz.to_next_val());
+        let mut pat = rz.path().to_vec();
+
+        let mut run = |fused: bool| -> Vec<Vec<u8>> {
+            MATCH_ANY_TERM_FUSED.with(|c| c.set(fused));
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            Space::query_multi(
+                &s.btm,
+                Expr { ptr: pat.as_mut_ptr() },
+                |_bindings, loc| {
+                    seen.push(unsafe { loc.span().as_ref().unwrap() }.to_vec());
+                    true
+                },
+            );
+            MATCH_ANY_TERM_FUSED.with(|c| c.set(true));
+            seen
+        };
+        let fused = run(true);
+        let three_pass = run(false);
+        assert!(!fused.is_empty(), "the match-any query must see the corpus");
+        assert_eq!(
+            fused, three_pass,
+            "fused walk diverged from three-pass in results or order"
+        );
     }
 }

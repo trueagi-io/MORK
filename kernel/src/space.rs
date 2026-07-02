@@ -36,12 +36,44 @@ pub static ACT_PATH: &'static str = "/dev/shm/";
 // pub static ACT_PATH: &'static str = "/mnt/data/";
 
 pub struct Space {
+    /// Per-rule frontiers for the semi-naive immediate-consequence delta, armed by
+    /// `metta_calculus` for the duration of its loop (None on every other caller, so
+    /// every default path stays the naive full-space match).
+    #[cfg(feature = "semi_naive_ic")]
+    sni_rule_seen: Option<HashMap<Vec<u8>, SniRuleEntry>>,
+    /// Latched when a removal ran inside the current IC loop: the per-rule delta is
+    /// the monotone semi-naive recurrence, byte-identical to naive only while
+    /// evaluation is add-only, so any removal routes the rest of the loop to naive.
+    #[cfg(feature = "semi_naive_ic")]
+    sni_removal_seen: bool,
+    /// Runtime revert: force the naive loop even with the feature compiled in.
+    #[cfg(feature = "semi_naive_ic")]
+    pub sni_force_naive: bool,
     pub btm: PathMap<()>,
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<OwnedSourceItem, Box<Popen>>,
     pub last_merkleize: Instant,
     pub timing: bool
+}
+
+/// One rule's semi-naive frontier: the match input (`btm` plus the consumed exec)
+/// the last time this rule fired, and its cached fact count so the cost gate never
+/// pays an O(dish) walk on later firings.
+#[cfg(feature = "semi_naive_ic")]
+pub(crate) struct SniRuleEntry {
+    pub(crate) snapshot: PathMap<()>,
+    pub(crate) dish_count: usize,
+}
+
+#[cfg(feature = "semi_naive_ic")]
+thread_local! {
+    /// Revert for the semi-naive IC delta: when true, `metta_calculus` forces the
+    /// naive loop even with `semi_naive_ic` compiled in (the second revert next to
+    /// removing the feature; `MORK_SNI=0` is the process-wide form, checked at
+    /// arming). Thread-local so a test pinning the reference path never disarms a
+    /// concurrently running test's loop.
+    pub static SNI_DISARM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 pub(crate) const SIZES: [u64; 4] = {
@@ -453,7 +485,14 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
+        Self {
+            #[cfg(feature = "semi_naive_ic")]
+            sni_rule_seen: None,
+            #[cfg(feature = "semi_naive_ic")]
+            sni_removal_seen: false,
+            #[cfg(feature = "semi_naive_ic")]
+            sni_force_naive: false,
+            btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1457,6 +1496,33 @@ impl Space {
 
     #[cfg(feature="specialize_io")]
     pub fn transform_multi_multi_(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
+        // Semi-naive immediate-consequence step (feature `semi_naive_ic`). Inside the
+        // IC loop (`sni_rule_seen` is Some) fire the m-delta-rule transform: match each
+        // body factor against THIS rule's delta in turn (facts added since it last
+        // fired) with the other factors on the full space, and union (the idempotent
+        // insert dedups). A first-seen rule has no snapshot, so the cost gate routes it
+        // to the naive full match; every later monotone firing costs O(delta) instead
+        // of O(dish). Any removal in the loop latches `sni_removal_seen` and the rest
+        // of the loop stays naive (the per-rule delta recurrence is only byte-identical
+        // to naive while evaluation is add-only). `sni_rule_seen == None` (every
+        // non-IC caller, every default build) falls through to the naive match.
+        #[cfg(feature = "semi_naive_ic")]
+        if let Some(seen) = self.sni_rule_seen.take() {
+            if self.sni_force_naive || self.sni_removal_seen {
+                self.sni_rule_seen = Some(seen);
+            } else if let Some(result) = self.sni_delta_fire(seen, pat_expr, tpl_expr, add) {
+                return result;
+            }
+            // gate chose naive (snapshot refreshed inside): fall through.
+        }
+        self.transform_multi_multi_naive(pat_expr, tpl_expr, add)
+    }
+
+    /// The naive full-space match for a `,`->`,` rule: match the whole body against
+    /// `btm` plus the consumed exec and emit every template instantiation. The
+    /// unconditional, always-correct path every default caller and every semi-naive
+    /// fall-through routes to.
+    pub fn transform_multi_multi_naive(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut tpl_args = Vec::with_capacity(64);
@@ -1528,6 +1594,205 @@ impl Space {
             zh.cleanup_write_zipper(wz);
         }
         (touched, any_new)
+    }
+
+    /// Cost-gated semi-naive firing. Returns `Some(result)` when the m-delta-rule ran;
+    /// `None` when the gate chose the naive full match (first firing, or the delta is
+    /// not small enough that m delta-passes beat one full pass). Either way the rule's
+    /// snapshot is refreshed to this firing's match input, so the NEXT delta only
+    /// carries facts added after it, and `sni_rule_seen` is put back.
+    #[cfg(feature = "semi_naive_ic")]
+    fn sni_delta_fire(
+        &mut self,
+        mut seen: HashMap<Vec<u8>, SniRuleEntry>,
+        pat_expr: Expr,
+        tpl_expr: Expr,
+        add: Expr,
+    ) -> Option<(usize, bool)> {
+        let mut read_copy = self.btm.clone();
+        read_copy.insert(unsafe { add.span().as_ref().unwrap() }, ());
+
+        // Rule key: pattern bytes then template bytes; stable across the exec
+        // re-arming (the wrapper changes round to round, the `,`-body does not).
+        let pat_span = unsafe { pat_expr.span().as_ref().unwrap() };
+        let tpl_span = unsafe { tpl_expr.span().as_ref().unwrap() };
+        let mut key = Vec::with_capacity(pat_span.len() + tpl_span.len() + 1);
+        key.extend_from_slice(pat_span);
+        key.push(0xff);
+        key.extend_from_slice(tpl_span);
+
+        let mut pat_args = Vec::with_capacity(64);
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+        let m = pat_args.len().saturating_sub(1);
+
+        // Cost gate: the m-delta-rule runs m passes of ~O(delta) each versus naive's
+        // single ~O(dish) pass, so route to semi only when m * delta < dish. On a
+        // FIRST firing the delta IS the dish (m >= 1 pre-determines naive), so skip
+        // the subtract and seed the snapshot count from one val_count. On later
+        // firings both counts are O(facts changed): `subtract` on COW clones prunes
+        // shared subtrees (measured ~5us diffing a 500k-fact clone-plus-one; see
+        // tests/subtract_probe.rs), and dish_count = cached + delta - removed stays
+        // exact because the IC driver consumes exec facts between firings (the dish
+        // is not add-only).
+        let (delta, delta_count, dish_count) = match seen.get(&key) {
+            None => {
+                let dish_count = read_copy.val_count();
+                (None, dish_count, dish_count)
+            }
+            Some(entry) => {
+                let delta = read_copy.subtract(&entry.snapshot);
+                let delta_count = delta.val_count();
+                let removed_count = entry.snapshot.subtract(&read_copy).val_count();
+                debug_assert!(entry.dish_count + delta_count >= removed_count);
+                let dish_count = entry.dish_count + delta_count - removed_count;
+                (Some(delta), delta_count, dish_count)
+            }
+        };
+
+        let result = match delta {
+            Some(delta) if m.saturating_mul(delta_count) < dish_count => {
+                Some(self.transform_multi_multi_delta(&read_copy, &delta, pat_expr, tpl_expr))
+            }
+            _ => None,
+        };
+
+        seen.insert(
+            key,
+            SniRuleEntry {
+                snapshot: read_copy,
+                dish_count,
+            },
+        );
+        self.sni_rule_seen = Some(seen);
+        result
+    }
+
+    /// The m-delta-rule transform: one pass per body factor j, matching factor j
+    /// against the per-rule `delta` and the remaining factors against the full
+    /// `read_copy`, emitting exactly as the naive path does (the idempotent insert
+    /// dedups the pass overlap). Per pass the factors are REORDERED so the delta
+    /// factor drives the descent (the small outer loop) and re-encoded so its
+    /// variables become the leading NewVars (`renormalize_query_factors`); the
+    /// per-candidate unification still runs over the ORIGINAL sources, so bindings
+    /// stay keyed in the pattern's own namespace and the emit below is byte-identical
+    /// to the naive path's. A plan whose variables do not re-encode falls back to the
+    /// identity order for that pass (correct, only slower).
+    #[cfg(feature = "semi_naive_ic")]
+    pub fn transform_multi_multi_delta(
+        &mut self,
+        read_copy: &PathMap<()>,
+        delta: &PathMap<()>,
+        pat_expr: Expr,
+        tpl_expr: Expr,
+    ) -> (usize, bool) {
+        let mut buffer = Vec::with_capacity(1 << 32);
+        unsafe { buffer.set_len(1 << 32); }
+        let mut tpl_args = Vec::with_capacity(64);
+        ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
+        let templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+        let template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| x).as_ref().unwrap() }).collect();
+        let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
+        let mut placements = subsumption.clone();
+        let mut zh = self.btm.zipper_head();
+        let mut template_wzs: Vec<_> = Vec::with_capacity(64);
+        template_prefixes.iter().enumerate().for_each(|(i, x)| {
+            if subsumption[i] == i {
+                placements[i] = template_wzs.len();
+                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
+            }
+        });
+        for i in 0..subsumption.len() {
+            subsumption[i] = placements[subsumption[i]]
+        }
+
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut trace: Vec<(u8, u8)> = vec![];
+        let mut ass = Vec::with_capacity(64);
+        let mut astack = Vec::with_capacity(64);
+
+        let mut pat_args = Vec::with_capacity(64);
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
+        let sources: Vec<ExprEnv> = pat_args[1..].to_vec();
+        let n_factors = sources.len();
+
+        let mut any_new = false;
+        let mut total_candidates = 0usize;
+
+        for j in 0..n_factors {
+            // Plan: factor j first, the rest in identity order.
+            let plan_j: Vec<usize> =
+                std::iter::once(j).chain((0..n_factors).filter(|&i| i != j)).collect();
+
+            // (map per PZ position, search sources, unify sources) for this pass.
+            let (maps, _search_buffers, search_sources, unify_sources): (
+                Vec<&PathMap<()>>,
+                Vec<Vec<u8>>,
+                Vec<ExprEnv>,
+                Vec<ExprEnv>,
+            ) = match Self::renormalize_query_factors(&sources, &plan_j) {
+                Some((buffers, planned)) => (
+                    plan_j.iter().map(|&i| if i == j { delta } else { read_copy }).collect(),
+                    buffers,
+                    planned,
+                    plan_j.iter().map(|&i| sources[i]).collect(),
+                ),
+                None => (
+                    // Identity fallback: the delta zipper sits at PZ position j.
+                    (0..n_factors).map(|i| if i == j { delta } else { read_copy }).collect(),
+                    Vec::new(),
+                    sources.clone(),
+                    sources.clone(),
+                ),
+            };
+
+            let mut prz = ProductZipper::new(
+                maps[0].read_zipper(),
+                (1..n_factors).map(|k| maps[k].read_zipper()),
+            );
+            prz.reserve_buffers(1 << 32, 32);
+
+            total_candidates += Self::query_multi_raw_with_unification_sources(
+                &mut prz,
+                &search_sources,
+                &unify_sources,
+                |refs_bindings, loc| 'query: {
+                    trace!(target: "transform", "delta data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
+                    unsafe { writes += template_prefixes.len(); }
+                    match refs_bindings {
+                        Ok(_refs) => {
+                            unreachable!()
+                        }
+                        Err(ref bindings) => {
+                            #[cfg(debug_assertions)]
+                            bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "delta binding {:?} {}", *v, ee.show()));
+
+                            // Per-match seed recompute, exactly as the naive emit: no
+                            // caching, so schematic matches can never inherit a stale
+                            // ground seed.
+                            let (mut oi, ni, true) = ({
+                                let mut void = std::io::sink();
+                                mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
+                            }) else { break 'query true; };
+
+                            'writes: for (i, template) in templates.iter().enumerate() {
+                                let wz = &mut template_wzs[subsumption[i]];
+                                buffer.clear();
+                                let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
+                                oi = toi;
+                                wz.move_to_path(&buffer[wz.root_prefix_path().len()..]);
+                                any_new |= wz.set_val(()).is_none();
+                            }
+                            true
+                        }
+                    }
+                },
+            );
+        }
+
+        for wz in template_wzs {
+            zh.cleanup_write_zipper(wz);
+        }
+        (total_candidates, any_new)
     }
 
     #[cfg(feature="specialize_io")]
@@ -1613,6 +1878,12 @@ impl Space {
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
         let mut sinks: Vec<_> = templates.iter().map(|e| ASink::new(*e)).collect();
+        // A remove sink makes this loop non-monotone: latch the semi-naive soundness
+        // gate (conservatively, on presence) so later `,`->`,` rules route to naive.
+        #[cfg(feature = "semi_naive_ic")]
+        {
+            self.sni_removal_seen |= sinks.iter().any(|s| matches!(s, crate::sinks::ASink::RemoveSink(_)));
+        }
         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
             sink.request().next().unwrap()
         ).collect();
@@ -1699,6 +1970,10 @@ impl Space {
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
         let mut sinks: Vec<_> = templates.iter().map(|e| { if no_sink { ASink::compat(*e) } else { ASink::new(*e) } }).collect();
+        #[cfg(feature = "semi_naive_ic")]
+        {
+            self.sni_removal_seen |= sinks.iter().any(|s| matches!(s, crate::sinks::ASink::RemoveSink(_)));
+        }
         let mut template_prefixes: Vec<_> = sinks.iter().map(|sink|
             sink.request().next().unwrap()
         ).collect();
@@ -1821,6 +2096,21 @@ impl Space {
         let mut done: usize = 0;
         const PREFIX: [u8; 6] = const { [item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(4)), b'e', b'x', b'e', b'c' ] };
 
+        // Arm the semi-naive immediate-consequence delta for the duration of this
+        // loop; every `,`->`,` rule then matches only what changed since IT last
+        // fired (see `transform_multi_multi_`). Restored on exit so nested and later
+        // transform calls stay naive. The default build never arms it.
+        #[cfg(feature = "semi_naive_ic")]
+        let sni_outer = self.sni_rule_seen.take();
+        #[cfg(feature = "semi_naive_ic")]
+        {
+            self.sni_rule_seen = Some(HashMap::new());
+            self.sni_removal_seen = false;
+            self.sni_force_naive = self.sni_force_naive
+                || SNI_DISARM.with(|c| c.get())
+                || std::env::var("MORK_SNI").as_deref() == Ok("0");
+        }
+
         while {
             let mut rz = self.btm.read_zipper_at_borrowed_path(&PREFIX[..]);
             if rz.to_next_val() {
@@ -1846,6 +2136,11 @@ impl Space {
                 false
             }
         } { done += 1 }
+
+        #[cfg(feature = "semi_naive_ic")]
+        {
+            self.sni_rule_seen = sni_outer;
+        }
 
         done
     }
@@ -1909,5 +2204,431 @@ impl Drop for Space {
             // z3.terminate();
             drop(z3.stdin.take())
         }
+    }
+}
+#[cfg(all(test, feature = "semi_naive_ic"))]
+mod semi_naive_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn query_pattern_and_sources(space: &mut Space, pattern: &'static str) -> (Expr, Vec<ExprEnv>) {
+        let pat_expr = crate::expr!(space, pattern);
+        let mut args = Vec::new();
+        ExprEnv::new(0, pat_expr).args(&mut args);
+        (pat_expr, args[1..].to_vec())
+    }
+
+    fn peano_sexpr(x: usize) -> String {
+        if x == 0 { "Z".to_string() } else { format!("(S {})", peano_sexpr(x - 1)) }
+    }
+
+    fn collect_facts(btm: &PathMap<()>) -> BTreeSet<Vec<u8>> {
+        let mut facts = BTreeSet::new();
+        let mut rz = btm.read_zipper();
+        while rz.to_next_val() {
+            facts.insert(rz.origin_path().to_vec());
+        }
+        facts
+    }
+
+    /// Mirrors `metta_calculus`'s exec-taking: pop the first `(exec ...)` fact, if any.
+    fn take_first_exec(s: &mut Space, out: &mut Vec<u8>) -> bool {
+        const PREFIX: [u8; 6] =
+            [item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(4)), b'e', b'x', b'e', b'c'];
+        let has = {
+            let mut rz = s.btm.read_zipper_at_borrowed_path(&PREFIX[..]);
+            if rz.to_next_val() {
+                *out = rz.into_path();
+                true
+            } else {
+                false
+            }
+        };
+        if has {
+            s.btm.remove(&out[..]);
+        }
+        has
+    }
+
+    /// The naive one-step emit set over `btm` (the oracle): the same per-match seed
+    /// recompute and template application `transform_multi_multi_naive` performs,
+    /// collecting the output paths instead of inserting them.
+    fn naive_emit_set(
+        space: &mut Space,
+        btm: &PathMap<()>,
+        body: &'static str,
+        template: &'static str,
+    ) -> BTreeSet<Vec<u8>> {
+        let (pat_expr, _) = query_pattern_and_sources(space, body);
+        let (tpl_expr, _) = query_pattern_and_sources(space, template);
+        let mut tpl_args = Vec::new();
+        ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
+        let templates: Vec<Expr> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+        let mut outputs = BTreeSet::new();
+        let mut buffer: Vec<u8> = Vec::with_capacity(1 << 20);
+        let mut trace: Vec<(u8, u8)> = vec![];
+        let mut assignments: Vec<(u8, u8)> = vec![];
+        let mut ass = Vec::with_capacity(64);
+        let mut astack = Vec::with_capacity(64);
+        Space::query_multi(btm, pat_expr, |refs_bindings, _loc| 'query: {
+            let Err(ref bindings) = refs_bindings else { break 'query true; };
+            let (mut oi, ni, true) = ({
+                let mut void = std::io::sink();
+                mork_expr::apply_e_clears_stacks_and_cycles_check!(0, 0, 0, pat_expr, bindings, void, trace, assignments)
+            }) else {
+                break 'query true;
+            };
+            for template in templates.iter() {
+                buffer.clear();
+                let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0, oi, ni, *template, bindings, buffer, astack, ass) else {
+                    continue;
+                };
+                oi = toi;
+                outputs.insert(buffer.clone());
+            }
+            true
+        });
+        outputs
+    }
+
+    /// The m-delta-rule emit set: the facts `transform_multi_multi_delta` writes into
+    /// a space initialized to `post` (the full post-step space), given `delta`.
+    fn delta_emit_set(
+        post: &PathMap<()>,
+        delta: &PathMap<()>,
+        pat_expr: Expr,
+        tpl_expr: Expr,
+    ) -> BTreeSet<Vec<u8>> {
+        let mut space = Space::new();
+        space.btm = post.clone();
+        let read_copy = space.btm.clone();
+        let before = space.btm.clone();
+        space.transform_multi_multi_delta(&read_copy, delta, pat_expr, tpl_expr);
+        collect_facts(&space.btm.subtract(&before))
+    }
+
+    /// (post-step space, pre-step space, delta) from sexpr blocks.
+    fn build_step_spaces(base: &[u8], added: &[u8]) -> (PathMap<()>, PathMap<()>, PathMap<()>) {
+        let mut pre = Space::new();
+        pre.add_all_sexpr(base).unwrap();
+        let pre_btm = pre.btm.clone();
+
+        let mut post = Space::new();
+        post.add_all_sexpr(base).unwrap();
+        post.add_all_sexpr(added).unwrap();
+        let post_btm = post.btm.clone();
+
+        let delta = post_btm.subtract(&pre_btm);
+        (post_btm, pre_btm, delta)
+    }
+
+    /// The core m-delta-rule invariant on one body, asserted two ways:
+    ///   (soundness)   delta_emit is a subset of naive(post)
+    ///   (semi-naive)  delta_emit + naive(pre) == naive(post)
+    /// With injective template instantiation (`exact_difference`) the stronger form
+    /// also holds: delta_emit == naive(post) \ naive(pre).
+    fn assert_m_delta_invariant(
+        base: &[u8],
+        added: &[u8],
+        body: &'static str,
+        template: &'static str,
+        exact_difference: bool,
+    ) {
+        let (post, pre, delta) = build_step_spaces(base, added);
+
+        let mut space = Space::new();
+        let (pat_expr, _) = query_pattern_and_sources(&mut space, body);
+        let (tpl_expr, _) = query_pattern_and_sources(&mut space, template);
+
+        let naive_pre = naive_emit_set(&mut space, &pre, body, template);
+        let naive_post = naive_emit_set(&mut space, &post, body, template);
+        let delta_out = delta_emit_set(&post, &delta, pat_expr, tpl_expr);
+
+        assert!(
+            delta_out.is_subset(&naive_post),
+            "delta-rule emitted a fact the naive full match does not"
+        );
+        let recovered: BTreeSet<Vec<u8>> = delta_out.union(&naive_pre).cloned().collect();
+        assert_eq!(recovered, naive_post, "delta_emit + naive(pre) must equal naive(post)");
+        if exact_difference {
+            let naive_new: BTreeSet<Vec<u8>> =
+                naive_post.difference(&naive_pre).cloned().collect();
+            assert_eq!(delta_out, naive_new, "with injective output, delta_emit == naive(post) \\ naive(pre)");
+        }
+    }
+
+    #[test]
+    fn m_delta_rule_per_step_invariant_ground() {
+        let base = br#"
+(path a b)
+(path b c)
+(path c d)
+"#;
+        let added = b"(path d e)\n";
+        assert_m_delta_invariant(base, added, "[3] , [3] path $ $ [3] path _2 $", "[2] , [3] path _1 _3", false);
+        assert_m_delta_invariant(base, added, "[3] , [3] path $ $ [3] path _2 $", "[2] , [3] reach _1 _3", true);
+        assert_m_delta_invariant(
+            base,
+            added,
+            "[4] , [3] path $ $ [3] path _2 $ [3] path _3 $",
+            "[2] , [3] tri _1 _4",
+            true,
+        );
+    }
+
+    #[test]
+    fn m_delta_rule_per_step_invariant_schematic() {
+        // Variable-bearing receiver joined with a message on shared channel+payload:
+        // real unification on the delta-restricted factor, both factors over the
+        // mutated relation so the m-delta-rule loops both.
+        let base = br#"
+(petri (? chan one (done one)))
+(petri (! chan one))
+"#;
+        let added = br#"
+(petri (? other ($v) (got $v)))
+(petri (! other (Z)))
+"#;
+        assert_m_delta_invariant(
+            base,
+            added,
+            "[3] , [2] petri [4] ? $ $ $ [2] petri [3] ! _1 _2",
+            "[2] , [2] petri _3",
+            false,
+        );
+    }
+
+    #[test]
+    fn m_delta_rule_preserves_free_data_vars_in_split_templates() {
+        // A single-factor body over a schematic fact whose second component carries a
+        // FREE data variable plus a back-reference, split by two templates: pins the
+        // split emit byte-for-byte against the naive full match.
+        let base = br#"
+(petri (| (msg a) (recv a)))
+"#;
+        let added = br#"
+(petri (| (! chan pay) (? chan $a (send (S $a)))))
+"#;
+        assert_m_delta_invariant(
+            base,
+            added,
+            "[2] , [2] petri [3] | $ $",
+            "[3] , [2] petri _1 [2] petri _2",
+            false,
+        );
+    }
+
+    fn process_calculus_setup_sexpr(steps: usize, x: usize, y: usize) -> String {
+        format!(
+            r#"
+(exec (IC 0 1 {})
+               (, (exec (IC $x $y (S $c)) $sp $st)
+                  ((exec $x) $p $t))
+               (, (exec (IC $y $x $c) $sp $st)
+                  (exec (R $x) $p $t)))
+
+((exec 0)
+      (, (petri (? $channel $payload $body))
+         (petri (! $channel $payload)) )
+      (, (petri $body)))
+((exec 1)
+      (, (petri (| $lprocess $rprocess)))
+      (, (petri $lprocess)
+         (petri $rprocess)))
+
+(petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                    (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+(petri (? (add $ret) (Z $y) (! $ret $y)))
+(petri (! (add result) ({} {})))
+    "#,
+            peano_sexpr(steps),
+            peano_sexpr(x),
+            peano_sexpr(y)
+        )
+    }
+
+    fn build(setup: &str) -> Space {
+        let mut s = Space::new();
+        let pat = crate::expr!(s, "$");
+        let tpl = crate::expr!(s, "_1");
+        s.add_sexpr(setup.as_bytes(), pat, tpl).unwrap();
+        s
+    }
+
+    /// The IC loop with the delta hook inert (`sni_rule_seen` stays None): the
+    /// feature-off reference, driven by hand.
+    fn run_naive(setup: &str) -> Space {
+        let mut s = build(setup);
+        let mut exec_path = Vec::new();
+        while take_first_exec(&mut s, &mut exec_path) {
+            let xe = Expr { ptr: exec_path.as_mut_ptr() };
+            let _ = s.interpret(xe);
+            debug_assert!(s.sni_rule_seen.is_none());
+        }
+        s
+    }
+
+    fn project_result(s: &mut Space) -> String {
+        let pat = crate::expr!(s, "[2] petri [3] ! result $");
+        let tpl = crate::expr!(s, "_1");
+        let mut v = Vec::new();
+        s.dump_sexpr(pat, tpl, &mut v);
+        String::from_utf8_lossy(&v).into_owned()
+    }
+
+    /// The load-bearing end-to-end oracle: the full process_calculus IC loop run
+    /// naive (hand-driven, delta inert) and semi-naive (`metta_calculus`, which arms
+    /// the per-rule deltas) must produce a BYTE-IDENTICAL final dish, and both must
+    /// land peano(x+y) on the result channel.
+    #[test]
+    fn metta_calculus_semi_naive_matches_naive() {
+        for (x, y) in [(8usize, 8usize), (16, 16)] {
+            let setup = process_calculus_setup_sexpr(100, x, y);
+            let mut naive = run_naive(&setup);
+            let mut semi = build(&setup);
+            semi.metta_calculus(1_000_000_000_000_000);
+
+            let mut nv = Vec::new();
+            naive.dump_all_sexpr(&mut nv).unwrap();
+            let mut sv = Vec::new();
+            semi.dump_all_sexpr(&mut sv).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&nv),
+                String::from_utf8_lossy(&sv),
+                "process_calculus x={x} y={y}: semi-naive IC loop must be byte-identical to naive"
+            );
+
+            let want = format!("{}\n", peano_sexpr(x + y));
+            assert_eq!(project_result(&mut naive), want);
+            assert_eq!(project_result(&mut semi), want);
+        }
+    }
+
+    /// Per-step oracle: drive the naive loop and an armed semi loop in lockstep and
+    /// compare the whole dish after EVERY exec step, so a divergence is pinned to the
+    /// first step that produced it, with the offending facts and raw byte layouts.
+    #[test]
+    fn semi_naive_ic_lockstep_with_naive_per_step() {
+        for (x, y) in [(3usize, 3usize), (8, 8)] {
+            let setup = process_calculus_setup_sexpr(100, x, y);
+            let mut naive = build(&setup);
+            let mut semi = build(&setup);
+            // Arm the semi space exactly as metta_calculus does for its loop.
+            semi.sni_rule_seen = Some(HashMap::new());
+            semi.sni_removal_seen = false;
+
+            let mut exec_path = Vec::new();
+            let mut step = 0usize;
+            loop {
+                step += 1;
+                let n_has = take_first_exec(&mut naive, &mut exec_path);
+                if n_has {
+                    let xe = Expr { ptr: exec_path.as_mut_ptr() };
+                    let _ = naive.interpret(xe);
+                }
+                let s_has = take_first_exec(&mut semi, &mut exec_path);
+                if s_has {
+                    let xe = Expr { ptr: exec_path.as_mut_ptr() };
+                    let _ = semi.interpret(xe);
+                }
+                assert_eq!(n_has, s_has, "x={x} y={y} step {step}: one loop ran dry first");
+                let mut nv = Vec::new();
+                naive.dump_all_sexpr(&mut nv).unwrap();
+                let mut sv = Vec::new();
+                semi.dump_all_sexpr(&mut sv).unwrap();
+                if nv != sv {
+                    let ns: BTreeSet<String> =
+                        String::from_utf8_lossy(&nv).lines().map(|l| l.to_string()).collect();
+                    let ss: BTreeSet<String> =
+                        String::from_utf8_lossy(&sv).lines().map(|l| l.to_string()).collect();
+                    let only_n: Vec<String> = ns.difference(&ss).take(4).cloned().collect();
+                    let only_s: Vec<String> = ss.difference(&ns).take(4).cloned().collect();
+                    let mut raw = String::new();
+                    raw.push_str(&format!("exec: {:02x?}\n", &exec_path[..]));
+                    for (label, space) in [("naive", &naive), ("semi", &semi)] {
+                        let mut rz = space.btm.read_zipper();
+                        while rz.to_next_val() {
+                            let p = rz.origin_path();
+                            let shown = serialize(p);
+                            if only_n.iter().any(|l| *l == shown) || only_s.iter().any(|l| *l == shown) {
+                                raw.push_str(&format!("{label} {shown}\n  = {p:02x?}\n"));
+                            }
+                        }
+                    }
+                    panic!(
+                        "x={x} y={y}: first divergence at step {step}\nonly naive:\n  {}\nonly semi:\n  {}\n{raw}",
+                        only_n.join("\n  "),
+                        only_s.join("\n  ")
+                    );
+                }
+                if !n_has {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// An `O (- ...)` removal inside the loop makes evaluation non-monotone; the
+    /// soundness gate must latch and every later `,`->`,` rule route to naive, so
+    /// the loop stays byte-identical to the hand-driven naive one.
+    #[test]
+    fn removal_latches_the_soundness_gate() {
+        fn setup() -> Space {
+            let mut s = Space::new();
+            s.add_all_sexpr(
+                br#"
+(fact a)
+(fact b)
+(kill a)
+(exec 0 (, (kill $x)) (O (- (fact $x))))
+(exec 1 (, (fact $x)) (, (copy $x)))
+"#,
+            )
+            .unwrap();
+            s
+        }
+        let mut naive = setup();
+        let mut exec_path = Vec::new();
+        while take_first_exec(&mut naive, &mut exec_path) {
+            let xe = Expr { ptr: exec_path.as_mut_ptr() };
+            let _ = naive.interpret(xe);
+        }
+
+        let mut semi = setup();
+        semi.metta_calculus(1_000_000);
+        assert!(semi.sni_removal_seen, "the O(-) removal must latch the soundness gate");
+
+        let mut nv = Vec::new();
+        naive.dump_all_sexpr(&mut nv).unwrap();
+        let mut sv = Vec::new();
+        semi.dump_all_sexpr(&mut sv).unwrap();
+        assert_eq!(String::from_utf8_lossy(&nv), String::from_utf8_lossy(&sv));
+    }
+
+    /// Regression guard for the use-after-realloc in `coreferential_transition`'s
+    /// VarRef recheck: the bound subterm pointed into the ProductZipper path buffer
+    /// and the recursion below realloc'd it on deep terms (peano(1000) IC counter
+    /// plus the add(n,n) cascade at n=175 pushes past the reserved capacity).
+    /// Pre-fix this panicked (`byte_item` "reserved"); post-fix both loops are
+    /// byte-identical.
+    #[test]
+    fn coreferential_recheck_survives_path_buffer_realloc_on_deep_terms() {
+        std::thread::Builder::new()
+            .stack_size(1 << 31)
+            .spawn(|| {
+                let n = 175usize;
+                let setup = process_calculus_setup_sexpr(1000, n, n);
+                let mut naive = run_naive(&setup);
+                let mut semi = build(&setup);
+                semi.metta_calculus(1_000_000_000_000_000);
+                let mut nv = Vec::new();
+                naive.dump_all_sexpr(&mut nv).unwrap();
+                let mut sv = Vec::new();
+                semi.dump_all_sexpr(&mut sv).unwrap();
+                assert_eq!(nv, sv, "deep-term IC loop must stay byte-identical");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

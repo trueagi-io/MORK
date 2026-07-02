@@ -89,6 +89,18 @@ pub(crate) const VARS: [u64; 4] = {
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
+thread_local! {
+    /// Drives the VarRef ground fast-path re-check in `coreferential_transition` (WAM
+    /// `unify_value` by byte comparison). The ground-data case is proved correct in
+    /// `kernel/resources/formal/verus/VarRefRecheck.rs`; the implementation handles non-ground
+    /// data by detecting a variable branch in the data's child mask and falling back to the
+    /// recursive re-match (the differential oracle test
+    /// `varref_fast_recheck_matches_recursive_path` checks both, including the Verus Theorem-3
+    /// non-ground witness). The toggle stays so the differential test can compare the two paths.
+    pub(crate) static VARREF_FAST_RECHECK: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(true) };
+}
+
 fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
     loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
     macro_rules! vs {
@@ -163,26 +175,62 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     if let Some((idx, prev)) = restore { references[idx] = prev; }
                 }
                 Tag::VarRef(i) => {
-                    let addition = if e.n == 0 && (i as usize) < references.len() && references[i as usize] != u32::MAX {
-                        if i as usize >= references.len() {
-                            trace!(target: "coref trans", "i {i} #references {}", references.len());
-                            stack.push(e);
-                            return;
-                        }
+                    if e.n == 0 && (i as usize) < references.len() && references[i as usize] != u32::MAX {
                         trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
-                        // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
-                        // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
+                        // The data subterm bound to this variable at its first occurrence
+                        // (`references[i]` is its start in the data path).
+                        let bound = Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) };
+                        // WAM `unify_value` (read mode): re-check that the data here equals the
+                        // bound value. For a GROUND bound term this is an exact byte descent
+                        // instead of pushing the data subterm and re-matching it structurally
+                        // (which `args`-decomposes it, the measured matcher hot spot). Sound,
+                        // since it only matches literal data, and on ground data also complete
+                        // (resources/formal/verus/VarRefRecheck.rs proves both). The moment the
+                        // data branches on a variable child, byte comparison is incomplete (its
+                        // Theorem 3), so fall back to the recursive re-match for the whole
+                        // subterm. The toggle drives the differential oracle test.
+                        if VARREF_FAST_RECHECK.with(|c| c.get()) && bound.is_ground() {
+                            let bytes: Vec<u8> = (&*bound.span()).to_vec();
+                            vs!(e, false);
+                            let mut k = 0usize;
+                            let mut variable_branch = false;
+                            while k < bytes.len() {
+                                if loc.child_mask().and(&ByteMask(VARS)).iter().next().is_some() {
+                                    variable_branch = true;
+                                    break;
+                                }
+                                if loc.descend_to_existing_byte(bytes[k]) {
+                                    k += 1;
+                                } else {
+                                    break; // ground data, literal absent: a real mismatch
+                                }
+                            }
+                            if variable_branch {
+                                loc.ascend(k);
+                                stack.push(ExprEnv{ n: 254, v: 0, offset: 0, base: bound });
+                                coreferential_transition(loc, stack, references, f);
+                                stack.pop();
+                            } else {
+                                if k == bytes.len() {
+                                    coreferential_transition(loc, stack, references, f);
+                                }
+                                loc.ascend(k);
+                            }
+                        } else {
+                            stack.push(ExprEnv{ n: 254, v: 0, offset: 0, base: bound });
+                            vs!(e, false);
+                            coreferential_transition(loc, stack, references, f);
+                            stack.pop();
+                        }
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
                         static nv: u8 = item_byte(Tag::NewVar);
-                        ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
-                    };
-                    stack.push(addition);
-                    vs!(e, false);
-                    coreferential_transition(loc, stack, references, f);
-                    stack.pop();
+                        stack.push(ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } });
+                        vs!(e, false);
+                        coreferential_transition(loc, stack, references, f);
+                        stack.pop();
+                    }
                 }
                 Tag::SymbolSize(size) => {
                     vs!(e, false);
@@ -1783,6 +1831,72 @@ impl Drop for Space {
         for (_, z3) in self.z3s.iter_mut() {
             // z3.terminate();
             drop(z3.stdin.take())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The VarRef ground fast-path (WAM `unify_value` by byte comparison) must produce the SAME
+    /// result set as the recursive re-match, on coreferential rewrites over varied data. The fast
+    /// path drops duplicate re-matches, so the unification COUNT may differ; the result SET must
+    /// be identical.
+    #[test]
+    fn varref_fast_recheck_matches_recursive_path() {
+        let programs: &[&str] = &[
+            // value coreference: a,b share value 1
+            "(e a 1)\n(e b 1)\n(e c 2)\n(exec 0 (, (e $x $v) (e $y $v)) (, (sib $x $y)))\n",
+            // compound-value coreference (the value is a nested term)
+            "(e a (p 1 2))\n(e b (p 1 2))\n(e c (p 3 4))\n(exec 0 (, (e $x $v) (e $y $v)) (, (sib $x $y)))\n",
+            // three-factor coreference (a variable repeated across 3 factors)
+            "(t a m)\n(t b m)\n(t c m)\n(u m)\n(exec 0 (, (t $x $k) (t $y $k) (u $k)) (, (tri $x $y)))\n",
+            // nested coreference over a larger ground value space
+            "(k1 x (s (s z)))\n(k2 x (s (s z)))\n(k1 y (s z))\n(k2 y (s (s z)))\n(exec 0 (, (k1 $a $v) (k2 $a $v)) (, (matched $a)))\n",
+            // duplicate-prone: the same value reachable several ways
+            "(e a 1)\n(e a 1)\n(e b 1)\n(exec 0 (, (e $x $v) (e $y $v)) (, (sib $x $y)))\n",
+            // counter_machine shape: a variable ($ts) coreferenced across THREE
+            // factors with intervening factors, over nested peano data
+            "(state Z (ic i0))\n(state Z (reg r0 (S Z)))\n(state Z (reg r1 (S (S Z))))\n(prog i0 step)\n(exec 0 (, (state $ts (ic $i)) (prog $i $op) (state $ts (reg $r $v)) (state $ts (reg $k $kv))) (, (fired $ts $i $r $k)))\n",
+            // coreference where the repeated variable wraps in a constructor in a
+            // later occurrence, like counter_machine's `(S $ts)` / `(S $i)`
+            "(c a (S Z))\n(c b (S Z))\n(d (S Z))\n(exec 0 (, (c $x $v) (c $y $v) (d $v)) (, (g $x $y)))\n",
+            // iterated coreference machine: derives across several steps, the
+            // coreference re-check fires deep in the recursion each round
+            "(n a Z)\n(n b Z)\n(n a (S Z))\n(n b (S Z))\n(exec 0 (, (n $x $t) (n $y $t)) (, (same $x $y $t)))\n",
+            // THE NON-GROUND-DATA WITNESS (Verus Theorem 3): the data at a
+            // coreferenced position is itself a variable. `$v` binds to `1` at
+            // `(rel a 1)`, then is re-checked at `(rel2 $y $v)` against `(rel2 b $w)`
+            // whose value slot is the variable `$w`. The recursive matcher matches
+            // (a data variable is a wildcard); a naive byte comparison would MISS
+            // it. This is the case the fast path must handle (fall back) or be
+            // gated against.
+            "(rel a 1)\n(rel2 b $w)\n(exec 0 (, (rel $x $v) (rel2 $y $v)) (, (m $x $y)))\n",
+            // nested variable in data at the coreferenced slot
+            "(p k (S Z))\n(q (S $u))\n(exec 0 (, (p $a $v) (q $v)) (, (r $a)))\n",
+        ];
+        for prog in programs {
+            let mut fast = Space::new();
+            fast.add_all_sexpr(prog.as_bytes()).unwrap();
+            let mut slow = Space::new();
+            slow.add_all_sexpr(prog.as_bytes()).unwrap();
+
+            VARREF_FAST_RECHECK.with(|c| c.set(true));
+            fast.metta_calculus(50);
+            VARREF_FAST_RECHECK.with(|c| c.set(false));
+            slow.metta_calculus(50);
+            VARREF_FAST_RECHECK.with(|c| c.set(true));
+
+            let mut fb = Vec::new();
+            fast.dump_all_sexpr(&mut fb).unwrap();
+            let mut sb = Vec::new();
+            slow.dump_all_sexpr(&mut sb).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&fb),
+                String::from_utf8_lossy(&sb),
+                "VarRef fast path diverged from the recursive re-match on:\n{prog}"
+            );
         }
     }
 }

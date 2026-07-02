@@ -1,8 +1,4 @@
-#![feature(coroutine_trait)]
-#![feature(coroutines)]
-
 use std::collections::HashMap;
-use std::ops::{Coroutine, CoroutineState};
 use mork_expr::{item_source, SourceItem};
 use eval_ffi::{EvalError, ExprSink, ExprSource, FuncPtr, Tag};
 use log::trace;
@@ -101,8 +97,7 @@ impl EvalScope {
                 if func == quote {
                     let top_frame = self.stack.last_mut().unwrap();
                     let e = mork_expr::Expr { ptr: unsafe { self.expr.ptr.cast_mut().add(self.expr.position) } };
-                    let mut src = item_source(e);
-                    while let CoroutineState::Yielded(i) = std::pin::pin!(&mut src).resume(()) {
+                    for i in item_source(e) {
                         top_frame.sink.write(i)?;
                     }
                 } else {

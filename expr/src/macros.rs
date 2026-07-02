@@ -436,10 +436,9 @@ macro_rules! apply_e_clears_stacks_and_cycles_check {
         let mut cycled = std::collections::BTreeMap::<(u8, u8), u8>::new();
         $stack.clear();
         $assignments.clear();
-        let (l,r) = $crate::apply_e($n, $original_intros, $new_intros, $pat_expr, $bindings, &mut std::pin::pin!(snk), &mut cycled, &mut $stack, &mut $assignments);
+        let (l,r) = $crate::apply_e($n, $original_intros, $new_intros, $pat_expr, $bindings, &mut snk, &mut cycled, &mut $stack, &mut $assignments);
 
         (l,r,cycled.is_empty())
-        // $crate::apply_e_clears_stacks_and_cycles_check_takes_coroutine!($n,$original_intros,$new_intros,$pat_expr,$bindings,snk,$stack,$assignments)
     }};
 }
 

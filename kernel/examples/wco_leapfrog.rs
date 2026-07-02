@@ -311,6 +311,11 @@ fn main() {
             "($u $v w)\n",
             &["($p a w)"],
         ),
+        (
+            "wildcard fact propagates a compound through a cycle",
+            "(e v0 v1)\n(e v1 v2)\n(e v2 v3)\n(e v3 v0)\n(g v0 v1)\n(g v1 v2)\n(g v2 v3)\n(g v3 v0)\n(h v0 v1)\n(h v1 v2)\n(h v2 v3)\n(h v3 v0)\n(h v3 v5)\n(e (k $s0) v2)\n(h $s1 $u1)\n",
+            &["(g $x0 $x1)", "(h $x1 $x2)", "(e $x2 $x3)", "(e $x3 $x0)"],
+        ),
     ];
     for (name, facts, patterns) in corpus {
         let ans = ans_vars_of(patterns);

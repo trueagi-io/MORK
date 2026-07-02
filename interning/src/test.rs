@@ -200,3 +200,72 @@ fn allocate_many() {
   // std::fs::remove_file(path).unwrap(); 
 
 }
+
+#[test]
+fn permits_are_scoped_per_mapping() {
+  // Same thread, two mappings, nested permits: each mapping must get its OWN
+  // registered slot, and a release must never touch the other mapping. The old
+  // single cached slot skipped registration on the second mapping entirely and
+  // the last drop zeroed a slot through whichever handle it happened to hold.
+  fn owned_slots(handle: &SharedMappingHandle) -> usize {
+    (0..MAX_WRITER_THREADS)
+      .filter(|&i| handle.permissions[i].0.thread_id.load(core::sync::atomic::Ordering::Relaxed) != 0)
+      .count()
+  }
+  let a = SharedMapping::new();
+  let b = SharedMapping::new();
+
+  let pa = a.try_aquire_permission().unwrap();
+  let pa2 = a.try_aquire_permission().unwrap();
+  let pb = b.try_aquire_permission().unwrap();
+  core::assert_eq!(owned_slots(&a), 1, "one slot on a, shared by both permits");
+  core::assert_eq!(owned_slots(&b), 1, "the nested mapping must be registered too");
+
+  drop(pb);
+  core::assert_eq!(owned_slots(&a), 1, "releasing b must not touch a");
+  core::assert_eq!(owned_slots(&b), 0, "b fully released");
+
+  drop(pa);
+  core::assert_eq!(owned_slots(&a), 1, "a still held by the second permit");
+  drop(pa2);
+  core::assert_eq!(owned_slots(&a), 0, "a fully released");
+
+  let pa3 = a.try_aquire_permission().unwrap();
+  core::assert_eq!(owned_slots(&a), 1, "re-acquisition registers afresh");
+  drop(pa3);
+  core::assert_eq!(owned_slots(&a), 0);
+}
+
+#[test]
+fn interning_is_exclusive_under_thread_and_mapping_churn() {
+  // Threads that each touch their own mappings and then a SHARED one: the old
+  // thread-cached slot made the shared-mapping permit use an unowned slot, so
+  // two threads raced the lock-free eager slab write (torn interned bytes).
+  // Every symbol must read back byte-exact.
+  let shared = SharedMapping::new();
+  std::thread::scope(|s| {
+    for t in 0..8usize {
+      let shared = &shared;
+      s.spawn(move || {
+        for round in 0..300usize {
+          let own = SharedMapping::new();
+          let po = own.try_aquire_permission().unwrap();
+          let own_text = std::format!("own-{t}-{round}");
+          let own_sym = po.get_sym_or_insert(own_text.as_bytes());
+          drop(po);
+          core::assert_eq!(own.get_bytes(own_sym), Some(own_text.as_bytes()));
+
+          let ps = shared.try_aquire_permission().unwrap();
+          let text = std::format!("shared-{t}-{round}-{}", "x".repeat(round % 61));
+          let sym = ps.get_sym_or_insert(text.as_bytes());
+          drop(ps);
+          core::assert_eq!(
+            shared.get_bytes(sym),
+            Some(text.as_bytes()),
+            "interned bytes must read back exactly (thread {t}, round {round})"
+          );
+        }
+      });
+    }
+  });
+}

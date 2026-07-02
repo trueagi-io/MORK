@@ -1249,10 +1249,110 @@ const FD_PROBE_ROW_CAP: usize = 200_000;
 /// stops paying for the scan within a few facts and dispatches.
 ///
 /// Correctness never depends on any of this, since both paths return the same matches.
+///
+/// Within the cyclic non-functional class, the instance still decides who wins, and the full
+/// bench suite measured the boundary. Every relation tiny: the whole query is fast either way
+/// and the ProductZipper's constants win (the tile puzzle's inequality tables), so it declines.
+/// Four or more join factors: a relation-at-a-time product deepens multiplicatively while the
+/// join stays output-bounded (the clique bench's 6- and 10-factor queries ran 50x faster
+/// dispatched), so it dispatches. Three factors: only skew pays, so a bounded probe samples
+/// first-argument values for a heavy hitter, the hub through which a product blows up
+/// quadratically (the 240x triangle); a uniform instance has none and declines (the transitive
+/// bench's triangle detect over a million random edges measured 15% slower dispatched, and
+/// declines). A hub outside the sample window is missed, and the body then merely stays on the
+/// stock path; telling those apart exactly is the cost-based dispatch this policy approximates
+/// with bounded reads.
 fn body_factors_profit_from_leapfrog(map: &PathMap<()>, factors: &[Factor], nvars: usize) -> bool {
-    hypergraph_is_cyclic(column_var_edges(factors), nvars)
-        && body_is_cyclic(factors, nvars)
-        && !body_is_acyclic_modulo_fds(map, factors, nvars)
+    if !(hypergraph_is_cyclic(column_var_edges(factors), nvars) && body_is_cyclic(factors, nvars)) {
+        return false;
+    }
+    let counts: Vec<usize> = factors
+        .iter()
+        .map(|f| bounded_fact_count(map, f, DISPATCH_MIN_FACTS))
+        .collect();
+    if counts.iter().all(|c| *c < DISPATCH_MIN_FACTS) {
+        return false;
+    }
+    if factors.len() < DISPATCH_MANY_FACTORS {
+        let heavy = factors
+            .iter()
+            .zip(&counts)
+            .any(|(f, c)| *c >= DISPATCH_MIN_FACTS && factor_has_sampled_heavy_hitter(map, f));
+        if !heavy {
+            return false;
+        }
+    }
+    !body_is_acyclic_modulo_fds(map, factors, nvars)
+}
+
+/// Below this many facts in every factor's relation the query is small either way and the
+/// ProductZipper's straight-line constants win; the tile puzzle's 56-fact inequality tables
+/// measured a mild loss dispatched, while the demonstration's smallest hub instance (265 facts)
+/// must still dispatch.
+const DISPATCH_MIN_FACTS: usize = 128;
+
+/// From this many join factors on, the relation-at-a-time product deepens multiplicatively while
+/// the join stays output-bounded, skewed instance or not: the clique bench's 6- and 10-factor
+/// queries measured 50x faster dispatched on a graph whose 3-factor triangle declines.
+const DISPATCH_MANY_FACTORS: usize = 4;
+
+/// A first-argument value with this many continuations is a heavy hitter: the product through it
+/// blows up quadratically. Uniform random graphs (the transitive bench's degrees average ~20)
+/// stay below it and decline.
+const DISPATCH_HEAVY_DEGREE: usize = 64;
+
+/// How many first-argument values the heavy-hitter probe samples, in trie order.
+const DISPATCH_HEAVY_SAMPLES: usize = 64;
+
+/// The factor's relation region: its prefix, extended by the head column when the head is a
+/// ground symbol, so the counts and samples read this relation rather than every same-arity fact.
+fn factor_scan_path(factor: &Factor) -> Vec<u8> {
+    let mut p = factor.prefix.clone();
+    if let Some(FactorColumn::Term(head)) = factor.cols.first() {
+        if head.is_ground() {
+            p.extend_from_slice(&head.bytes);
+        }
+    }
+    p
+}
+
+/// Count the facts under the factor's relation region, stopping at `cap`: a bounded walk, so the
+/// gate's cost stays independent of the space size.
+fn bounded_fact_count(map: &PathMap<()>, factor: &Factor, cap: usize) -> usize {
+    let mut rz = map.read_zipper_at_path(&factor_scan_path(factor));
+    let mut n = 0;
+    while n < cap && rz.to_next_val() {
+        n += 1;
+    }
+    n
+}
+
+/// Sample up to [`DISPATCH_HEAVY_SAMPLES`] first-argument values of the factor's relation, in
+/// trie order, and report whether any has [`DISPATCH_HEAVY_DEGREE`] or more continuations. Both
+/// walks are capped, so the probe reads a bounded region regardless of the space size.
+fn factor_has_sampled_heavy_hitter(map: &PathMap<()>, factor: &Factor) -> bool {
+    let base = factor_scan_path(factor);
+    let mut cur = SubtermCursor::new(map.read_zipper_at_path(&base));
+    cur.first();
+    let mut sampled = 0;
+    while sampled < DISPATCH_HEAVY_SAMPLES && !cur.at_end() {
+        let Some(key) = cur.key() else { break };
+        let mut path = base.clone();
+        path.extend_from_slice(key);
+        let mut inner = SubtermCursor::new(map.read_zipper_at_path(&path));
+        inner.first();
+        let mut deg = 0;
+        while !inner.at_end() && deg < DISPATCH_HEAVY_DEGREE {
+            deg += 1;
+            inner.next();
+        }
+        if deg >= DISPATCH_HEAVY_DEGREE {
+            return true;
+        }
+        sampled += 1;
+        cur.next();
+    }
+    false
 }
 
 /// The hyperedges of the variables the leapfrog can seek: per factor, its whole-column variables
@@ -3609,37 +3709,66 @@ mod tests {
         }
     }
 
-    /// The dispatch policy is cyclicity modulo functional dependencies: a genuine relational
-    /// cycle (the triangle over a non-functional `e`) dispatches; a structurally cyclic but
-    /// functionally determined diamond declines after the data probe; an acyclic path declines on
-    /// GYO alone, reading no data. Correctness never depends on this routing, but the boundary is
-    /// the performance contract, so pin it.
+    /// The dispatch policy is cyclicity modulo functional dependencies, refined by the instance:
+    /// tiny queries decline, deep cyclic bodies dispatch, shallow ones dispatch only on a sampled
+    /// heavy hitter, and functionally determined bodies decline after the data probe. Correctness
+    /// never depends on this routing, but the boundary is the performance contract, so pin every
+    /// clause.
     #[test]
     fn dispatch_policy_follows_cyclicity_modulo_fds() {
+        // A hub graph (the skewed instance), a branching uniform graph (non-functional, low
+        // degree), and four functional 12x12 tables for the FD diamond.
+        let mut text = String::new();
+        for k in 0..64 {
+            text.push_str(&format!("(hub h o{k})\n(hub i{k} h)\n"));
+        }
+        for k in 0..128 {
+            text.push_str(&format!("(uni n{k} n{})\n(uni n{k} m{k})\n", (k + 1) % 128));
+        }
+        for x in 0..12 {
+            for y in 0..12 {
+                text.push_str(&format!(
+                    "(fa {x} {y} = r{})\n(fb {x} {y} = r{})\n",
+                    (x + y) % 12,
+                    (x * y) % 12
+                ));
+                text.push_str(&format!(
+                    "(fc r{x} r{y} = s{})\n(fd r{x} r{y} = s{})\n",
+                    (x + y) % 12,
+                    (x + 2 * y) % 12
+                ));
+            }
+        }
+        text.push_str("(e a b)\n(e a c)\n(e b c)\n");
         let mut s = crate::space::Space::new();
-        s.add_all_sexpr(
-            "(f a a = a)\n(f a b = b)\n(f b a = b)\n(f b b = a)\n\
-             (g a a = a)\n(g a b = b)\n(g b a = a)\n(g b b = b)\n\
-             (h a a = a)\n(h a b = a)\n(h b a = b)\n(h b b = b)\n\
-             (e a b)\n(e a c)\n(e b c)\n"
-                .as_bytes(),
-        )
-        .unwrap();
+        s.add_all_sexpr(text.as_bytes()).unwrap();
         let case = |body: &str| -> bool {
             let b = enc(body);
             let (factors, nvars) = parse_body_factors(&b).unwrap();
             body_factors_profit_from_leapfrog(&s.btm, &factors, nvars)
         };
         assert!(
-            case("(, (e $x $y) (e $y $z) (e $x $z))"),
-            "a relational cycle must dispatch"
+            case("(, (hub $x $y) (hub $y $z) (hub $x $z))"),
+            "a triangle through a sampled heavy hitter must dispatch"
         );
         assert!(
-            !case("(, (f $x $y = $l) (g $x $y = $h) (h $l $h = $d))"),
+            !case("(, (uni $x $y) (uni $y $z) (uni $x $z))"),
+            "a uniform triangle has no heavy hitter and must decline"
+        );
+        assert!(
+            case("(, (uni $a $b) (uni $b $c) (uni $c $d) (uni $d $a))"),
+            "a deep cyclic body dispatches on product depth alone"
+        );
+        assert!(
+            !case("(, (fa $x $y = $u) (fb $x $y = $v) (fc $u $v = $w) (fd $u $v = $z))"),
             "a functional diamond is FD-acyclic and must decline"
         );
         assert!(
-            !case("(, (e $x $y) (e $y $z))"),
+            !case("(, (e $x $y) (e $y $z) (e $x $z))"),
+            "a tiny query declines whatever its shape"
+        );
+        assert!(
+            !case("(, (uni $x $y) (uni $y $z))"),
             "an acyclic path must decline on GYO alone"
         );
         assert!(

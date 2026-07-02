@@ -163,6 +163,14 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                     if let Some((idx, prev)) = restore { references[idx] = prev; }
                 }
                 Tag::VarRef(i) => {
+                    // The bound branch re-matches the RECORDED data subterm. Its bytes
+                    // live in `loc`'s path buffer, which the recursion below GROWS; past
+                    // the reserved capacity the buffer REALLOCATES and a raw pointer into
+                    // it dangles, decoding garbage tag bytes on deep terms (a `byte_item`
+                    // "reserved" panic; a delta-reordered descent reaches this with deep
+                    // bound payloads). Copy the subterm into an owned buffer that lives
+                    // across the recursion and point the re-match at that.
+                    let mut _bound_owned: Vec<u8> = Vec::new();
                     let addition = if e.n == 0 && (i as usize) < references.len() && references[i as usize] != u32::MAX {
                         if i as usize >= references.len() {
                             trace!(target: "coref trans", "i {i} #references {}", references.len());
@@ -171,9 +179,9 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         }
                         trace!(target: "coref trans", "varref {i} at {} pushing {}", references[i as usize], serialize(&loc.path()[references[i as usize] as usize..]));
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
-                        // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
-                        // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
+                        let bound = Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) };
+                        _bound_owned = slice_from_raw_parts(bound.ptr, bound.span().as_ref().unwrap().len()).as_ref().unwrap().to_vec();
+                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: _bound_owned.as_ptr().cast_mut() } }
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
                         static nv: u8 = item_byte(Tag::NewVar);

@@ -5,12 +5,21 @@ pub struct WritePermit<'a>(&'a SharedMappingHandle, PhantomData<*const (/* we do
 
 impl<'a> core::ops::Drop for WritePermit<'a> {
   fn drop(&mut self) {
-    let permits = LIVE_PERMIT_HANDLES.get()-1;
-    LIVE_PERMIT_HANDLES.set(permits);
-
-    if permits == 0 {
-      self.permissions[MAPPING_THREAD_INDEX.get().unwrap() as usize].0.thread_id.store(0, atomic::Ordering::Release);
-    }
+    let key = self.0.0.as_ptr() as usize;
+    MAPPING_PERMITS.with_borrow_mut(|permits| {
+      let pos = permits
+        .iter()
+        .position(|entry| entry.mapping == key)
+        .expect("write permit dropped without a registration for its mapping");
+      permits[pos].live -= 1;
+      if permits[pos].live == 0 {
+        self.permissions[permits[pos].slot as usize]
+          .0
+          .thread_id
+          .store(0, atomic::Ordering::Release);
+        permits.swap_remove(pos);
+      }
+    });
   }
 }
 
@@ -18,6 +27,20 @@ impl<'a> core::ops::Deref for WritePermit<'a> {
   type Target = SharedMapping;
   fn deref(&self) -> &Self::Target {
     unsafe {&*self.0.0.as_ptr()}
+  }
+}
+
+impl<'a> WritePermit<'a> {
+  /// The permission slot this thread holds on THIS permit's mapping.
+  fn slot_index(&self) -> u8 {
+    let key = self.0.0.as_ptr() as usize;
+    MAPPING_PERMITS.with_borrow(|permits| {
+      permits
+        .iter()
+        .find(|entry| entry.mapping == key)
+        .expect("write permit used without a registration for its mapping")
+        .slot
+    })
   }
 }
 
@@ -34,7 +57,7 @@ impl<'a> WritePermit<'a> {
     if let Some(sym) = self.get_sym(bytes) {
         return sym;
     }
-    let index = MAPPING_THREAD_INDEX.get().unwrap();
+    let index = self.slot_index();
     let thread_permission = &self.permissions[index as usize].0;
 
     // On the happy path we want to make the critical section as small as possible.
@@ -58,7 +81,7 @@ impl<'a> WritePermit<'a> {
 
     // as minimal as it might be, we want the critical section as small as posible, so we index first
     let sym_table_lock = &self.to_symbol[hash as usize % MAX_WRITER_THREADS].0;
-    let bytes_guard_lock = &self.to_bytes[MAPPING_THREAD_INDEX.get().unwrap() as usize].0;
+    let bytes_guard_lock = &self.to_bytes[self.slot_index() as usize].0;
     let sym = 'lock_scope_sym : {
       let mut sym_guard = sym_table_lock.write().unwrap();
       // try once more to see if we need to make the symbol
@@ -115,10 +138,26 @@ impl<'a> WritePermit<'a> {
   }
 }
  
+/// One live permit registration: the MAPPING it is for (its pointer identity),
+/// the permission slot this thread holds THERE, and how many WritePermit values
+/// are alive for it on this thread.
+#[derive(Clone, Copy)]
+struct PermitEntry {
+  mapping: usize,
+  slot: u8,
+  live: usize,
+}
+
 thread_local! {
-  static MAPPING_THREAD_INDEX : core::cell::Cell<Option<u8>> = core::cell::Cell::new(None);
+  /// Per-thread live permits, KEYED BY MAPPING. A thread routinely touches many
+  /// mappings over its lifetime (and can hold permits on more than one at once);
+  /// a single cached slot index made a permit on a second mapping skip
+  /// registration entirely, so its writes used an unowned slot -- which another
+  /// thread could legitimately acquire, breaking the per-slot exclusivity the
+  /// lock-free eager slab write relies on (torn interned bytes), and the last
+  /// drop then zeroed a slot on whichever mapping it happened to reference.
+  static MAPPING_PERMITS : core::cell::RefCell<alloc::vec::Vec<PermitEntry>> = core::cell::RefCell::new(alloc::vec::Vec::new());
   static THREAD_ID : u64 = unsafe {core::mem::transmute::<_,u64> (std::thread::current().id()) };
-  static LIVE_PERMIT_HANDLES : core::cell::Cell<usize> = core::cell::Cell::new(0)
 }
 
 
@@ -134,17 +173,31 @@ impl SharedMappingHandle {
   /// Failure can be spurious if there are a high number of threads (> [`MAX_THREADS`]), it is recommended to 
   /// retry even if there are many threads as this only competes with writer threads.
   pub fn try_aquire_permission<'a>(&'a self)->Result<WritePermit<'a>, ()> {
-    // A thred can only have one permission at a time
-    if let Some(_) = MAPPING_THREAD_INDEX.get() {
-      LIVE_PERMIT_HANDLES.set(LIVE_PERMIT_HANDLES.get() + 1);
+    let key = self.0.as_ptr() as usize;
+    // A thread holds at most one permission slot PER MAPPING; further permits on
+    // the same mapping share it (refcounted).
+    let already = MAPPING_PERMITS.with_borrow_mut(|permits| {
+      if let Some(entry) = permits.iter_mut().find(|entry| entry.mapping == key) {
+        entry.live += 1;
+        true
+      } else {
+        false
+      }
+    });
+    if already {
       return Ok(WritePermit(self, PhantomData));
     }
 
     for each in 0..MAX_WRITER_THREADS {
       let p = &self.permissions[each];
       if let Ok(_) = p.0.thread_id.compare_exchange(0, THREAD_ID.with(|x|*x)+1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed) {
-        MAPPING_THREAD_INDEX.set(Some(each as u8));
-        LIVE_PERMIT_HANDLES.set(LIVE_PERMIT_HANDLES.get() + 1);
+        MAPPING_PERMITS.with_borrow_mut(|permits| {
+          permits.push(PermitEntry {
+            mapping: key,
+            slot: each as u8,
+            live: 1,
+          })
+        });
         return Ok(WritePermit(self, PhantomData));
       }
     }

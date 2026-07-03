@@ -16,8 +16,14 @@ deficiencies") — it is not a new feature and not a constant factor.
   growing (not flat) speedup proves the fast path is actually taken.
 - **Alloy fac18** (`alloy-mork`, online) proves the exact gate: distinct-output == match count iff
   the projection keeps every variable.
-- **Remaining:** Slice 4 (SUM sink) and Slice 5 (P1+P1'' fusion). Default-flip only after a wider
-  adversarial corpus.
+- **Slice 4 LANDED** (commit `ee476e4`): the SumSink routes SUM(DISTINCT col) through a Yannakakis
+  semi-join reduction -- sum the column's surviving domain, computed by keeping it free and
+  eliminating the rest over the EXISTS semiring. Key fix: `elimination_order_free` re-roots the order
+  at the summed column's bag, or a chain join tree eliminates a shared variable before a leaf and
+  materializes a quadratic intermediate (ghd_sum_distinct was O(k^2), 324918us -> O(k), 971us at
+  k=800). Through the exec the SUM sink grows 13.3x -> 340.5x, byte-identical. Alloy `fac19` proves
+  the semi-join domain equals the join's column projection. Full lib suite 37/0.
+- **Remaining:** Slice 5 (P1+P1'' fusion). Default-flip only after a wider adversarial corpus.
 
 ## Prior art (researched, tavily)
 The wiring is a combination of battle-tested work, not an invention:
@@ -106,15 +112,12 @@ The enumerate `CountSink` is ALWAYS correct; the fast-path is an optional, prove
    projection-free multi-join (route + win); AND adversarial (projected join var, grouped, cyclic,
    nonground compound, single-factor) which MUST fall back — assert byte-identical `dump_all_sexpr` and
    identical `(count "..." n)`. Flip default only after clean.
-4. **SUM sink -- NOT a weight-swap.** `SumSink` (sinks.rs ~842) dedups into `unique` then sums the
-   DISTINCT values of a single numeric projection column (`total += parse(value)`), i.e. it is
-   `SUM(DISTINCT x)`, the FAQ "SumSum" case -- it does NOT factorize as the COUNT SumProd with a
-   per-fact weight (that would sum with multiplicity). The sound factorization is a Yannakakis
-   semi-join reduction to the x-values that survive the join (the projected domain), then sum those
-   distinct values: O(N^fhtw), but a different mechanism than `ghd_aggregate`. Gate as for COUNT
-   (ungrouped, and the summed column is the whole projection). Build the semi-join-reduced domain
-   from the same GHD, sum it, set a `SumSink::set_precomputed`, differential vs enumerate. Separate,
-   careful piece -- do not ship the naive weight version.
+4. **[DONE] SUM sink via Yannakakis semi-join.** `SumSink` is `SUM(DISTINCT col)` (FAQ SumSum), NOT a
+   COUNT weight-swap. Landed as `ghd_surviving_domain` (keep the column free, EXISTS-eliminate the
+   rest = the full reducer) + `ghd_sum_distinct` (parse + sum, wrapping u32 to match) +
+   `elimination_order_free` (root at the free column's bag -- without this it is O(N^2)). Gate:
+   ungrouped, single-column projection, connected, >= 2 factors. `SumSink::set_precomputed` in both
+   emit guards. Differentials + a scaling proof; Alloy `fac19`.
 5. **P1+P1'' fusion (the real flybase win).** Recognize `(exec P1 join (,) res0)` then
    `(exec P1'' (res0 ..) (O (COUNT ..)))` where `res0` is consumed only by the COUNT, and fuse into one
    factorized COUNT of P1's join, skipping `res0` materialization. A dataflow rewrite; do last.

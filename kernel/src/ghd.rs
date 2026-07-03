@@ -717,6 +717,37 @@ pub fn ghd_sum_distinct(
     Some(total)
 }
 
+/// Factorized float reduction (MIN/MAX/PROD/SUM) over `free`'s semi-join-reduced surviving domain,
+/// reducing each distinct value with `op` from `init`. MIN(DISTINCT x) == MIN over the surviving
+/// domain (idempotent, so distinct vs not does not matter), likewise MAX. Parses values exactly as
+/// `FloatReductionSink` does (skip the symbol-size tag byte, `f64`), and `init`/`op` are the sink's
+/// `Reduction::ACC`/`Reduction::op` so the emitted `to_string()` is byte-identical. `None` if the
+/// body is disconnected/undecomposable or a value is not a float (the caller falls back to enumerate).
+pub fn ghd_float_reduce_distinct(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    free: usize,
+    init: f64,
+    op: fn(&mut f64, f64),
+) -> Option<f64> {
+    let edges = hypergraph(factors);
+    if connected_components(&edges).len() != 1 {
+        return None;
+    }
+    let ghd = decompose(&edges, 3)?;
+    let order = elimination_order_free(&ghd, free);
+    let mut acc = init;
+    for val in ghd_surviving_domain(map, factors, nvars, free, &order) {
+        if val.is_empty() {
+            return None;
+        }
+        let f = std::str::from_utf8(&val[1..]).ok()?.parse::<f64>().ok()?;
+        op(&mut acc, f);
+    }
+    Some(acc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

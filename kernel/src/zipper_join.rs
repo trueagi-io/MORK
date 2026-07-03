@@ -4270,6 +4270,8 @@ mod tests {
 (exec 0 (, (r1 $a $b) (r2 $b $c)) (O (sum (chain-sum $n) $n $a)))
 (exec 0 (, (r1 $a $b) (r2 $a $c) (r3 $a $d)) (O (sum (star-sum $n) $n $b)))
 (exec 0 (, (r1 $a $b) (r2 $b $c) (r3 $c $d) (r4 $d $a)) (O (sum (cyc4-sum $n) $n $c)))
+(exec 0 (, (r1 $a $b) (r2 $b $c)) (O (fmin (chain-min $m) $m $a)))
+(exec 0 (, (r1 $a $b) (r2 $a $c) (r3 $a $d)) (O (fmax (star-max $m) $m $b)))
 (exec 0 (, (r1 $a $b) (r2 $b $c)) (O (count (grouped $a $n) $n $c)))
 (exec 0 (, (r1 $a $b) (r2 $b $c)) (O (count (partial $n) $n (t $a))))
 "#,
@@ -4333,6 +4335,26 @@ mod tests {
         assert!(enumerated.contains("is-sixty"), "60==60 emits:\n{enumerated}");
         assert!(!enumerated.contains("is-fifty"), "60!=50 does not emit:\n{enumerated}");
         assert_eq!(factorized, enumerated, "factorized SUM diverged from the enumerate SumSink");
+    }
+
+    /// Differential for the wired MIN/MAX sinks: MIN/MAX(DISTINCT x) over a join, factorized vs
+    /// enumerate. g1's x {10,20,30} survive; g2's {5,40} dangle (no rel2 partner). So MIN=10 (not the
+    /// dangling 5) and MAX=30 (not the dangling 40) -- the semi-join reduction must exclude the
+    /// dangling values, which a wrong routing would include. MIN/MAX are idempotent so distinct vs
+    /// multiplicity does not matter, and exact so the f64 to_string is byte-identical.
+    #[test]
+    fn factorized_minmax_sink_matches_enumerate() {
+        const PROG: &str = r#"
+(gene g1) (rel1 g1 10) (rel1 g1 20) (rel1 g1 30) (rel2 g1 1) (rel2 g1 2)
+(rel1 g2 5) (rel1 g2 40)
+(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (fmin (mn $m) $m $x)))
+(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (fmax (mx $m) $m $x)))
+"#;
+        let enumerated = count_diff_run(PROG, false);
+        let factorized = count_diff_run(PROG, true);
+        assert!(enumerated.contains("(mn 10)"), "MIN excludes the dangling 5:\n{enumerated}");
+        assert!(enumerated.contains("(mx 30)"), "MAX excludes the dangling 40:\n{enumerated}");
+        assert_eq!(factorized, enumerated, "factorized MIN/MAX diverged from the enumerate sink");
     }
 
     /// Proof the wired SUM fast path is taken and wins: SUM(DISTINCT x) over a star with k distinct x

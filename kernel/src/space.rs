@@ -67,6 +67,7 @@ fn count_sink_pattern_refs(e: Expr, p: usize) -> std::collections::BTreeSet<usiz
 enum FactorizedAgg {
     Count(u64),
     Sum(u32),
+    Float(f64),
 }
 
 /// Gate and compute the factorized aggregate for a single ungrouped aggregate sink over a
@@ -114,6 +115,22 @@ fn factorized_aggregate_gate(
             }
             let free = *proj.iter().next().unwrap();
             crate::ghd::ghd_sum_distinct(read_copy, &factors, nvars, free).map(FactorizedAgg::Sum)
+        }
+        // MIN/MAX over the distinct values of one column = the reduction over its surviving domain
+        // (idempotent, so distinct vs multiplicity does not matter). init/op mirror FloatReduction.
+        crate::sinks::ASink::FMinSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_float_reduce_distinct(read_copy, &factors, nvars, free, f64::MAX, |a, n| {
+                *a = a.min(n)
+            })
+            .map(FactorizedAgg::Float)
+        }
+        crate::sinks::ASink::FMaxSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_float_reduce_distinct(read_copy, &factors, nvars, free, f64::MIN, |a, n| {
+                *a = a.max(n)
+            })
+            .map(FactorizedAgg::Float)
         }
         _ => None,
     }
@@ -1683,6 +1700,11 @@ impl Space {
                     cs.set_precomputed(n);
                 }
             }
+            Some(FactorizedAgg::Float(n)) => match &mut sinks[0] {
+                crate::sinks::ASink::FMinSink(cs) => cs.set_precomputed(n),
+                crate::sinks::ASink::FMaxSink(cs) => cs.set_precomputed(n),
+                _ => {}
+            },
             None => {}
         }
 

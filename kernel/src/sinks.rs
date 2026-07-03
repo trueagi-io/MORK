@@ -965,10 +965,10 @@ impl Sink for SumSink {
 }
 
 
-struct Sum;
-struct Min;
-struct Max;
-struct Prod;
+pub struct Sum;
+pub struct Min;
+pub struct Max;
+pub struct Prod;
 
 trait FloatReduction {
     const NAME : &'static str;
@@ -997,10 +997,16 @@ impl FloatReduction for Prod {
 }
 
 
-pub struct FloatReductionSink<Reduction> { e: Expr, unique: PathMap<()>, boo : PhantomData<Reduction> }
+pub struct FloatReductionSink<Reduction> { e: Expr, unique: PathMap<()>, boo : PhantomData<Reduction>, precomputed: Option<f64> }
+impl<Reduction> FloatReductionSink<Reduction> {
+    /// Override the reduced value with the factorized reduction over the semi-join-reduced domain,
+    /// so finalize emits it instead of reducing the materialized `unique` set. The caller gates on an
+    /// ungrouped single-column reduction and seeds one representative for the group's template context.
+    pub fn set_precomputed(&mut self, n: f64) { self.precomputed = Some(n); }
+}
 impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
     fn new(e: Expr) -> Self {
-        Self { e, unique: PathMap::new(), boo : PhantomData }
+        Self { e, unique: PathMap::new(), boo : PhantomData, precomputed: None }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[2+Reduction::NAME.len()..];
@@ -1019,6 +1025,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "{} finalizing by reducing {} at '{}'", Reduction::NAME, self.unique.val_count(), serialize(wz.origin_path()));
+        let precomputed = self.precomputed;
 
         let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
         let mut rooted_input = PathMap::new();
@@ -1040,11 +1047,15 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                     let mut total = Reduction::ACC;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
-                    while rz.to_next_val() {
-                        let p = rz.origin_path();
-                        trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
-                        Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                    if let Some(n) = precomputed {
+                        total = n;
+                    } else {
+                        let mut rz = prz.fork_read_zipper();
+                        while rz.to_next_val() {
+                            let p = rz.origin_path();
+                            trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
+                            Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        }
                     }
                     let min_str = total.to_string();
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), total);
@@ -1076,12 +1087,16 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut total = Reduction::ACC;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
-                    while rz.to_next_val() {
-                        let p = rz.origin_path();
-                        trace!(target: "sink", "path {:?}", serialize(p));
-                        trace!(target: "sink", "path {:?}", serialize(&p[clen+1..]));
-                        Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                    if let Some(n) = precomputed {
+                        total = n;
+                    } else {
+                        let mut rz = prz.fork_read_zipper();
+                        while rz.to_next_val() {
+                            let p = rz.origin_path();
+                            trace!(target: "sink", "path {:?}", serialize(p));
+                            trace!(target: "sink", "path {:?}", serialize(&p[clen+1..]));
+                            Reduction::op(&mut total, str::parse::<f64>(str::from_utf8(&p[clen+1..]).unwrap()).unwrap());
+                        }
                     }
                     let min_str = total.to_string();
 

@@ -106,8 +106,15 @@ The enumerate `CountSink` is ALWAYS correct; the fast-path is an optional, prove
    projection-free multi-join (route + win); AND adversarial (projected join var, grouped, cyclic,
    nonground compound, single-factor) which MUST fall back — assert byte-identical `dump_all_sexpr` and
    identical `(count "..." n)`. Flip default only after clean.
-4. **SUM sink.** Same routing for `SumSink` with `ghd_aggregate::<u64>(weight = read the numeric column)`.
-   Differential vs the enumerate `SumSink`.
+4. **SUM sink -- NOT a weight-swap.** `SumSink` (sinks.rs ~842) dedups into `unique` then sums the
+   DISTINCT values of a single numeric projection column (`total += parse(value)`), i.e. it is
+   `SUM(DISTINCT x)`, the FAQ "SumSum" case -- it does NOT factorize as the COUNT SumProd with a
+   per-fact weight (that would sum with multiplicity). The sound factorization is a Yannakakis
+   semi-join reduction to the x-values that survive the join (the projected domain), then sum those
+   distinct values: O(N^fhtw), but a different mechanism than `ghd_aggregate`. Gate as for COUNT
+   (ungrouped, and the summed column is the whole projection). Build the semi-join-reduced domain
+   from the same GHD, sum it, set a `SumSink::set_precomputed`, differential vs enumerate. Separate,
+   careful piece -- do not ship the naive weight version.
 5. **P1+P1'' fusion (the real flybase win).** Recognize `(exec P1 join (,) res0)` then
    `(exec P1'' (res0 ..) (O (COUNT ..)))` where `res0` is consumed only by the COUNT, and fuse into one
    factorized COUNT of P1's join, skipping `res0` materialization. A dataflow rewrite; do last.

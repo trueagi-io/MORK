@@ -1222,7 +1222,66 @@ impl Sink for Z3Sink {
 }
 
 
+// (wselect <offset> <item> <weight>): a grounded weighted-selection sink. Each
+// matched fact contributes (item, weight); the weights accumulate into a signed
+// WeightedPathIndex (PR #101), and at finalize the item at cumulative-weight
+// <offset> (deterministic inverse-CDF selection) is written back as a
+// (wselected <item>) atom, which ordinary queries then read. This wires #101's
+// select_by_offset primitive instead of leaving it as an un-wired island, modeled
+// on the write-back sinks; nothing is reimplemented. <offset> and <weight> are
+// decimal-digit symbols, parsed the way SumSink parses its numbers. Soundness of
+// the selection partition is modeled in Alloy (fac24_weighted_select).
+#[cfg(feature = "weighted_select")]
+static WSELECTED_PREFIX: [u8; 11] = [
+    item_byte(Tag::Arity(2)), item_byte(Tag::SymbolSize(9)),
+    b'w', b's', b'e', b'l', b'e', b'c', b't', b'e', b'd',
+];
+
+#[cfg(feature = "weighted_select")]
+pub struct WeightedSelectSink {
+    e: Expr,
+    offset: u64,
+    index: crate::weighted_paths::WeightedPathIndex,
+}
+
+#[cfg(feature = "weighted_select")]
+impl Sink for WeightedSelectSink {
+    fn new(e: Expr) -> Self {
+        // (wselect <offset> <item> <weight>): the offset is a fixed decimal symbol.
+        let offset = destruct!(e, ("wselect" {offset_s: &str} {_item: Expr} {_weight: Expr}), {
+            offset_s.parse::<u64>().unwrap_or(0)
+        }, _err => { 0 });
+        WeightedSelectSink { e, offset, index: crate::weighted_paths::WeightedPathIndex::new() }
+    }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::BTM(&WSELECTED_PREFIX[..]))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let e = unsafe { Expr { ptr: path.as_ptr().cast_mut() } };
+        destruct!(e, ("wselect" {_offset_s: &str} {item: Expr} {weight_s: &str}), {
+            if let Ok(weight) = weight_s.parse::<i64>() {
+                let item_bytes = unsafe { item.span().as_ref().unwrap() };
+                // accumulate: an item matched multiple times sums its weight (set semantics on the key)
+                self.index.apply_delta(item_bytes, weight);
+            }
+        }, _err => {});
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        wz.reset();
+        let mut changed = false;
+        if let Some(item) = self.index.select_by_offset(self.offset) {
+            wz.move_to_path(&item);
+            changed |= wz.set_val(()).is_none();
+        }
+        wz.reset();
+        changed
+    }
+}
+
 pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadTailSink<true>), TailSink(HeadTailSink<false>), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+    #[cfg(feature = "weighted_select")]
+    WeightedSelectSink(WeightedSelectSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1305,6 +1364,12 @@ impl Sink for ASink {
             return ASink::Z3Sink(Z3Sink::new(e));
             #[cfg(not(feature = "z3"))]
             panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(7)) &&
+            *e.ptr.offset(2) == b'w' && *e.ptr.offset(3) == b's' && *e.ptr.offset(4) == b'e' && *e.ptr.offset(5) == b'l' && *e.ptr.offset(6) == b'e' && *e.ptr.offset(7) == b'c' && *e.ptr.offset(8) == b't' } {
+            #[cfg(feature = "weighted_select")]
+            return ASink::WeightedSelectSink(WeightedSelectSink::new(e));
+            #[cfg(not(feature = "weighted_select"))]
+            panic!("MORK was not built with the weighted_select feature, yet trying to call {:?}", e);
         } else {
             panic!("unrecognized sink")
         }
@@ -1335,6 +1400,8 @@ impl Sink for ASink {
                 ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMaxSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FProdSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "weighted_select")]
+                ASink::WeightedSelectSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1362,6 +1429,8 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.sink(it, path) }
             ASink::FMaxSink(s) => { s.sink(it, path) }
             ASink::FProdSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "weighted_select")]
+            ASink::WeightedSelectSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1389,6 +1458,37 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.finalize(it) }
             ASink::FMaxSink(s) => { s.finalize(it) }
             ASink::FProdSink(s) => { s.finalize(it) }
+            #[cfg(feature = "weighted_select")]
+            ASink::WeightedSelectSink(s) => { s.finalize(it) }
         }
+    }
+}
+
+#[cfg(all(test, feature = "weighted_select"))]
+mod weighted_select_tests {
+    use crate::space::Space;
+    fn run(program: &[u8]) -> String {
+        let mut s = Space::new();
+        s.add_all_sexpr(program).unwrap();
+        s.metta_calculus(100);
+        let mut out = Vec::new();
+        s.dump_all_sexpr(&mut out).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+    // weights a:3, b:5, c:2 in PathMap order a<b<c -> cumulative blocks a[0,3) b[3,8) c[8,10).
+    // The (O ...) template functor routes (wselect ...) through the sink dispatch.
+    #[test]
+    fn wselect_picks_item_at_cumulative_offset() {
+        assert!(run(b"(w a 3)\n(w b 5)\n(w c 2)\n(exec 0 (, (w $i $wt)) (O (wselect 4 $i $wt)))\n")
+            .contains("(wselected b)"), "offset 4 in [3,8) -> b");
+        assert!(run(b"(w a 3)\n(w b 5)\n(w c 2)\n(exec 0 (, (w $i $wt)) (O (wselect 0 $i $wt)))\n")
+            .contains("(wselected a)"), "offset 0 in [0,3) -> a");
+        assert!(run(b"(w a 3)\n(w b 5)\n(w c 2)\n(exec 0 (, (w $i $wt)) (O (wselect 9 $i $wt)))\n")
+            .contains("(wselected c)"), "offset 9 in [8,10) -> c");
+    }
+    #[test]
+    fn wselect_out_of_range_selects_nothing() {
+        assert!(!run(b"(w a 3)\n(w b 5)\n(exec 0 (, (w $i $wt)) (O (wselect 99 $i $wt)))\n")
+            .contains("(wselected"), "offset 99 >= total 8 -> None");
     }
 }

@@ -4199,6 +4199,43 @@ mod tests {
         assert_eq!(wsum, count * (1u64 << factors.len()), "weight 2 per fact gives 2^m * count");
     }
 
+    /// The elimination order comes from the join tree, not the caller: a 3-chain r-s-t decomposes
+    /// to a width-1 GHD, `ghd_aggregate_auto` derives a leaf-first order, and the factorized count
+    /// equals enumerate-and-count.
+    #[test]
+    fn ghd_aggregate_auto_derives_order_on_a_chain() {
+        let mut s = crate::space::Space::new();
+        let mut prog = String::new();
+        for x in 0..3 {
+            for y in 0..3 {
+                prog.push_str(&format!("(r x{x} y{y})\n"));
+            }
+        }
+        for y in 0..3 {
+            for z in 0..3 {
+                prog.push_str(&format!("(s y{y} z{z})\n"));
+            }
+        }
+        for z in 0..3 {
+            for w in 0..3 {
+                prog.push_str(&format!("(t z{z} w{w})\n"));
+            }
+        }
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        let body = enc("(, (r $x $y) (s $y $z) (t $z $w))");
+        let (factors, nvars) = parse_body_factors(&body).unwrap();
+        let var_order: Vec<usize> = (0..nvars).collect();
+        let mut ec = 0u64;
+        run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut |_t| {
+            ec += 1;
+            true
+        });
+        let fc = crate::ghd::ghd_aggregate_auto::<u64>(&s.btm, &factors, nvars, |_| 1)
+            .expect("the chain decomposes");
+        assert_eq!(fc, ec, "auto factorized count must equal enumerate");
+        assert!(ec > 0, "the test must exercise matches");
+    }
+
     /// The asymptotic separation: on a hub 2-path (k inputs, k^2 output) enumerate-and-count is
     /// O(k^2) while the factorized count is O(k), so the speedup grows with k. This is the win the
     /// WCO join cannot match: the same COUNT, without touching the output.

@@ -488,6 +488,63 @@ pub fn ghd_count(map: &PathMap<()>, factors: &[Factor], nvars: usize, elim_order
     ghd_aggregate::<u64>(map, factors, nvars, elim_order, |_| 1u64)
 }
 
+/// A sum-product elimination order derived from the GHD join tree: post-order (leaves before
+/// parents), eliminating at each bag the variables it does not share with its parent. The variable
+/// eliminated at a bag is confined to that bag's subtree, so the induced width is the hypertree
+/// width and the aggregation runs in O(N^fhtw).
+pub fn elimination_order(ghd: &Ghd) -> Vec<usize> {
+    let n = ghd.bags.len();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut root = 0usize;
+    for (i, p) in ghd.parent.iter().enumerate() {
+        match p {
+            Some(pp) => children[*pp].push(i),
+            None => root = i,
+        }
+    }
+    let mut post = Vec::new();
+    let mut stack = vec![(root, false)];
+    while let Some((b, done)) = stack.pop() {
+        if done {
+            post.push(b);
+        } else {
+            stack.push((b, true));
+            for &c in &children[b] {
+                stack.push((c, false));
+            }
+        }
+    }
+    let mut eliminated: BTreeSet<usize> = BTreeSet::new();
+    let mut order = Vec::new();
+    for &b in &post {
+        let parent_vars: BTreeSet<usize> = ghd.parent[b]
+            .and_then(|p| ghd.bags.get(p))
+            .map(|pb| pb.vars.clone())
+            .unwrap_or_default();
+        for &v in &ghd.bags[b].vars {
+            if !parent_vars.contains(&v) && eliminated.insert(v) {
+                order.push(v);
+            }
+        }
+    }
+    order
+}
+
+/// Factorized aggregation that decomposes the body and derives a good elimination order from the
+/// join tree, so the caller need not choose one. For an acyclic body this is O(N^fhtw) = O(N);
+/// `None` when the body does not decompose (a nonground compound column the planner declines).
+pub fn ghd_aggregate_auto<S: Semiring>(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    weight: impl Fn(&[u8]) -> S + Copy,
+) -> Option<S> {
+    let edges = hypergraph(factors);
+    let ghd = decompose(&edges, 3)?;
+    let order = elimination_order(&ghd);
+    Some(ghd_aggregate(map, factors, nvars, &order, weight))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -442,6 +442,46 @@ fn sum_out<S: Semiring>(t: &FactorTable<S>, v: usize) -> FactorTable<S> {
     FactorTable { vars: out_vars, rows }
 }
 
+/// One sum-product elimination step: remove `v` by multiplying every table that mentions it and
+/// summing `v` out of the product; tables without `v` pass through unchanged.
+fn eliminate_var<S: Semiring>(tables: Vec<FactorTable<S>>, v: usize) -> Vec<FactorTable<S>> {
+    let (with_v, mut without_v): (Vec<FactorTable<S>>, Vec<FactorTable<S>>) =
+        tables.into_iter().partition(|t| t.vars.contains(&v));
+    if let Some((first, rest)) = with_v.split_first() {
+        let mut combined = first.clone();
+        for t in rest {
+            combined = multiply(&combined, t);
+        }
+        without_v.push(sum_out(&combined, v));
+    }
+    without_v
+}
+
+/// Walk bags in `bag_order` (children before parents) and collect the variables each bag eliminates:
+/// those not in its `parent` bag and not already eliminated, skipping `free` if given. Shared by the
+/// full and free-variable elimination orders.
+fn collect_bag_elims(
+    ghd: &Ghd,
+    bag_order: &[usize],
+    parent: &[Option<usize>],
+    free: Option<usize>,
+) -> Vec<usize> {
+    let mut eliminated: BTreeSet<usize> = BTreeSet::new();
+    let mut order = Vec::new();
+    for &b in bag_order {
+        let parent_vars: BTreeSet<usize> = parent[b]
+            .and_then(|p| ghd.bags.get(p))
+            .map(|pb| pb.vars.clone())
+            .unwrap_or_default();
+        for &v in &ghd.bags[b].vars {
+            if Some(v) != free && !parent_vars.contains(&v) && eliminated.insert(v) {
+                order.push(v);
+            }
+        }
+    }
+    order
+}
+
 /// Factorized aggregation of the join over semiring `S`, by sum-product variable elimination in
 /// `elim_order`: for each variable, `mul` the tables that mention it and `add`-sum it out. The
 /// remaining tables are scalars combined with `mul` (disjoint components). `weight` gives each
@@ -460,17 +500,7 @@ pub fn ghd_aggregate<S: Semiring>(
         .map(|f| materialize_factor_table(map, f, nvars, weight))
         .collect();
     for &v in elim_order {
-        let (with_v, without_v): (Vec<FactorTable<S>>, Vec<FactorTable<S>>) =
-            tables.into_iter().partition(|t| t.vars.contains(&v));
-        tables = without_v;
-        if with_v.is_empty() {
-            continue;
-        }
-        let mut combined = with_v[0].clone();
-        for t in &with_v[1..] {
-            combined = multiply(&combined, t);
-        }
-        tables.push(sum_out(&combined, v));
+        tables = eliminate_var(tables, v);
     }
     let mut acc = S::one();
     for t in &tables {
@@ -514,20 +544,7 @@ pub fn elimination_order(ghd: &Ghd) -> Vec<usize> {
             }
         }
     }
-    let mut eliminated: BTreeSet<usize> = BTreeSet::new();
-    let mut order = Vec::new();
-    for &b in &post {
-        let parent_vars: BTreeSet<usize> = ghd.parent[b]
-            .and_then(|p| ghd.bags.get(p))
-            .map(|pb| pb.vars.clone())
-            .unwrap_or_default();
-        for &v in &ghd.bags[b].vars {
-            if !parent_vars.contains(&v) && eliminated.insert(v) {
-                order.push(v);
-            }
-        }
-    }
-    order
+    collect_bag_elims(ghd, &post, &ghd.parent, None)
 }
 
 /// Partition factor indices into connected components by shared variables. A body whose
@@ -564,6 +581,45 @@ fn connected_components(edges: &[std::collections::BTreeSet<usize>]) -> Vec<Vec<
     groups.into_values().collect()
 }
 
+/// A free-variable elimination order: like `elimination_order`, but re-rooted at a bag containing
+/// `free` so every other variable is eliminated on a path TOWARD `free`, and `free` itself is never
+/// eliminated. This is what a free (kept / summed / projected) variable needs: rooting elsewhere can
+/// eliminate a shared join variable before a leaf variable, materializing a quadratic intermediate
+/// (e.g. a chain gene->rel1->rel2 rooted at rel2 joins rel1 and rel2 on the shared variable before
+/// the leaf is summed out). Rooting at `free`'s bag keeps every intermediate within the hypertree
+/// width -- O(N^fhtw). Standard free-connex variable elimination (Yannakakis toward the free set).
+pub fn elimination_order_free(ghd: &Ghd, free: usize) -> Vec<usize> {
+    let n = ghd.bags.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, p) in ghd.parent.iter().enumerate() {
+        if let Some(pp) = p {
+            adj[i].push(*pp);
+            adj[*pp].push(i);
+        }
+    }
+    // Root at a bag holding `free`; BFS orients parents away from it.
+    let root = (0..n).find(|&b| ghd.bags[b].vars.contains(&free)).unwrap_or(0);
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    let mut visited = vec![false; n];
+    let mut queue = std::collections::VecDeque::new();
+    let mut bfs = vec![root];
+    queue.push_back(root);
+    visited[root] = true;
+    while let Some(b) = queue.pop_front() {
+        for &c in &adj[b] {
+            if !visited[c] {
+                visited[c] = true;
+                parent[c] = Some(b);
+                queue.push_back(c);
+                bfs.push(c);
+            }
+        }
+    }
+    // Reverse BFS visits children before parents; eliminate each bag's non-parent, non-free vars.
+    let bfs_rev: Vec<usize> = bfs.iter().rev().cloned().collect();
+    collect_bag_elims(ghd, &bfs_rev, &parent, Some(free))
+}
+
 /// Factorized aggregation that decomposes the body and derives a good elimination order from the
 /// join tree, so the caller need not choose one. For an acyclic body this is O(N^fhtw) = O(N);
 /// `None` when a component does not decompose (a cycle beyond `k_max`, or a nonground compound
@@ -585,6 +641,80 @@ pub fn ghd_aggregate_auto<S: Semiring>(
         order.extend(elimination_order(&ghd));
     }
     Some(ghd_aggregate(map, factors, nvars, &order, weight))
+}
+
+/// The values of `free` that participate in at least one full join answer: the semi-join-reduced
+/// (Yannakakis / Bernstein-Goodman full reducer) domain of `free`. Computed by eliminating every
+/// OTHER variable over the EXISTS (boolean) semiring and keeping `free` free -- FAQ's free-variable
+/// form, which for the boolean semiring is exactly the single-pass full reducer toward `free`
+/// (`sum_out` = OR = "some assignment of the eliminated variable satisfies the factor"). Each
+/// surviving key is `free`'s value bytes. O(N^fhtw). `elim_order` covers every variable; `free` is
+/// skipped, so it need not be last. The body must be connected (the caller gates on it) so no
+/// eliminated variable leaves an orphan scalar component.
+pub fn ghd_surviving_domain(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    free: usize,
+    elim_order: &[usize],
+) -> Vec<Vec<u8>> {
+    let mut tables: Vec<FactorTable<bool>> = factors
+        .iter()
+        .map(|f| materialize_factor_table(map, f, nvars, |_| true))
+        .collect();
+    for &v in elim_order {
+        if v == free {
+            continue; // keep the summed column free; eliminate everything else
+        }
+        tables = eliminate_var(tables, v);
+    }
+    // A fully-eliminated disjoint component (empty vars) that is empty makes the whole join empty.
+    if tables.iter().any(|t| t.vars.is_empty() && t.rows.values().all(|&b| !b)) {
+        return Vec::new();
+    }
+    let free_tables: Vec<FactorTable<bool>> =
+        tables.into_iter().filter(|t| t.vars.contains(&free)).collect();
+    let Some(mut combined) = free_tables.first().cloned() else {
+        return Vec::new();
+    };
+    for t in &free_tables[1..] {
+        combined = multiply(&combined, t);
+    }
+    combined
+        .rows
+        .iter()
+        .filter(|(_, present)| **present)
+        .map(|(k, _)| key_slice(&combined.vars, k, free))
+        .collect()
+}
+
+/// Factorized `SUM(DISTINCT x)` over a connected body: sum the numeric values of `free`'s
+/// semi-join-reduced surviving domain (each value appears once -- distinct). This is the sound
+/// factorization of MORK's SumSink (which dedups then sums a numeric column): distinct summed
+/// values == the surviving domain, so O(N^fhtw) replaces enumerating the join. Values are parsed
+/// exactly as the SumSink does (skip the symbol-size tag byte, base-10, wrapping u32). `None` if the
+/// body is disconnected/undecomposable or a value is not numeric (the caller falls back to enumerate).
+pub fn ghd_sum_distinct(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    free: usize,
+) -> Option<u32> {
+    let edges = hypergraph(factors);
+    if connected_components(&edges).len() != 1 {
+        return None; // a disjoint component would need its own presence check; keep it simple
+    }
+    let ghd = decompose(&edges, 3)?;
+    let order = elimination_order_free(&ghd, free);
+    let mut total: u32 = 0;
+    for val in ghd_surviving_domain(map, factors, nvars, free, &order) {
+        if val.is_empty() {
+            return None;
+        }
+        let digits = std::str::from_utf8(&val[1..]).ok()?;
+        total = total.wrapping_add(u32::from_str_radix(digits, 10).ok()?);
+    }
+    Some(total)
 }
 
 #[cfg(test)]

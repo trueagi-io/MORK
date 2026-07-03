@@ -4192,6 +4192,43 @@ mod tests {
         assert_eq!(fact_count, enum_count, "factorized Cartesian count != enumerate");
     }
 
+    /// Factorized SUM(DISTINCT x) over a join equals enumerate-collect-distinct-sum. The body
+    /// `(gene $g)(rel1 $g $x)(rel2 $g $y)` sums the distinct $x that survive the join (connect
+    /// through $g to some $y). `ghd_sum_distinct` sums $x's semi-join-reduced domain in O(N).
+    #[test]
+    fn ghd_sum_distinct_matches_enumerate() {
+        let mut s = crate::space::Space::new();
+        // g=g1 reaches x in {10,20,30} and y in {1,2}; g=g2 reaches x in {20,40} but NO y (dangling).
+        s.add_all_sexpr(
+            b"(gene g1) (rel1 g1 10) (rel1 g1 20) (rel1 g1 30) (rel2 g1 1) (rel2 g1 2)
+              (rel1 g2 20) (rel1 g2 40)",
+        )
+        .unwrap();
+        let body = enc("(, (gene $g) (rel1 $g $x) (rel2 $g $y))");
+        let (factors, nvars) = parse_body_factors(&body).unwrap();
+        // g1 has a rel2 partner so its x {10,20,30} survive the join; g2 has no rel2 partner, so its
+        // x=40 dangles and is excluded (20 still survives via g1). Distinct surviving x = {10,20,30}.
+        let free = 1usize; // gene $g -> var 0, rel1 $g $x introduces $x -> var 1
+        let domain = crate::ghd::ghd_surviving_domain(
+            &s.btm,
+            &factors,
+            nvars,
+            free,
+            &(0..nvars).collect::<Vec<_>>(),
+        );
+        let surviving: std::collections::BTreeSet<u32> = domain
+            .iter()
+            .map(|v| u32::from_str_radix(std::str::from_utf8(&v[1..]).unwrap(), 10).unwrap())
+            .collect();
+        assert_eq!(
+            surviving,
+            [10, 20, 30].into_iter().collect(),
+            "semi-join reduction must drop dangling x=40"
+        );
+        let fact_sum = crate::ghd::ghd_sum_distinct(&s.btm, &factors, nvars, free).unwrap();
+        assert_eq!(fact_sum, 60, "factorized SUM(DISTINCT x) = 10+20+30");
+    }
+
     /// Run a count-sink program to fixpoint with the factorized fast path forced on/off and return
     /// the whole-space dump, for the differential oracles below.
     fn count_diff_run(prog: &str, factorized: bool) -> String {
@@ -4220,6 +4257,62 @@ mod tests {
         let factorized = count_diff_run(PROG, true);
         assert!(enumerated.contains("(star 6)"), "1*2*3 star count:\n{enumerated}");
         assert_eq!(factorized, enumerated, "connected-star factorized diverged from enumerate");
+    }
+
+    /// Differential oracle for the wired SUM sink: SUM(DISTINCT x) over a join, factorized vs
+    /// enumerate, byte-identical. g1's x {10,20,30} survive (they reach a rel2 partner); g2's x=40
+    /// dangles (no rel2 partner) so the semi-join reduction drops it -- distinct surviving x sums to
+    /// 60. `(total $c)` emits the value; the literal guards check emit-iff-sum-equals both ways.
+    #[test]
+    fn factorized_sum_sink_matches_enumerate() {
+        const PROG: &str = r#"
+(gene g1) (rel1 g1 10) (rel1 g1 20) (rel1 g1 30) (rel2 g1 1) (rel2 g1 2)
+(rel1 g2 20) (rel1 g2 40)
+(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (sum (total $c) $c $x)))
+(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (sum (is-sixty) 60 $x)))
+(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (sum (is-fifty) 50 $x)))
+"#;
+        let enumerated = count_diff_run(PROG, false);
+        let factorized = count_diff_run(PROG, true);
+        assert!(enumerated.contains("(total 60)"), "distinct surviving x sum = 60:\n{enumerated}");
+        assert!(enumerated.contains("is-sixty"), "60==60 emits:\n{enumerated}");
+        assert!(!enumerated.contains("is-fifty"), "60!=50 does not emit:\n{enumerated}");
+        assert_eq!(factorized, enumerated, "factorized SUM diverged from the enumerate SumSink");
+    }
+
+    /// Proof the wired SUM fast path is taken and wins: SUM(DISTINCT x) over a star with k distinct x
+    /// but k*k matches. The enumerate SumSink materializes k*k rows then dedups; the factorized path
+    /// semi-join-reduces to the k-value domain in O(k). Byte-identical each k; the growing speedup is
+    /// the proof it routes. Distinct x = {0..k-1}, sum = k*(k-1)/2.
+    #[test]
+    #[ignore = "timing: the wired SUM sink, factorized vs enumerate through the exec"]
+    fn factorized_sum_sink_win_scales() {
+        for k in [50usize, 100, 200, 400, 800] {
+            let mut prog = String::from("(gene g)\n");
+            for i in 0..k {
+                prog.push_str(&format!("(rel1 g {i})\n"));
+            }
+            for j in 0..k {
+                prog.push_str(&format!("(rel2 g y{j})\n"));
+            }
+            prog.push_str(
+                "(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (sum (total $c) $c $x)))\n",
+            );
+            let t = std::time::Instant::now();
+            let enumerated = count_diff_run(&prog, false);
+            let enum_us = t.elapsed().as_micros().max(1);
+            let t = std::time::Instant::now();
+            let factorized = count_diff_run(&prog, true);
+            let fact_us = t.elapsed().as_micros().max(1);
+            assert_eq!(factorized, enumerated, "diverged at k={k}");
+            let expected: u32 = (0..k as u32).sum();
+            assert!(enumerated.contains(&format!("(total {expected})")), "sum k*(k-1)/2 at k={k}");
+            eprintln!(
+                "k={k:4} distinct_x={k:4} matches={:8}  enumerate {enum_us:9}us  factorized {fact_us:7}us  speedup {:.1}x",
+                k * k,
+                enum_us as f64 / fact_us as f64
+            );
+        }
     }
 
     /// Proof the wired fast path is actually taken and wins through the exec, not silently falling

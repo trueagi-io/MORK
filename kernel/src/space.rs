@@ -63,25 +63,28 @@ fn count_sink_pattern_refs(e: Expr, p: usize) -> std::collections::BTreeSet<usiz
     out
 }
 
-/// Gate and compute the factorized COUNT for a single ungrouped, projection-free count sink over a
-/// decomposable multi-factor body. `Some(n)` means route the sink to the factorized aggregate
-/// (FAQ InsideOut over the join tree, O(N^fhtw)); `None` falls back to the enumerate CountSink
-/// (always correct, O(output)). The gate is exactly Alloy fac18's soundness condition: the count
-/// template mentions no pattern variable (a single group) and the projection mentions every pattern
-/// variable (distinct-output == match count), which is Yan-Larson "double eager" COUNT.
-fn factorized_count_gate(
+/// The factorized value for an aggregate sink, ready to hand to its `set_precomputed`.
+enum FactorizedAgg {
+    Count(u64),
+    Sum(u32),
+}
+
+/// Gate and compute the factorized aggregate for a single ungrouped aggregate sink over a
+/// decomposable multi-factor body. Both require the template to mention no pattern variable (a
+/// single group). COUNT additionally needs a full projection (distinct-output == match count, Alloy
+/// fac18; Yan-Larson "double eager" COUNT). SUM(DISTINCT) needs a single-column projection and sums
+/// that column's semi-join-reduced surviving domain (Yannakakis full reducer over the boolean
+/// semiring). `None` -> the enumerate sink runs, always correct, O(output).
+fn factorized_aggregate_gate(
     read_copy: &PathMap<()>,
     pat_expr: Expr,
     sinks: &[crate::sinks::ASink],
     templates: &[Expr],
-) -> Option<u64> {
+) -> Option<FactorizedAgg> {
     if !factorized_count_enabled() || sinks.len() != 1 {
         return None;
     }
-    if !matches!(sinks[0], crate::sinks::ASink::CountSink(_)) {
-        return None;
-    }
-    // Split the sink `(count TEMPLATE COUNTVAR PROJECTION)` into its parts.
+    // Split the sink `(op TEMPLATE COUNTVAR PROJECTION)` into its parts.
     let mut args = Vec::new();
     ExprEnv::new(0, templates[0]).args(&mut args);
     if args.len() != 4 {
@@ -91,15 +94,29 @@ fn factorized_count_gate(
     if !count_sink_pattern_refs(args[1].subsexpr(), p).is_empty() {
         return None; // template mentions a pattern variable -> grouped, not a single scalar
     }
-    if count_sink_pattern_refs(args[3].subsexpr(), p).len() != p {
-        return None; // projection drops a pattern variable -> distinct-output < match count
-    }
     let body = unsafe { pat_expr.span().as_ref().unwrap() };
     let (factors, nvars) = crate::zipper_join::parse_body_factors(body)?;
     if factors.len() < 2 {
-        return None; // a single factor is already O(N) to count
+        return None; // a single factor is already O(N)
     }
-    crate::ghd::ghd_aggregate_auto::<u64>(read_copy, &factors, nvars, |_| 1)
+    let proj = count_sink_pattern_refs(args[3].subsexpr(), p);
+    match &sinks[0] {
+        crate::sinks::ASink::CountSink(_) => {
+            if proj.len() != p {
+                return None; // COUNT needs a full projection (distinct-output < matches otherwise)
+            }
+            crate::ghd::ghd_aggregate_auto::<u64>(read_copy, &factors, nvars, |_| 1)
+                .map(FactorizedAgg::Count)
+        }
+        crate::sinks::ASink::SumSink(_) => {
+            if proj.len() != 1 {
+                return None; // SUM sums exactly one projected numeric column
+            }
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_sum_distinct(read_copy, &factors, nvars, free).map(FactorizedAgg::Sum)
+        }
+        _ => None,
+    }
 }
 use crate::sources::{AFactor, Resource, ResourceRequest};
 
@@ -1619,7 +1636,7 @@ impl Space {
         // single group so finalize discovers the template context; set_precomputed then supplies the
         // real count. When the gate declines (grouped, projected, cyclic, single-factor, disabled)
         // this is None and the enumerate path runs unchanged.
-        let fast_n = factorized_count_gate(&read_copy, pat_expr, &sinks, &templates);
+        let fast = factorized_aggregate_gate(&read_copy, pat_expr, &sinks, &templates);
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
@@ -1649,16 +1666,24 @@ impl Space {
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
                     }
                     // Fast path stops after the first successful match: one representative seeds the
-                    // single group, and set_precomputed (below) supplies the factorized count.
-                    fast_n.is_none()
+                    // single group, and set_precomputed (below) supplies the factorized aggregate.
+                    fast.is_none()
                 }
             }
         });
 
-        if let Some(n) = fast_n {
-            if let crate::sinks::ASink::CountSink(cs) = &mut sinks[0] {
-                cs.set_precomputed(n);
+        match fast {
+            Some(FactorizedAgg::Count(n)) => {
+                if let crate::sinks::ASink::CountSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
             }
+            Some(FactorizedAgg::Sum(n)) => {
+                if let crate::sinks::ASink::SumSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
+            }
+            None => {}
         }
 
         for (i, s) in sinks.iter_mut().enumerate() {

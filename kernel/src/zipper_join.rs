@@ -1110,7 +1110,7 @@ fn run_unify_join<'a>(
 
 /// Run the join streaming each accepted assignment's per-factor original fact bytes to `on_tuple`
 /// instead of collecting rows; a `false` return stops the search early.
-fn run_unify_join_stream(
+pub fn run_unify_join_stream(
     map: &PathMap<()>,
     factors: &[Factor],
     var_order: &[usize],
@@ -1372,6 +1372,74 @@ pub fn query_multi_leapfrog<F: FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>
     }))
     .ok()
     .flatten()
+}
+
+/// GHD drop-in for [`query_multi_leapfrog`]: for a *cyclic* body with a low-width hypertree
+/// decomposition, materialize each bag with the WCO join and natural-join the bags (an acyclic
+/// bag-query), streaming the SAME `(bindings, loc)` per full match as the global join, so the
+/// answer set is byte-identical. Returns `None` (fall back to the global join) for an acyclic body
+/// (already output-optimal), a body with a nonground compound column (a shared variable the bag
+/// key would miss), or when no width `<= 3` decomposition exists.
+pub fn query_multi_ghd<F: FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(
+    map: &PathMap<()>,
+    pat_expr: Expr,
+    mut effect: F,
+) -> Option<usize> {
+    let body = unsafe { pat_expr.span().as_ref().unwrap() };
+    let (factors, nvars) = parse_body_factors(body)?;
+    if !body_factors_routable_to_zipper_join(&factors) {
+        return None;
+    }
+    // Every variable must be a top-level column: `extract_var_values` reads top-level columns, so a
+    // nonground compound column could hide a shared variable the bag-join key misses.
+    if factors
+        .iter()
+        .any(|f| f.cols.iter().any(|c| c.is_nonground_compound()))
+    {
+        return None;
+    }
+    let edges = crate::ghd::hypergraph(&factors);
+    let ghd = crate::ghd::decompose(&edges, 3)?;
+    if ghd.width < 2 {
+        return None; // acyclic bodies are already output-optimal under the global WCO join.
+    }
+    let bags_mat: Vec<(crate::ghd::Bag, Vec<crate::ghd::BagMatch>)> = ghd
+        .bags
+        .iter()
+        .map(|b| (b.clone(), crate::ghd::materialize_bag(map, &factors, b, nvars)))
+        .collect();
+    let full_tuples = crate::ghd::join_bags(&bags_mat, factors.len());
+
+    let mut pat_args = Vec::new();
+    ExprEnv::new(0, pat_expr).args(&mut pat_args);
+    let sources = &pat_args[1..];
+    debug_assert_eq!(sources.len(), factors.len());
+    let mut candidate = 0usize;
+    for tuple in &full_tuples {
+        unsafe { crate::space::unifications += 1 };
+        let e = Expr {
+            ptr: tuple[0].as_ptr().cast_mut(),
+        };
+        let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+        for (j, fact) in tuple.iter().enumerate().skip(1) {
+            pairs.push((
+                sources[j],
+                ExprEnv::new(
+                    (j + 1) as u8,
+                    Expr {
+                        ptr: fact.as_ptr().cast_mut(),
+                    },
+                ),
+            ));
+        }
+        if let Ok(bs) = unify(&mut pairs) {
+            candidate += 1;
+            if !effect(Err(bs), e) {
+                break;
+            }
+        }
+    }
+    Some(candidate)
 }
 
 /// The join owns every nonempty relation-prefixed conjunction: each column carries full
@@ -4019,6 +4087,48 @@ mod tests {
             let ((p0, s0), (p1, s1)) = engine_both_ways(prog, steps);
             assert_eq!(p0, p1, "performed step counts differ on\n{prog}");
             assert_eq!(s0, s1, "spaces differ on\n{prog}");
+        }
+    }
+
+    /// Model 14 in the running engine: for a cyclic body the GHD's full tuples (a matched fact per
+    /// factor, joined across the bags) equal the global WCO join's full tuples as a set. This is
+    /// the correctness gate for `query_multi_ghd`: identical tuples feed the identical unify+effect.
+    #[test]
+    fn ghd_full_tuples_match_global_join_on_cycles() {
+        let mut s = crate::space::Space::new();
+        s.add_all_sexpr(
+            "(e a b)\n(e b c)\n(e c a)\n(e a c)\n(e c b)\n(e b a)\n\
+             (e a d)\n(e d c)\n(e c d)\n(e d a)\n(e b d)\n(e d b)\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        for body_str in [
+            "(, (e $x $y) (e $y $z) (e $z $x))",           // triangle, ghw 2
+            "(, (e $a $b) (e $b $c) (e $c $d) (e $d $a))", // 4-cycle, ghw 2
+        ] {
+            let body = enc(body_str);
+            let (factors, nvars) = parse_body_factors(&body).unwrap();
+
+            let var_order: Vec<usize> = (0..nvars).collect();
+            let mut global: BTreeSet<Vec<Vec<u8>>> = BTreeSet::new();
+            run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut |t| {
+                global.insert(t.to_vec());
+                true
+            });
+
+            let edges = crate::ghd::hypergraph(&factors);
+            let ghd = crate::ghd::decompose(&edges, 3).expect("cyclic body decomposes");
+            assert_eq!(ghd.width, 2, "{body_str}: cyclic body has width 2");
+            let bags_mat: Vec<_> = ghd
+                .bags
+                .iter()
+                .map(|b| (b.clone(), crate::ghd::materialize_bag(&s.btm, &factors, b, nvars)))
+                .collect();
+            let ghd_tuples: BTreeSet<Vec<Vec<u8>>> =
+                crate::ghd::join_bags(&bags_mat, factors.len()).into_iter().collect();
+
+            assert_eq!(global, ghd_tuples, "{body_str}: GHD tuples must equal the global join");
+            assert!(!global.is_empty(), "{body_str}: the test must exercise non-empty results");
         }
     }
 

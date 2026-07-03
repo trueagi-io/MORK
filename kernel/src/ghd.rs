@@ -15,8 +15,11 @@
 //! all factors. Evaluation (materialize bags via the WCO join, Yannakakis over them) lives
 //! separately; this file is pure planning and is unit-tested on the hypergraph in isolation.
 
-use crate::zipper_join::{collect_factor_vars, Factor};
-use std::collections::BTreeSet;
+use crate::zipper_join::{
+    collect_factor_vars, first_subterm_len, run_unify_join_stream, Factor, FactorColumn,
+};
+use pathmap::PathMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The query hypergraph: per factor, the set of body variables it constrains (its hyperedge).
 pub fn hypergraph(factors: &[Factor]) -> Vec<BTreeSet<usize>> {
@@ -188,6 +191,97 @@ fn partition_rec(
     blocks.pop();
 }
 
+// ---- Evaluation: materialize each bag with the WCO join, then join the bags ----
+
+/// One match of a bag: the matched fact bytes for each of the bag's factors (in `bag.factors`
+/// order) and the value bound to each of the bag's variables (its join-key material).
+#[derive(Clone, Debug)]
+pub struct BagMatch {
+    pub facts: Vec<Vec<u8>>,
+    pub vars: BTreeMap<usize, Vec<u8>>,
+}
+
+/// Read the value bound to each top-level `Var` column of `factor` from a matched `fact`. A fact
+/// is a full s-expression: `fact[0]` is the arity byte (the factor's seek prefix), then one
+/// subterm per column. Coreference is enforced by the join, so a variable's first occurrence
+/// carries its value.
+fn extract_var_values(fact: &[u8], factor: &Factor, out: &mut BTreeMap<usize, Vec<u8>>) {
+    let mut pos = 1; // skip the arity byte
+    for col in &factor.cols {
+        if pos >= fact.len() {
+            break;
+        }
+        let len = first_subterm_len(&fact[pos..]);
+        if let FactorColumn::Var(v) = col {
+            out.entry(*v).or_insert_with(|| fact[pos..pos + len].to_vec());
+        }
+        pos += len;
+    }
+}
+
+/// Materialize a bag: run the WCO join over the bag's factors and collect, per match, the matched
+/// facts and the bag's variable values. Ascending variable order is a valid elimination order
+/// because `catch_up` seeks already-bound columns, so a factor whose columns are not in ascending
+/// variable order still binds correctly.
+pub fn materialize_bag(
+    map: &PathMap<()>,
+    all_factors: &[Factor],
+    bag: &Bag,
+    nvars: usize,
+) -> Vec<BagMatch> {
+    let bag_factors: Vec<Factor> = bag.factors.iter().map(|&i| all_factors[i].clone()).collect();
+    let var_order: Vec<usize> = bag.vars.iter().cloned().collect();
+    let mut out = Vec::new();
+    run_unify_join_stream(map, &bag_factors, &var_order, nvars, &mut |tuple: &[Vec<u8>]| {
+        let facts: Vec<Vec<u8>> = tuple.to_vec();
+        let mut vars = BTreeMap::new();
+        for (k, &fi) in bag.factors.iter().enumerate() {
+            extract_var_values(&facts[k], &all_factors[fi], &mut vars);
+        }
+        out.push(BagMatch { facts, vars });
+        true
+    });
+    out
+}
+
+/// Natural-join the materialized bags on their shared variables, producing one full tuple of
+/// matched facts per original factor (indexed by original factor id). The bags cover every factor
+/// (Model 14), so a completed tuple binds every factor. This first version is a nested-loop join
+/// (correct for any order); Yannakakis semijoin reduction over the join tree replaces it for the
+/// asymptotic bound.
+pub fn join_bags(bags: &[(Bag, Vec<BagMatch>)], n_factors: usize) -> Vec<Vec<Vec<u8>>> {
+    let mut acc: Vec<(Vec<Option<Vec<u8>>>, BTreeMap<usize, Vec<u8>>)> =
+        vec![(vec![None; n_factors], BTreeMap::new())];
+    for (bag, matches) in bags {
+        let mut next = Vec::new();
+        for (partial_facts, partial_vars) in &acc {
+            for m in matches {
+                // agree on every already-bound shared variable
+                let agree = m
+                    .vars
+                    .iter()
+                    .all(|(v, val)| partial_vars.get(v).map_or(true, |pv| pv == val));
+                if !agree {
+                    continue;
+                }
+                let mut facts = partial_facts.clone();
+                for (k, &fi) in bag.factors.iter().enumerate() {
+                    facts[fi] = Some(m.facts[k].clone());
+                }
+                let mut vars = partial_vars.clone();
+                for (v, val) in &m.vars {
+                    vars.insert(*v, val.clone());
+                }
+                next.push((facts, vars));
+            }
+        }
+        acc = next;
+    }
+    acc.into_iter()
+        .filter_map(|(facts, _)| facts.into_iter().collect::<Option<Vec<Vec<u8>>>>())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +334,43 @@ mod tests {
         let g = decompose(&edges, 3).expect("one factor decomposes");
         assert_eq!(g.width, 1);
         assert_eq!(g.bags.len(), 1);
+    }
+
+    fn bm(facts: &[&[u8]], vars: &[(usize, &[u8])]) -> BagMatch {
+        BagMatch {
+            facts: facts.iter().map(|f| f.to_vec()).collect(),
+            vars: vars.iter().map(|(v, b)| (*v, b.to_vec())).collect(),
+        }
+    }
+
+    #[test]
+    fn join_bags_natural_join_on_shared_var() {
+        // bag A = factor 0 over vars {0=x, 1=y}; bag B = factor 1 over vars {1=y, 2=z}.
+        // They share variable 1 (y): only matches agreeing on y join.
+        let bag_a = Bag { factors: vec![0], vars: e(&[0, 1]) };
+        let bag_b = Bag { factors: vec![1], vars: e(&[1, 2]) };
+        let a = vec![
+            bm(&[b"FA0"], &[(0, b"x0"), (1, b"y0")]),
+            bm(&[b"FA1"], &[(0, b"x1"), (1, b"y1")]),
+        ];
+        let b = vec![
+            bm(&[b"FB0"], &[(1, b"y0"), (2, b"z0")]),
+            bm(&[b"FB9"], &[(1, b"y9"), (2, b"z9")]),
+        ];
+        let bags = vec![(bag_a, a), (bag_b, b)];
+        let full = join_bags(&bags, 2);
+        // only (y0) agrees: full tuple is [factor0 = FA0, factor1 = FB0].
+        assert_eq!(full, vec![vec![b"FA0".to_vec(), b"FB0".to_vec()]]);
+    }
+
+    #[test]
+    fn join_bags_places_facts_at_original_factor_ids() {
+        // bag covers factors {2, 0} (out of 3): the full tuple must slot facts by original id.
+        let bag = Bag { factors: vec![2, 0], vars: e(&[0]) };
+        let m = vec![bm(&[b"F2", b"F0"], &[(0, b"v")])];
+        let solo = Bag { factors: vec![1], vars: e(&[0]) };
+        let m1 = vec![bm(&[b"F1"], &[(0, b"v")])];
+        let full = join_bags(&[(bag, m), (solo, m1)], 3);
+        assert_eq!(full, vec![vec![b"F0".to_vec(), b"F1".to_vec(), b"F2".to_vec()]]);
     }
 }

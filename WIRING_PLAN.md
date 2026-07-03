@@ -23,7 +23,21 @@ deficiencies") — it is not a new feature and not a constant factor.
   materializes a quadratic intermediate (ghd_sum_distinct was O(k^2), 324918us -> O(k), 971us at
   k=800). Through the exec the SUM sink grows 13.3x -> 340.5x, byte-identical. Alloy `fac19` proves
   the semi-join domain equals the join's column projection. Full lib suite 37/0.
-- **Remaining:** Slice 5 (P1+P1'' fusion). Default-flip only after a wider adversarial corpus.
+- **MIN/MAX also WIRED** (commit `985700b`): `FloatReductionSink<Min>/<Max>` route through the same
+  semi-join surviving domain (MIN/MAX are idempotent + exact, so distinct==all and the f64 to_string
+  is byte-identical). Float SUM/PROD deliberately NOT routed -- their reduction is order-sensitive
+  (non-associative rounding), so a different domain order could differ in the last bit. The aggregate
+  family is now COUNT, SUM, MIN, MAX.
+- **Perfected:** a 600-program property-based fuzz differential (six join shapes incl. cyclic,
+  4-cycle, self-join; COUNT/SUM/MIN/MAX; grouped/partial declines) is byte-identical both ways;
+  Alloy `fac16`-`fac21` cover every gate decision; gate knob renamed `MORK_FACTORIZED_AGGREGATE`;
+  jscpd 0, full lib suite 39/0.
+- **Slice 5 (fusion) is a NON-GOAL as an automatic pass** -- and not for value reasons: removing
+  `res0`'s materialization changes the OBSERVABLE space (dumps, other execs, external queries can
+  read `res0`), and `res0` cannot be proven dead in MORK's open, externally-queryable model. It is
+  sound only as a user-directed rewrite where the user asserts `res0` is intermediate -- a separate
+  feature, not part of the aggregate routing. The natural single-exec `(exec (, join) (O (agg ..)))`
+  form is already fully optimized by what landed.
 
 ## Prior art (researched, tavily)
 The wiring is a combination of battle-tested work, not an invention:
@@ -118,9 +132,12 @@ The enumerate `CountSink` is ALWAYS correct; the fast-path is an optional, prove
    `elimination_order_free` (root at the free column's bag -- without this it is O(N^2)). Gate:
    ungrouped, single-column projection, connected, >= 2 factors. `SumSink::set_precomputed` in both
    emit guards. Differentials + a scaling proof; Alloy `fac19`.
-5. **P1+P1'' fusion (the real flybase win).** Recognize `(exec P1 join (,) res0)` then
-   `(exec P1'' (res0 ..) (O (COUNT ..)))` where `res0` is consumed only by the COUNT, and fuse into one
-   factorized COUNT of P1's join, skipping `res0` materialization. A dataflow rewrite; do last.
+5. **[NON-GOAL as an automatic pass] P1+P1'' fusion.** Fusing `(exec P1 join (,) res0)` +
+   `(exec P1'' (res0 ..) (O (COUNT ..)))` to skip materializing `res0` is UNSOUND automatically:
+   `res0` is written into the space and is observable (dumps, other execs, external queries), and it
+   cannot be proven dead in MORK's open model. Sound only as a user-directed rewrite where the user
+   asserts `res0` is intermediate -- a separate feature. The natural single-exec count/sum/min/max
+   form is already fully optimized (Slices 1-4), so there is no automatic win to chase here.
 
 ## Measurement
 - `ghd_count_flybase_star_shape` already shows 216.9x on the P1 star (k inputs, k^2 output). After

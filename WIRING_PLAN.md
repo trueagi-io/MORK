@@ -6,6 +6,34 @@ This ACCELERATES an existing operation asymptotically — exactly what Adam's up
 protects ("closed to constant-time speed-ups until the asymptotic runtime has no known
 deficiencies") — it is not a new feature and not a constant factor.
 
+## Status
+- **Slices 1-3 LANDED and proven** (commits `caa1ff2` connected-components, `42fc718` routing,
+  `8a346f5` benchmark). The count sink routes through the factorized aggregate, gated behind
+  `MORK_FACTORIZED_COUNT` / a per-thread test override, **default OFF**. Three differential oracles
+  assert byte-identical whole-space dumps (sound Cartesian + connected star route; grouped +
+  projected decline and fall back). Full lib suite 35/0. Measured through the exec:
+  `factorized_count_sink_win_scales` grows 16.3x -> 399.9x (k=50..800), byte-identical each k -- the
+  growing (not flat) speedup proves the fast path is actually taken.
+- **Alloy fac18** (`alloy-mork`, online) proves the exact gate: distinct-output == match count iff
+  the projection keeps every variable.
+- **Remaining:** Slice 4 (SUM sink) and Slice 5 (P1+P1'' fusion). Default-flip only after a wider
+  adversarial corpus.
+
+## Prior art (researched, tavily)
+The wiring is a combination of battle-tested work, not an invention:
+- **Engine (C1):** FAQ / `InsideOut` (Abo Khamis-Ngo-Rudra, PODS'16) -- aggregation as semiring
+  variable elimination over worst-case-optimal joins. Same as the generalized distributive law
+  (Aji-McEliece) and factorized-DB aggregation (Bakibayev-Kocisky-Olteanu-Zavodny, PVLDB'13).
+- **Pushdown soundness (C2):** Yan-Larson eager aggregation (VLDB'95, now in PostgreSQL; conditions
+  by Chaudhuri-Shim). The gate (full projection, no grouping) is their "double eager" COUNT:
+  push COUNT to all relations and multiply, `Sum_y Prod |R_y|`.
+- **Distinct (C3):** the CountSink counts distinct OUTPUTS; the full-projection gate makes
+  distinct == matches (fac18), sidestepping hard COUNT-DISTINCT-over-join.
+- **Disconnected (C4):** GYO's isolated-edge-is-an-ear (Ullman, Fagin) -> a disconnected CQ is a
+  Cartesian product -> connected-components split, `Prod` of per-component aggregates.
+- **Semiring contract (C5):** FAQ + fac10 + the MORK devnotes all require a commutative semiring;
+  COUNT (naturals) qualifies, so MORK's own regroup-freedom already licenses the factorization.
+
 ## Pick-up context (read first after compaction)
 - Repo/branch: `/home/user/Dev/mork-124-validate`, branch `wco-ghd-upstream`, off #124
   (`e491c44`, upstream PR trueagi-io/MORK#124 = fork/wco-leapfrog-join).
@@ -62,19 +90,19 @@ Local-variable projection (dropping a variable that occurs in ONE relation only)
 The enumerate `CountSink` is ALWAYS correct; the fast-path is an optional, proven acceleration.
 
 ## Slices (build, differential-oracle byte-identical vs enumerate, NO default flip until proven)
-1. **CountSink precomputed fast-path.** Add `precomputed: Option<u64>` to `CountSink`. In `finalize`,
+1. **[DONE] CountSink precomputed fast-path.** Add `precomputed: Option<u64>` to `CountSink`. In `finalize`,
    if `Some(n)`, emit `n` for the single group via the SAME `substitute_one_de_bruijn` emit path (so it
    is byte-identical to the enumerate path that reached `unique.val_count() == n`); skip the `unique`
    scan. Default `None` = unchanged. Differential: set `precomputed` to the true count and assert the
    emitted space == the enumerate sink's (`dump_all_sexpr`).
-2. **Detect + route in `transform_multi_multi_o`.** Before the query loop, gate on: exactly one sink,
+2. **[DONE] Detect + route in `transform_multi_multi_o`.** Before the query loop, gate on: exactly one sink,
    it is a `CountSink`, `pat_expr` is a multi-factor `(, ..)` (`parse_body_factors` Some, len ≥ 2),
    `decompose(hypergraph(&factors), 3)` Some, no nonground compound columns, count is
    projection-free-full-vars (sink proj == body vars, no grouping). If so:
    `let n = ghd::ghd_aggregate_auto::<u64>(&read_copy, &factors, nvars, |_| 1)?;` set
    `count_sink.precomputed = Some(n)`, SKIP the `query_multi` loop, go to `finalize`. Else unchanged.
    Feature-gate (env `MORK_FACTORIZED_COUNT` or cargo feature), default OFF.
-3. **Differential corpus.** Test the transform BOTH ways (fast-path on/off) over: star, chain,
+3. **[DONE] Differential corpus.** Test the transform BOTH ways (fast-path on/off) over: star, chain,
    projection-free multi-join (route + win); AND adversarial (projected join var, grouped, cyclic,
    nonground compound, single-factor) which MUST fall back — assert byte-identical `dump_all_sexpr` and
    identical `(count "..." n)`. Flip default only after clean.

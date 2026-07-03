@@ -530,9 +530,45 @@ pub fn elimination_order(ghd: &Ghd) -> Vec<usize> {
     order
 }
 
+/// Partition factor indices into connected components by shared variables. A body whose
+/// hypergraph splits is a Cartesian product across the components: they share no variable, so the
+/// aggregate factorizes as the semiring product of the per-component aggregates. This is why a
+/// disconnected body like `(foo $x)(bar $y)(baz $z)` still factorizes -- COUNT is the product of
+/// the per-relation counts, O(sum of sizes) not O(product) (Yan-Larson "double eager" aggregation,
+/// VLDB'95). `gyo_join_tree` is connected-only (an isolated edge is a component root); splitting
+/// first means `decompose` only ever sees a connected component, the case it is tested on.
+fn connected_components(edges: &[std::collections::BTreeSet<usize>]) -> Vec<Vec<usize>> {
+    let n = edges.len();
+    let mut comp: Vec<usize> = (0..n).collect(); // comp[i] = component label of factor i
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if comp[i] != comp[j] && !edges[i].is_disjoint(&edges[j]) {
+                    let (keep, drop) = (comp[i].min(comp[j]), comp[i].max(comp[j]));
+                    for c in comp.iter_mut() {
+                        if *c == drop {
+                            *c = keep;
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..n {
+        groups.entry(comp[i]).or_default().push(i);
+    }
+    groups.into_values().collect()
+}
+
 /// Factorized aggregation that decomposes the body and derives a good elimination order from the
 /// join tree, so the caller need not choose one. For an acyclic body this is O(N^fhtw) = O(N);
-/// `None` when the body does not decompose (a nonground compound column the planner declines).
+/// `None` when a component does not decompose (a cycle beyond `k_max`, or a nonground compound
+/// column the planner declines). This is FAQ's `InsideOut` (Abo Khamis-Ngo-Rudra, PODS'16):
+/// variable elimination over a semiring, one good order per connected component.
 pub fn ghd_aggregate_auto<S: Semiring>(
     map: &PathMap<()>,
     factors: &[Factor],
@@ -540,8 +576,14 @@ pub fn ghd_aggregate_auto<S: Semiring>(
     weight: impl Fn(&[u8]) -> S + Copy,
 ) -> Option<S> {
     let edges = hypergraph(factors);
-    let ghd = decompose(&edges, 3)?;
-    let order = elimination_order(&ghd);
+    // Decompose each connected component and concatenate the orders; ghd_aggregate multiplies the
+    // resulting per-component scalars (its final loop), so the whole disconnected body factorizes.
+    let mut order = Vec::new();
+    for comp in connected_components(&edges) {
+        let sub_edges: Vec<_> = comp.iter().map(|&i| edges[i].clone()).collect();
+        let ghd = decompose(&sub_edges, 3)?;
+        order.extend(elimination_order(&ghd));
+    }
     Some(ghd_aggregate(map, factors, nvars, &order, weight))
 }
 

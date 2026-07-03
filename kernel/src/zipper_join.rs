@@ -4168,6 +4168,30 @@ mod tests {
         }
     }
 
+    /// A disconnected body is a Cartesian product and still factorizes: `(foo $x)(bar $y)(baz $z)`
+    /// -- the `sink_count_literal` shape -- has no shared variable, so its count is |foo|*|bar|*|baz|
+    /// computed in O(sum) not O(product) (Yan-Larson "double eager"). Before the connected-components
+    /// split, gyo rejected the disconnected hypergraph and ghd_aggregate_auto returned None; now each
+    /// component decomposes on its own and ghd_aggregate multiplies the per-component scalars.
+    #[test]
+    fn ghd_count_cartesian_product_factorizes() {
+        let mut s = crate::space::Space::new();
+        s.add_all_sexpr(b"(foo 1) (foo 2) (foo 3) (bar x) (bar y) (baz P) (baz Q) (baz R)")
+            .unwrap();
+        let body = enc("(, (foo $x) (bar $y) (baz $z))");
+        let (factors, nvars) = parse_body_factors(&body).unwrap();
+        let var_order: Vec<usize> = (0..nvars).collect();
+        let mut enum_count = 0u64;
+        run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut |_t| {
+            enum_count += 1;
+            true
+        });
+        let fact_count = crate::ghd::ghd_aggregate_auto::<u64>(&s.btm, &factors, nvars, |_| 1)
+            .expect("the disconnected body factorizes per connected component");
+        assert_eq!(enum_count, 18, "3*2*3 Cartesian product");
+        assert_eq!(fact_count, enum_count, "factorized Cartesian count != enumerate");
+    }
+
     /// One sum-product engine, many semirings: COUNT (naturals), EXISTS (booleans), and a weighted
     /// SUM all run through `ghd_aggregate` with only the element type and per-fact weight changing.
     /// This is the FAQ generalization -- weighted joins and existence share the factorization.

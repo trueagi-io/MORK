@@ -152,14 +152,16 @@ impl WeightedPathIndex {
             ..WeightedPathStats::default()
         };
 
-        self.weights.for_each_value(|_, &weight| {
+        // PathMap dropped `for_each_value`; `iter` is the surviving whole-map walk and yields
+        // the same values.
+        for (_, &weight) in self.weights.iter() {
             stats.entries += 1;
             if weight > 0 {
                 stats.positive_entries += 1;
             } else {
                 stats.non_positive_entries += 1;
             }
-        });
+        }
 
         stats
     }

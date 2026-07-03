@@ -13,6 +13,8 @@
 //! - [`einsum`] — VM-based einsum supporting arbitrary specs and mixed
 //!   sparse/dense inputs via [`einsum`](einsum::einsum) /
 //!   [`einsum_homogenous`](einsum::einsum_homogenous).
+//! - [`blas_backend`] (feature `blas`) — OpenBLAS-backed dense `f32` matmul
+//!   and attention kernels for standard dense workloads.
 //!
 //! # Quick example: CSR × Dense via einsum
 //!
@@ -50,6 +52,9 @@ pub mod tensor;
 
 #[cfg(feature = "dense")]
 pub mod dense;
+
+#[cfg(feature = "blas")]
+pub mod blas_backend;
 
 #[cfg(feature = "csr")]
 pub mod csr;

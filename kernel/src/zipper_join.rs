@@ -4168,6 +4168,37 @@ mod tests {
         }
     }
 
+    /// One sum-product engine, many semirings: COUNT (naturals), EXISTS (booleans), and a weighted
+    /// SUM all run through `ghd_aggregate` with only the element type and per-fact weight changing.
+    /// This is the FAQ generalization -- weighted joins and existence share the factorization.
+    #[test]
+    fn ghd_aggregate_over_semirings() {
+        let mut s = crate::space::Space::new();
+        let mut prog = String::new();
+        for a in 0..5 {
+            for h in 0..3 {
+                prog.push_str(&format!("(r a{a} h{h})\n"));
+            }
+        }
+        for h in 0..3 {
+            for z in 0..4 {
+                prog.push_str(&format!("(s h{h} z{z})\n"));
+            }
+        }
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        let body = enc("(, (r $x $y) (s $y $z))");
+        let (factors, nvars) = parse_body_factors(&body).unwrap();
+        let order: Vec<usize> = (0..nvars).collect();
+
+        let count = crate::ghd::ghd_aggregate::<u64>(&s.btm, &factors, nvars, &order, |_| 1);
+        let exists = crate::ghd::ghd_aggregate::<bool>(&s.btm, &factors, nvars, &order, |_| true);
+        let wsum = crate::ghd::ghd_aggregate::<u64>(&s.btm, &factors, nvars, &order, |_| 2);
+
+        assert!(count > 0, "the test must exercise matches");
+        assert!(exists, "EXISTS holds when there is a match");
+        assert_eq!(wsum, count * (1u64 << factors.len()), "weight 2 per fact gives 2^m * count");
+    }
+
     /// The asymptotic separation: on a hub 2-path (k inputs, k^2 output) enumerate-and-count is
     /// O(k^2) while the factorized count is O(k), so the speedup grows with k. This is the win the
     /// WCO join cannot match: the same COUNT, without touching the output.

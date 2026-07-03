@@ -282,19 +282,44 @@ pub fn join_bags(bags: &[(Bag, Vec<BagMatch>)], n_factors: usize) -> Vec<Vec<Vec
         .collect()
 }
 
-// ---- Factorized aggregation: COUNT the join without enumerating it ----
+// ---- Factorized aggregation: aggregate the join without enumerating it ----
 //
-// WCO is output-optimal for enumeration, so a COUNT computed by enumerate-and-count is O(output).
+// WCO is output-optimal for enumeration, so a COUNT/SUM by enumerate-and-aggregate is O(output).
 // Factorizing it (sum-product variable elimination over the join tree) touches each relation once
-// and multiplies/sums per join value: O(N^fhtw), which for an acyclic body is O(N). Alloy-verified
-// sound in `scratchpad/fac17_count.als`.
+// and combines per join value: O(N^fhtw), which for an acyclic body is O(N). Generic over a
+// commutative semiring, so one engine serves COUNT, EXISTS, and weighted SUM. Alloy-verified sound
+// in `scratchpad/fac17_count.als`.
 
-/// A sum-product factor: a relation over `vars` (sorted variable ids) with a count per distinct
-/// value tuple. The key length-prefixes each variable's value bytes, in `vars` order.
+/// A commutative semiring for factorized aggregation: `zero`/`one` with `add` (the reduce, `+`) and
+/// `mul` (the combine, `*`). COUNT is the natural numbers; EXISTS the booleans; a weighted SUM is
+/// the same engine with a per-fact weight.
+pub trait Semiring: Clone {
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn add(&self, other: &Self) -> Self;
+    fn mul(&self, other: &Self) -> Self;
+}
+
+impl Semiring for u64 {
+    fn zero() -> Self { 0 }
+    fn one() -> Self { 1 }
+    fn add(&self, o: &Self) -> Self { self + o }
+    fn mul(&self, o: &Self) -> Self { self * o }
+}
+
+impl Semiring for bool {
+    fn zero() -> Self { false }
+    fn one() -> Self { true }
+    fn add(&self, o: &Self) -> Self { *self || *o }
+    fn mul(&self, o: &Self) -> Self { *self && *o }
+}
+
+/// A sum-product factor: a relation over `vars` (sorted variable ids) with a semiring weight per
+/// distinct value tuple. The key length-prefixes each variable's value bytes, in `vars` order.
 #[derive(Clone, Debug)]
-pub struct FactorTable {
+pub struct FactorTable<S> {
     pub vars: Vec<usize>,
-    pub rows: BTreeMap<Vec<u8>, u64>,
+    pub rows: BTreeMap<Vec<u8>, S>,
 }
 
 fn encode_key(vars: &[usize], vals: &BTreeMap<usize, Vec<u8>>) -> Vec<u8> {
@@ -321,25 +346,34 @@ fn key_slice(vars: &[usize], key: &[u8], want: usize) -> Vec<u8> {
     Vec::new()
 }
 
-/// Materialize one factor as a count table over its variables (each fact contributes one, grouped
-/// by its variable values). Coreference is enforced by running the single-factor join.
-pub fn materialize_factor_table(map: &PathMap<()>, factor: &Factor, nvars: usize) -> FactorTable {
+/// Materialize one factor as a semiring-weighted table over its variables. `weight` maps each
+/// matched fact to its element (`|_| S::one()` for COUNT/EXISTS); facts sharing a value tuple are
+/// added. Coreference is enforced by running the single-factor join.
+pub fn materialize_factor_table<S: Semiring>(
+    map: &PathMap<()>,
+    factor: &Factor,
+    nvars: usize,
+    weight: impl Fn(&[u8]) -> S,
+) -> FactorTable<S> {
     let mut vs = BTreeSet::new();
     collect_factor_vars(factor, &mut vs);
     let vars: Vec<usize> = vs.into_iter().collect();
-    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    let mut rows: BTreeMap<Vec<u8>, S> = BTreeMap::new();
     let f = [factor.clone()];
     run_unify_join_stream(map, &f, &vars, nvars, &mut |tuple: &[Vec<u8>]| {
         let mut vals = BTreeMap::new();
         extract_var_values(&tuple[0], factor, &mut vals);
-        *rows.entry(encode_key(&vars, &vals)).or_insert(0) += 1;
+        let key = encode_key(&vars, &vals);
+        let w = weight(&tuple[0]);
+        rows.entry(key).and_modify(|e| *e = e.add(&w)).or_insert(w);
         true
     });
     FactorTable { vars, rows }
 }
 
-/// Multiply two factor tables: join on shared variables, count = product of the two counts.
-fn multiply(a: &FactorTable, b: &FactorTable) -> FactorTable {
+/// Multiply two factor tables: join on shared variables, weight = `mul` of the two weights, with
+/// coincident output rows reduced by `add`.
+fn multiply<S: Semiring>(a: &FactorTable<S>, b: &FactorTable<S>) -> FactorTable<S> {
     let shared: Vec<usize> = a.vars.iter().cloned().filter(|v| b.vars.contains(v)).collect();
     let mut out_vars = a.vars.clone();
     for &v in &b.vars {
@@ -349,8 +383,8 @@ fn multiply(a: &FactorTable, b: &FactorTable) -> FactorTable {
     }
     out_vars.sort_unstable();
     // index b by its shared-variable values.
-    let mut b_index: BTreeMap<Vec<u8>, Vec<(&Vec<u8>, u64)>> = BTreeMap::new();
-    for (bk, &bc) in &b.rows {
+    let mut b_index: BTreeMap<Vec<u8>, Vec<(&Vec<u8>, &S)>> = BTreeMap::new();
+    for (bk, bc) in &b.rows {
         let sk: Vec<u8> = shared
             .iter()
             .flat_map(|&v| {
@@ -362,8 +396,8 @@ fn multiply(a: &FactorTable, b: &FactorTable) -> FactorTable {
             .collect();
         b_index.entry(sk).or_default().push((bk, bc));
     }
-    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
-    for (ak, &ac) in &a.rows {
+    let mut rows: BTreeMap<Vec<u8>, S> = BTreeMap::new();
+    for (ak, ac) in &a.rows {
         let sk: Vec<u8> = shared
             .iter()
             .flat_map(|&v| {
@@ -383,38 +417,50 @@ fn multiply(a: &FactorTable, b: &FactorTable) -> FactorTable {
             for &v in &b.vars {
                 vals.insert(v, key_slice(&b.vars, bk, v));
             }
-            *rows.entry(encode_key(&out_vars, &vals)).or_insert(0) += ac * bc;
+            let prod = ac.mul(bc);
+            rows.entry(encode_key(&out_vars, &vals))
+                .and_modify(|e| *e = e.add(&prod))
+                .or_insert(prod);
         }
     }
     FactorTable { vars: out_vars, rows }
 }
 
-/// Sum a variable out of a factor table: group by the remaining variables, summing counts.
-fn sum_out(t: &FactorTable, v: usize) -> FactorTable {
+/// Sum a variable out of a factor table: group by the remaining variables, reducing with `add`.
+fn sum_out<S: Semiring>(t: &FactorTable<S>, v: usize) -> FactorTable<S> {
     let out_vars: Vec<usize> = t.vars.iter().cloned().filter(|&x| x != v).collect();
-    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
-    for (k, &c) in &t.rows {
+    let mut rows: BTreeMap<Vec<u8>, S> = BTreeMap::new();
+    for (k, c) in &t.rows {
         let mut vals: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
         for &x in &out_vars {
             vals.insert(x, key_slice(&t.vars, k, x));
         }
-        *rows.entry(encode_key(&out_vars, &vals)).or_insert(0) += c;
+        rows.entry(encode_key(&out_vars, &vals))
+            .and_modify(|e| *e = e.add(c))
+            .or_insert_with(|| c.clone());
     }
     FactorTable { vars: out_vars, rows }
 }
 
-/// Factorized COUNT of the join defined by `factors`, by sum-product variable elimination in
-/// `elim_order`: for each variable, multiply the tables that mention it and sum it out. The final
-/// tables are scalars whose product is the count. O(sum of intermediate sizes); enumerate-and-count
-/// is O(output). Sound for any elimination order (Alloy fac17); the order sets the intermediate
-/// sizes (a good order gives O(N^fhtw)).
-pub fn ghd_count(map: &PathMap<()>, factors: &[Factor], nvars: usize, elim_order: &[usize]) -> u64 {
-    let mut tables: Vec<FactorTable> = factors
+/// Factorized aggregation of the join over semiring `S`, by sum-product variable elimination in
+/// `elim_order`: for each variable, `mul` the tables that mention it and `add`-sum it out. The
+/// remaining tables are scalars combined with `mul` (disjoint components). `weight` gives each
+/// fact's element (`|_| S::one()` for COUNT/EXISTS; a value reader for weighted SUM). O(sum of
+/// intermediate sizes); enumerate-and-aggregate is O(output). Sound for any order (Alloy fac17);
+/// the order sets the intermediate sizes (a good order gives O(N^fhtw)).
+pub fn ghd_aggregate<S: Semiring>(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    elim_order: &[usize],
+    weight: impl Fn(&[u8]) -> S + Copy,
+) -> S {
+    let mut tables: Vec<FactorTable<S>> = factors
         .iter()
-        .map(|f| materialize_factor_table(map, f, nvars))
+        .map(|f| materialize_factor_table(map, f, nvars, weight))
         .collect();
     for &v in elim_order {
-        let (with_v, without_v): (Vec<FactorTable>, Vec<FactorTable>) =
+        let (with_v, without_v): (Vec<FactorTable<S>>, Vec<FactorTable<S>>) =
             tables.into_iter().partition(|t| t.vars.contains(&v));
         tables = without_v;
         if with_v.is_empty() {
@@ -426,10 +472,20 @@ pub fn ghd_count(map: &PathMap<()>, factors: &[Factor], nvars: usize, elim_order
         }
         tables.push(sum_out(&combined, v));
     }
-    tables
-        .iter()
-        .map(|t| t.rows.values().sum::<u64>())
-        .product()
+    let mut acc = S::one();
+    for t in &tables {
+        let mut s = S::zero();
+        for val in t.rows.values() {
+            s = s.add(val);
+        }
+        acc = acc.mul(&s);
+    }
+    acc
+}
+
+/// Factorized COUNT: the natural-number semiring, each fact weighing one.
+pub fn ghd_count(map: &PathMap<()>, factors: &[Factor], nvars: usize, elim_order: &[usize]) -> u64 {
+    ghd_aggregate::<u64>(map, factors, nvars, elim_order, |_| 1u64)
 }
 
 #[cfg(test)]

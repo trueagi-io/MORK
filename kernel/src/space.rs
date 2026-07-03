@@ -1181,7 +1181,7 @@ impl Space {
 
             // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-            let bindings = unify(pairs);
+            let bindings = unify(&mut pairs);
 
             match bindings {
                 Ok(bs) => {

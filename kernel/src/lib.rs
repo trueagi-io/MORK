@@ -11,3 +11,4 @@ mod pure;
 
 pub use sinks::WriteResourceRequest;
 pub use sources::ResourceRequest;
+pub mod weighted_paths;

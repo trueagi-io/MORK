@@ -6,6 +6,17 @@ This ACCELERATES an existing operation asymptotically — exactly what Adam's up
 protects ("closed to constant-time speed-ups until the asymptotic runtime has no known
 deficiencies") — it is not a new feature and not a constant factor.
 
+## Final state (DEFAULT-ON, benchmarked)
+The factorized aggregate routing is complete and ON by default (`MORK_FACTORIZED_AGGREGATE=0` kills it).
+Family: **COUNT, SUM, MIN, MAX, AND** (float SUM/PROD declined -- order-sensitive rounding). Verified
+byte-identical by 6 targeted differentials + a 600-program property-based fuzz (every join shape, every
+aggregate, grouped/partial declines); Alloy `fac16`-`fac21` prove every gate decision (public repo
+github.com/MesTTo/alloy-mork, 21 models). Full lib suite 40/0, jscpd 0. Benchmarked via
+`mork bench`: the ENTIRE default minimal-MeTTa suite is unchanged default-on (counter_machine,
+transitive, clique, finite_domain, process_calculus, tile, taxi_lts, bfc -- all within noise, they use
+no aggregate sinks), and `mork bench aggregate` routes at ~460x COUNT / ~420x SUM. Slice 5 is a
+non-goal (unsound automatic + no valid use case; the single-exec form already subsumes it).
+
 ## Status
 - **Slices 1-3 LANDED and proven** (commits `caa1ff2` connected-components, `42fc718` routing,
   `8a346f5` benchmark). The count sink routes through the factorized aggregate, gated behind

@@ -4276,6 +4276,51 @@ mod tests {
         }
     }
 
+    /// The flybase query shape (main.rs `bench_flybase` P1): a star join
+    /// `(gene_name_of TP g $x)(SPO $x includes $y)(SPO $x transcribed_from $z)` whose COUNT the
+    /// CountSink computes today by enumerating the O(k^2) product into a PathMap. `$y` and `$z` are
+    /// independent given `$x`, so `ghd_aggregate_auto` counts it in O(k) via Sum_x deg_y(x)*deg_z(x).
+    #[test]
+    #[ignore = "timing: the flybase star-join COUNT win vs the enumerate CountSink"]
+    fn ghd_count_flybase_star_shape() {
+        for k in [50usize, 100, 200, 400, 800] {
+            let mut s = crate::space::Space::new();
+            let mut prog = String::from("(gene_name_of TP g x)\n");
+            for y in 0..k {
+                prog.push_str(&format!("(SPO x includes y{y})\n"));
+            }
+            for z in 0..k {
+                prog.push_str(&format!("(SPO x transcribed_from z{z})\n"));
+            }
+            s.add_all_sexpr(prog.as_bytes()).unwrap();
+            let body =
+                enc("(, (gene_name_of TP g $x) (SPO $x includes $y) (SPO $x transcribed_from $z))");
+            let (factors, nvars) = parse_body_factors(&body).unwrap();
+            let order: Vec<usize> = (0..nvars).collect();
+
+            // enumerate the join (what the CountSink dedups today)
+            let t = std::time::Instant::now();
+            let mut ec = 0u64;
+            run_unify_join_stream(&s.btm, &factors, &order, nvars, &mut |_t| {
+                ec += 1;
+                true
+            });
+            let enum_us = t.elapsed().as_micros().max(1);
+
+            // factorized count via the auto-derived elimination order
+            let t = std::time::Instant::now();
+            let fc = crate::ghd::ghd_aggregate_auto::<u64>(&s.btm, &factors, nvars, |_| 1)
+                .expect("the star decomposes");
+            let fact_us = t.elapsed().as_micros().max(1);
+
+            assert_eq!(fc, ec, "factorized star count must equal the enumerated count");
+            eprintln!(
+                "k={k:4} output={ec:9}  enumerate {enum_us:8}us  factorized {fact_us:6}us  speedup {:.1}x",
+                enum_us as f64 / fact_us as f64
+            );
+        }
+    }
+
     /// An inverted factor is re-indexed with permuted, renumbered columns; a streamed leaf must
     /// hand back the fact's original stored bytes, coreference included: `(f $u $u)` must come
     /// back as NewVar then VarRef, not two fresh variables.

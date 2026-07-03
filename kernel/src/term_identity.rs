@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use mork_expr::{Tag, maybe_byte_item};
+use mork_expr::{Tag, maybe_byte_item, Expr};
 
 /// Canonical identity for an encoded MORK term or subterm.
 #[repr(transparent)]
@@ -567,20 +567,17 @@ struct SidecarMark {
     generation: u32,
 }
 
-/// Deterministic 128-bit hash for encoded terms.
+/// Deterministic 128-bit structural hash for an exact encoded term, reusing the
+/// canonical `Expr::hash` (gxhash128 over the term's byte span) rather than a
+/// hand-rolled hash. The hash is only a collision-bucket filter -- exact bytes are
+/// compared before an identity is reused -- so any deterministic hash is sound;
+/// this just stops reimplementing one (Alloy fac22_term_identity: the swap
+/// preserves canonical identity). `encoded` must be exactly one encoded term.
 pub fn structural_hash(encoded: &[u8]) -> u128 {
-    let mut lo = 0xcbf2_9ce4_8422_2325u64;
-    let mut hi = 0x9e37_79b9_7f4a_7c15u64;
-
-    for &byte in encoded {
-        lo ^= u64::from(byte);
-        lo = lo.wrapping_mul(0x0000_0100_0000_01b3);
-
-        hi ^= u64::from(byte).wrapping_add(lo.rotate_left(17));
-        hi = hi.wrapping_mul(0x9e37_79b1_85eb_ca87);
+    if encoded.is_empty() {
+        return 0;
     }
-
-    (u128::from(hi) << 64) | u128::from(lo)
+    unsafe { Expr { ptr: encoded.as_ptr() as *mut u8 }.hash() }
 }
 
 #[cfg(test)]

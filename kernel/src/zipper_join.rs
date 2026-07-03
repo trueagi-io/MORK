@@ -4222,6 +4222,40 @@ mod tests {
         assert_eq!(factorized, enumerated, "connected-star factorized diverged from enumerate");
     }
 
+    /// Proof the wired fast path is actually taken and wins through the exec, not silently falling
+    /// back: the same count exec at growing scale, factorized vs enumerate. The star has k*k output
+    /// but O(k) inputs, so a routed factorized count grows its lead (a dropped exponent); if it did
+    /// not route, both would be O(k^2) and the speedup would stay ~1x. Byte-identical each k.
+    #[test]
+    #[ignore = "timing: the wired count sink, factorized vs enumerate through the exec"]
+    fn factorized_count_sink_win_scales() {
+        for k in [50usize, 100, 200, 400, 800] {
+            let mut prog = String::from("(gene x)\n");
+            for y in 0..k {
+                prog.push_str(&format!("(rel1 x a{y})\n"));
+            }
+            for z in 0..k {
+                prog.push_str(&format!("(rel2 x b{z})\n"));
+            }
+            prog.push_str(
+                "(exec 0 (, (gene $x) (rel1 $x $y) (rel2 $x $z)) (O (count (star $c) $c (out $x $y $z))))\n",
+            );
+            let t = std::time::Instant::now();
+            let enumerated = count_diff_run(&prog, false);
+            let enum_us = t.elapsed().as_micros().max(1);
+            let t = std::time::Instant::now();
+            let factorized = count_diff_run(&prog, true);
+            let fact_us = t.elapsed().as_micros().max(1);
+            assert_eq!(factorized, enumerated, "diverged at k={k}");
+            assert!(enumerated.contains(&format!("(star {})", k * k)), "count k*k at k={k}");
+            eprintln!(
+                "k={k:4} count={:8}  enumerate {enum_us:9}us  factorized {fact_us:7}us  speedup {:.1}x",
+                k * k,
+                enum_us as f64 / fact_us as f64
+            );
+        }
+    }
+
     /// Differential oracle for the wired count sink: the same count exec, run with the factorized
     /// fast path off (enumerate) and on, must leave a byte-identical space. The body
     /// `(foo $x)(bar $y)(baz $z)` is a 3-way Cartesian counted with full projection and no grouping

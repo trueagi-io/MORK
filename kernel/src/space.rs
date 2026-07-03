@@ -28,19 +28,24 @@ use subprocess::unix::PopenExt;
 use crate::sinks::{WriteResource, WriteResourceRequest};
 
 thread_local! {
-    /// Per-thread override for the factorized-COUNT fast path, so the differential test can toggle
+    /// Per-thread override for the factorized-aggregate fast path, so the differential test can toggle
     /// it without a process-global env race. `None` falls back to the `MORK_FACTORIZED_AGGREGATE` env.
     static FACTORIZED_AGGREGATE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
-/// Force the factorized-COUNT fast path on/off for the current thread (test hook); `None` restores
-/// the env-var default.
+/// Force the factorized-aggregate fast path on/off for the current thread (test hook); `None`
+/// restores the env-var default.
 pub fn set_factorized_aggregate_override(v: Option<bool>) {
     FACTORIZED_AGGREGATE_OVERRIDE.with(|c| c.set(v));
 }
+/// The factorized routing is ON by default -- the gate is Alloy-sound (fac16-fac21) and byte-identical
+/// across the differential corpus (600-program fuzz over every shape + `mork bench aggregate`), and it
+/// only ever engages on cases it can prove equal to the enumerate sink (declining grouped, partially
+/// projected, nonground-compound, disconnected, or single-factor bodies). `MORK_FACTORIZED_AGGREGATE=0`
+/// is the kill switch. A thread-local override wins over both, for tests.
 fn factorized_aggregate_enabled() -> bool {
     FACTORIZED_AGGREGATE_OVERRIDE
         .with(|c| c.get())
-        .unwrap_or_else(|| std::env::var_os("MORK_FACTORIZED_AGGREGATE").is_some())
+        .unwrap_or_else(|| std::env::var("MORK_FACTORIZED_AGGREGATE").as_deref() != Ok("0"))
 }
 
 /// The pattern variables (`VarRef(i)` with `i < p`) a sink sub-expression reads. A pattern variable

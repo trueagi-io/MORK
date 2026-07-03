@@ -1386,7 +1386,7 @@ fn body_factors_routable_to_zipper_join(factors: &[Factor]) -> bool {
 /// Collect the query variables of one factor into `out`: the top-level `Var` columns and every
 /// variable nested in a `Term` column. A NewVar takes the next id after the ones introduced before
 /// this term (`term.intro`), a VarRef names its id, matching the body's global numbering.
-fn collect_factor_vars(factor: &Factor, out: &mut std::collections::BTreeSet<usize>) {
+pub fn collect_factor_vars(factor: &Factor, out: &mut std::collections::BTreeSet<usize>) {
     for col in &factor.cols {
         match col {
             FactorColumn::Var(v) => {

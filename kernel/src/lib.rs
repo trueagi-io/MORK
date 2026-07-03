@@ -4,6 +4,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(more_float_constants)]
 
+pub mod ghd;
 pub mod space;
 pub mod zipper_join;
 mod sources;

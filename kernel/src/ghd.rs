@@ -688,6 +688,25 @@ pub fn ghd_surviving_domain(
         .collect()
 }
 
+/// The semi-join-reduced surviving domain of `free` for a connected, decomposable body -- the shared
+/// front half of the SUM/MIN/MAX/AND reducers. Roots the elimination at `free` (O(N^fhtw)). `None`
+/// if the body is disconnected (a disjoint component would need its own presence check) or does not
+/// decompose within the width bound.
+fn connected_free_domain(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    free: usize,
+) -> Option<Vec<Vec<u8>>> {
+    let edges = hypergraph(factors);
+    if connected_components(&edges).len() != 1 {
+        return None;
+    }
+    let ghd = decompose(&edges, 3)?;
+    let order = elimination_order_free(&ghd, free);
+    Some(ghd_surviving_domain(map, factors, nvars, free, &order))
+}
+
 /// Factorized `SUM(DISTINCT x)` over a connected body: sum the numeric values of `free`'s
 /// semi-join-reduced surviving domain (each value appears once -- distinct). This is the sound
 /// factorization of MORK's SumSink (which dedups then sums a numeric column): distinct summed
@@ -700,14 +719,8 @@ pub fn ghd_sum_distinct(
     nvars: usize,
     free: usize,
 ) -> Option<u32> {
-    let edges = hypergraph(factors);
-    if connected_components(&edges).len() != 1 {
-        return None; // a disjoint component would need its own presence check; keep it simple
-    }
-    let ghd = decompose(&edges, 3)?;
-    let order = elimination_order_free(&ghd, free);
     let mut total: u32 = 0;
-    for val in ghd_surviving_domain(map, factors, nvars, free, &order) {
+    for val in connected_free_domain(map, factors, nvars, free)? {
         if val.is_empty() {
             return None;
         }
@@ -731,19 +744,33 @@ pub fn ghd_float_reduce_distinct(
     init: f64,
     op: fn(&mut f64, f64),
 ) -> Option<f64> {
-    let edges = hypergraph(factors);
-    if connected_components(&edges).len() != 1 {
-        return None;
-    }
-    let ghd = decompose(&edges, 3)?;
-    let order = elimination_order_free(&ghd, free);
     let mut acc = init;
-    for val in ghd_surviving_domain(map, factors, nvars, free, &order) {
+    for val in connected_free_domain(map, factors, nvars, free)? {
         if val.is_empty() {
             return None;
         }
         let f = std::str::from_utf8(&val[1..]).ok()?.parse::<f64>().ok()?;
         op(&mut acc, f);
+    }
+    Some(acc)
+}
+
+/// Factorized bitwise-AND over the first value byte of `free`'s semi-join-reduced surviving domain,
+/// from `!0u8` -- MORK's AndSink. AND is associative + commutative and idempotent, so the domain
+/// (distinct) gives the same result as the enumerate sink and the order does not matter (byte-
+/// identical). Matches the sink: it ANDs `p[clen+1]`, the first byte after the symbol-size tag.
+pub fn ghd_and_distinct(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    nvars: usize,
+    free: usize,
+) -> Option<u8> {
+    let mut acc = !0u8;
+    for val in connected_free_domain(map, factors, nvars, free)? {
+        if val.len() < 2 {
+            return None; // need [symbol-size tag, first byte]
+        }
+        acc &= val[1];
     }
     Some(acc)
 }

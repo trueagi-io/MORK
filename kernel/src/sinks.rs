@@ -729,10 +729,16 @@ impl Sink for HashSink {
 }
 
 
-pub struct AndSink { e: Expr, unique: PathMap<()> }
+pub struct AndSink { e: Expr, unique: PathMap<()>, precomputed: Option<u8> }
+impl AndSink {
+    /// Override the AND result with the factorized bitwise-AND over the semi-join-reduced domain, so
+    /// finalize emits it instead of AND-ing the materialized `unique` set. The caller gates on an
+    /// ungrouped single-column AND and seeds one representative for the group's template context.
+    pub fn set_precomputed(&mut self, n: u8) { self.precomputed = Some(n); }
+}
 impl Sink for AndSink {
     fn new(e: Expr) -> Self {
-        Self { e, unique: PathMap::new() }
+        Self { e, unique: PathMap::new(), precomputed: None }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
@@ -751,6 +757,7 @@ impl Sink for AndSink {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "and finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
+        let precomputed = self.precomputed;
 
         let mut _to_swap = PathMap::new(); std::mem::swap(&mut self.unique, &mut _to_swap);
         let mut rooted_input = PathMap::new();
@@ -765,7 +772,7 @@ impl Sink for AndSink {
 
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
-                println!("and size {size}");
+                trace!(target: "sink", "and size {size}");
                 prz.descend_to_byte(b);
                 debug_assert!(prz.path_exists());
                 if !prz.descend_first_k_path(size as _) { unreachable!() }
@@ -773,11 +780,15 @@ impl Sink for AndSink {
                     let mut total = !0u8;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
-                    while rz.to_next_val() {
-                        let p = rz.origin_path();
-                        trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
-                        total &= p[clen+1];
+                    if let Some(n) = precomputed {
+                        total = n;
+                    } else {
+                        let mut rz = prz.fork_read_zipper();
+                        while rz.to_next_val() {
+                            let p = rz.origin_path();
+                            trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
+                            total &= p[clen+1];
+                        }
                     }
                     let cnt_str = [total];
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), total);
@@ -809,12 +820,16 @@ impl Sink for AndSink {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut total = !0u8;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
-                    while rz.to_next_val() {
-                        let p = rz.origin_path();
-                        trace!(target: "sink", "and path {:?}", serialize(p));
-                        trace!(target: "sink", "and path {:?}", serialize(&p[clen+1..]));
-                        total &= p[clen+1];
+                    if let Some(n) = precomputed {
+                        total = n;
+                    } else {
+                        let mut rz = prz.fork_read_zipper();
+                        while rz.to_next_val() {
+                            let p = rz.origin_path();
+                            trace!(target: "sink", "and path {:?}", serialize(p));
+                            trace!(target: "sink", "and path {:?}", serialize(&p[clen+1..]));
+                            total &= p[clen+1];
+                        }
                     }
                     let cnt_str = [total];
 

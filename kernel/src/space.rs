@@ -73,6 +73,7 @@ enum FactorizedAgg {
     Count(u64),
     Sum(u32),
     Float(f64),
+    And(u8),
 }
 
 /// Gate and compute the factorized aggregate for a single ungrouped aggregate sink over a
@@ -136,6 +137,12 @@ fn factorized_aggregate_gate(
                 *a = a.max(n)
             })
             .map(FactorizedAgg::Float)
+        }
+        // bitwise AND of the distinct values' first byte, over the surviving domain (associative +
+        // commutative + idempotent, so order- and multiplicity-independent -> byte-identical).
+        crate::sinks::ASink::AndSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_and_distinct(read_copy, &factors, nvars, free).map(FactorizedAgg::And)
         }
         _ => None,
     }
@@ -1710,6 +1717,11 @@ impl Space {
                 crate::sinks::ASink::FMaxSink(cs) => cs.set_precomputed(n),
                 _ => {}
             },
+            Some(FactorizedAgg::And(n)) => {
+                if let crate::sinks::ASink::AndSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
+            }
             None => {}
         }
 

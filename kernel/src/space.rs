@@ -29,18 +29,18 @@ use crate::sinks::{WriteResource, WriteResourceRequest};
 
 thread_local! {
     /// Per-thread override for the factorized-COUNT fast path, so the differential test can toggle
-    /// it without a process-global env race. `None` falls back to the `MORK_FACTORIZED_COUNT` env.
-    static FACTORIZED_COUNT_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// it without a process-global env race. `None` falls back to the `MORK_FACTORIZED_AGGREGATE` env.
+    static FACTORIZED_AGGREGATE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 /// Force the factorized-COUNT fast path on/off for the current thread (test hook); `None` restores
 /// the env-var default.
-pub fn set_factorized_count_override(v: Option<bool>) {
-    FACTORIZED_COUNT_OVERRIDE.with(|c| c.set(v));
+pub fn set_factorized_aggregate_override(v: Option<bool>) {
+    FACTORIZED_AGGREGATE_OVERRIDE.with(|c| c.set(v));
 }
-fn factorized_count_enabled() -> bool {
-    FACTORIZED_COUNT_OVERRIDE
+fn factorized_aggregate_enabled() -> bool {
+    FACTORIZED_AGGREGATE_OVERRIDE
         .with(|c| c.get())
-        .unwrap_or_else(|| std::env::var_os("MORK_FACTORIZED_COUNT").is_some())
+        .unwrap_or_else(|| std::env::var_os("MORK_FACTORIZED_AGGREGATE").is_some())
 }
 
 /// The pattern variables (`VarRef(i)` with `i < p`) a sink sub-expression reads. A pattern variable
@@ -82,7 +82,7 @@ fn factorized_aggregate_gate(
     sinks: &[crate::sinks::ASink],
     templates: &[Expr],
 ) -> Option<FactorizedAgg> {
-    if !factorized_count_enabled() || sinks.len() != 1 {
+    if !factorized_aggregate_enabled() || sinks.len() != 1 {
         return None;
     }
     // Split the sink `(op TEMPLATE COUNTVAR PROJECTION)` into its parts.

@@ -4289,13 +4289,13 @@ mod tests {
     /// Run a count-sink program to fixpoint with the factorized fast path forced on/off and return
     /// the whole-space dump, for the differential oracles below.
     fn count_diff_run(prog: &str, factorized: bool) -> String {
-        crate::space::set_factorized_count_override(Some(factorized));
+        crate::space::set_factorized_aggregate_override(Some(factorized));
         let mut s = crate::space::Space::new();
         s.add_all_sexpr(prog.as_bytes()).unwrap();
         s.metta_calculus(1_000_000);
         let mut v = vec![];
         s.dump_all_sexpr(&mut v).unwrap();
-        crate::space::set_factorized_count_override(None);
+        crate::space::set_factorized_aggregate_override(None);
         String::from_utf8(v).unwrap()
     }
 
@@ -4432,7 +4432,7 @@ mod tests {
     /// -- the routable case (Alloy fac18). `(total $c)` emits the actual count so the value is
     /// compared, not just presence; the `(all eighteen)`/`(all sixteen)` literal guards check the
     /// count-equals-literal emit both ways. This is the gate that must be green before any default
-    /// flip of `MORK_FACTORIZED_COUNT`.
+    /// flip of `MORK_FACTORIZED_AGGREGATE`.
     #[test]
     fn factorized_count_sink_matches_enumerate() {
         const PROG: &str = r#"

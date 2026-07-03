@@ -4229,6 +4229,61 @@ mod tests {
         assert_eq!(fact_sum, 60, "factorized SUM(DISTINCT x) = 10+20+30");
     }
 
+    /// Property-based differential: over random data and several join shapes (chain, star, cyclic
+    /// triangle) with count and sum sinks -- plus grouped and partially-projected sinks the gate must
+    /// DECLINE -- the whole space must be byte-identical with the factorized fast path on vs off. Any
+    /// divergence is a gate-soundness or factorization bug. Deterministic LCG per seed (no Date/rand).
+    #[test]
+    fn factorized_aggregate_fuzz_differential() {
+        let step = |st: &mut u64| -> u64 {
+            *st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *st >> 33
+        };
+        let mut diverged = Vec::new();
+        for seed in 0u64..600 {
+            let mut st = seed
+                .wrapping_mul(2862933555777941757)
+                .wrapping_add(3037000493);
+            let d = 3 + step(&mut st) % 8; // domain 3..10
+            let mut prog = String::new();
+            for r in ["r1", "r2", "r3", "r4"] {
+                let n = 1 + step(&mut st) % 14; // 1..14 tuples each
+                for _ in 0..n {
+                    let a = step(&mut st) % d;
+                    let b = step(&mut st) % d;
+                    prog.push_str(&format!("({r} {a} {b})\n"));
+                }
+            }
+            // Routable across chain, star, cyclic triangle, 4-cycle, self-join, and longer chain; SUM
+            // over chain/star; and grouped + partial-projection which the gate must DECLINE. Random
+            // data exercises empty joins, single matches, dangling tuples, and high fan-out per seed.
+            prog.push_str(
+                r#"
+(exec 0 (, (r1 $a $b) (r2 $b $c)) (O (count (chain-cnt $n) $n (t $a $b $c))))
+(exec 0 (, (r1 $a $b) (r2 $a $c) (r3 $a $d)) (O (count (star-cnt $n) $n (t $a $b $c $d))))
+(exec 0 (, (r1 $a $b) (r2 $b $c) (r3 $c $a)) (O (count (tri-cnt $n) $n (t $a $b $c))))
+(exec 0 (, (r1 $a $b) (r2 $b $c) (r3 $c $d) (r4 $d $a)) (O (count (cyc4-cnt $n) $n (t $a $b $c $d))))
+(exec 0 (, (r1 $a $b) (r1 $b $c)) (O (count (self-cnt $n) $n (t $a $b $c))))
+(exec 0 (, (r1 $a $b) (r2 $b $c) (r3 $c $d)) (O (count (chain3-cnt $n) $n (t $a $b $c $d))))
+(exec 0 (, (r1 $a $b) (r2 $b $c)) (O (sum (chain-sum $n) $n $a)))
+(exec 0 (, (r1 $a $b) (r2 $a $c) (r3 $a $d)) (O (sum (star-sum $n) $n $b)))
+(exec 0 (, (r1 $a $b) (r2 $b $c) (r3 $c $d) (r4 $d $a)) (O (sum (cyc4-sum $n) $n $c)))
+(exec 0 (, (r1 $a $b) (r2 $b $c)) (O (count (grouped $a $n) $n $c)))
+(exec 0 (, (r1 $a $b) (r2 $b $c)) (O (count (partial $n) $n (t $a))))
+"#,
+            );
+            if count_diff_run(&prog, false) != count_diff_run(&prog, true) {
+                diverged.push(seed);
+            }
+        }
+        assert!(
+            diverged.is_empty(),
+            "factorized aggregate diverged from enumerate on seeds {diverged:?}"
+        );
+    }
+
     /// Run a count-sink program to fixpoint with the factorized fast path forced on/off and return
     /// the whole-space dump, for the differential oracles below.
     fn count_diff_run(prog: &str, factorized: bool) -> String {

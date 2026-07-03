@@ -282,6 +282,156 @@ pub fn join_bags(bags: &[(Bag, Vec<BagMatch>)], n_factors: usize) -> Vec<Vec<Vec
         .collect()
 }
 
+// ---- Factorized aggregation: COUNT the join without enumerating it ----
+//
+// WCO is output-optimal for enumeration, so a COUNT computed by enumerate-and-count is O(output).
+// Factorizing it (sum-product variable elimination over the join tree) touches each relation once
+// and multiplies/sums per join value: O(N^fhtw), which for an acyclic body is O(N). Alloy-verified
+// sound in `scratchpad/fac17_count.als`.
+
+/// A sum-product factor: a relation over `vars` (sorted variable ids) with a count per distinct
+/// value tuple. The key length-prefixes each variable's value bytes, in `vars` order.
+#[derive(Clone, Debug)]
+pub struct FactorTable {
+    pub vars: Vec<usize>,
+    pub rows: BTreeMap<Vec<u8>, u64>,
+}
+
+fn encode_key(vars: &[usize], vals: &BTreeMap<usize, Vec<u8>>) -> Vec<u8> {
+    let mut k = Vec::new();
+    for v in vars {
+        let val = &vals[v];
+        k.extend_from_slice(&(val.len() as u32).to_le_bytes());
+        k.extend_from_slice(val);
+    }
+    k
+}
+
+/// Decode the value of variable `vars[i]` from a key produced by `encode_key`.
+fn key_slice(vars: &[usize], key: &[u8], want: usize) -> Vec<u8> {
+    let mut pos = 0;
+    for &v in vars {
+        let len = u32::from_le_bytes(key[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if v == want {
+            return key[pos..pos + len].to_vec();
+        }
+        pos += len;
+    }
+    Vec::new()
+}
+
+/// Materialize one factor as a count table over its variables (each fact contributes one, grouped
+/// by its variable values). Coreference is enforced by running the single-factor join.
+pub fn materialize_factor_table(map: &PathMap<()>, factor: &Factor, nvars: usize) -> FactorTable {
+    let mut vs = BTreeSet::new();
+    collect_factor_vars(factor, &mut vs);
+    let vars: Vec<usize> = vs.into_iter().collect();
+    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    let f = [factor.clone()];
+    run_unify_join_stream(map, &f, &vars, nvars, &mut |tuple: &[Vec<u8>]| {
+        let mut vals = BTreeMap::new();
+        extract_var_values(&tuple[0], factor, &mut vals);
+        *rows.entry(encode_key(&vars, &vals)).or_insert(0) += 1;
+        true
+    });
+    FactorTable { vars, rows }
+}
+
+/// Multiply two factor tables: join on shared variables, count = product of the two counts.
+fn multiply(a: &FactorTable, b: &FactorTable) -> FactorTable {
+    let shared: Vec<usize> = a.vars.iter().cloned().filter(|v| b.vars.contains(v)).collect();
+    let mut out_vars = a.vars.clone();
+    for &v in &b.vars {
+        if !out_vars.contains(&v) {
+            out_vars.push(v);
+        }
+    }
+    out_vars.sort_unstable();
+    // index b by its shared-variable values.
+    let mut b_index: BTreeMap<Vec<u8>, Vec<(&Vec<u8>, u64)>> = BTreeMap::new();
+    for (bk, &bc) in &b.rows {
+        let sk: Vec<u8> = shared
+            .iter()
+            .flat_map(|&v| {
+                let s = key_slice(&b.vars, bk, v);
+                let mut e = (s.len() as u32).to_le_bytes().to_vec();
+                e.extend_from_slice(&s);
+                e
+            })
+            .collect();
+        b_index.entry(sk).or_default().push((bk, bc));
+    }
+    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for (ak, &ac) in &a.rows {
+        let sk: Vec<u8> = shared
+            .iter()
+            .flat_map(|&v| {
+                let s = key_slice(&a.vars, ak, v);
+                let mut e = (s.len() as u32).to_le_bytes().to_vec();
+                e.extend_from_slice(&s);
+                e
+            })
+            .collect();
+        let Some(matches) = b_index.get(&sk) else { continue };
+        for (bk, bc) in matches {
+            // assemble the merged value map, then re-key over out_vars.
+            let mut vals: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+            for &v in &a.vars {
+                vals.insert(v, key_slice(&a.vars, ak, v));
+            }
+            for &v in &b.vars {
+                vals.insert(v, key_slice(&b.vars, bk, v));
+            }
+            *rows.entry(encode_key(&out_vars, &vals)).or_insert(0) += ac * bc;
+        }
+    }
+    FactorTable { vars: out_vars, rows }
+}
+
+/// Sum a variable out of a factor table: group by the remaining variables, summing counts.
+fn sum_out(t: &FactorTable, v: usize) -> FactorTable {
+    let out_vars: Vec<usize> = t.vars.iter().cloned().filter(|&x| x != v).collect();
+    let mut rows: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for (k, &c) in &t.rows {
+        let mut vals: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+        for &x in &out_vars {
+            vals.insert(x, key_slice(&t.vars, k, x));
+        }
+        *rows.entry(encode_key(&out_vars, &vals)).or_insert(0) += c;
+    }
+    FactorTable { vars: out_vars, rows }
+}
+
+/// Factorized COUNT of the join defined by `factors`, by sum-product variable elimination in
+/// `elim_order`: for each variable, multiply the tables that mention it and sum it out. The final
+/// tables are scalars whose product is the count. O(sum of intermediate sizes); enumerate-and-count
+/// is O(output). Sound for any elimination order (Alloy fac17); the order sets the intermediate
+/// sizes (a good order gives O(N^fhtw)).
+pub fn ghd_count(map: &PathMap<()>, factors: &[Factor], nvars: usize, elim_order: &[usize]) -> u64 {
+    let mut tables: Vec<FactorTable> = factors
+        .iter()
+        .map(|f| materialize_factor_table(map, f, nvars))
+        .collect();
+    for &v in elim_order {
+        let (with_v, without_v): (Vec<FactorTable>, Vec<FactorTable>) =
+            tables.into_iter().partition(|t| t.vars.contains(&v));
+        tables = without_v;
+        if with_v.is_empty() {
+            continue;
+        }
+        let mut combined = with_v[0].clone();
+        for t in &with_v[1..] {
+            combined = multiply(&combined, t);
+        }
+        tables.push(sum_out(&combined, v));
+    }
+    tables
+        .iter()
+        .map(|t| t.rows.values().sum::<u64>())
+        .product()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4132,6 +4132,82 @@ mod tests {
         }
     }
 
+    /// Factorized aggregation (Model 17): the factorized COUNT equals enumerate-and-count, while
+    /// touching only the input rows. The 2-path has O(N^2) output but O(N) input, so the factorized
+    /// count does asymptotically less work for the same answer.
+    #[test]
+    fn ghd_count_matches_enumerate_count() {
+        let mut s = crate::space::Space::new();
+        let mut prog = String::new();
+        for a in 0..5 {
+            for h in 0..4 {
+                prog.push_str(&format!("(r a{a} h{h})\n"));
+            }
+        }
+        for h in 0..4 {
+            for z in 0..5 {
+                prog.push_str(&format!("(s h{h} z{z})\n"));
+            }
+        }
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        for body_str in [
+            "(, (r $x $y) (s $y $z))", // 2-path: output 100, inputs 40
+            "(, (r $x $y))",           // single relation
+        ] {
+            let body = enc(body_str);
+            let (factors, nvars) = parse_body_factors(&body).unwrap();
+            let var_order: Vec<usize> = (0..nvars).collect();
+            let mut enum_count = 0u64;
+            run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut |_t| {
+                enum_count += 1;
+                true
+            });
+            let fact_count = crate::ghd::ghd_count(&s.btm, &factors, nvars, &var_order);
+            assert_eq!(fact_count, enum_count, "{body_str}: factorized != enumerate count");
+            assert!(enum_count > 0, "{body_str}: the test must exercise non-empty results");
+        }
+    }
+
+    /// The asymptotic separation: on a hub 2-path (k inputs, k^2 output) enumerate-and-count is
+    /// O(k^2) while the factorized count is O(k), so the speedup grows with k. This is the win the
+    /// WCO join cannot match: the same COUNT, without touching the output.
+    #[test]
+    #[ignore = "timing: run explicitly for the factorized-count separation"]
+    fn ghd_count_win_scales() {
+        for k in [50usize, 100, 200, 400, 800] {
+            let mut s = crate::space::Space::new();
+            let mut prog = String::new();
+            for a in 0..k {
+                prog.push_str(&format!("(r a{a} hub)\n"));
+            }
+            for z in 0..k {
+                prog.push_str(&format!("(s hub z{z})\n"));
+            }
+            s.add_all_sexpr(prog.as_bytes()).unwrap();
+            let body = enc("(, (r $x $y) (s $y $z))");
+            let (factors, nvars) = parse_body_factors(&body).unwrap();
+            let var_order: Vec<usize> = (0..nvars).collect();
+
+            let t = std::time::Instant::now();
+            let mut ec = 0u64;
+            run_unify_join_stream(&s.btm, &factors, &var_order, nvars, &mut |_t| {
+                ec += 1;
+                true
+            });
+            let enum_us = t.elapsed().as_micros().max(1);
+
+            let t = std::time::Instant::now();
+            let fc = crate::ghd::ghd_count(&s.btm, &factors, nvars, &var_order);
+            let fact_us = t.elapsed().as_micros().max(1);
+
+            assert_eq!(fc, ec, "factorized count must equal enumerate count");
+            eprintln!(
+                "k={k:4} output={ec:9}  enumerate {enum_us:8}us  factorized {fact_us:6}us  speedup {:.1}x",
+                enum_us as f64 / fact_us as f64
+            );
+        }
+    }
+
     /// An inverted factor is re-indexed with permuted, renumbered columns; a streamed leaf must
     /// hand back the fact's original stored bytes, coreference included: `(f $u $u)` must come
     /// back as NewVar then VarRef, not two fresh variables.

@@ -526,6 +526,16 @@ fn min_var_pos_in_expr(expr: Expr, intro_start: u8, var_pos: &[usize]) -> Option
 /// Cyclic queries that admit no compatible order are handled by re-indexing in a later layer.
 ///
 /// Returns one row per answer: `row[v]` is the bound subterm bytes for global variable `v`.
+///
+/// COMPLETENESS CONTRACT: this is an EXACT-match join. It is complete only when every
+/// joined relation is fully GROUND. It does not unify: a stored fact that carries a
+/// variable (a schematic fact, e.g. `(sol $n ..)`) is not matched against a query
+/// ground value (`(sol Z ..)`), and a nonground compound query column (e.g.
+/// `(: $b (-> $c $d))`) stays unconsumed. On ground data flat-leapfrog equals the
+/// ProductZipper; on schematic data it is a strict subset and will SILENTLY drop
+/// answers. A caller that may join over schematic facts must detect that (any factor
+/// column is a nonground compound, or any joined relation holds a non-ground fact at
+/// the functor prefix) and route to a unifying join instead.
 pub fn ground_join(
     map: &PathMap<()>,
     factors: &[Factor],

@@ -15,7 +15,9 @@
 
 use mork_expr::{byte_item, item_byte, unify, Expr, ExprEnv, ExprZipper, Tag};
 use pathmap::utils::ByteMask;
-use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperValues};
+use pathmap::zipper::{
+    ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperValues,
+};
 use pathmap::PathMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -123,6 +125,13 @@ pub struct SubtermCursor<Z> {
     z: Z,
     key: Vec<u8>,
     at_end: bool,
+    /// Values of the columns already descended past, below the zipper's creation
+    /// focus. `descend_floor` locks the current subterm as a column value and
+    /// lowers the floor into it (so the next enumeration is of the following
+    /// column); `ascend_floor` restores it. This lets one cursor walk a factor's
+    /// successive columns with the zipper HELD -- descended and ascended in place,
+    /// never re-opened from the trie root (which is the join's dominant cost).
+    floor_stack: Vec<Vec<u8>>,
 }
 
 impl<Z: Zipper + ZipperMoving> SubtermCursor<Z> {
@@ -132,6 +141,7 @@ impl<Z: Zipper + ZipperMoving> SubtermCursor<Z> {
             z,
             key: Vec::new(),
             at_end: true,
+            floor_stack: Vec::new(),
         }
     }
 
@@ -141,6 +151,37 @@ impl<Z: Zipper + ZipperMoving> SubtermCursor<Z> {
             self.z.ascend_byte();
         }
         self.at_end = false;
+    }
+
+    /// Lock the current complete subterm (the cursor's `key`) as a consumed column
+    /// value: the floor descends into it so subsequent enumeration is of the NEXT
+    /// column. The zipper stays put (it is already descended into `key`); only the
+    /// floor bookkeeping moves. Pairs with `ascend_floor`.
+    pub fn descend_floor(&mut self) {
+        self.floor_stack.push(std::mem::take(&mut self.key));
+        self.at_end = false;
+    }
+
+    /// Undo the most recent `descend_floor`: the floor rises back to this column
+    /// and the cursor is repositioned at the value it held (its `key`), ready to
+    /// advance via `next`. Requires the zipper to be back at this column's floor
+    /// plus that value, which holds because a fully-exhausted deeper column
+    /// leaves its cursor at its own floor (== this value's end).
+    pub fn ascend_floor(&mut self) {
+        self.key = self
+            .floor_stack
+            .pop()
+            .expect("ascend_floor without a matching descend_floor");
+        self.at_end = false;
+    }
+
+    /// Whether the current focus (after consuming every column) carries a stored
+    /// value: the factor's fact is present at this full binding.
+    pub fn has_value(&self) -> bool
+    where
+        Z: ZipperValues<()>,
+    {
+        self.z.value().is_some()
     }
 
     /// Descend the least child at each step until the key forms a complete subterm. Returns false
@@ -491,112 +532,156 @@ pub fn ground_join(
     var_order: &[usize],
     nvars: usize,
 ) -> Vec<Vec<Vec<u8>>> {
-    let mut state = GroundJoin {
-        map,
-        factors,
-        var_order,
-        bound: vec![Vec::new(); factors.len()],
-        next_col: vec![0; factors.len()],
-        binding: vec![Vec::new(); nvars],
-        out: Vec::new(),
-    };
-    state.recurse(0);
-    state.out
+    let mut out = Vec::new();
+    GroundJoin::new(map, factors, var_order, nvars, None).run(&mut |b: &[Vec<u8>]| out.push(b.to_vec()));
+    out
 }
 
+/// `ground_join` restricted to the leading variable's values assigned to
+/// worker `worker` of `nworkers` by hash. The union over `worker in 0..nworkers`
+/// equals `ground_join`.
+pub fn ground_join_partition(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    worker: usize,
+    nworkers: usize,
+) -> Vec<Vec<Vec<u8>>> {
+    let mut out = Vec::new();
+    GroundJoin::new(map, factors, var_order, nvars, Some((worker, nworkers.max(1))))
+        .run(&mut |b: &[Vec<u8>]| out.push(b.to_vec()));
+    out
+}
+
+/// Streams each join answer (the per-variable bound values, indexed by variable)
+/// to `emit`, restricted to worker `worker` of `nworkers` by hashing the leading
+/// variable. No answer vector is materialized -- the caller applies its template
+/// to each binding as it is produced. The held-cursor substrate of the parallel
+/// ground transform.
+pub fn ground_join_for_each<F: FnMut(&[Vec<u8>])>(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    worker: usize,
+    nworkers: usize,
+    mut emit: F,
+) {
+    GroundJoin::new(map, factors, var_order, nvars, Some((worker, nworkers.max(1)))).run(&mut emit);
+}
+
+/// Data-parallel `ground_join`: partition the leading variable's domain across
+/// `nthreads` workers by hash, each running the join on the shared read-only map
+/// into its own answer buffer, then concatenate. Byte-identical (as a set) to
+/// `ground_join`. Safe: concurrent reads of an immutable `PathMap`, no shared
+/// writes.
+pub fn ground_join_parallel(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    nthreads: usize,
+) -> Vec<Vec<Vec<u8>>> {
+    let nthreads = nthreads.max(1);
+    let parts: Vec<Vec<Vec<Vec<u8>>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..nthreads)
+            .map(|w| scope.spawn(move || ground_join_partition(map, factors, var_order, nvars, w, nthreads)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut out = Vec::new();
+    for p in parts {
+        out.extend(p);
+    }
+    out
+}
+
+/// Data-parallel `ground_join` that only COUNTS answers (no materialization),
+/// isolating the join's parallel scaling from answer-vector allocation.
+pub fn ground_join_count_parallel(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    nthreads: usize,
+) -> u64 {
+    let nthreads = nthreads.max(1);
+    let counts: Vec<u64> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..nthreads)
+            .map(|w| {
+                scope.spawn(move || {
+                    let mut n = 0u64;
+                    GroundJoin::new(map, factors, var_order, nvars, Some((w, nthreads)))
+                        .run(&mut |_b: &[Vec<u8>]| n += 1);
+                    n
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    counts.into_iter().sum()
+}
+
+/// Worst-case-optimal leapfrog join over ground MORK facts, HELD-cursor: one
+/// `SubtermCursor` per factor is opened once at the factor's relation prefix and
+/// walked column by column with `descend_floor`/`ascend_floor` as variables bind
+/// and backtrack, so the byte-trie is descended incrementally and never re-opened
+/// from the root (the dominant cost of the naive per-column re-descend, ~25% of
+/// the join). Answers stream to a caller closure -- no domain is materialized.
 struct GroundJoin<'a> {
-    map: &'a PathMap<()>,
     factors: &'a [Factor],
     var_order: &'a [usize],
-    bound: Vec<Vec<u8>>,
+    cursors: Vec<SubtermCursor<ReadZipperUntracked<'a, 'static, ()>>>,
     next_col: Vec<usize>,
     binding: Vec<Vec<u8>>,
-    out: Vec<Vec<Vec<u8>>>,
+    /// Assigns the FIRST scheduled variable's values to workers by
+    /// `hash(value) % nworkers == worker` (`None` = whole domain, sequential).
+    /// Hashing the whole value balances the domain; a byte-range split would give
+    /// one worker everything (every value shares its leading tag byte).
+    lead_partition: Option<(usize, usize)>,
 }
 
-impl GroundJoin<'_> {
-    fn recurse(&mut self, i: usize) {
-        self.catch_up(i, 0);
-    }
-
-    fn recurse_after_catch_up(&mut self, i: usize) {
-        if i == self.var_order.len() {
-            if (0..self.factors.len()).all(|f| self.factor_has_value(f)) {
-                self.out.push(self.binding.clone());
-            }
-            return;
-        }
-        let v = self.var_order[i];
-        let parts: Vec<usize> = (0..self.factors.len())
-            .filter(|&f| {
-                let nc = self.next_col[f];
-                matches!(self.factors[f].cols.get(nc), Some(FactorColumn::Var(cv)) if *cv == v)
-            })
-            .collect();
-
-        // Open one cursor per participating factor at its current position (relation prefix plus the
-        // bytes of its already-bound columns), then leapfrog-intersect their next-column subterms.
-        let mut cursors: Vec<_> = parts
+impl<'a> GroundJoin<'a> {
+    fn new(
+        map: &'a PathMap<()>,
+        factors: &'a [Factor],
+        var_order: &'a [usize],
+        nvars: usize,
+        lead_partition: Option<(usize, usize)>,
+    ) -> Self {
+        let cursors = factors
             .iter()
-            .map(|&f| {
-                let mut path = self.factors[f].prefix.clone();
-                path.extend_from_slice(&self.bound[f]);
-                SubtermCursor::new(self.map.read_zipper_at_path(&path))
-            })
+            .map(|f| SubtermCursor::new(map.read_zipper_at_path(&f.prefix)))
             .collect();
-        let vals = intersect(&mut cursors);
-        drop(cursors);
-
-        for val in vals {
-            for &f in &parts {
-                self.bound[f].extend_from_slice(&val);
-                self.next_col[f] += 1;
-            }
-            self.binding[v] = val.clone();
-            self.recurse(i + 1);
-            self.binding[v].clear();
-            for &f in &parts {
-                let len = self.bound[f].len() - val.len();
-                self.bound[f].truncate(len);
-                self.next_col[f] -= 1;
-            }
+        GroundJoin {
+            factors,
+            var_order,
+            cursors,
+            next_col: vec![0; factors.len()],
+            binding: vec![Vec::new(); nvars],
+            lead_partition,
         }
     }
 
-    fn factor_path(&self, f: usize) -> Vec<u8> {
-        let mut path = self.factors[f].prefix.clone();
-        path.extend_from_slice(&self.bound[f]);
-        path
+    fn run<F: FnMut(&[Vec<u8>])>(&mut self, emit: &mut F) {
+        self.catch_up(0, 0, emit);
     }
 
-    fn factor_has_value(&self, f: usize) -> bool {
-        if self.next_col[f] != self.factors[f].cols.len() {
-            return false;
-        }
-        let path = self.factor_path(f);
-        self.map.read_zipper_at_path(&path).val().is_some()
+    fn recurse<F: FnMut(&[Vec<u8>])>(&mut self, i: usize, emit: &mut F) {
+        self.catch_up(i, 0, emit);
     }
 
-    fn consume_exact_column(&mut self, f: usize, target: &[u8]) -> bool {
-        let path = self.factor_path(f);
-        let mut cur = SubtermCursor::new(self.map.read_zipper_at_path(&path));
-        cur.seek(target);
-        if cur.key() == Some(target) {
-            self.bound[f].extend_from_slice(target);
-            self.next_col[f] += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn catch_up(&mut self, i: usize, f: usize) {
+    /// Consume every ground or already-bound column of factor `f` (and beyond) at
+    /// the current variable depth by seeking the held cursor to the exact value,
+    /// then hand off to the free-variable leapfrog. Descends in place -- no re-open.
+    fn catch_up<F: FnMut(&[Vec<u8>])>(&mut self, i: usize, f: usize, emit: &mut F) {
         if f == self.factors.len() {
-            self.recurse_after_catch_up(i);
+            self.recurse_after_catch_up(i, emit);
             return;
         }
         let Some(col) = self.factors[f].cols.get(self.next_col[f]).cloned() else {
-            self.catch_up(i, f + 1);
+            self.catch_up(i, f + 1, emit);
             return;
         };
         let target = match col {
@@ -605,14 +690,120 @@ impl GroundJoin<'_> {
             FactorColumn::Var(_) | FactorColumn::Term(_) => None,
         };
         let Some(target) = target else {
-            self.catch_up(i, f + 1);
+            self.catch_up(i, f + 1, emit);
             return;
         };
-        if self.consume_exact_column(f, &target) {
-            self.catch_up(i, f);
-            let len = self.bound[f].len() - target.len();
-            self.bound[f].truncate(len);
+        self.cursors[f].seek(&target);
+        if self.cursors[f].key() == Some(target.as_slice()) {
+            self.cursors[f].descend_floor();
+            self.next_col[f] += 1;
+            self.catch_up(i, f, emit);
             self.next_col[f] -= 1;
+            self.cursors[f].ascend_floor();
+        }
+        self.cursors[f].reset_to_floor();
+    }
+
+    fn recurse_after_catch_up<F: FnMut(&[Vec<u8>])>(&mut self, i: usize, emit: &mut F) {
+        if i == self.var_order.len() {
+            if (0..self.factors.len())
+                .all(|f| self.next_col[f] == self.factors[f].cols.len() && self.cursors[f].has_value())
+            {
+                emit(&self.binding);
+            }
+            return;
+        }
+        let v = self.var_order[i];
+        let parts: Vec<usize> = (0..self.factors.len())
+            .filter(|&f| {
+                matches!(self.factors[f].cols.get(self.next_col[f]), Some(FactorColumn::Var(cv)) if *cv == v)
+            })
+            .collect();
+        self.leapfrog(i, v, &parts, emit);
+    }
+
+    /// Held-cursor streaming leapfrog for free variable `v` over its participating
+    /// factors `parts`: seek each cursor to the running maximum subterm; when they
+    /// all agree, that value is in the intersection, so descend every cursor into
+    /// it, recurse, ascend back, and step the first cursor forward. Every exit
+    /// resets the participating cursors to their column floors so the parent can
+    /// ascend past its own column cleanly.
+    fn leapfrog<F: FnMut(&[Vec<u8>])>(&mut self, i: usize, v: usize, parts: &[usize], emit: &mut F) {
+        if parts.is_empty() {
+            return;
+        }
+        for &f in parts {
+            self.cursors[f].first();
+            if self.cursors[f].at_end() {
+                self.reset_parts(parts);
+                return;
+            }
+        }
+        loop {
+            let max: Vec<u8> = parts
+                .iter()
+                .map(|&f| self.cursors[f].key().unwrap().to_vec())
+                .max()
+                .unwrap();
+            let mut all_match = true;
+            for &f in parts {
+                if self.cursors[f].key().unwrap() != max.as_slice() {
+                    self.cursors[f].seek(&max);
+                    if self.cursors[f].at_end() {
+                        self.reset_parts(parts);
+                        return;
+                    }
+                    if self.cursors[f].key().unwrap() != max.as_slice() {
+                        all_match = false;
+                    }
+                }
+            }
+            if all_match {
+                if self.lead_owned(i, &max) {
+                    for &f in parts {
+                        self.cursors[f].descend_floor();
+                        self.next_col[f] += 1;
+                    }
+                    self.binding[v].clear();
+                    self.binding[v].extend_from_slice(&max);
+                    self.recurse(i + 1, emit);
+                    self.binding[v].clear();
+                    for &f in parts {
+                        self.next_col[f] -= 1;
+                        self.cursors[f].ascend_floor();
+                    }
+                }
+                self.cursors[parts[0]].next();
+                if self.cursors[parts[0]].at_end() {
+                    self.reset_parts(parts);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The leading-variable work-partition gate (only at the first scheduled
+    /// variable): hash the value and keep it iff it belongs to this worker.
+    fn lead_owned(&self, i: usize, val: &[u8]) -> bool {
+        if i != 0 {
+            return true;
+        }
+        match self.lead_partition {
+            None => true,
+            Some((worker, nworkers)) => {
+                let mut h = 0xcbf29ce484222325u64;
+                for &b in val {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+                (h % nworkers as u64) as usize == worker
+            }
+        }
+    }
+
+    fn reset_parts(&mut self, parts: &[usize]) {
+        for &f in parts {
+            self.cursors[f].reset_to_floor();
         }
     }
 }
@@ -2794,6 +2985,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    // The data-parallel ground_join must return byte-identically (as a set) what
+    // the sequential ground_join returns: the leading variable's hash partition is
+    // a disjoint cover, so the workers' answer sets union to the whole. Checked on
+    // a moderate edge relation via the 2-hop join.
+    #[test]
+    fn ground_join_parallel_matches_sequential() {
+        let mut s = crate::space::Space::new();
+        let mut prog = String::new();
+        for a in 0..48u32 {
+            for b in 0..48u32 {
+                if (a.wrapping_mul(31).wrapping_add(b.wrapping_mul(17))) % 5 == 0 {
+                    prog.push_str(&format!("(edge {} {})\n", a % 13, b % 13));
+                }
+            }
+        }
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        let body = crate::expr!(s, "[3] , [3] edge $ $ [3] edge _2 $");
+        let span = unsafe { body.span().as_ref().unwrap() };
+        let (factors, nvars) = parse_body_factors(span).expect("parses");
+        let var_order: Vec<usize> = (0..nvars).collect();
+
+        let mut seq = ground_join(&s.btm, &factors, &var_order, nvars);
+        let mut par = ground_join_parallel(&s.btm, &factors, &var_order, nvars, 32);
+        assert!(!seq.is_empty(), "the join must produce answers");
+        seq.sort();
+        par.sort();
+        assert_eq!(seq, par, "parallel join answer set must equal sequential");
     }
 
     #[test]

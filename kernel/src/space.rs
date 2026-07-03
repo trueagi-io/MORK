@@ -26,6 +26,81 @@ use log::*;
 use subprocess::{Popen, PopenConfig, Redirection};
 use subprocess::unix::PopenExt;
 use crate::sinks::{WriteResource, WriteResourceRequest};
+
+thread_local! {
+    /// Per-thread override for the factorized-COUNT fast path, so the differential test can toggle
+    /// it without a process-global env race. `None` falls back to the `MORK_FACTORIZED_COUNT` env.
+    static FACTORIZED_COUNT_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+/// Force the factorized-COUNT fast path on/off for the current thread (test hook); `None` restores
+/// the env-var default.
+pub fn set_factorized_count_override(v: Option<bool>) {
+    FACTORIZED_COUNT_OVERRIDE.with(|c| c.set(v));
+}
+fn factorized_count_enabled() -> bool {
+    FACTORIZED_COUNT_OVERRIDE
+        .with(|c| c.get())
+        .unwrap_or_else(|| std::env::var_os("MORK_FACTORIZED_COUNT").is_some())
+}
+
+/// The pattern variables (`VarRef(i)` with `i < p`) a sink sub-expression reads. A pattern variable
+/// can only appear as a reference here -- its introduction (`NewVar`) was in the pattern -- so this
+/// is the set of pattern columns the sub-expression mentions. Fresh sink variables (the count
+/// placeholder) are `NewVar` or `VarRef(>= p)` and are excluded.
+fn count_sink_pattern_refs(e: Expr, p: usize) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut ez = ExprZipper::new(e);
+    loop {
+        if let Tag::VarRef(i) = ez.tag() {
+            if (i as usize) < p {
+                out.insert(i as usize);
+            }
+        }
+        if !ez.next() {
+            break;
+        }
+    }
+    out
+}
+
+/// Gate and compute the factorized COUNT for a single ungrouped, projection-free count sink over a
+/// decomposable multi-factor body. `Some(n)` means route the sink to the factorized aggregate
+/// (FAQ InsideOut over the join tree, O(N^fhtw)); `None` falls back to the enumerate CountSink
+/// (always correct, O(output)). The gate is exactly Alloy fac18's soundness condition: the count
+/// template mentions no pattern variable (a single group) and the projection mentions every pattern
+/// variable (distinct-output == match count), which is Yan-Larson "double eager" COUNT.
+fn factorized_count_gate(
+    read_copy: &PathMap<()>,
+    pat_expr: Expr,
+    sinks: &[crate::sinks::ASink],
+    templates: &[Expr],
+) -> Option<u64> {
+    if !factorized_count_enabled() || sinks.len() != 1 {
+        return None;
+    }
+    if !matches!(sinks[0], crate::sinks::ASink::CountSink(_)) {
+        return None;
+    }
+    // Split the sink `(count TEMPLATE COUNTVAR PROJECTION)` into its parts.
+    let mut args = Vec::new();
+    ExprEnv::new(0, templates[0]).args(&mut args);
+    if args.len() != 4 {
+        return None;
+    }
+    let p = pat_expr.newvars();
+    if !count_sink_pattern_refs(args[1].subsexpr(), p).is_empty() {
+        return None; // template mentions a pattern variable -> grouped, not a single scalar
+    }
+    if count_sink_pattern_refs(args[3].subsexpr(), p).len() != p {
+        return None; // projection drops a pattern variable -> distinct-output < match count
+    }
+    let body = unsafe { pat_expr.span().as_ref().unwrap() };
+    let (factors, nvars) = crate::zipper_join::parse_body_factors(body)?;
+    if factors.len() < 2 {
+        return None; // a single factor is already O(N) to count
+    }
+    crate::ghd::ghd_aggregate_auto::<u64>(read_copy, &factors, nvars, |_| 1)
+}
 use crate::sources::{AFactor, Resource, ResourceRequest};
 
 pub static mut transitions: usize = 0;
@@ -1538,6 +1613,13 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
+        // Fast path: an ungrouped, projection-free count over a decomposable multi-factor body is
+        // computed by the factorized aggregate (O(N^fhtw)) instead of enumerating the whole join.
+        // The query below still runs but stops after one representative match, which seeds the
+        // single group so finalize discovers the template context; set_precomputed then supplies the
+        // real count. When the gate declines (grouped, projected, cyclic, single-factor, disabled)
+        // this is None and the enumerate path runs unchanged.
+        let fast_n = factorized_count_gate(&read_copy, pat_expr, &sinks, &templates);
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
@@ -1566,10 +1648,18 @@ impl Space {
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
                     }
-                    true
+                    // Fast path stops after the first successful match: one representative seeds the
+                    // single group, and set_precomputed (below) supplies the factorized count.
+                    fast_n.is_none()
                 }
             }
         });
+
+        if let Some(n) = fast_n {
+            if let crate::sinks::ASink::CountSink(cs) = &mut sinks[0] {
+                cs.set_precomputed(n);
+            }
+        }
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };

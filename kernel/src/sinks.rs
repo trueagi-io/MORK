@@ -544,10 +544,18 @@ impl Sink for WASMSink {
 // (count (count of $k is $i) $i ($x $y))   unify
 // (count (count of r2 is $i) $i (P Q))
 // (count (count of r2 is 3) 3 ($x $y))
-pub struct CountSink { e: Expr, unique: PathMap<()> }
+pub struct CountSink { e: Expr, unique: PathMap<()>, precomputed: Option<usize> }
+impl CountSink {
+    /// Override the group's count with a value computed off-band (the factorized aggregate), so
+    /// `finalize` emits it instead of counting the materialized `unique` set. Sound only for a
+    /// projection-free, ungrouped count where distinct-output == match count (Alloy fac18); the
+    /// caller (`transform_multi_multi_o`'s fast path) gates on exactly that and seeds `unique` with
+    /// one representative match so the single group and its template context are still discovered.
+    pub fn set_precomputed(&mut self, n: u64) { self.precomputed = Some(n as usize); }
+}
 impl Sink for CountSink {
     fn new(e: Expr) -> Self {
-        CountSink { e, unique: PathMap::new() }
+        CountSink { e, unique: PathMap::new(), precomputed: None }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
         let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[7..];
@@ -576,8 +584,9 @@ impl Sink for CountSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        let precomputed = self.precomputed;
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
-            let cnt = prz.val_count();
+            let cnt = precomputed.unwrap_or_else(|| prz.val_count());
             trace!(target: "sink", "'{}' and under {}", serialize(prz.path()), cnt);
             let clen = prz.path().len();
             let cnt_str = cnt.to_string();

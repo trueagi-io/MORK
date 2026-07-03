@@ -4192,6 +4192,94 @@ mod tests {
         assert_eq!(fact_count, enum_count, "factorized Cartesian count != enumerate");
     }
 
+    /// Run a count-sink program to fixpoint with the factorized fast path forced on/off and return
+    /// the whole-space dump, for the differential oracles below.
+    fn count_diff_run(prog: &str, factorized: bool) -> String {
+        crate::space::set_factorized_count_override(Some(factorized));
+        let mut s = crate::space::Space::new();
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        s.metta_calculus(1_000_000);
+        let mut v = vec![];
+        s.dump_all_sexpr(&mut v).unwrap();
+        crate::space::set_factorized_count_override(None);
+        String::from_utf8(v).unwrap()
+    }
+
+    /// A CONNECTED multi-factor join routed through the count sink: the flybase P1 star
+    /// `(gene $x)(rel1 $x $y)(rel2 $x $z)`, full projection, no grouping. Unlike the Cartesian case
+    /// this exercises the connected GHD decomposition end to end. 1 gene * 2 rel1 * 3 rel2 = 6.
+    #[test]
+    fn factorized_count_sink_routes_connected_star() {
+        const PROG: &str = r#"
+(gene x)
+(rel1 x a) (rel1 x b)
+(rel2 x p) (rel2 x q) (rel2 x r)
+(exec 0 (, (gene $x) (rel1 $x $y) (rel2 $x $z)) (O (count (star $c) $c (out $x $y $z))))
+"#;
+        let enumerated = count_diff_run(PROG, false);
+        let factorized = count_diff_run(PROG, true);
+        assert!(enumerated.contains("(star 6)"), "1*2*3 star count:\n{enumerated}");
+        assert_eq!(factorized, enumerated, "connected-star factorized diverged from enumerate");
+    }
+
+    /// Differential oracle for the wired count sink: the same count exec, run with the factorized
+    /// fast path off (enumerate) and on, must leave a byte-identical space. The body
+    /// `(foo $x)(bar $y)(baz $z)` is a 3-way Cartesian counted with full projection and no grouping
+    /// -- the routable case (Alloy fac18). `(total $c)` emits the actual count so the value is
+    /// compared, not just presence; the `(all eighteen)`/`(all sixteen)` literal guards check the
+    /// count-equals-literal emit both ways. This is the gate that must be green before any default
+    /// flip of `MORK_FACTORIZED_COUNT`.
+    #[test]
+    fn factorized_count_sink_matches_enumerate() {
+        const PROG: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (total $c) $c (cux $z $y $x))))
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all eighteen) 18 (cux $z $y $x))))
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (all sixteen) 16 (cux $z $y $x))))
+"#;
+        let enumerated = count_diff_run(PROG, false);
+        let factorized = count_diff_run(PROG, true);
+        assert!(
+            enumerated.contains("(total 18)"),
+            "enumerate must emit the actual count:\n{enumerated}"
+        );
+        assert_eq!(
+            factorized, enumerated,
+            "factorized COUNT diverged from the enumerate CountSink"
+        );
+    }
+
+    /// Adversarial half of the corpus: the gate must DECLINE counts where match-count != distinct
+    /// output and fall back to enumerate, so the space stays byte-identical with the fast path on.
+    /// A grouped count `(grouped $g $c)` (a pattern variable in the template) is per-group, not a
+    /// scalar; a projected count `(only $x)` drops join variables so distinct-output < matches. If
+    /// the gate wrongly routed either, the factorized match-count (18) would replace the true
+    /// grouped/distinct counts and this differential would fail.
+    #[test]
+    fn factorized_count_gate_declines_grouped_and_projected() {
+        const PROG: &str = r#"
+(foo 1) (foo 2) (foo 3)
+(bar x) (bar y)
+(baz P) (baz Q) (baz R)
+(rel a m) (rel a n) (rel b m)
+(rel2 m p) (rel2 n q) (rel2 m r)
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (sound-total $c) $c (cux $z $y $x))))
+(exec 0 (, (rel $g $h) (rel2 $h $k)) (O (count (grouped $g $c) $c ($h $k))))
+(exec 0 (, (foo $x) (bar $y) (baz $z)) (O (count (projected $c) $c (only $x))))
+"#;
+        let enumerated = count_diff_run(PROG, false);
+        let factorized = count_diff_run(PROG, true);
+        // the sound one routes; distinct x is 3 not 18 (projection drops y,z); grouping is per g.
+        assert!(enumerated.contains("(sound-total 18)"), "sound count:\n{enumerated}");
+        assert!(enumerated.contains("(projected 3)"), "distinct x is 3:\n{enumerated}");
+        assert_eq!(
+            factorized, enumerated,
+            "the gate must decline grouped/projected counts and stay byte-identical"
+        );
+    }
+
     /// One sum-product engine, many semirings: COUNT (naturals), EXISTS (booleans), and a weighted
     /// SUM all run through `ghd_aggregate` with only the element type and per-fact weight changing.
     /// This is the FAQ generalization -- weighted joins and existence share the factorization.

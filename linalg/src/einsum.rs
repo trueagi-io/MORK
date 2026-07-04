@@ -242,31 +242,29 @@ pub struct Program {
     sparse_value_source: Vec<Option<usize>>,
 }
 
-/// Infer output shapes for an explicit einsum spec from input shapes.
-///
-/// This follows the same explicit `lhs->rhs` contract used by [`einsum`]:
-/// every input subscript labels one input axis, repeated labels must have the
-/// same dimension, and each output subscript must be bound by an input.
-pub fn infer_output_shapes(
-    spec_str: &str,
-    input_shapes: &[&[usize]],
-) -> Result<Vec<Vec<usize>>, InvalidSpec> {
-    let spec = parse_spec(spec_str, input_shapes.len())?;
+/// Resolve the dimension of every subscript slot across all inputs, validating
+/// that each input's rank matches its subscripts and that repeated labels
+/// agree. `ndim`/`dim` abstract how an input's shape is read, so [`compile`]
+/// (NDIndex inputs) and [`infer_output_shapes`] (plain shape slices) share the
+/// one resolution loop.
+fn resolve_slot_dims(
+    input_specs: &[Vec<u8>],
+    ndim: impl Fn(usize) -> usize,
+    dim: impl Fn(usize, usize) -> usize,
+) -> Result<[usize; 26], InvalidSpec> {
     let mut dims = [0usize; 26];
     let mut dim_set = [false; 26];
-
-    for (pi, inp_spec) in spec.inputs.iter().enumerate() {
-        let shape = input_shapes[pi];
-        if shape.len() != inp_spec.len() {
+    for (pi, inp_spec) in input_specs.iter().enumerate() {
+        if ndim(pi) != inp_spec.len() {
             return Err(InvalidSpec::InputNdimMismatch {
                 input: pi,
-                array_ndim: shape.len(),
+                array_ndim: ndim(pi),
                 spec_ndim: inp_spec.len(),
             });
         }
         for (pos, &s) in inp_spec.iter().enumerate() {
             let si = s as usize;
-            let d = shape[pos];
+            let d = dim(pi, pos);
             if dim_set[si] {
                 if dims[si] != d {
                     return Err(InvalidSpec::DimensionMismatch {
@@ -281,6 +279,24 @@ pub fn infer_output_shapes(
             }
         }
     }
+    Ok(dims)
+}
+
+/// Infer output shapes for an explicit einsum spec from input shapes.
+///
+/// This follows the same explicit `lhs->rhs` contract used by [`einsum`]:
+/// every input subscript labels one input axis, repeated labels must have the
+/// same dimension, and each output subscript must be bound by an input.
+pub fn infer_output_shapes(
+    spec_str: &str,
+    input_shapes: &[&[usize]],
+) -> Result<Vec<Vec<usize>>, InvalidSpec> {
+    let spec = parse_spec(spec_str, input_shapes.len())?;
+    let dims = resolve_slot_dims(
+        &spec.inputs,
+        |pi| input_shapes[pi].len(),
+        |pi, pos| input_shapes[pi][pos],
+    )?;
 
     Ok(spec
         .outputs
@@ -304,33 +320,11 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
     let spec = parse_spec(spec_str, inputs.len())?;
 
     // Validate dim consistency and capture per-slot dims.
-    let mut dims = [0usize; 26];
-    let mut dim_set = [false; 26];
-    for (pi, inp_spec) in spec.inputs.iter().enumerate() {
-        if inputs[pi].ndim() != inp_spec.len() {
-            return Err(InvalidSpec::InputNdimMismatch {
-                input: pi,
-                array_ndim: inputs[pi].ndim(),
-                spec_ndim: inp_spec.len(),
-            });
-        }
-        for (pos, &s) in inp_spec.iter().enumerate() {
-            let si = s as usize;
-            let d = inputs[pi].dim(pos);
-            if dim_set[si] {
-                if dims[si] != d {
-                    return Err(InvalidSpec::DimensionMismatch {
-                        index: slot_to_char(s),
-                        expected: dims[si],
-                        got: d,
-                    });
-                }
-            } else {
-                dims[si] = d;
-                dim_set[si] = true;
-            }
-        }
-    }
+    let dims = resolve_slot_dims(
+        &spec.inputs,
+        |pi| inputs[pi].ndim(),
+        |pi, pos| inputs[pi].dim(pos),
+    )?;
 
     // For each input exposing a sparse row view (any rank >= 2), record its
     // leading (compound-row) slots and trailing stored-column slot.

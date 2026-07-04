@@ -58,7 +58,8 @@ fn bench_flybase() {
 
     let add_gene_name_index_start = Instant::now();
     s.add_all_sexpr("(exec P0 (I (ACT whole_flybase (NKV $x gene_name $y))) (, (gene_name_of $y $x)))".as_bytes());
-    s.metta_calculus(0);
+    // one exec pending; budget 1 runs exactly it (budget 0 now runs nothing)
+    s.metta_calculus(1);
     println!("add gene name index took {} ms added {}", add_gene_name_index_start.elapsed().as_millis(), s.btm.val_count());
 
     // let all_related_to_gene_start = Instant::now();
@@ -5012,7 +5013,8 @@ fn large_statement() {
 )
     "#;
     s.add_all_sexpr(SPACE.as_bytes()).unwrap();
-    s.metta_calculus(0);
+    // one meta-exec pending; budget 1 unpacks exactly it (budget 0 now runs nothing)
+    s.metta_calculus(1);
 
     let mut v = vec![];
     s.dump_all_sexpr(&mut v);

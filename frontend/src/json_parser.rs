@@ -403,14 +403,14 @@ macro_rules! expect_fraction {
             b'0' ..= b'9' => {
                 if $mantissa < MAX_PRECISION {
                     $mantissa = $mantissa * 10 + (ch - b'0') as u64;
-                    $exponent -= 1;
+                    $exponent = $exponent.checked_sub(1).ok_or_else(|| Error::ExceededDepthLimit)?;
                 } else {
                     match $mantissa.checked_mul(10).and_then(|num| {
                         num.checked_add((ch - b'0') as u64)
                     }) {
                         Some(r) => {
                             $mantissa = r;
-                            $exponent -= 1;
+                            $exponent = $exponent.checked_sub(1).ok_or_else(|| Error::ExceededDepthLimit)?;
                         },
                         None => {}
                     }
@@ -430,14 +430,14 @@ macro_rules! expect_fraction {
                     $parser.bump();
                     if $mantissa < MAX_PRECISION {
                         $mantissa = $mantissa * 10 + (ch - b'0') as u64;
-                        $exponent -= 1;
+                        $exponent = $exponent.checked_sub(1).ok_or_else(|| Error::ExceededDepthLimit)?;
                     } else {
                         match $mantissa.checked_mul(10).and_then(|num| {
                             num.checked_add((ch - b'0') as u64)
                         }) {
                             Some(result) => {
                                 $mantissa = result;
-                                $exponent -= 1;
+                                $exponent = $exponent.checked_sub(1).ok_or_else(|| Error::ExceededDepthLimit)?;
                             },
                             None => {}
                         }
@@ -683,7 +683,7 @@ impl<'a> Parser<'a> {
     // encountered. This is pretty straight forward, I guess.
     fn expect_exponent(&mut self, exponent: &mut i16) -> Result<()> {
         let mut ch = expect_byte!(self);
-        let sign = match ch {
+        let sign: i32 = match ch {
             b'-' => {
                 ch = expect_byte!(self);
                 -1
@@ -696,7 +696,7 @@ impl<'a> Parser<'a> {
         };
 
         let mut e = match ch {
-            b'0' ..= b'9' => (ch - b'0') as i16,
+            b'0' ..= b'9' => i32::from(ch - b'0'),
             _ => return self.unexpected_character(),
         };
 
@@ -708,13 +708,20 @@ impl<'a> Parser<'a> {
             match ch {
                 b'0' ..= b'9' => {
                     self.bump();
-                    e = e.saturating_mul(10).saturating_add((ch - b'0') as i16);
+                    e = e
+                        .checked_mul(10)
+                        .and_then(|e| e.checked_add(i32::from(ch - b'0')))
+                        .ok_or_else(|| Error::ExceededDepthLimit)?;
                 },
                 _  => break
             }
         }
 
-        *exponent = exponent.saturating_add(e * sign);
+        let signed_exponent = e.checked_mul(sign).ok_or_else(|| Error::ExceededDepthLimit)?;
+        let combined = i32::from(*exponent)
+            .checked_add(signed_exponent)
+            .ok_or_else(|| Error::ExceededDepthLimit)?;
+        *exponent = i16::try_from(combined).map_err(|_| Error::ExceededDepthLimit)?;
         Ok(())
     }
 
@@ -771,7 +778,7 @@ impl<'a> Parser<'a> {
                     t.write_string(s);
                 },
                 b'0' => {
-                    let mut mantissa = 0; let mut exponent = 0;
+                    let mut mantissa = 0; let mut exponent: i16 = 0;
                     if !self.is_eof() {
                         let ch = self.read_byte();
                         allow_number_extensions!(self, mantissa, exponent, ch);
@@ -779,7 +786,7 @@ impl<'a> Parser<'a> {
                     t.write_number(false, mantissa, exponent);
                 },
                 b'1' ..= b'9' => {
-                    let mut _mantissa = 0; let mut exponent = 0;
+                    let mut _mantissa = 0; let mut exponent: i16 = 0;
                     expect_number!(self, _mantissa, exponent, ch);
                     t.write_number(false, _mantissa, exponent);
                 },
@@ -787,7 +794,7 @@ impl<'a> Parser<'a> {
                     let ch = expect_byte!(self);
                     match ch {
                         b'0' => {
-                            let mut mantissa = 0; let mut exponent = 0;
+                            let mut mantissa = 0; let mut exponent: i16 = 0;
                             if !self.is_eof() {
                                 let ch = self.read_byte();
                                 allow_number_extensions!(self, mantissa, exponent, ch);
@@ -795,7 +802,7 @@ impl<'a> Parser<'a> {
                             t.write_number(true, mantissa, exponent);
                         },
                         b'1' ..= b'9' => {
-                            let mut _mantissa = 0; let mut exponent = 0;
+                            let mut _mantissa = 0; let mut exponent: i16 = 0;
                             expect_number!(self, _mantissa, exponent, ch);
                             t.write_number(true, _mantissa, exponent);
                         },
@@ -924,7 +931,7 @@ impl<'a> Parser<'a> {
                     for si in t.write_string(s) { yield si }
                 },
                 b'0' => {
-                    let mut mantissa = 0; let mut exponent = 0;
+                    let mut mantissa = 0; let mut exponent: i16 = 0;
                     if !self.is_eof() {
                         let ch = self.read_byte();
                         allow_number_extensions!(self, mantissa, exponent, ch);
@@ -932,7 +939,7 @@ impl<'a> Parser<'a> {
                     for si in t.write_number(false, mantissa, exponent) { yield si }
                 },
                 b'1' ..= b'9' => {
-                    let mut _mantissa = 0; let mut exponent = 0;
+                    let mut _mantissa = 0; let mut exponent: i16 = 0;
                     expect_number!(self, _mantissa, exponent, ch);
                     for si in t.write_number(false, _mantissa, exponent) { yield si }
                 },
@@ -940,7 +947,7 @@ impl<'a> Parser<'a> {
                     let ch = expect_byte!(self);
                     match ch {
                         b'0' => {
-                            let mut mantissa = 0; let mut exponent = 0;
+                            let mut mantissa = 0; let mut exponent: i16 = 0;
                             if !self.is_eof() {
                                 let ch = self.read_byte();
                                 allow_number_extensions!(self, mantissa, exponent, ch);
@@ -948,7 +955,7 @@ impl<'a> Parser<'a> {
                             for si in t.write_number(true, mantissa, exponent) { yield si }
                         },
                         b'1' ..= b'9' => {
-                            let mut _mantissa = 0; let mut exponent = 0;
+                            let mut _mantissa = 0; let mut exponent: i16 = 0;
                             expect_number!(self, _mantissa, exponent, ch);
                             for si in t.write_number(true, _mantissa, exponent) { yield si }
                         },

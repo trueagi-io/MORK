@@ -1696,7 +1696,7 @@ impl Space {
         let mut done: usize = 0;
         const PREFIX: [u8; 6] = const { [item_byte(Tag::Arity(4)), item_byte(Tag::SymbolSize(4)), b'e', b'x', b'e', b'c' ] };
 
-        while {
+        while done < steps {
             let mut rz = self.btm.read_zipper_at_borrowed_path(&PREFIX[..]);
             if rz.to_next_val() {
                 // cannot be here `rz` conflicts potentially with zippers(rz.path())
@@ -1716,11 +1716,11 @@ impl Space {
                     self.btm.insert(&buf[..], ());
                     trace!(target: "interpret", "interpret took {} ns", start_str);
                 }
-                done < steps
             } else {
-                false
+                break;
             }
-        } { done += 1 }
+            done += 1;
+        }
 
         done
     }

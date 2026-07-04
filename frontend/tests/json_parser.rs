@@ -53,3 +53,20 @@ fn huge_fractional_exponent_reports_depth_limit() {
 
     assert_eq!(parse_error(&input), Error::ExceededDepthLimit);
 }
+
+fn parse_ok(input: &str) {
+    let mut parser = Parser::new(input);
+    let mut transcriber = EventTranscriber;
+    parser.parse(&mut transcriber).unwrap();
+}
+
+#[test]
+fn ordinary_large_exponents_still_parse() {
+    // The overflow guard must reject only genuine i16-range overflow, not
+    // numbers that merely look extreme.
+    parse_ok("1e300");
+    parse_ok("1.5e-300");
+    parse_ok("-2.25e100");
+    parse_ok("1e32000");
+    parse_ok("1e-32000");
+}

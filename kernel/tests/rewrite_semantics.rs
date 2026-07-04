@@ -203,3 +203,30 @@ fn rewrite_step_preserves_critical_alternatives_without_assuming_confluence() {
     assert!(choices.contains("(choice left)"), "{choices}");
     assert!(choices.contains("(choice right)"), "{choices}");
 }
+
+#[test]
+fn step_budget_is_exact_when_more_execs_are_pending() {
+    // Five independent execs pending; a budget of 3 must interpret exactly
+    // three (the old loop ran budget+1), leaving two scheduled. This is the
+    // divergence the exponential bench exposed: work must equal the report.
+    let mut s = Space::new();
+    let program = b"(src a)\n(src b)\n(src c)\n(src d)\n(src e)\n\
+(exec 0 (, (src a)) (, (done a)))\n\
+(exec 1 (, (src b)) (, (done b)))\n\
+(exec 2 (, (src c)) (, (done c)))\n\
+(exec 3 (, (src d)) (, (done d)))\n\
+(exec 4 (, (src e)) (, (done e)))\n";
+    s.add_all_sexpr(program).unwrap();
+
+    let n = s.metta_calculus(3);
+    assert_eq!(n, 3, "the return value must equal the budget when work remains");
+
+    let mut out = Vec::new();
+    s.dump_all_sexpr(&mut out).unwrap();
+    let dump = String::from_utf8_lossy(&out);
+    // line-anchored: the pending execs' templates also contain `(done ...)` text
+    let done_atoms = dump.lines().filter(|l| l.starts_with("(done ")).count();
+    let pending_execs = dump.lines().filter(|l| l.starts_with("(exec ")).count();
+    assert_eq!(done_atoms, 3, "exactly three rewrites ran:\n{dump}");
+    assert_eq!(pending_execs, 2, "two execs must remain pending:\n{dump}");
+}

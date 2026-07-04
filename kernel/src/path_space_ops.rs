@@ -1,11 +1,13 @@
 use pathmap::PathMap;
 
-/// Keeps accepted paths that have no accepted strict prefix.
+/// Keeps accepted paths that have no accepted strict prefix: the prefix-minimal
+/// antichain.
 ///
-/// This is a finite-pathset reference helper for the MORK `^space`
-/// subsumption operation. It intentionally materializes path lists, so it is a
-/// semantic target for future zipper/residual-DAG implementations rather than a
-/// hot-path kernel.
+/// This is a finite-pathset reference oracle. Its in-tree counterpart is
+/// `Space::prefix_subsumption`, whose self-representatives are exactly this
+/// antichain; the differential test below seals the two against each other. It
+/// intentionally materializes sorted path lists (the dumbest correct thing), so
+/// it is a semantic target for zipper implementations rather than a hot path.
 pub fn prefix_minimal_values(map: &PathMap<()>) -> PathMap<()> {
     let mut minimal = Vec::<Vec<u8>>::new();
     for path in sorted_paths(map) {
@@ -16,10 +18,9 @@ pub fn prefix_minimal_values(map: &PathMap<()>) -> PathMap<()> {
     paths_to_map(&minimal)
 }
 
-/// Keeps accepted paths that have no accepted strict extension.
-///
-/// This is a finite-pathset reference helper for the MORK `v space`
-/// instantiation operation.
+/// Keeps accepted paths that have no accepted strict extension: the
+/// prefix-maximal antichain (the dual of [`prefix_minimal_values`]). No in-tree
+/// operation computes this yet; the oracle pins the semantics ahead of one.
 pub fn prefix_maximal_values(map: &PathMap<()>) -> PathMap<()> {
     let paths = sorted_paths(map);
     let maximal = paths
@@ -35,12 +36,10 @@ pub fn prefix_maximal_values(map: &PathMap<()>) -> PathMap<()> {
     paths_to_map(&maximal)
 }
 
-/// Computes the prefix-maximal common-prefix witnesses between accepted paths.
-///
-/// The implementation is deliberately pairwise and finite. It mirrors the
-/// archive's `sharing` semantics as a compact reference oracle: collect the
-/// longest common prefix for every left/right path pair, then keep only the
-/// prefix-maximal witnesses.
+/// Computes the prefix-maximal common-prefix witnesses between accepted paths:
+/// the longest common prefix of every left/right pair, reduced to the
+/// prefix-maximal set. Deliberately pairwise and finite, a reference for a
+/// future shared-structure (trie-intersection-by-prefix) operation.
 pub fn shared_prefix_witnesses(left: &PathMap<()>, right: &PathMap<()>) -> PathMap<()> {
     let left_paths = sorted_paths(left);
     let right_paths = sorted_paths(right);
@@ -148,5 +147,65 @@ mod tests {
             paths(&shared_prefix_witnesses(&left, &right)),
             vec![Vec::<u8>::new()]
         );
+    }
+
+    /// Differential seal against the in-tree operation: the self-representatives
+    /// of `Space::prefix_subsumption` (out[i] == i) are exactly the
+    /// prefix-minimal antichain this oracle computes.
+    mod differential {
+        use super::*;
+        use crate::space::Space;
+
+        fn subsumption_representatives(paths: &[Vec<u8>]) -> Vec<Vec<u8>> {
+            let prefix_refs: Vec<&[u8]> = paths.iter().map(|p| p.as_slice()).collect();
+            let out = Space::prefix_subsumption(&prefix_refs);
+            let mut reps: Vec<Vec<u8>> = out
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &rep)| (rep == i).then(|| paths[i].clone()))
+                .collect();
+            reps.sort();
+            reps.dedup();
+            reps
+        }
+
+        fn assert_agrees(input: Paths) {
+            let source = map(input);
+            let oracle = paths(&prefix_minimal_values(&source));
+            let engine = subsumption_representatives(&sorted_paths(&source));
+            assert_eq!(oracle, engine, "antichain diverges on {input:?}");
+        }
+
+        #[test]
+        fn engine_representatives_match_the_oracle_on_fixed_shapes() {
+            assert_agrees(&[b"foo", b"foo/bar", b"foo/bar/baz", b"other"]);
+            assert_agrees(&[b"", b"a", b"ab"]);
+            assert_agrees(&[b"a", b"b", b"c"]);
+            assert_agrees(&[b"ab", b"abc", b"abd", b"ab"]);
+        }
+
+        #[test]
+        fn engine_representatives_match_the_oracle_on_random_pathsets() {
+            // deterministic LCG; no time or thread dependence
+            let mut state = 0x51ce_b00b_u64;
+            let mut next = move |bound: usize| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((state >> 33) as usize) % bound
+            };
+
+            for _ in 0..80 {
+                let n = 1 + next(8);
+                let mut input = PathMap::new();
+                for _ in 0..n {
+                    let len = next(4); // includes the empty path
+                    let path: Vec<u8> = (0..len).map(|_| next(3) as u8).collect();
+                    input.insert(&path[..], ());
+                }
+
+                let oracle = paths(&prefix_minimal_values(&input));
+                let engine = subsumption_representatives(&sorted_paths(&input));
+                assert_eq!(oracle, engine, "antichain diverges on random pathset");
+            }
+        }
     }
 }

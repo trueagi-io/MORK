@@ -1222,7 +1222,106 @@ impl Sink for Z3Sink {
 }
 
 
+// (egraph <term | (= a b)>): a grounded equality-saturation sink. Accumulates the
+// matched terms and equalities into a scoped e-graph, runs congruence closure at
+// finalize, and writes each member's minimum-cost extracted form back as a
+// (canon <member> <representative>) atom, which ordinary queries then read. This is
+// Adam's "e-graphs: yes, as a sink/source" (MORKification 2026-03-02): a grounded
+// mechanism behind the IO machinery, modeled on the ACT/Remove write-back sinks.
+// Reuses egraph.rs (union-find + egg-style rebuild + cheapest extraction) and the
+// term-identity sidecar (interning); nothing is reimplemented. The pattern is
+// relational e-matching / egglog (Zhang et al., POPL 2022 / PLDI 2023): the pattern
+// body is the conjunctive query, this sink is the equality-saturation half.
+#[cfg(feature = "egraph")]
+static CANON_PREFIX: [u8; 7] = [
+    item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(5)), b'c', b'a', b'n', b'o', b'n',
+];
+
+#[cfg(feature = "egraph")]
+pub struct EGraphSink {
+    e: Expr,
+    egraph: crate::egraph::EGraph,
+    sidecar: crate::term_identity::TermIdentitySidecar,
+    members: Vec<crate::term_identity::TermId>,
+}
+
+#[cfg(feature = "egraph")]
+impl EGraphSink {
+    // A fact is an equality iff it is (= a b): a 3-arity application whose relation
+    // head (first child) is the one-byte symbol '='.
+    fn is_equality(
+        record: &crate::term_identity::TermRecord,
+        sidecar: &crate::term_identity::TermIdentitySidecar,
+    ) -> bool {
+        use crate::term_identity::TermKind;
+        matches!(record.kind, TermKind::Application { arity: 3 })
+            && record.children().first().is_some_and(|&head| {
+                sidecar
+                    .get_term(head)
+                    .is_some_and(|h| h.encoded() == [item_byte(Tag::SymbolSize(1)), b'='])
+            })
+    }
+}
+
+#[cfg(feature = "egraph")]
+impl Sink for EGraphSink {
+    fn new(e: Expr) -> Self {
+        EGraphSink {
+            e,
+            egraph: crate::egraph::EGraph::new(),
+            sidecar: crate::term_identity::TermIdentitySidecar::new(),
+            members: Vec::new(),
+        }
+    }
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::BTM(&CANON_PREFIX[..]))
+    }
+    fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        // strip the "(egraph " head: Arity(2) [1] + SymbolSize(6) [1] + "egraph" [6].
+        if path.len() < 8 { return; }
+        let fact = &path[8..];
+        let Ok(term) = self.sidecar.insert_term(fact) else { return; };
+        let (is_eq, kids) = {
+            let Some(record) = self.sidecar.get_term(term) else { return; };
+            (Self::is_equality(record, &self.sidecar), record.children().to_vec())
+        };
+        if is_eq && kids.len() == 3 {
+            self.egraph.add_equivalence(kids[1], kids[2], &self.sidecar);
+            self.members.push(kids[1]);
+            self.members.push(kids[2]);
+        } else {
+            self.egraph.add_term(term, &self.sidecar);
+            self.members.push(term);
+        }
+    }
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+        self.egraph.rebuild();
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+        let mut changed = false;
+        let members = std::mem::take(&mut self.members);
+        let mut written: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+        for member in members {
+            let class = self.egraph.add_term(member, &self.sidecar);
+            let Some(rep) = self.egraph.extract_cheapest(class, &mut self.sidecar) else { continue; };
+            let member_bytes = self.sidecar.get_term(member).map(|t| t.encoded().to_vec());
+            let rep_bytes = self.sidecar.get_term(rep).map(|t| t.encoded().to_vec());
+            let (Some(member_bytes), Some(rep_bytes)) = (member_bytes, rep_bytes) else { continue; };
+            let mut args = Vec::with_capacity(member_bytes.len() + rep_bytes.len());
+            args.extend_from_slice(&member_bytes);
+            args.extend_from_slice(&rep_bytes);
+            if !written.insert(args.clone()) { continue; }
+            wz.reset();
+            wz.move_to_path(&args);
+            changed |= wz.set_val(()).is_none();
+        }
+        wz.reset();
+        changed
+    }
+}
+
 pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadTailSink<true>), TailSink(HeadTailSink<false>), CountSink(CountSink), HashSink(HashSink), SumSink(SumSink), AndSink(AndSink), ACTSink(ACTSink),
+    #[cfg(feature = "egraph")]
+    EGraphSink(EGraphSink),
     #[cfg(feature = "wasm")]
     WASMSink(WASMSink),
     #[cfg(feature = "grounding")]
@@ -1305,6 +1404,12 @@ impl Sink for ASink {
             return ASink::Z3Sink(Z3Sink::new(e));
             #[cfg(not(feature = "z3"))]
             panic!("MORK was not built with the z3 feature, yet trying to call {:?}", e);
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(2)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(6)) &&
+            *e.ptr.offset(2) == b'e' && *e.ptr.offset(3) == b'g' && *e.ptr.offset(4) == b'r' && *e.ptr.offset(5) == b'a' && *e.ptr.offset(6) == b'p' && *e.ptr.offset(7) == b'h' } {
+            #[cfg(feature = "egraph")]
+            return ASink::EGraphSink(EGraphSink::new(e));
+            #[cfg(not(feature = "egraph"))]
+            panic!("MORK was not built with the egraph feature, yet trying to call {:?}", e);
         } else {
             panic!("unrecognized sink")
         }
@@ -1335,6 +1440,8 @@ impl Sink for ASink {
                 ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMaxSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FProdSink(s) => { for i in s.request().into_iter() { yield i } }
+                #[cfg(feature = "egraph")]
+                ASink::EGraphSink(s) => { for i in s.request().into_iter() { yield i } }
             }
         }
     }
@@ -1362,6 +1469,8 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.sink(it, path) }
             ASink::FMaxSink(s) => { s.sink(it, path) }
             ASink::FProdSink(s) => { s.sink(it, path) }
+            #[cfg(feature = "egraph")]
+            ASink::EGraphSink(s) => { s.sink(it, path) }
         }
     }
 
@@ -1389,6 +1498,42 @@ impl Sink for ASink {
             ASink::FMinSink(s) => { s.finalize(it) }
             ASink::FMaxSink(s) => { s.finalize(it) }
             ASink::FProdSink(s) => { s.finalize(it) }
+            #[cfg(feature = "egraph")]
+            ASink::EGraphSink(s) => { s.finalize(it) }
         }
+    }
+}
+
+#[cfg(all(test, feature = "egraph"))]
+mod egraph_sink_tests {
+    use crate::space::Space;
+
+    fn run(program: &[u8]) -> String {
+        let mut s = Space::new();
+        s.add_all_sexpr(program).unwrap();
+        s.metta_calculus(100);
+        let mut out = Vec::new();
+        s.dump_all_sexpr(&mut out).unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    // (= a b), (= b c) saturate to one class {a,b,c}; the cheapest term (ties break
+    // on min bytes) is `a`, written back as (canon <member> a) for every member.
+    // The (O ...) template functor routes the factor through the sink dispatch.
+    #[test]
+    fn egraph_sink_saturates_and_writes_canonical_forms() {
+        let dump = run(b"(eq a b)\n(eq b c)\n(exec 0 (, (eq $x $y)) (O (egraph (= $x $y))))\n");
+        for m in ["a", "b", "c"] {
+            assert!(dump.contains(&format!("(canon {m} a)")), "missing (canon {m} a):\n{dump}");
+        }
+    }
+
+    // Congruence read-through: (= a b) forces (f a) == (f b), which is never stated.
+    // Feeding the equality and both terms into one e-graph, both extract to (f a).
+    #[test]
+    fn egraph_sink_reads_through_congruence() {
+        let dump = run(b"(fact (= a b))\n(fact (f a))\n(fact (f b))\n(exec 0 (, (fact $x)) (O (egraph $x)))\n");
+        assert!(dump.contains("(canon (f a) (f a))"), "no rep for (f a):\n{dump}");
+        assert!(dump.contains("(canon (f b) (f a))"), "congruence not read through:\n{dump}");
     }
 }

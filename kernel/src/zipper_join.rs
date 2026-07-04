@@ -4234,6 +4234,7 @@ mod tests {
     /// DECLINE -- the whole space must be byte-identical with the factorized fast path on vs off. Any
     /// divergence is a gate-soundness or factorization bug. Deterministic LCG per seed (no Date/rand).
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_aggregate_fuzz_differential() {
         let step = |st: &mut u64| -> u64 {
             *st = st
@@ -4304,6 +4305,7 @@ mod tests {
     /// `(gene $x)(rel1 $x $y)(rel2 $x $z)`, full projection, no grouping. Unlike the Cartesian case
     /// this exercises the connected GHD decomposition end to end. 1 gene * 2 rel1 * 3 rel2 = 6.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_count_sink_routes_connected_star() {
         const PROG: &str = r#"
 (gene x)
@@ -4322,6 +4324,7 @@ mod tests {
     /// dangles (no rel2 partner) so the semi-join reduction drops it -- distinct surviving x sums to
     /// 60. `(total $c)` emits the value; the literal guards check emit-iff-sum-equals both ways.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_sum_sink_matches_enumerate() {
         const PROG: &str = r#"
 (gene g1) (rel1 g1 10) (rel1 g1 20) (rel1 g1 30) (rel2 g1 1) (rel2 g1 2)
@@ -4344,6 +4347,7 @@ mod tests {
     /// dangling values, which a wrong routing would include. MIN/MAX are idempotent so distinct vs
     /// multiplicity does not matter, and exact so the f64 to_string is byte-identical.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_minmax_sink_matches_enumerate() {
         const PROG: &str = r#"
 (gene g1) (rel1 g1 10) (rel1 g1 20) (rel1 g1 30) (rel2 g1 1) (rel2 g1 2)
@@ -4362,6 +4366,7 @@ mod tests {
     /// {6,7,2} survive; g2's x=9 dangles (no rel2 partner), so a wrong routing that folded 9 into the
     /// AND would diverge. AND is associative+commutative+idempotent, so factorized == enumerate.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_and_sink_matches_enumerate() {
         const PROG: &str = r#"
 (gene g1) (rel1 g1 6) (rel1 g1 7) (rel1 g1 2) (rel2 g1 1)
@@ -4379,6 +4384,7 @@ mod tests {
     /// the proof it routes. Distinct x = {0..k-1}, sum = k*(k-1)/2.
     #[test]
     #[ignore = "timing: the wired SUM sink, factorized vs enumerate through the exec"]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_sum_sink_win_scales() {
         for k in [50usize, 100, 200, 400, 800] {
             let mut prog = String::from("(gene g)\n");
@@ -4414,6 +4420,7 @@ mod tests {
     /// not route, both would be O(k^2) and the speedup would stay ~1x. Byte-identical each k.
     #[test]
     #[ignore = "timing: the wired count sink, factorized vs enumerate through the exec"]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_count_sink_win_scales() {
         for k in [50usize, 100, 200, 400, 800] {
             let mut prog = String::from("(gene x)\n");
@@ -4450,6 +4457,7 @@ mod tests {
     /// count-equals-literal emit both ways. This is the gate that must be green before any default
     /// flip of `MORK_FACTORIZED_AGGREGATE`.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_count_sink_matches_enumerate() {
         const PROG: &str = r#"
 (foo 1) (foo 2) (foo 3)
@@ -4478,6 +4486,7 @@ mod tests {
     /// the gate wrongly routed either, the factorized match-count (18) would replace the true
     /// grouped/distinct counts and this differential would fail.
     #[test]
+    #[cfg(feature = "factorized_aggregate")]
     fn factorized_count_gate_declines_grouped_and_projected() {
         const PROG: &str = r#"
 (foo 1) (foo 2) (foo 3)

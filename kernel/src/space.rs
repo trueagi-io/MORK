@@ -88,6 +88,10 @@ fn factorized_aggregate_gate(
     sinks: &[crate::sinks::ASink],
     templates: &[Expr],
 ) -> Option<FactorizedAgg> {
+    // experimental routing: compiled out unless the factorized_aggregate feature is on
+    if !cfg!(feature = "factorized_aggregate") {
+        return None;
+    }
     if !factorized_aggregate_enabled() || sinks.len() != 1 {
         return None;
     }

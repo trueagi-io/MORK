@@ -123,6 +123,7 @@ fn bench_flybase() {
 /// O(k) inputs. COUNT(join) = k*k and SUM(DISTINCT x) = 0+..+(k-1). Each aggregate runs both ways
 /// (factorized off = the enumerate sink, on = routed), asserts byte-identical, and reports the
 /// speedup -- O(k) factorized vs O(k*k) enumerate.
+#[cfg(feature = "factorized_aggregate")]
 fn bench_aggregate(k: usize) {
     let mut prog = String::from("(gene g)\n");
     for i in 0..k { prog.push_str(&format!("(rel1 g {i})\n")); }
@@ -6168,7 +6169,9 @@ fn main() {
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
             if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states", "bfc"]) }
-            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc", "aggregate"]) }
+            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc"]);
+                #[cfg(feature = "factorized_aggregate")]
+                selected.extend(&["aggregate"]); }
             if selected.remove("sinks") { selected.extend(&["taxi_lts", "odd_even_sort"]) }
 
             for b in selected {
@@ -6185,6 +6188,7 @@ fn main() {
                     "logic_query" => { bench_logic_query() }
                     "logic_query_act" => { bench_logic_query_act() }
                     "flybase" => { bench_flybase() }
+                    #[cfg(feature = "factorized_aggregate")]
                     "aggregate" => { bench_aggregate(800) }
                     "tile_puzzle_states" => { bench_tile_puzzle_states() }
                     "taxi_lts" => { bench_taxi_lts() }

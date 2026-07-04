@@ -1017,6 +1017,7 @@ impl Space {
     /// dispatches: interpreted sources and sinks and the pattern-directed dumps keep the stock
     /// path and its enumeration order.
     pub fn query_multi_dispatch<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        #[cfg(feature = "leapfrog")]
         if crate::zipper_join::leapfrog_dispatch_enabled() {
             if let Some(touched) = crate::zipper_join::query_multi_leapfrog(btm, pat_expr, &mut effect) {
                 return touched;

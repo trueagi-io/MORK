@@ -33,7 +33,11 @@ neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]
 z3 = []
+leapfrog = [] # experimental: route flat conjunctive exec bodies to the WCO leapfrog join
 no_search = []
 grounding = []
 specialize_io = []
 periodic_merkleize = []
+[[example]]
+name = "wco_leapfrog"
+required-features = ["leapfrog"]

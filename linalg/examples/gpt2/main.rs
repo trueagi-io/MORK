@@ -100,16 +100,20 @@ fn e(spec: &str, inputs: &[&Dense<f32>], out_shape: Vec<usize>) -> Dense<f32> {
 // Elementwise ops the einsum VM doesn't cover (all over flat storage)
 // ─────────────────────────────────────────────────────────────────────────
 
+/// Build a new tensor by applying `f` elementwise (shape preserved).
+fn map(x: &Dense<f32>, f: impl Fn(f32) -> f32) -> Dense<f32> {
+    Dense { data: x.data.iter().map(|&v| f(v)).collect(), shape: x.shape.clone() }
+}
+
 /// Row-vector RMSNorm: `x / sqrt(mean(x²) + eps)`. No learned gain.
 fn rmsnorm(x: &Dense<f32>, eps: f32) -> Dense<f32> {
-    let n = x.data.len();
-    let ms = x.data.iter().map(|&v| v * v).sum::<f32>() / n as f32;
+    let ms = x.data.iter().map(|&v| v * v).sum::<f32>() / x.data.len() as f32;
     let inv = 1.0 / (ms + eps).sqrt();
-    Dense { data: x.data.iter().map(|&v| v * inv).collect(), shape: x.shape.clone() }
+    map(x, |v| v * inv)
 }
 
 fn relu(x: &Dense<f32>) -> Dense<f32> {
-    Dense { data: x.data.iter().map(|&v| v.max(0.0)).collect(), shape: x.shape.clone() }
+    map(x, |v| v.max(0.0))
 }
 
 fn add(a: &Dense<f32>, b: &Dense<f32>) -> Dense<f32> {
@@ -121,7 +125,7 @@ fn add(a: &Dense<f32>, b: &Dense<f32>) -> Dense<f32> {
 }
 
 fn scale(x: &Dense<f32>, s: f32) -> Dense<f32> {
-    Dense { data: x.data.iter().map(|&v| v * s).collect(), shape: x.shape.clone() }
+    map(x, |v| v * s)
 }
 
 /// Softmax over the last axis (each contiguous run of `last` elements).

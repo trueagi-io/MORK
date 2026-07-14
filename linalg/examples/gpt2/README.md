@@ -1,10 +1,15 @@
 # GPT-2 on the `linalg` einsum VM
 
 A small GPT-2-shaped decoder-only transformer whose every matmul / contraction
-runs through `linalg`'s einsum VM. It exists to show that a full transformer
-forward pass — attention, KV cache, MLP, LM head — expresses entirely in
-einsum, and to check the Rust implementation against a Python reference
-bit-for-bit (modulo float summation order).
+runs through `linalg`'s einsum VM. It exists to show that the *linear algebra*
+of a full transformer forward pass — the QKV / attention / output / MLP / LM-head
+contractions — expresses as einsum, and to check the Rust implementation against
+a Python reference bit-for-bit (modulo float summation order).
+
+The einsum VM handles only the contractions. The elementwise and reduction
+steps — RMSNorm, ReLU, softmax, residual adds, the `1/sqrt(head_dim)` scale —
+are *not* einsum; they're plain loops over the flat `Dense<f32>` storage (see
+[Architecture](#architecture) for which spec each contraction uses).
 
 The same architecture is written **three times against one set of einsum specs**:
 

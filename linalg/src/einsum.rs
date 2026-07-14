@@ -32,11 +32,120 @@
 //!
 //! Indices in inputs but missing from the output are contracted (summed
 //! over). All output indices must appear in at least one input.
+//!
+//! # Generalized reductions
+//!
+//! [`einsum_reduce`] generalizes the contraction to an arbitrary reduction
+//! ⊕ ([`Reduce`]) over an elementwise combination ⊗ ([`Combine`]) — einsum
+//! over a commutative semiring:
+//!
+//! ```text
+//! out[free…] = ⊕ over contracted…  ( in₀[…] ⊗ in₁[…] ⊗ … )
+//! ```
+//!
+//! - `einsum_reduce("j,ikq,kq->ijk", Reduce::Max, Combine::Mul, …)` computes
+//!   `A[i,j,k] = max over q of B[j] * C[i,k,q] * D[k,q]`.
+//! - `einsum_reduce("ij,jk->ik", Reduce::Min, Combine::Add, …)` is min-plus
+//!   (tropical) matrix multiplication — one all-pairs-shortest-path
+//!   relaxation step.
+//! - `Reduce::Sum` + `Combine::Mul` is plain einsum.
+//!
+//! Unlike [`einsum`] (which accumulates into caller-zeroed outputs), the
+//! `einsum_reduce` wrappers first fill every output with the reduction
+//! identity ([`Reduce::identity`]) — overwrite semantics. An empty
+//! contraction range therefore yields the identity (e.g. `-∞` for
+//! `Reduce::Max` over `f32`). To accumulate into existing output contents
+//! instead, use [`compile_reduce`] + [`Program::exec`] with outputs
+//! pre-filled however you like.
+//!
+//! Sparse row iteration (skipping structural zeros) is only used when a
+//! structurally-missing operand annihilates its whole contribution to the
+//! reduce identity — true precisely for (`Sum`, `Mul`), where a zero factor
+//! makes the product 0 and adding 0 is a no-op. For every other op pair a
+//! structural zero is an actual `0` value that must still compete in the
+//! reduction (e.g. `max(…, 0)`), so sparse inputs are iterated densely via
+//! `get_opt` (correct, but without the sparse speedup).
+//!
+//! ---
+//!
+//! <small>The generalized-reduction design — the operator set, the
+//! per-operator identity table, and the overwrite-with-identity output
+//! semantics — is modelled after the Julia library
+//! [Tullio.jl](https://github.com/mcabbott/Tullio.jl).</small>
 
 use std::fmt;
-use std::ops::{Add, AddAssign, Mul};
 
-use crate::tensor::{NDIndex, Sparse2D};
+use crate::tensor::{NDIndex, Scalar, Sparse2D};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reduction / combination operators
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Reduction operator ⊕: how contributions from contracted index tuples are
+/// folded into an output element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reduce {
+    Sum,
+    Prod,
+    Max,
+    Min,
+}
+
+impl Reduce {
+    /// The identity element of the operator: `apply(identity(), v) == v`.
+    ///
+    /// Outputs are pre-filled with this by the [`einsum_reduce`] wrappers,
+    /// and it is the result of reducing over an empty range:
+    /// `Sum → 0`, `Prod → 1`, `Max → -∞`/`T::MIN`, `Min → +∞`/`T::MAX`.
+    pub fn identity<T: Scalar>(self) -> T {
+        match self {
+            Reduce::Sum => T::ZERO,
+            Reduce::Prod => T::ONE,
+            Reduce::Max => T::LEAST,
+            Reduce::Min => T::GREATEST,
+        }
+    }
+
+    /// Fold one contribution into the accumulator.
+    ///
+    /// `Max`/`Min` are comparison-based; their behaviour when a float
+    /// operand is NaN is unspecified.
+    #[inline]
+    pub fn apply<T: Scalar>(self, acc: T, v: T) -> T {
+        match self {
+            Reduce::Sum => acc + v,
+            Reduce::Prod => acc * v,
+            Reduce::Max => if v > acc { v } else { acc },
+            Reduce::Min => if v < acc { v } else { acc },
+        }
+    }
+}
+
+/// Elementwise combination ⊗: how the input operands at one index tuple are
+/// merged into a single contribution (left-to-right in input order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Combine {
+    Mul,
+    Add,
+    Min,
+    Max,
+}
+
+impl Combine {
+    /// Combine the next operand into the partial contribution.
+    ///
+    /// `Max`/`Min` are comparison-based; their behaviour when a float
+    /// operand is NaN is unspecified.
+    #[inline]
+    pub fn apply<T: Scalar>(self, a: T, b: T) -> T {
+        match self {
+            Combine::Mul => a * b,
+            Combine::Add => a + b,
+            Combine::Min => if b < a { b } else { a },
+            Combine::Max => if b > a { b } else { a },
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Error type
@@ -231,7 +340,8 @@ enum VmOp {
     MulAcc,
 }
 
-/// Compiled einsum program. Construct via [`compile`], execute via [`Program::exec`].
+/// Compiled einsum program. Construct via [`compile`] or [`compile_reduce`],
+/// execute via [`Program::exec`].
 pub struct Program {
     ops: Vec<VmOp>,
     input_patterns: Vec<Vec<u8>>,
@@ -240,6 +350,13 @@ pub struct Program {
     /// covers both axes — `MulAcc` reads the cached value instead of
     /// re-querying `get_opt`.
     sparse_value_source: Vec<Option<usize>>,
+    reduce: Reduce,
+    combine: Combine,
+    /// True iff a structurally-missing operand annihilates its whole
+    /// contribution to the reduce identity, so the tuple can be skipped
+    /// outright — precisely the (Sum, Mul) semiring. Also gates whether
+    /// the scheduler emitted `SparseRowLoop`s.
+    skip_missing: bool,
 }
 
 /// Compile an einsum spec into a [`Program`] for the given input shapes.
@@ -254,7 +371,20 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
     spec_str: &str,
     inputs: &[&In],
 ) -> Result<Program, InvalidSpec> {
+    compile_reduce::<T, In>(spec_str, Reduce::Sum, Combine::Mul, inputs)
+}
+
+/// [`compile`] generalized to an arbitrary ([`Reduce`], [`Combine`])
+/// semiring. See the module docs for the semantics and the sparse-input
+/// caveat: only (`Sum`, `Mul`) programs use sparse row iteration.
+pub fn compile_reduce<T, In: NDIndex<T> + ?Sized>(
+    spec_str: &str,
+    reduce: Reduce,
+    combine: Combine,
+    inputs: &[&In],
+) -> Result<Program, InvalidSpec> {
     let spec = parse_spec(spec_str, inputs.len())?;
+    let skip_missing = reduce == Reduce::Sum && combine == Combine::Mul;
 
     // Validate dim consistency and capture per-slot dims.
     let mut dims = [0usize; 26];
@@ -286,13 +416,16 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
     }
 
     // For each input exposing a sparse row view (any rank >= 2), record its
-    // leading (compound-row) slots and trailing stored-column slot.
+    // leading (compound-row) slots and trailing stored-column slot. Sparse
+    // loops skip structural zeros, which is only sound under (Sum, Mul) —
+    // for any other semiring a missing entry is a real 0 that must still
+    // compete in the reduction, so we iterate those inputs densely.
     let sparse_axes: Vec<Option<(Vec<u8>, u8)>> = spec
         .inputs
         .iter()
         .zip(inputs.iter())
         .map(|(inp_spec, arr)| {
-            if inp_spec.len() >= 2 && arr.as_sparse_2d().is_some() {
+            if skip_missing && inp_spec.len() >= 2 && arr.as_sparse_2d().is_some() {
                 let n = inp_spec.len();
                 Some((inp_spec[..n - 1].to_vec(), inp_spec[n - 1]))
             } else {
@@ -487,6 +620,9 @@ pub fn compile<T, In: NDIndex<T> + ?Sized>(
         input_patterns: spec.inputs.clone(),
         output_patterns: spec.outputs.clone(),
         sparse_value_source,
+        reduce,
+        combine,
+        skip_missing,
     })
 }
 
@@ -519,13 +655,11 @@ impl Program {
     /// `SparseRowLoop` always goes through `as_sparse_2d()`, which returns
     /// a `&dyn Sparse2D<T>` trait object — so the per-iteration `row_nnz`
     /// and `row_entry` calls remain vtable dispatched in both cases.
-    pub fn exec<T, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+    pub fn exec<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
         &self,
         inputs: &[&In],
         outs: &mut [&mut Out],
-    ) where
-        T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-    {
+    ) {
         // Cache one sparse view per input up front so the inner loop only
         // pays one vtable per row_entry call (not two).
         let sparse_views: Vec<Option<&dyn Sparse2D<T>>> =
@@ -547,7 +681,7 @@ impl Program {
         );
     }
 
-    fn exec_at<T, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+    fn exec_at<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
         &self,
         mut pc: usize,
         vals: &mut [usize; 26],
@@ -557,10 +691,7 @@ impl Program {
         inputs: &[&In],
         sparse_views: &[Option<&dyn Sparse2D<T>>],
         outs: &mut [&mut Out],
-    ) -> usize
-    where
-        T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-    {
+    ) -> usize {
         let ops = &self.ops;
         while pc < ops.len() {
             match &ops[pc] {
@@ -628,7 +759,7 @@ impl Program {
                 VmOp::LoopEnd => return pc + 1,
                 VmOp::AccStart { acc_slot, acc_out_pos, dim } => {
                     *acc_state = Some(AccState {
-                        acc: vec![T::default(); *dim],
+                        acc: vec![self.reduce.identity(); *dim],
                         touched: vec![false; *dim],
                         nz_cols: Vec::new(),
                         acc_slot: *acc_slot,
@@ -649,13 +780,14 @@ impl Program {
                             // outside the accumulator's scope (e.g. `acd->cd`
                             // where `a` is outermost and the acc is over `d`),
                             // we visit each output element once per outer
-                            // contracted tuple and the contributions must sum.
-                            // Output is pre-zeroed by convention, so the first
-                            // flush adds to 0 and we get acc; later flushes
-                            // accumulate.
+                            // contracted tuple and the contributions must be
+                            // reduced together. Output is pre-filled with the
+                            // reduce identity by convention, so the first
+                            // flush lands on the identity and later flushes
+                            // keep reducing.
                             let cur = outs[0].get(&buf[..len]);
-                            outs[0].set(&buf[..len], cur + st.acc[j]);
-                            st.acc[j] = T::default();
+                            outs[0].set(&buf[..len], self.reduce.apply(cur, st.acc[j]));
+                            st.acc[j] = self.reduce.identity();
                             st.touched[j] = false;
                         }
                         st.nz_cols.clear();
@@ -672,7 +804,7 @@ impl Program {
     }
 
     #[inline]
-    fn mul_acc<T, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+    fn mul_acc<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
         &self,
         vals: &[usize; 26],
         buf: &mut [usize; 26],
@@ -680,10 +812,8 @@ impl Program {
         acc_state: &mut Option<AccState<T>>,
         inputs: &[&In],
         outs: &mut [&mut Out],
-    ) where
-        T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-    {
-        let mut product = None::<T>;
+    ) {
+        let mut contrib = None::<T>;
         for (i, pattern) in self.input_patterns.iter().enumerate() {
             let v = if self.sparse_value_source[i].is_some() {
                 Some(sparse_vals[i])
@@ -694,27 +824,28 @@ impl Program {
                 }
                 inputs[i].get_opt(&buf[..len])
             };
-            match v {
-                Some(v) => {
-                    product = Some(match product {
-                        Some(p) => p * v,
-                        None => v,
-                    });
-                }
-                None => {
-                    product = None;
-                    break;
-                }
-            }
+            let v = match v {
+                Some(v) => v,
+                // Structurally missing. Under (Sum, Mul) the whole tuple's
+                // contribution collapses to the reduce identity — skip it.
+                // Under any other semiring it's an actual 0 value that must
+                // still compete in the reduction (e.g. max(…, 0)).
+                None if self.skip_missing => return,
+                None => T::ZERO,
+            };
+            contrib = Some(match contrib {
+                Some(p) => self.combine.apply(p, v),
+                None => v,
+            });
         }
-        if let Some(p) = product {
+        if let Some(p) = contrib {
             if let Some(st) = acc_state {
                 let idx = vals[st.acc_slot as usize];
                 if !st.touched[idx] {
                     st.touched[idx] = true;
                     st.nz_cols.push(idx);
                 }
-                st.acc[idx] += p;
+                st.acc[idx] = self.reduce.apply(st.acc[idx], p);
             } else {
                 for (oi, pattern) in self.output_patterns.iter().enumerate() {
                     let len = pattern.len();
@@ -722,7 +853,7 @@ impl Program {
                         buf[i] = vals[s as usize];
                     }
                     let cur = outs[oi].get(&buf[..len]);
-                    outs[oi].set(&buf[..len], cur + p);
+                    outs[oi].set(&buf[..len], self.reduce.apply(cur, p));
                 }
             }
         }
@@ -767,15 +898,94 @@ impl Program {
 /// assert_eq!(c.get(&[1, 1]), 154.0);
 /// # }
 /// ```
-pub fn einsum<T>(
+pub fn einsum<T: Scalar>(
     spec: &str,
     inputs: &[&dyn NDIndex<T>],
     outs: &mut [&mut dyn NDIndex<T>],
-) -> Result<(), InvalidSpec>
-where
-    T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-{
+) -> Result<(), InvalidSpec> {
     einsum_dyn::<T, dyn NDIndex<T>, dyn NDIndex<T>>(spec, inputs, outs)
+}
+
+/// Generalized einsum over a ([`Reduce`], [`Combine`]) semiring —
+/// dyn-dispatch entry point, mirroring [`einsum`].
+///
+/// Every output is first **filled with the reduction identity**
+/// ([`Reduce::identity`]), then each contribution
+/// `in₀[…] ⊗ in₁[…] ⊗ …` from the contracted index space is folded in
+/// with ⊕ — overwrite semantics; an empty contraction leaves the
+/// identity behind.
+///
+/// # Example: max-product and min-plus (requires the `dense` feature)
+///
+/// ```
+/// # #[cfg(not(feature = "dense"))] fn main() {}
+/// # #[cfg(feature = "dense")] fn main() {
+/// use linalg::einsum::{einsum_reduce, Reduce, Combine};
+/// use linalg::tensor::NDIndex;
+/// use linalg::dense::Dense;
+///
+/// let mut a = Dense::<f32>::zeros(vec![2, 2]);
+/// a.fill_from(&[1., -2., 3., 4.]);
+/// let mut b = Dense::<f32>::zeros(vec![2, 2]);
+/// b.fill_from(&[5., 6., -7., 8.]);
+/// let mut c = Dense::<f32>::zeros(vec![2, 2]);
+///
+/// // c[a][c] = max_b a[a][b] * b[b][c]
+/// einsum_reduce::<f32>(
+///     "ab,bc->ac",
+///     Reduce::Max,
+///     Combine::Mul,
+///     &[&a as &dyn NDIndex<f32>, &b],
+///     &mut [&mut c as &mut dyn NDIndex<f32>],
+/// ).unwrap();
+/// assert_eq!(c.get(&[0, 0]), 14.0); // max(1·5, -2·-7)
+///
+/// // Min-plus (tropical): one shortest-path relaxation step.
+/// let mut d = Dense::<f32>::zeros(vec![2, 2]);
+/// einsum_reduce::<f32>(
+///     "ab,bc->ac",
+///     Reduce::Min,
+///     Combine::Add,
+///     &[&a as &dyn NDIndex<f32>, &b],
+///     &mut [&mut d as &mut dyn NDIndex<f32>],
+/// ).unwrap();
+/// assert_eq!(d.get(&[0, 0]), -9.0); // min(1+5, -2+-7)
+/// # }
+/// ```
+pub fn einsum_reduce<T: Scalar>(
+    spec: &str,
+    reduce: Reduce,
+    combine: Combine,
+    inputs: &[&dyn NDIndex<T>],
+    outs: &mut [&mut dyn NDIndex<T>],
+) -> Result<(), InvalidSpec> {
+    einsum_reduce_dyn::<T, dyn NDIndex<T>, dyn NDIndex<T>>(spec, reduce, combine, inputs, outs)
+}
+
+/// Fill every element of `out` with `v` (row-major odometer over its dims).
+fn fill_output<T: Scalar, Out: NDIndex<T> + ?Sized>(out: &mut Out, v: T) {
+    let nd = out.ndim();
+    let mut ix = vec![0usize; nd];
+    for ax in 0..nd {
+        if out.dim(ax) == 0 {
+            return; // no elements
+        }
+    }
+    loop {
+        out.set(&ix[..nd], v);
+        let mut ax = nd;
+        loop {
+            if ax == 0 {
+                return;
+            }
+            ax -= 1;
+            ix[ax] += 1;
+            if ix[ax] < out.dim(ax) {
+                break;
+            }
+            ix[ax] = 0;
+        }
+    }
 }
 
 /// Generic einsum wrapper — accepts both concrete inputs (`&[&Csr]`,
@@ -785,15 +995,42 @@ where
 /// This is the function [`einsum`] forwards to — it's also the right
 /// choice if you have a concrete type but don't care to declare intent
 /// as strict-monomorphic via [`einsum_homogenous`].
-pub fn einsum_dyn<T, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+pub fn einsum_dyn<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
     spec: &str,
     inputs: &[&In],
     outs: &mut [&mut Out],
-) -> Result<(), InvalidSpec>
-where
-    T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-{
-    let program = compile::<T, In>(spec, inputs)?;
+) -> Result<(), InvalidSpec> {
+    einsum_impl::<T, In, Out>(spec, Reduce::Sum, Combine::Mul, inputs, outs, false)
+}
+
+/// [`einsum_reduce`] generalized over the input/output types — accepts both
+/// concrete tensors and `&dyn NDIndex<T>` trait objects, mirroring
+/// [`einsum_dyn`]. Outputs are pre-filled with the reduction identity.
+pub fn einsum_reduce_dyn<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+    spec: &str,
+    reduce: Reduce,
+    combine: Combine,
+    inputs: &[&In],
+    outs: &mut [&mut Out],
+) -> Result<(), InvalidSpec> {
+    einsum_impl::<T, In, Out>(spec, reduce, combine, inputs, outs, true)
+}
+
+/// Shared compile + validate + (optionally identity-fill) + exec body.
+///
+/// `fill` distinguishes the two output conventions: the plain einsum entry
+/// points accumulate into caller-prepared (zeroed) outputs, while the
+/// `einsum_reduce` entry points overwrite by pre-filling with the reduce
+/// identity.
+fn einsum_impl<T: Scalar, In: NDIndex<T> + ?Sized, Out: NDIndex<T> + ?Sized>(
+    spec: &str,
+    reduce: Reduce,
+    combine: Combine,
+    inputs: &[&In],
+    outs: &mut [&mut Out],
+    fill: bool,
+) -> Result<(), InvalidSpec> {
+    let program = compile_reduce::<T, In>(spec, reduce, combine, inputs)?;
 
     // Validate output shapes against the parsed spec.
     let spec = parse_spec(spec, inputs.len())?;
@@ -811,6 +1048,12 @@ where
     }
     for (oi, out_spec) in spec.outputs.iter().enumerate() {
         validate_output::<T, Out>(out_spec, &dims, &*outs[oi])?;
+    }
+
+    if fill {
+        for out in outs.iter_mut() {
+            fill_output::<T, Out>(&mut **out, reduce.identity());
+        }
     }
 
     program.exec::<T, In, Out>(inputs, outs);
@@ -846,14 +1089,11 @@ where
 /// assert_eq!(c.get(&[0, 0]), 58.0);
 /// # }
 /// ```
-pub fn einsum_homogenous<T, In: NDIndex<T>, Out: NDIndex<T>>(
+pub fn einsum_homogenous<T: Scalar, In: NDIndex<T>, Out: NDIndex<T>>(
     spec: &str,
     inputs: &[&In],
     outs: &mut [&mut Out],
-) -> Result<(), InvalidSpec>
-where
-    T: Default + Copy + Add<Output = T> + AddAssign + Mul<Output = T> + PartialEq,
-{
+) -> Result<(), InvalidSpec> {
     einsum_dyn::<T, In, Out>(spec, inputs, outs)
 }
 
@@ -1007,6 +1247,272 @@ mod tests {
             einsum_homogenous::<f32, _, _>("ab,bc->az", &[&a, &b], &mut [&mut c]).unwrap_err(),
             InvalidSpec::UnboundOutputIndex { index: 'z' },
         );
+    }
+
+    /// Naive semiring reference: iterate the full cartesian index space.
+    fn naive_reduce(
+        spec: &str,
+        reduce: Reduce,
+        combine: Combine,
+        inputs: &[&Dense<f32>],
+        dims: &[usize; 26],
+        out_shape: Vec<usize>,
+    ) -> Dense<f32> {
+        let parsed = parse_spec(spec, inputs.len()).unwrap();
+        let mut slots = Vec::new();
+        let mut seen = [false; 26];
+        for pat in &parsed.inputs {
+            for &s in pat {
+                if !seen[s as usize] {
+                    seen[s as usize] = true;
+                    slots.push(s);
+                }
+            }
+        }
+        let mut out = Dense::<f32>::zeros(out_shape);
+        let ident = reduce.identity::<f32>();
+        for v in out.data.iter_mut() {
+            *v = ident;
+        }
+        let n_tuples: usize = slots.iter().map(|&s| dims[s as usize]).product();
+        let mut vals = [0usize; 26];
+        for mut t in 0..n_tuples {
+            for &s in slots.iter().rev() {
+                vals[s as usize] = t % dims[s as usize];
+                t /= dims[s as usize];
+            }
+            let mut contrib: Option<f32> = None;
+            for (pat, inp) in parsed.inputs.iter().zip(inputs) {
+                let ix: Vec<usize> = pat.iter().map(|&s| vals[s as usize]).collect();
+                let v = inp.get(&ix);
+                contrib = Some(match contrib {
+                    Some(p) => combine.apply(p, v),
+                    None => v,
+                });
+            }
+            let ix: Vec<usize> =
+                parsed.outputs[0].iter().map(|&s| vals[s as usize]).collect();
+            let cur = out.get(&ix);
+            out.set(&ix, reduce.apply(cur, contrib.unwrap()));
+        }
+        out
+    }
+
+    #[test]
+    fn tullio_example_max_product() {
+        // A[i,j,k] = max_q B[j] * C[i,k,q] * D[k,q]
+        // (Tullio: @tullio (max) A[i,j,k] := B[j] * C[i,k,q] * D[k,q])
+        let (di, dj, dk, dq) = (2usize, 3usize, 2usize, 4usize);
+        let mut dims = [0usize; 26];
+        dims[(b'i' - b'a') as usize] = di;
+        dims[(b'j' - b'a') as usize] = dj;
+        dims[(b'k' - b'a') as usize] = dk;
+        dims[(b'q' - b'a') as usize] = dq;
+
+        // Deterministic small ints of mixed sign (0 included).
+        let fill = |d: &mut Dense<f32>, seed: u64| {
+            let mut x = seed;
+            for v in d.data.iter_mut() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *v = ((x >> 33) % 5) as f32 - 2.0;
+            }
+        };
+        let mut b = Dense::<f32>::zeros(vec![dj]);
+        let mut c = Dense::<f32>::zeros(vec![di, dk, dq]);
+        let mut d = Dense::<f32>::zeros(vec![dk, dq]);
+        fill(&mut b, 1);
+        fill(&mut c, 2);
+        fill(&mut d, 3);
+
+        let mut a = Dense::<f32>::zeros(vec![di, dj, dk]);
+        einsum_reduce::<f32>(
+            "j,ikq,kq->ijk",
+            Reduce::Max,
+            Combine::Mul,
+            &[&b as &dyn NDIndex<f32>, &c, &d],
+            &mut [&mut a as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+
+        let expect = naive_reduce(
+            "j,ikq,kq->ijk",
+            Reduce::Max,
+            Combine::Mul,
+            &[&b, &c, &d],
+            &dims,
+            vec![di, dj, dk],
+        );
+        assert_eq!(a.data, expect.data);
+    }
+
+    #[test]
+    fn min_plus_shortest_path_step() {
+        // Tropical semiring: D[i,k] = min_j (A[i,j] + B[j,k]).
+        let mut a = Dense::<f32>::zeros(vec![2, 2]);
+        a.fill_from(&[0., 3., 7., 0.]);
+        let mut b = Dense::<f32>::zeros(vec![2, 2]);
+        b.fill_from(&[0., 4., 1., 0.]);
+        let mut d = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_reduce::<f32>(
+            "ij,jk->ik",
+            Reduce::Min,
+            Combine::Add,
+            &[&a as &dyn NDIndex<f32>, &b],
+            &mut [&mut d as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+        // d[0][1] = min(0+4, 3+0) = 3; d[1][0] = min(7+0, 0+1) = 1.
+        assert_eq!(d.data, vec![0., 3., 1., 0.]);
+    }
+
+    #[test]
+    fn prod_reduction() {
+        let mut a = Dense::<f32>::zeros(vec![2, 3]);
+        a.fill_from(&[1., 2., 3., 4., 5., 6.]);
+        let mut p = Dense::<f32>::zeros(vec![2]);
+        einsum_reduce::<f32>(
+            "ij->i",
+            Reduce::Prod,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<f32>],
+            &mut [&mut p as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+        assert_eq!(p.data, vec![6., 120.]);
+    }
+
+    #[test]
+    fn empty_reduction_yields_identity() {
+        let a = Dense::<f32>::zeros(vec![2, 0]);
+        let mut m = Dense::<f32>::zeros(vec![2]);
+        einsum_reduce::<f32>(
+            "iq->i",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<f32>],
+            &mut [&mut m as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+        assert_eq!(m.data, vec![f32::NEG_INFINITY; 2]);
+    }
+
+    #[test]
+    fn max_with_accumulator_flush_path() {
+        // "acd->cd" triggers the AccFlush RMW edge (contracted `a` sits
+        // outside the accumulator scope) — the flush must fold with max,
+        // not overwrite or add.
+        let mut dims = [0usize; 26];
+        dims[0] = 3; // a
+        dims[2] = 2; // c
+        dims[3] = 4; // d
+        let mut x = Dense::<f32>::zeros(vec![3, 2, 4]);
+        let mut s = 7u64;
+        for v in x.data.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *v = ((s >> 33) % 7) as f32 - 3.0;
+        }
+        let mut got = Dense::<f32>::zeros(vec![2, 4]);
+        einsum_reduce::<f32>(
+            "acd->cd",
+            Reduce::Max,
+            Combine::Mul,
+            &[&x as &dyn NDIndex<f32>],
+            &mut [&mut got as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+        let expect =
+            naive_reduce("acd->cd", Reduce::Max, Combine::Mul, &[&x], &dims, vec![2, 4]);
+        assert_eq!(got.data, expect.data);
+    }
+
+    #[test]
+    fn integer_max_uses_type_min_identity() {
+        // All-negative integers: a zero-seeded accumulator would wrongly
+        // return 0; the identity must be i32::MIN.
+        let mut a = Dense::<i32>::zeros(vec![2, 2]);
+        a.fill_from(&[-5, -3, -9, -1]);
+        let mut m = Dense::<i32>::zeros(vec![2]);
+        einsum_reduce::<i32>(
+            "ij->i",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<i32>],
+            &mut [&mut m as &mut dyn NDIndex<i32>],
+        )
+        .unwrap();
+        assert_eq!(m.data, vec![-3, -1]);
+    }
+
+    #[test]
+    fn sum_mul_reduce_matches_plain_einsum() {
+        let mut a = Dense::<f32>::zeros(vec![2, 3]);
+        a.fill_from(&[1., 2., 3., 4., 5., 6.]);
+        let mut b = Dense::<f32>::zeros(vec![3, 2]);
+        b.fill_from(&[7., 8., 9., 10., 11., 12.]);
+        let mut c = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_reduce::<f32>(
+            "ab,bc->ac",
+            Reduce::Sum,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<f32>, &b],
+            &mut [&mut c as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+        assert_eq!(c.data, vec![58., 64., 139., 154.]);
+    }
+
+    #[cfg(feature = "csr")]
+    #[test]
+    fn sparse_input_with_max_iterates_densely() {
+        use crate::csr::Csr;
+
+        // Sparse input with negative stored values: the structural zeros
+        // must compete in the max (0 > negative products), so the plan may
+        // not skip them via a sparse row loop.
+        let a = Csr::<u32, f32>::from_parts(
+            vec![2, 3],
+            vec![0, 2, 3],
+            vec![1, 2, 0],
+            vec![-2.0, -3.0, -1.0],
+        );
+        let mut a_dense = Dense::<f32>::zeros(vec![2, 3]);
+        a_dense.fill_from(&[0., -2., -3., -1., 0., 0.]);
+        let mut b = Dense::<f32>::zeros(vec![3, 2]);
+        b.fill_from(&[1., -2., 3., 4., -5., 6.]);
+
+        let prog = compile_reduce::<f32, dyn NDIndex<f32>>(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<f32>, &b],
+        )
+        .unwrap();
+        let plan = format!("{prog}");
+        assert!(!plan.contains("[SPARSE"), "max must not use sparse skipping:\n{plan}");
+
+        let mut got = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_reduce::<f32>(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn NDIndex<f32>, &b],
+            &mut [&mut got as &mut dyn NDIndex<f32>],
+        )
+        .unwrap();
+
+        let mut dims = [0usize; 26];
+        dims[0] = 2;
+        dims[1] = 3;
+        dims[2] = 2;
+        let expect = naive_reduce(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a_dense, &b],
+            &dims,
+            vec![2, 2],
+        );
+        assert_eq!(got.data, expect.data);
     }
 
     #[cfg(feature = "csr")]

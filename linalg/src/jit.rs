@@ -56,12 +56,27 @@
 //! sparse, or a sparse trace `"aa->"`) are rejected at compile time with
 //! [`JitError::Unsupported`]; use the [`crate::einsum`] VM for those.
 //!
+//! # Generalized reductions
+//!
+//! [`EinsumF32Jit::compile_reduce`] / [`einsum_jit_reduce`] accept a
+//! ([`Reduce`], [`Combine`]) operator pair, compiling e.g. max-product or
+//! min-plus (tropical) contractions to the same loop nests with `fmax` /
+//! `fmin` / `fadd` / `fmul` in place of the sum-product instructions —
+//! the native counterpart of [`crate::einsum::einsum_reduce`]. Sparse
+//! inputs are only accepted for (`Sum`, `Mul`), since sparse row iteration
+//! skips structural zeros and that is unsound for any other semiring
+//! (a missing entry is a real 0 that must compete in the reduction);
+//! other pairs return [`JitError::Unsupported`] — use the VM.
+//!
 //! # Output convention
 //!
-//! Outputs are **accumulated into** and must be zeroed by the caller before
-//! [`run`](EinsumF32Jit::run) (same convention as [`crate::einsum`]). For an
-//! all-dense single output the contraction sum is held in a register and
-//! stored once per free-index tuple; otherwise outputs are read-modify-write.
+//! Outputs are **folded into** with the reduce operator and must be
+//! pre-filled by the caller with [`Reduce::identity`] — for the plain
+//! sum-product entry points that is the usual zeroing (same convention as
+//! [`crate::einsum`]); the [`einsum_jit_reduce`] wrapper does the fill for
+//! you. For an all-dense single output the contraction is held in a
+//! register and stored once per free-index tuple; otherwise outputs are
+//! read-modify-write.
 //!
 //! # Example
 //!
@@ -99,7 +114,7 @@ use cranelift_module::{Linkage, Module};
 
 use crate::csr::Csr;
 use crate::dense::Dense;
-use crate::einsum::{parse_spec, InvalidSpec};
+use crate::einsum::{parse_spec, Combine, InvalidSpec, Reduce};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Errors
@@ -328,6 +343,34 @@ impl EinsumF32Jit {
         inputs: &[JitInput],
         output_shapes: &[Vec<usize>],
     ) -> Result<Self, JitError> {
+        Self::compile_reduce(spec, Reduce::Sum, Combine::Mul, inputs, output_shapes)
+    }
+
+    /// [`compile`](Self::compile) generalized to an arbitrary
+    /// ([`Reduce`], [`Combine`]) semiring — the native counterpart of
+    /// [`crate::einsum::einsum_reduce`].
+    ///
+    /// The compiled program *folds into* the outputs with the reduce
+    /// operator, so the caller must pre-fill them with
+    /// [`Reduce::identity`] (for `Sum` that is the usual zeroing) — or use
+    /// the [`einsum_jit_reduce`] wrapper which does the fill.
+    ///
+    /// Sparse inputs are only supported for (`Sum`, `Mul`): sparse row
+    /// iteration skips structural zeros, which is unsound for any other
+    /// semiring, and this backend has no dense-fallback addressing for
+    /// CSR. Other op pairs with sparse inputs return
+    /// [`JitError::Unsupported`]; use the VM for those.
+    ///
+    /// Float `Max`/`Min` compile to Cranelift `fmax`/`fmin`, which are
+    /// NaN-propagating — the VM's comparison-based fold agrees for
+    /// non-NaN data, but NaN behaviour is unspecified in both.
+    pub fn compile_reduce(
+        spec: &str,
+        reduce: Reduce,
+        combine: Combine,
+        inputs: &[JitInput],
+        output_shapes: &[Vec<usize>],
+    ) -> Result<Self, JitError> {
         let parsed = parse_spec(spec, inputs.len())?;
         let in_shapes: Vec<Vec<usize>> = inputs.iter().map(|i| i.shape()).collect();
         let is_sparse: Vec<bool> = inputs.iter().map(|i| i.is_sparse()).collect();
@@ -391,7 +434,8 @@ impl EinsumF32Jit {
             }
         }
 
-        let (module, func) = codegen(&parsed.inputs, &parsed.outputs, &is_sparse, &dims)?;
+        let (module, func) =
+            codegen(&parsed.inputs, &parsed.outputs, &is_sparse, &dims, reduce, combine)?;
 
         Ok(Self {
             module: Some(module),
@@ -493,6 +537,54 @@ pub fn einsum_jit(
     let jit = EinsumF32Jit::compile(spec, inputs, &output_shapes)?;
     jit.run(inputs, outputs);
     // jit is dropped here — its Drop impl frees the JIT'd code memory.
+    Ok(())
+}
+
+/// One-shot generalized-reduction einsum, matching the shape of
+/// [`crate::einsum::einsum_reduce`]: outputs are **pre-filled with the
+/// reduction identity** (overwrite semantics), then compiled, run, and the
+/// code freed. Same amortization caveat as [`einsum_jit`] — prefer
+/// [`EinsumF32Jit::compile_reduce`] + [`run`](EinsumF32Jit::run) for
+/// repeated use (pre-filling the outputs yourself).
+///
+/// # Example
+///
+/// ```
+/// use linalg::jit::{einsum_jit_reduce, JitInput};
+/// use linalg::einsum::{Reduce, Combine};
+/// use linalg::dense::Dense;
+/// use linalg::tensor::NDIndex;
+///
+/// let mut a = Dense::<f32>::zeros(vec![2, 2]);
+/// a.fill_from(&[1., -2., 3., 4.]);
+/// let mut b = Dense::<f32>::zeros(vec![2, 2]);
+/// b.fill_from(&[5., 6., -7., 8.]);
+/// let mut c = Dense::<f32>::zeros(vec![2, 2]);
+///
+/// einsum_jit_reduce(
+///     "ab,bc->ac",
+///     Reduce::Max,
+///     Combine::Mul,
+///     &[JitInput::Dense(&a), JitInput::Dense(&b)],
+///     &mut [&mut c],
+/// ).unwrap();
+/// assert_eq!(c.get(&[0, 0]), 14.0); // max(1·5, -2·-7)
+/// ```
+pub fn einsum_jit_reduce(
+    spec: &str,
+    reduce: Reduce,
+    combine: Combine,
+    inputs: &[JitInput],
+    outputs: &mut [&mut Dense<f32>],
+) -> Result<(), JitError> {
+    let output_shapes: Vec<Vec<usize>> =
+        outputs.iter().map(|o| o.shape.clone()).collect();
+    let jit = EinsumF32Jit::compile_reduce(spec, reduce, combine, inputs, &output_shapes)?;
+    let ident = reduce.identity::<f32>();
+    for out in outputs.iter_mut() {
+        out.data.fill(ident);
+    }
+    jit.run(inputs, outputs);
     Ok(())
 }
 
@@ -747,18 +839,34 @@ fn close_loop(b: &mut FunctionBuilder, iv: Variable, header: Block, exit: Block)
     b.seal_block(exit);
 }
 
-/// Emit the product of all input elements at the current index values. Dense
-/// inputs are loaded by computed address; sparse-covered inputs read their
-/// cached per-iteration value variable.
-fn emit_product(
+/// Emit the reduce-op fold of the accumulator with one contribution.
+///
+/// NaN caveat: Cranelift's `fmax`/`fmin` are NaN-propagating, while the
+/// VM's `Reduce::apply` is comparison-based — results agree for non-NaN
+/// data; behaviour with NaN operands is unspecified in both.
+fn emit_reduce(b: &mut FunctionBuilder, reduce: Reduce, acc: Value, v: Value) -> Value {
+    match reduce {
+        Reduce::Sum => b.ins().fadd(acc, v),
+        Reduce::Prod => b.ins().fmul(acc, v),
+        Reduce::Max => b.ins().fmax(acc, v),
+        Reduce::Min => b.ins().fmin(acc, v),
+    }
+}
+
+/// Emit the combine ⊗ of all input elements at the current index values
+/// (left-to-right in input order). Dense inputs are loaded by computed
+/// address; sparse-covered inputs read their cached per-iteration value
+/// variable.
+fn emit_contribution(
     b: &mut FunctionBuilder,
     ptr_ty: Type,
+    combine: Combine,
     inputs: &[Vec<u8>],
     bases: &[InputBase],
     val_vars: &[Option<Variable>],
     vars: &[Variable; 26],
 ) -> Value {
-    let mut product: Option<Value> = None;
+    let mut contrib: Option<Value> = None;
     for (i, pattern) in inputs.iter().enumerate() {
         let v = if let Some(vv) = val_vars[i] {
             b.use_var(vv)
@@ -773,12 +881,17 @@ fn emit_product(
                 InputBase::Row { .. } => unreachable!("row input must be sparse-covered"),
             }
         };
-        product = Some(match product {
+        contrib = Some(match contrib {
             None => v,
-            Some(p) => b.ins().fmul(p, v),
+            Some(p) => match combine {
+                Combine::Mul => b.ins().fmul(p, v),
+                Combine::Add => b.ins().fadd(p, v),
+                Combine::Min => b.ins().fmin(p, v),
+                Combine::Max => b.ins().fmax(p, v),
+            },
         });
     }
-    product.expect("einsum input list is non-empty")
+    contrib.expect("einsum input list is non-empty")
 }
 
 /// Build the host ISA and a fresh JIT module.
@@ -799,8 +912,21 @@ fn codegen(
     outputs: &[Vec<u8>],
     is_sparse: &[bool],
     dims: &[usize; 26],
+    reduce: Reduce,
+    combine: Combine,
 ) -> Result<(JITModule, extern "C" fn(*const *const u8, *const *mut u8)), JitError> {
     let any_sparse = is_sparse.iter().any(|&c| c);
+
+    // Sparse row iteration skips structural zeros, which is only sound for
+    // sum-of-products (a zero factor annihilates the product and adding 0
+    // is a no-op). Under any other semiring a missing entry is a real 0
+    // that must still compete in the reduction, and this backend has no
+    // dense-fallback addressing for CSR — use the VM for those.
+    if any_sparse && !(reduce == Reduce::Sum && combine == Combine::Mul) {
+        return Err(JitError::Unsupported(
+            "sparse inputs require sum-of-products (Reduce::Sum, Combine::Mul)",
+        ));
+    }
 
     // Sparse axes per input: the last slot is the stored column; all preceding
     // slots form the (row-major) compound row index.
@@ -927,22 +1053,23 @@ fn codegen(
 
         if !any_sparse && outputs.len() == 1 {
             // ── All-dense single output: register accumulator. ──
-            // for free: { acc = 0; for contracted { acc += prod }; out = acc }
+            // for free: { acc = identity; for contracted { acc = acc ⊕ contrib }; out = acc }
             let mut free_loops = Vec::new();
             for &s in &free {
                 free_loops.push((vars[s as usize], open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize])));
             }
-            let zero = b.ins().f32const(0.0);
-            b.def_var(acc, zero);
+            let ident = b.ins().f32const(reduce.identity::<f32>());
+            b.def_var(acc, ident);
             let mut c_loops = Vec::new();
             for &s in &contracted {
                 c_loops.push((vars[s as usize], open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize])));
             }
 
-            let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
+            let contrib =
+                emit_contribution(&mut b, ptr_ty, combine, inputs, &bases, &val_vars, &vars);
             let cur = b.use_var(acc);
-            let sum = b.ins().fadd(cur, prod);
-            b.def_var(acc, sum);
+            let folded = emit_reduce(&mut b, reduce, cur, contrib);
+            b.def_var(acc, folded);
 
             for (iv, (h, e)) in c_loops.into_iter().rev() {
                 close_loop(&mut b, iv, h, e);
@@ -994,15 +1121,16 @@ fn codegen(
                 }
             }
 
-            let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
+            let contrib =
+                emit_contribution(&mut b, ptr_ty, combine, inputs, &bases, &val_vars, &vars);
             for (oi, pattern) in outputs.iter().enumerate() {
                 let idx_vals: Vec<Value> =
                     pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();
                 let addr =
                     out_layouts[oi].emit_elem_addr(&mut b, ptr_ty, out_bases[oi], &idx_vals);
                 let cur = b.ins().load(types::F32, MemFlags::trusted(), addr, 0);
-                let sum = b.ins().fadd(cur, prod);
-                b.ins().store(MemFlags::trusted(), sum, addr, 0);
+                let folded = emit_reduce(&mut b, reduce, cur, contrib);
+                b.ins().store(MemFlags::trusted(), folded, addr, 0);
             }
 
             for (iv, h, e) in opened.into_iter().rev() {
@@ -1128,6 +1256,112 @@ mod tests {
             let mut c = Dense::<f32>::zeros(vec![2, 2]);
             jit.run(&[d(&a), d(&b)], &mut [&mut c]);
             assert_eq!(c.data, vec![f, f * 2., f * 3., f * 4.]);
+        }
+    }
+
+    // ── Generalized reductions ──
+
+    #[test]
+    fn reduce_max_product_matches_vm() {
+        // Register-accumulator path (all-dense single output), mixed signs.
+        let a = dense(vec![2, 3], &[1., -2., 3., -4., 5., 0.]);
+        let b = dense(vec![3, 2], &[-7., 8., 9., -10., 11., 12.]);
+        let mut got = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_jit_reduce(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[d(&a), d(&b)],
+            &mut [&mut got],
+        )
+        .unwrap();
+
+        let mut expect = Dense::<f32>::zeros(vec![2, 2]);
+        crate::einsum::einsum_reduce::<f32>(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn crate::tensor::NDIndex<f32>, &b],
+            &mut [&mut expect as &mut dyn crate::tensor::NDIndex<f32>],
+        )
+        .unwrap();
+        assert_eq!(got.data, expect.data);
+    }
+
+    #[test]
+    fn reduce_min_plus_matches_vm() {
+        let a = dense(vec![2, 2], &[0., 3., 7., 0.]);
+        let b = dense(vec![2, 2], &[0., 4., 1., 0.]);
+        let mut got = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_jit_reduce(
+            "ij,jk->ik",
+            Reduce::Min,
+            Combine::Add,
+            &[d(&a), d(&b)],
+            &mut [&mut got],
+        )
+        .unwrap();
+        assert_eq!(got.data, vec![0., 3., 1., 0.]);
+    }
+
+    #[test]
+    fn reduce_multi_output_rmw_path() {
+        // Multi-output forces the read-modify-write codegen path; outputs
+        // must land on the identity prefill correctly for max.
+        let a = dense(vec![2, 2], &[1., -2., 3., 4.]);
+        let b = dense(vec![2, 2], &[5., 6., -7., 8.]);
+        let mut ac = Dense::<f32>::zeros(vec![2, 2]);
+        let mut ca = Dense::<f32>::zeros(vec![2, 2]);
+        einsum_jit_reduce(
+            "ab,bc->ac,ca",
+            Reduce::Max,
+            Combine::Mul,
+            &[d(&a), d(&b)],
+            &mut [&mut ac, &mut ca],
+        )
+        .unwrap();
+
+        let mut vac = Dense::<f32>::zeros(vec![2, 2]);
+        let mut vca = Dense::<f32>::zeros(vec![2, 2]);
+        crate::einsum::einsum_reduce::<f32>(
+            "ab,bc->ac,ca",
+            Reduce::Max,
+            Combine::Mul,
+            &[&a as &dyn crate::tensor::NDIndex<f32>, &b],
+            &mut [
+                &mut vac as &mut dyn crate::tensor::NDIndex<f32>,
+                &mut vca,
+            ],
+        )
+        .unwrap();
+        assert_eq!(ac.data, vac.data);
+        assert_eq!(ca.data, vca.data);
+    }
+
+    #[test]
+    fn reduce_empty_range_yields_identity() {
+        let a = dense(vec![2, 0], &[]);
+        let mut m = Dense::<f32>::zeros(vec![2]);
+        einsum_jit_reduce("iq->i", Reduce::Max, Combine::Mul, &[d(&a)], &mut [&mut m])
+            .unwrap();
+        assert_eq!(m.data, vec![f32::NEG_INFINITY; 2]);
+    }
+
+    #[test]
+    fn reduce_sparse_input_unsupported() {
+        let a = Csr::<u32, f32>::from_coo(3, &mut vec![(0, 1, 1.0), (1, 2, 1.0)]);
+        let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
+        let res = EinsumF32Jit::compile_reduce(
+            "ab,bc->ac",
+            Reduce::Max,
+            Combine::Mul,
+            &[JitInput::Csr(&a), d(&x)],
+            &[vec![3, 2]],
+        );
+        match res {
+            Err(JitError::Unsupported(_)) => {}
+            Err(e) => panic!("expected Unsupported, got {e:?}"),
+            Ok(_) => panic!("expected Unsupported, got Ok"),
         }
     }
 

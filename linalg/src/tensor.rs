@@ -3,10 +3,70 @@
 //! [`NDIndex`] is the universal interface for any N-dimensional tensor.
 //! Implement it to make a type composable with [`crate::einsum`].
 //!
+//! [`Scalar`] is the numeric element trait: the arithmetic the einsum VM
+//! needs plus the per-operator identity elements used by generalized
+//! (non-sum) reductions.
+//!
 //! [`Sparse2D`] is an extension for 2D matrices that expose row-wise
 //! non-zero iteration. The einsum VM detects `Sparse2D` participants via
 //! [`NDIndex::as_sparse_2d`] and emits sparse loops for them, falling back
 //! to dense loops for everything else.
+
+/// Numeric element for generalized (semiring) einsum reductions.
+///
+/// Extends the ad-hoc arithmetic bounds of the plain einsum with the
+/// identity elements each [`crate::einsum::Reduce`] operator needs:
+///
+/// - [`ZERO`](Scalar::ZERO) — identity for `sum` (and the value of a
+///   structurally-missing sparse entry);
+/// - [`ONE`](Scalar::ONE) — identity for `prod`;
+/// - [`LEAST`](Scalar::LEAST) — identity for `max`: `-∞` for floats,
+///   `T::MIN` for integers. Note this is *not* `f32::MIN` (the smallest
+///   finite value) for floats;
+/// - [`GREATEST`](Scalar::GREATEST) — identity for `min`: `+∞` for floats,
+///   `T::MAX` for integers.
+///
+/// Implemented for all the primitive numeric types.
+pub trait Scalar:
+    Copy
+    + Default
+    + PartialEq
+    + PartialOrd
+    + std::ops::Add<Output = Self>
+    + std::ops::AddAssign
+    + std::ops::Mul<Output = Self>
+{
+    const ZERO: Self;
+    const ONE: Self;
+    /// Least value of the type (`-∞` for floats): identity for `max`.
+    const LEAST: Self;
+    /// Greatest value of the type (`+∞` for floats): identity for `min`.
+    const GREATEST: Self;
+}
+
+macro_rules! impl_scalar_int {
+    ($($t:ty),*) => {$(
+        impl Scalar for $t {
+            const ZERO: Self = 0;
+            const ONE: Self = 1;
+            const LEAST: Self = <$t>::MIN;
+            const GREATEST: Self = <$t>::MAX;
+        }
+    )*};
+}
+impl_scalar_int!(i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+
+macro_rules! impl_scalar_float {
+    ($($t:ty),*) => {$(
+        impl Scalar for $t {
+            const ZERO: Self = 0.0;
+            const ONE: Self = 1.0;
+            const LEAST: Self = <$t>::NEG_INFINITY;
+            const GREATEST: Self = <$t>::INFINITY;
+        }
+    )*};
+}
+impl_scalar_float!(f32, f64);
 
 /// N-dimensional tensor read/write interface.
 ///

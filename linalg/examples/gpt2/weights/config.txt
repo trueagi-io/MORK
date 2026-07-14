@@ -1,0 +1,9 @@
+vocab 27
+n_embd 64
+n_head 4
+n_layer 3
+head_dim 16
+mlp_hidden 256
+block_size 32
+n_generate 128
+rms_eps 1e-05

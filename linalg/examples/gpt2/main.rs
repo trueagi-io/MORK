@@ -332,6 +332,72 @@ fn argmax(logits: &Dense<f32>) -> usize {
         .0
 }
 
+/// Full greedy decode from a fresh KV cache. Returns the token stream (prompt
+/// + generated) and the per-step logits recorded for the reference comparison.
+/// One `calculate_step` (one full einsum-VM forward) runs per token position.
+fn run_decode(model: &Model, prompt: &[usize]) -> (Vec<usize>, Vec<Vec<f32>>) {
+    let cfg = model.cfg;
+    let mut cache = Cache::new(cfg.n_layer);
+    let mut tokens = prompt.to_vec();
+    let mut pos = 0usize;
+
+    let mut logits = Dense::<f32>::zeros(vec![cfg.vocab]);
+    for &tok in prompt {
+        logits = calculate_step(model, &mut cache, tok, pos);
+        pos += 1;
+    }
+
+    let mut step_logits: Vec<Vec<f32>> = Vec::new();
+    for _ in 0..cfg.n_generate {
+        if pos >= cfg.block_size {
+            break;
+        }
+        step_logits.push(logits.data.clone());
+        let next = argmax(&logits);
+        tokens.push(next);
+        logits = calculate_step(model, &mut cache, next, pos);
+        pos += 1;
+    }
+    (tokens, step_logits)
+}
+
+/// Time the full einsum-VM decode: repeatedly greedy-decode the whole context
+/// from a cold cache and report per-token latency and throughput. Reports the
+/// best of several batches to suppress scheduler noise.
+fn bench(model: &Model, prompt: &[usize]) {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let cfg = model.cfg;
+    let (tokens, _) = run_decode(model, prompt);
+    let steps = tokens.len(); // einsum-VM forwards per decode (prompt + generated)
+
+    for _ in 0..20 {
+        black_box(run_decode(model, prompt));
+    }
+
+    let (batches, iters) = (5u32, 200u32);
+    let mut best = f64::INFINITY;
+    for _ in 0..batches {
+        let t = Instant::now();
+        for _ in 0..iters {
+            black_box(run_decode(model, prompt));
+        }
+        best = best.min(t.elapsed().as_secs_f64() / iters as f64);
+    }
+
+    let per_tok_us = best / steps as f64 * 1e6;
+    println!("── einsum-VM decode benchmark ──");
+    println!(
+        "model              : n_embd={} n_head={} n_layer={} mlp={} vocab={}",
+        cfg.n_embd, cfg.n_head, cfg.n_layer, cfg.mlp_hidden, cfg.vocab
+    );
+    println!("forwards / decode  : {steps} (ctx up to block_size={})", cfg.block_size);
+    println!("best full decode   : {:.3} ms", best * 1e3);
+    println!("per-token latency  : {per_tok_us:.2} µs");
+    println!("decode throughput  : {:.0} tokens/s", 1e6 / per_tok_us);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // I/O helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -383,29 +449,14 @@ fn main() {
     };
 
     let cfg = model.cfg;
-    let mut cache = Cache::new(cfg.n_layer);
-    let mut tokens = prompt_tokens.clone();
-    let mut pos = 0usize;
 
-    // Feed the prompt (warm the KV cache).
-    let mut logits = Dense::<f32>::zeros(vec![cfg.vocab]);
-    for &tok in &prompt_tokens {
-        logits = calculate_step(&model, &mut cache, tok, pos);
-        pos += 1;
+    // `cargo run --release --example gpt2 -- bench` times the decode instead.
+    if std::env::args().any(|a| a == "bench") {
+        bench(&model, &prompt_tokens);
+        return;
     }
 
-    // Greedy generation, recording each step's logits for comparison.
-    let mut rust_logits: Vec<Vec<f32>> = Vec::new();
-    for _ in 0..cfg.n_generate {
-        if pos >= cfg.block_size {
-            break;
-        }
-        rust_logits.push(logits.data.clone());
-        let next = argmax(&logits);
-        tokens.push(next);
-        logits = calculate_step(&model, &mut cache, next, pos);
-        pos += 1;
-    }
+    let (tokens, rust_logits) = run_decode(&model, &prompt_tokens);
 
     // ── Report ──
     if let Some(itos) = &itos {

@@ -70,31 +70,13 @@ pub struct Space {
 /// pays an O(dish) walk on later firings.
 #[cfg(feature = "semi_naive_ic")]
 pub(crate) struct SniRuleEntry {
-    /// The rule's frontier snapshot. None while the rule is SETTLED on naive
-    /// (exploration decay below): a snapshot is stored from the first sighting so
-    /// the very next firing can diff -- deferring it costs one extra naive firing,
-    /// which on a growing dish can be half the total work (a doubling workload's
-    /// last naive firing dominates).
-    pub(crate) snapshot: Option<PathMap<()>>,
+    /// The rule's frontier: the match input the last time this rule fired.
+    pub(crate) snapshot: PathMap<()>,
     /// Fact count of `snapshot`, computed LAZILY on the rule's second firing (a
     /// first firing routes to naive regardless, so paying an O(dish) walk for a
     /// rule that never fires again -- e.g. programs that respawn counter-carrying
     /// rules every round -- would be pure overhead).
     pub(crate) dish_count: Option<usize>,
-    /// Measured wall cost (nanos) of this rule's last naive firing, transform
-    /// only. The router compares MEASURED costs instead of a size model: a model
-    /// in fact counts mis-prices narrow-prefix rules (their naive match visits a
-    /// small subtrie of a large dish), and a descent-step meter mis-prices the
-    /// delta route (its frontier bookkeeping -- clone, subtracts, counts -- costs
-    /// wall time but walks no trie).
-    pub(crate) naive_nanos: Option<u64>,
-    /// Measured wall cost (nanos) of this rule's last semi-naive firing, charged
-    /// from fire entry so the frontier bookkeeping is included (it exists to
-    /// serve the delta route; a rule settled on naive drops it).
-    pub(crate) semi_nanos: Option<u64>,
-    /// Firings of this rule so far; drives the periodic re-probe of the losing
-    /// route (both routes emit identical facts, so re-probing is free to swap).
-    pub(crate) firings: u32,
 }
 
 #[cfg(feature = "semi_naive_ic")]
@@ -1556,32 +1538,12 @@ impl Space {
             } {
                 // disarmed: drop the frontier state, run pure baseline from here on.
             } else {
-                let t0 = Instant::now();
-                let (semi_result, key) = self.sni_delta_fire(seen, pat_expr, tpl_expr, add);
+                let (semi_result, _key) = self.sni_delta_fire(seen, pat_expr, tpl_expr, add);
                 if let Some(result) = semi_result {
-                    // Charged from fire entry: the delta route pays for its own
-                    // frontier bookkeeping (subtracts, counts, clones).
-                    let cost = t0.elapsed().as_nanos() as u64;
                     self.sni_semi_firings += 1;
-                    if let Some(seen) = self.sni_rule_seen.as_mut() {
-                        if let Some(e) = seen.get_mut(&key) {
-                            e.semi_nanos = Some(cost);
-                        }
-                    }
                     return result;
                 }
-                // Routed naive: charge the transform alone. The bookkeeping paid
-                // above serves the delta route's probes and decays away once the
-                // rule settles on naive, so it is not the naive route's cost.
-                let t1 = Instant::now();
-                let result = self.transform_multi_multi_naive(pat_expr, tpl_expr, add);
-                let cost = t1.elapsed().as_nanos() as u64;
-                if let Some(seen) = self.sni_rule_seen.as_mut() {
-                    if let Some(e) = seen.get_mut(&key) {
-                        e.naive_nanos = Some(cost);
-                    }
-                }
-                return result;
+                return self.transform_multi_multi_naive(pat_expr, tpl_expr, add);
             }
         }
         self.transform_multi_multi_naive(pat_expr, tpl_expr, add)
@@ -1724,57 +1686,30 @@ impl Space {
         // tests/subtract_probe.rs), and dish_count = cached + delta - removed stays
         // exact because the IC driver consumes exec facts between firings (the dish
         // is not add-only).
-        let (delta, delta_count, dish_count, naive_t, semi_t, firings) = match seen.get(&key) {
+        let (delta, delta_count, dish_count) = match seen.get(&key) {
             // First sighting: the delta IS the dish, so `m >= 1` pre-determines naive;
             // no snapshot exists and none is diffed (the clone starts next firing).
-            None => (None, 0, None, None, None, 0),
-            Some(entry) => match &entry.snapshot {
-                // Settled-naive rule between probe pairs: no frontier to diff, route
-                // naive (a probe pair re-arms below on schedule).
-                None => (None, 0, None, entry.naive_nanos, entry.semi_nanos, entry.firings),
-                Some(snapshot) => {
-                    let rc = read_copy(&self.btm);
-                    let delta = rc.subtract(snapshot);
-                    let delta_count = delta.val_count();
-                    let removed_count = snapshot.subtract(&rc).val_count();
-                    // The base count pays its one O(dish) walk here, on the rule's
-                    // first diffed firing -- one-shot rules never do.
-                    let base = entry
-                        .dish_count
-                        .unwrap_or_else(|| snapshot.val_count());
-                    debug_assert!(base + delta_count >= removed_count);
-                    let dish_count = base + delta_count - removed_count;
-                    (
-                        Some(delta),
-                        delta_count,
-                        Some(dish_count),
-                        entry.naive_nanos,
-                        entry.semi_nanos,
-                        entry.firings,
-                    )
-                }
-            },
+            None => (None, 0, None),
+            Some(entry) => {
+                let snapshot = &entry.snapshot;
+                let rc = read_copy(&self.btm);
+                let delta = rc.subtract(snapshot);
+                let delta_count = delta.val_count();
+                let removed_count = snapshot.subtract(&rc).val_count();
+                // The base count pays its one O(dish) walk here, on the rule's
+                // first diffed firing -- one-shot rules never do.
+                let base = entry.dish_count.unwrap_or_else(|| snapshot.val_count());
+                debug_assert!(base + delta_count >= removed_count);
+                (Some(delta), delta_count, Some(base + delta_count - removed_count))
+            }
         };
 
-        let go_semi = match (&delta, dish_count) {
-            (Some(_), Some(dish_count))
-                if m.saturating_mul(delta_count) < dish_count =>
-            {
-                match (naive_t, semi_t) {
-                    // Measure naive first (it also seeds the frontier bookkeeping).
-                    (None, _) => false,
-                    // Naive measured, semi never tried and the pre-filter allows: probe.
-                    (Some(_), None) => true,
-                    // Both measured: cheaper route wins; every 257th firing runs the
-                    // LOSING route once to refresh its measurement.
-                    (Some(nt), Some(st)) => {
-                        if firings % 257 == 0 { st >= nt } else { st < nt }
-                    }
-                }
-            }
-            // First firing, or a delta spike (m*delta >= dish): naive.
-            _ => false,
-        };
+        // Deterministic cost gate: the m-delta-rule runs m passes of ~O(delta) each
+        // versus naive's single ~O(dish) pass. First firing (no delta) is naive.
+        let go_semi = matches!(
+            (&delta, dish_count),
+            (Some(_), Some(dish)) if m.saturating_mul(delta_count) < dish
+        );
 
         // Bound the frontier map: a program that respawns fresh-keyed rules every
         // round (counter-carrying inner execs) would otherwise accumulate one
@@ -1785,26 +1720,10 @@ impl Space {
             seen.clear();
         }
         let delta_for_fire = if go_semi { delta } else { None };
-        // Decay exploration once a rule SETTLES on naive (both routes measured,
-        // naive cheaper): maintaining its frontier -- a clone plus two subtracts
-        // and counts per firing -- buys nothing while it keeps losing. Drop the
-        // snapshot and re-arm one probe pair per 257-firing cycle: the firing
-        // before the probe stores a snapshot, the probe firing diffs it and
-        // re-measures the delta route, and the routing can flip back on a
-        // workload shift.
-        let settled_naive = matches!((naive_t, semi_t), (Some(nt), Some(st)) if st >= nt);
-        let arm_probe = (firings.wrapping_add(1)) % 257 == 0;
-        let keep_frontier = !settled_naive || arm_probe;
-        let snapshot = keep_frontier.then(|| read_copy(&self.btm));
+        // Every rule keeps its frontier: the snapshot IS the semi-naive state.
         seen.insert(
             key.clone(),
-            SniRuleEntry {
-                snapshot,
-                dish_count,
-                naive_nanos: naive_t,
-                semi_nanos: semi_t,
-                firings: firings.wrapping_add(1),
-            },
+            SniRuleEntry { snapshot: read_copy(&self.btm), dish_count },
         );
         self.sni_rule_seen = Some(seen);
 

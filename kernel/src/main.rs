@@ -118,6 +118,43 @@ fn bench_flybase() {
 
 }
 
+/// Benchmark the factorized aggregate routing on a flybase-shaped star join, without external data:
+/// one gene reaches k numeric rel1 partners and k rel2 partners, so the join has k*k matches but only
+/// O(k) inputs. COUNT(join) = k*k and SUM(DISTINCT x) = 0+..+(k-1). Each aggregate runs both ways
+/// (factorized off = the enumerate sink, on = routed), asserts byte-identical, and reports the
+/// speedup -- O(k) factorized vs O(k*k) enumerate.
+#[cfg(feature = "factorized_aggregate")]
+fn bench_aggregate(k: usize) {
+    let mut prog = String::from("(gene g)\n");
+    for i in 0..k { prog.push_str(&format!("(rel1 g {i})\n")); }
+    for j in 0..k { prog.push_str(&format!("(rel2 g y{j})\n")); }
+    let count_exec = "(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (count (cnt $n) $n (t $g $x $y))))\n";
+    let sum_exec = "(exec 0 (, (gene $g) (rel1 $g $x) (rel2 $g $y)) (O (sum (sm $n) $n $x)))\n";
+    let run = |exec: &str, factorized: bool| -> (u128, String) {
+        space::set_factorized_aggregate_override(Some(factorized));
+        let mut s = Space::new();
+        s.add_all_sexpr(prog.as_bytes()).unwrap();
+        s.add_all_sexpr(exec.as_bytes()).unwrap();
+        let t = Instant::now();
+        s.metta_calculus(1_000_000);
+        let us = t.elapsed().as_micros();
+        let mut v = vec![];
+        s.dump_all_sexpr(&mut v).unwrap();
+        space::set_factorized_aggregate_override(None);
+        (us, String::from_utf8_lossy(&v).into_owned())
+    };
+    for (name, exec) in [("COUNT", count_exec), ("SUM", sum_exec)] {
+        let (enum_us, enum_out) = run(exec, false);
+        let (fact_us, fact_out) = run(exec, true);
+        assert_eq!(enum_out, fact_out, "aggregate {name}: factorized diverged from enumerate");
+        println!(
+            "aggregate {name:<5} k={k} matches={:>9}  enumerate {enum_us:>9}us  factorized {fact_us:>7}us  speedup {:.1}x",
+            k * k,
+            enum_us as f64 / fact_us.max(1) as f64
+        );
+    }
+}
+
 const work_mm2: &str = r#"
 
 (exec P1 (, (gene_name_of TP73-AS1 $x)
@@ -6132,7 +6169,9 @@ fn main() {
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
             if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states", "bfc"]) }
-            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc"]) }
+            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc"]);
+                #[cfg(feature = "factorized_aggregate")]
+                selected.extend(&["aggregate"]); }
             if selected.remove("sinks") { selected.extend(&["taxi_lts", "odd_even_sort"]) }
 
             for b in selected {
@@ -6149,6 +6188,8 @@ fn main() {
                     "logic_query" => { bench_logic_query() }
                     "logic_query_act" => { bench_logic_query_act() }
                     "flybase" => { bench_flybase() }
+                    #[cfg(feature = "factorized_aggregate")]
+                    "aggregate" => { bench_aggregate(800) }
                     "tile_puzzle_states" => { bench_tile_puzzle_states() }
                     "taxi_lts" => { bench_taxi_lts() }
                     "bfc" => { bfc(19) }

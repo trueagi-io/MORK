@@ -26,6 +26,131 @@ use log::*;
 use subprocess::{Popen, PopenConfig, Redirection};
 use subprocess::unix::PopenExt;
 use crate::sinks::{WriteResource, WriteResourceRequest};
+
+thread_local! {
+    /// Per-thread override for the factorized-aggregate fast path, so the differential test can toggle
+    /// it without a process-global env race. `None` falls back to the `MORK_FACTORIZED_AGGREGATE` env.
+    static FACTORIZED_AGGREGATE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+/// Force the factorized-aggregate fast path on/off for the current thread (test hook); `None`
+/// restores the env-var default.
+pub fn set_factorized_aggregate_override(v: Option<bool>) {
+    FACTORIZED_AGGREGATE_OVERRIDE.with(|c| c.set(v));
+}
+/// The factorized routing is ON by default -- the gate is Alloy-sound (fac16-fac21) and byte-identical
+/// across the differential corpus (600-program fuzz over every shape + `mork bench aggregate`), and it
+/// only ever engages on cases it can prove equal to the enumerate sink (declining grouped, partially
+/// projected, nonground-compound, disconnected, or single-factor bodies). `MORK_FACTORIZED_AGGREGATE=0`
+/// is the kill switch. A thread-local override wins over both, for tests.
+fn factorized_aggregate_enabled() -> bool {
+    FACTORIZED_AGGREGATE_OVERRIDE
+        .with(|c| c.get())
+        .unwrap_or_else(|| std::env::var("MORK_FACTORIZED_AGGREGATE").as_deref() != Ok("0"))
+}
+
+/// The pattern variables (`VarRef(i)` with `i < p`) a sink sub-expression reads. A pattern variable
+/// can only appear as a reference here -- its introduction (`NewVar`) was in the pattern -- so this
+/// is the set of pattern columns the sub-expression mentions. Fresh sink variables (the count
+/// placeholder) are `NewVar` or `VarRef(>= p)` and are excluded.
+fn count_sink_pattern_refs(e: Expr, p: usize) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut ez = ExprZipper::new(e);
+    loop {
+        if let Tag::VarRef(i) = ez.tag() {
+            if (i as usize) < p {
+                out.insert(i as usize);
+            }
+        }
+        if !ez.next() {
+            break;
+        }
+    }
+    out
+}
+
+/// The factorized value for an aggregate sink, ready to hand to its `set_precomputed`.
+enum FactorizedAgg {
+    Count(u64),
+    Sum(u32),
+    Float(f64),
+    And(u8),
+}
+
+/// Gate and compute the factorized aggregate for a single ungrouped aggregate sink over a
+/// decomposable multi-factor body. Both require the template to mention no pattern variable (a
+/// single group). COUNT additionally needs a full projection (distinct-output == match count, Alloy
+/// fac18; Yan-Larson "double eager" COUNT). SUM(DISTINCT) needs a single-column projection and sums
+/// that column's semi-join-reduced surviving domain (Yannakakis full reducer over the boolean
+/// semiring). `None` -> the enumerate sink runs, always correct, O(output).
+fn factorized_aggregate_gate(
+    read_copy: &PathMap<()>,
+    pat_expr: Expr,
+    sinks: &[crate::sinks::ASink],
+    templates: &[Expr],
+) -> Option<FactorizedAgg> {
+    // experimental routing: compiled out unless the factorized_aggregate feature is on
+    if !cfg!(feature = "factorized_aggregate") {
+        return None;
+    }
+    if !factorized_aggregate_enabled() || sinks.len() != 1 {
+        return None;
+    }
+    // Split the sink `(op TEMPLATE COUNTVAR PROJECTION)` into its parts.
+    let mut args = Vec::new();
+    ExprEnv::new(0, templates[0]).args(&mut args);
+    if args.len() != 4 {
+        return None;
+    }
+    let p = pat_expr.newvars();
+    if !count_sink_pattern_refs(args[1].subsexpr(), p).is_empty() {
+        return None; // template mentions a pattern variable -> grouped, not a single scalar
+    }
+    let body = unsafe { pat_expr.span().as_ref().unwrap() };
+    let (factors, nvars) = crate::zipper_join::parse_body_factors(body)?;
+    if factors.len() < 2 {
+        return None; // a single factor is already O(N)
+    }
+    let proj = count_sink_pattern_refs(args[3].subsexpr(), p);
+    match &sinks[0] {
+        crate::sinks::ASink::CountSink(_) => {
+            if proj.len() != p {
+                return None; // COUNT needs a full projection (distinct-output < matches otherwise)
+            }
+            crate::ghd::ghd_aggregate_auto::<u64>(read_copy, &factors, nvars, |_| 1)
+                .map(FactorizedAgg::Count)
+        }
+        crate::sinks::ASink::SumSink(_) => {
+            if proj.len() != 1 {
+                return None; // SUM sums exactly one projected numeric column
+            }
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_sum_distinct(read_copy, &factors, nvars, free).map(FactorizedAgg::Sum)
+        }
+        // MIN/MAX over the distinct values of one column = the reduction over its surviving domain
+        // (idempotent, so distinct vs multiplicity does not matter). init/op mirror FloatReduction.
+        crate::sinks::ASink::FMinSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_float_reduce_distinct(read_copy, &factors, nvars, free, f64::MAX, |a, n| {
+                *a = a.min(n)
+            })
+            .map(FactorizedAgg::Float)
+        }
+        crate::sinks::ASink::FMaxSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_float_reduce_distinct(read_copy, &factors, nvars, free, f64::MIN, |a, n| {
+                *a = a.max(n)
+            })
+            .map(FactorizedAgg::Float)
+        }
+        // bitwise AND of the distinct values' first byte, over the surviving domain (associative +
+        // commutative + idempotent, so order- and multiplicity-independent -> byte-identical).
+        crate::sinks::ASink::AndSink(_) if proj.len() == 1 => {
+            let free = *proj.iter().next().unwrap();
+            crate::ghd::ghd_and_distinct(read_copy, &factors, nvars, free).map(FactorizedAgg::And)
+        }
+        _ => None,
+    }
+}
 use crate::sources::{AFactor, Resource, ResourceRequest};
 
 pub static mut transitions: usize = 0;
@@ -1010,6 +1135,22 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
+    /// [`Space::query_multi`] behind the leapfrog dispatch: a nonempty relation-prefixed
+    /// conjunction routes to the worst-case-optimal join in [`crate::zipper_join`], which streams
+    /// the same matches through `effect`; any other body, or a disabled toggle
+    /// (`MORK_LEAPFROG=0`), takes the ProductZipper path below. Only the space-to-space transform
+    /// dispatches: interpreted sources and sinks and the pattern-directed dumps keep the stock
+    /// path and its enumeration order.
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        #[cfg(feature = "leapfrog")]
+        if crate::zipper_join::leapfrog_dispatch_enabled() {
+            if let Some(touched) = crate::zipper_join::query_multi_leapfrog(btm, pat_expr, &mut effect) {
+                return touched;
+            }
+        }
+        Self::query_multi(btm, pat_expr, effect)
+    }
+
     pub fn query_multi<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
@@ -1364,7 +1505,7 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1522,6 +1663,13 @@ impl Space {
         let mut astack = Vec::with_capacity(64);
 
         let mut any_new = false;
+        // Fast path: an ungrouped, projection-free count over a decomposable multi-factor body is
+        // computed by the factorized aggregate (O(N^fhtw)) instead of enumerating the whole join.
+        // The query below still runs but stops after one representative match, which seeds the
+        // single group so finalize discovers the template context; set_precomputed then supplies the
+        // real count. When the gate declines (grouped, projected, cyclic, single-factor, disabled)
+        // this is None and the enumerate path runs unchanged.
+        let fast = factorized_aggregate_gate(&read_copy, pat_expr, &sinks, &templates);
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
@@ -1550,10 +1698,36 @@ impl Space {
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
                     }
-                    true
+                    // Fast path stops after the first successful match: one representative seeds the
+                    // single group, and set_precomputed (below) supplies the factorized aggregate.
+                    fast.is_none()
                 }
             }
         });
+
+        match fast {
+            Some(FactorizedAgg::Count(n)) => {
+                if let crate::sinks::ASink::CountSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
+            }
+            Some(FactorizedAgg::Sum(n)) => {
+                if let crate::sinks::ASink::SumSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
+            }
+            Some(FactorizedAgg::Float(n)) => match &mut sinks[0] {
+                crate::sinks::ASink::FMinSink(cs) => cs.set_precomputed(n),
+                crate::sinks::ASink::FMaxSink(cs) => cs.set_precomputed(n),
+                _ => {}
+            },
+            Some(FactorizedAgg::And(n)) => {
+                if let crate::sinks::ASink::AndSink(cs) = &mut sinks[0] {
+                    cs.set_precomputed(n);
+                }
+            }
+            None => {}
+        }
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };

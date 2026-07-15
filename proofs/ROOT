@@ -1,0 +1,6 @@
+session "WcoProofs" = HOL +
+  description "Soundness of the routing gate (RoutingSafe), the retired byte-level union-find's boundary (ZipperUnifySafe), and the total router's unification-system facts (TotalRouterSafe)."
+  theories
+    RoutingSafe
+    ZipperUnifySafe
+    TotalRouterSafe

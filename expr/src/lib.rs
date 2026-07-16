@@ -1974,6 +1974,52 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
     let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
 
     macro_rules! step {
+        (derefBound $t:expr) => {{
+            let mut t: ExprEnv = $t;
+            'bound: loop {
+                match t.var_opt() {
+                    None     => break 'bound t,
+                    Some(vs) => match bindings.get(&vs) {
+                                    None          => {               break    'bound t; }
+                                    Some(binding) => { t = *binding; continue 'bound    }
+                                }
+                }
+            }
+        }};
+
+        // [Remy] :
+        // Note that this block only ever gets reached, if the `match2` callback gets called.
+        //   The `match2` callback only gets called when it hits a variable or reference on a left or right hand side.
+        (push $x:expr, $y:expr) => {{
+            let _x: ExprEnv = $x;
+            let _y: ExprEnv = $y;
+            match (_x.var_opt(), _y.var_opt()) {
+                (None,None)                                                => unreachable!("Expected at leat one variable or reference."),
+                (Some(xvs), Some(yvs)) if step!(isUnbound xvs) 
+                                       && step!(isUnbound yvs)             => stack.push((_x, _y)),
+                _                      if !encountered.contains(&(_x, _y)) => { encountered.insert((_x, _y)); stack.push((_x, _y)); }
+                _                                                          => {}
+            }
+        }};
+        // [Remy] :
+        // This block only gets used in the `push` branch of the this macro.
+        (isUnbound $v:expr) => {{
+            let mut v: ExprVar = $v;
+            'unbound: loop {
+                match bindings.get(&v) {
+                    None          => break 'unbound true,
+                    Some(binding) => match binding.var_opt() {
+                                         None     => {         break    'unbound false }
+                                         Some(vs) => { v = vs; continue 'unbound       }
+                                     }
+                }
+            }
+        }};
+
+        // [Remy] :
+        // The occurs check here is actually incomplete,
+        //   but it does not remove any valid results, so it's doing filtering.
+        //   it's completeness is addressed in `apply_e`'s cycles checking map.
         (occurs $x:expr, $e:expr) => {{
             let x = $x;
             let e = $e;
@@ -1985,60 +2031,15 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
             }
         }};
-        (derefBound $t:expr) => {{
-            let mut t: ExprEnv = $t;
-            'bound: loop {
-                match t.var_opt() {
-                    None => { break 'bound t; }
-                    Some(vs) => {
-                        match bindings.get(&vs) {
-                            None => { break 'bound t; }
-                            Some(binding) => {
-                                t = *binding;
-                                continue 'bound
-                            }
-                        }
-                    }
-                }
-            }
-        }};
-        (isUnbound $v:expr) => {{
-            let mut v: ExprVar = $v;
-            'unbound: loop {
-                match bindings.get(&v) {
-                    None => { break 'unbound true }
-                    Some(binding) => {
-                        match binding.var_opt() {
-                            None => { break 'unbound false }
-                            Some(vs) => {
-                                v = vs;
-                                continue 'unbound
-                            }
-                        }
-                    }
-                }
-            }
-        }};
-        (push $x:expr, $y:expr) => {{
-            let _x: ExprEnv = $x;
-            let _y: ExprEnv = $y;
-            if PRINT_DEBUG { println!("pushing {} {}", _x.show(), _y.show()); }
-            match (_x.var_opt(), _y.var_opt()) {
-                (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
-                    stack.push((_x, _y));
-                }
-                _ if !encountered.contains(&(_x, _y)) => {
-                    encountered.insert((_x, _y));
-                    stack.push((_x, _y));
-                }
-                _ => {}
-            }
-        }};
     }
 
     // let mut largs = vec![];
     // let mut rargs = vec![];
 
+
+    // [Remy] :
+    // Note that although values on the stack are being popped, they are all pointers to data that must live longer than the unification operation,
+    //   so although we are constructing bindings from values derived from stack values (Expr pointers), the bindings will be usable after they are popped. 
     'popping: while let Some((xpop, ypop)) = stack.pop() {
         if PRINT_DEBUG {
             println!("step {iterations}");
@@ -2053,6 +2054,7 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
             println!();
         }
 
+
         if iterations > MAX_UNIFY_ITER { 
             return Err(UnificationFailure::MaxIter(iterations))
         }
@@ -2062,6 +2064,11 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
             // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
             // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
         }
+
+
+        // [Remy] :
+        // First, if there is a variable on either side, we dereference each in a loop as far as possible 
+        //  so that the following match can ask simply, "Are we making bindings, or comparing bindings?".
         let dt1: ExprEnv = step!(derefBound xpop);
         let dt2: ExprEnv = step!(derefBound ypop);
 
@@ -2069,12 +2076,14 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
             (None, None) => {
                 let mut ts1 = dt1.clone().v_incr_traversal();
                 let mut ts2 = dt2.clone().v_incr_traversal();
-
+                // [Remy] :
+                // `match2` will find cases that don't match (failure to unify), 
+                //   values that are definately equal,
+                //   and values that __may__ unify. the callback is responsible for sheduling more specific cases.
                 if let Err((o1, o2)) = match2(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
                                               &mut |_ts1, e1, i1, _ts2, e2, i2| {
                                                   step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32))
                                               }) {
-                    if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
                 }
 
@@ -2093,25 +2102,43 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
                 //     return Err(UnificationFailure::Difference(dt1, dt2));
                 // }
             }
+
             (Some(vx), ov) => {
-                if let Some(sv) = ov { if vx == sv { continue 'popping } }
+                // [Remy] :
+                // The order of the `match` blocks matters here.
+                //   Only this block will check variables with other variables.
+                //   since variable comparisons are always done in this block, all variable = variable bindings are ordered
+                if let Some(sv) = ov { if vx == sv { continue 'popping } } // this guarantees that a variable won't add a binding to itself
+                
+                // If the right hand side is a structure, we technically need to do occurs checking of the left had side variable.
                 if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                
+                // [Remy] :
+                // Symbols are trivial, no extra operation needed.
+                // The final bindings made are of this form:
+                //   
+                // left_var -> right_symbol
+                // left_var -> right_var
+                // left_var -> right_structure
                 bindings.insert(vx, dt2.clone());
             }
-            (ov, Some(vy)) => {
-                if let Some(sv) = ov { if vy == sv { continue 'popping } }
+            (None, Some(vy)) => {
+                // [Remy] :
+                // This block is like the block above, but it can work under the assumption that the left hand side isn't a variable.
                 if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                
+                // [Remy] :
+                // right_var -> left_structure
+                // right_var -> left_symbol
                 bindings.insert(vy, dt1.clone());
             }
         }
     }
 
-    if stack.is_empty() {
-        Ok(bindings)
-    } else {
-        unreachable!()
-    }
+    core::debug_assert!(stack.is_empty());
+    Ok(bindings)
 }
+
 
 
 // Generalization vars in the output are numbered by first occurrence (0..).

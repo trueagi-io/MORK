@@ -10,6 +10,7 @@ mork-frontend = { workspace=true }
 mork-expr = { workspace=true }
 mork-interning = { workspace = true }
 pathmap = { workspace = true, features = ["nightly"] }
+linalg = { workspace = true, optional = true, features = ["jit"] }
 log = { workspace=true }
 env_logger = { workspace=true }
 memmap2 = "0.9.5"
@@ -29,6 +30,7 @@ subprocess = { version = "0.2.13" }
 
 [features]
 default = ["grounding", "specialize_io"]
+einsum = ["dep:linalg"]
 neo4j = ["dep:neo4rs", "dep:tokio"]
 interning = []
 wasm = ["dep:wasmtime"]

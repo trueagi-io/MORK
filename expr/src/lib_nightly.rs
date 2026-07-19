@@ -169,19 +169,79 @@ pub fn item_source<'a>(e: Expr) -> impl Coroutine<(), Yield=SourceItem<'a>, Retu
 
 
 #[inline(never)]
-pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(n: u8, mut original_intros: u8, mut new_intros: u8, e: Expr, bindings: &BTreeMap<ExprVar, ExprEnv>, es: &mut std::pin::Pin<&mut OS>, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
+pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Result<usize>>>(
+    //                                                     [Remy] :
+    n                   : u8,                           // Identifies the expression being interpretted.
+    mut original_intros : u8,                           // The number of NewVars __read__ so from a source expression stream,
+    mut new_intros      : u8,                           // The number of NewVars __written__ to the output.
+    e                   : Expr,                         // The expression that will be interpretted as an instructon stream.
+    bindings            : &BTreeMap<ExprVar, ExprEnv>,  // Bindings made from previous call to the `unify` function.
+    es                  : &mut std::pin::Pin<&mut OS>,  // The output expression stream.
+    cycled              : &mut BTreeMap<ExprVar, u8>,   // Record of all detected cycles found when evaluating. The current behavior is that when a cycle is encountered a NewVar is written.
+    stack               : &mut Vec<ExprVar>,            // Used to catch substitution cycles.
+    assignments         : &mut Vec<ExprVar>             // Record of when a NewVar is written (and isn't cyclic)
+) -> (u8, u8) {
+    // [Remy] :
+    // The key to understanding this function is it "calls" the input expression as a "routine", and the binding expressions are "subroutines".
+    //   What does this mean? probably the best metaphor would be that the bindings are like a library of procedures, and the first procedure to call is the first expression `e`.
+    //
+    //   The pair '(n, original_intros)` to __identify__ bindings. 
+    //   Note, since `bindings` is immutable, it serves to lookup bindings to be substituted.
+    //   This pair is also used to in conjunction with the `stack` to identify if there is a substitution cycle.
+    //   This is done by pushing the pair to the `stack`, and if the same pair is found again, it means we started a new stream from a __binding__,
+    //   and that binding eventually spawned itself again. This is effectively the occurs check, but done at application time instead of at binding time.
+
+
+    // [Remy] :
+    //   This variable is used exculsively when PRINT_DEBUG is on. It does not affect the logic of the apply_e behavior.
     let depth = stack.len();
     if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
     if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, e); }
-    let mut src = item_source(e);
     
+    // [Remy] :
+    //   `n` identifies source expression `e`.
+    //   `e` is now interpretted as a stream of instructions. termination of this function is determined by reaching the end of this stream.
+    let mut src = item_source(e);
+
     loop {
         match std::pin::pin!(&mut src).resume(()) {
+            // [Remy] :
+            // It took me a while to grasp that __at least one key's `n`__ from the bindings must be the same as the
+            //   initial `n` that represents the identity of the initial expression.
+            //   I've done my best to avoid describing the logic of unify and apply_e without talking about MORK execs, but it actually serves as
+            //   the best example of why it to behaves this way.
+            //
+            //   MORK rough exec shape : (exec <ground-priority> <patterns> <templates>)
+            //
+            //   When a MORK exec runs, it does pattern matching on its patterns, then uses those binds on the template.
+            //   since the exec is an expression, the whole expression is given a singular id (for example exec_id == 0).
+            //   The patterns are split up into sub expressions, but each sub expression is still given the same expr id (exec_id == 0).
+            //   The reason is that they share the same introduction variables, NewVars. In other words they have the same binding context!
+            //
+            //   However, when a product zipper is made to be matched with each pattern sub expression, each value in the product is a different expression.
+            //   Since they are they do not share the same binding context, the need different IDs, one for each, and distinct from the exec (product_expr_id != 0).
+            //
+            //   When the two sides are unified, we get bindings, but we use them on the templates.
+            //   The templates share the same binding context as the patterns, because they are from the same expression.
+            //   In the case of MORK execs, the first bindings we look up are the bindings associated with the patterns,
+            //   because the expression we are substituting is the template, and they share the same (exec_id == 0).
+            //
+            //   Unfortunately, __there is an extra complication__. the patterns and templates also share the same `original_intros`.
+            //   This means you need to `apply_e` on the patterns first, in order to compute the original_intros value in the result.
+            //
+            //   So, if you are running this on the patterns, the first binding to match with `Some` will be on a `NewVar`,
+            //   But if you do this on a template (which comes later), it will be in the `VarRef`` branch. 
             CoroutineState::Yielded(SourceItem::Tag(Tag::NewVar)) => {
                 match bindings.get(&(n, original_intros)) {
                     None => {
                         if PRINT_DEBUG { println!("{}@ $ no binding for {:?}", "  ".repeat(depth), (n, original_intros)); }
                         // println!("original {original_intros} new {new_intros}");
+
+
+                        // [Remy] :
+                        // The `Some` condition below must be understood in terms of the recursive case.
+                        //   One needs to consider a binding expression that was written earlier that wrote a NewVar, 
+                        //   and it gets written again. then a reference is written instead to have sharing.
                         if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
                             // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
                             es.as_mut().resume(SourceItem::Tag(Tag::VarRef(pos as _)));
@@ -196,29 +256,56 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
                     Some(rhs) => {
                         if PRINT_DEBUG { println!("{}@ $ with bindings +{} {} for {:?}", "  ".repeat(depth), rhs.n, rhs.show(), (n, original_intros)); }
                         // println!("stack={stack:?}");
+
+                        
                         if let Some(introduced) = cycled.get(&(n, original_intros)) {
+                            // [Remy] :
+                            // It's not entirely clear why the algorithm continues after having cycles, 
+                            //   but I hazard to guess the logic here is that __if__ this was a rational tree, all cycles should share the same reference.
+
                             if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
                             es.as_mut().resume(SourceItem::Tag(Tag::VarRef(*introduced)));
                             // println!("nv cycled contains {:?}", (n, original_intros));
+
                         } else if stack.contains(&(n, original_intros)) {
+                            // [Remy] : 
+                            //   Similarly, __if__ we had rational tree semantics,there should still be an introductory variable.
+
                             cycled.insert((n, original_intros), new_intros);
                             // println!("nv cycled insert {:?}", (n, original_intros));
                             es.as_mut().resume(SourceItem::Tag(Tag::NewVar));
                             new_intros += 1;
+
                         } else {
+                            // [Remy] :
+                            // Understanding this block is crucial. The subtlety here is that we push the aforementioned `(n, original_intros)` pair
+                            //   in order to recognise what streams are live and waiting for the current stream to finish. `stack` and `cycles` are what makes this
+                            //   a graph algorithm, together they are a variant of a "visited set". similar to strongly the SCC algorithim.
                             stack.push((n, original_intros));
+                            // [Remy] :
+                            // The next subtle part is that we recurse __procedurally__ via `apply_e`, but __structurally__ via the `bindings`.
+                            //   note how after leaving a readable trail with the `stack`, we call `apply_e` using 
+                            //   the matched binding's equivalent of `n`(rhs.n) and `original_intros`(rhs.v).
+                            //
+                            //   This is the "subroutine" behavior
                             let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, es, cycled, stack, assignments);
                             new_intros = nvars_;
+                            // [Remy] :
+                            // Once a substitution is complete, we don't want to accidentally cause future substitutions to think they are cycling prematurely. 
                             stack.pop();
                         }
                         original_intros += 1;
                     }
                 }
             }
+            // [Remy] :
+            //   The main complexity of the code is explained above, and the following block is just a slightly modified version of the `NewVar` block
             CoroutineState::Yielded(SourceItem::Tag(Tag::VarRef(i))) => {
                 match bindings.get(&(n, i)) {
                     None => {
                         if PRINT_DEBUG { println!("{}@ _{} no binding for {:?}", "  ".repeat(depth), i+1, (n, i)); }
+
+
                         if let Some(pos) = assignments.iter().position(|e| *e == (n, i)) {
                             // println!("{}assignments _{} for {:?} (ref)", "  ".repeat(depth), pos+1, (n, i));
                             es.as_mut().resume(SourceItem::Tag(Tag::VarRef(pos as u8)));
@@ -231,9 +318,13 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
                     Some(rhs) => {
                         if PRINT_DEBUG { println!("{}@ _{} with binding +{} {} for {:?}", "  ".repeat(depth), i+1, rhs.n, rhs.show(), (n, i)); }
                         // println!("stack={stack:?}");
+
+
                         if let Some(introduced) = cycled.get(&(n, i)) {
                             // println!("vr cycled contains {:?}", (n, i));
                             if PRINT_DEBUG { println!("{}cycled _{} for {:?} (ref) rhs={}", "  ".repeat(depth), *introduced+1, (n, i), rhs.show()); }
+
+
                             es.as_mut().resume(SourceItem::Tag(Tag::VarRef(*introduced)));
                         } else if stack.contains(&(n, i)) {
                             // println!("vr cycled insert {:?}", (n, i));
@@ -264,6 +355,7 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
         }
     }
 }
+
 /// NOTE : expr_env, stack, assignments are cleared when this is called
 #[inline(always)]
 pub fn unifiable_reuse_state(left : Expr, right : Expr, mut expr_env : &mut Vec<(ExprEnv, ExprEnv)>, mut stack : &mut Vec<(u8, u8)>, mut assignments : &mut Vec<(u8, u8)>)->bool {

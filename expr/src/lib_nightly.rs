@@ -174,20 +174,20 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
     n                   : u8,                           // Identifies the expression being interpretted.
     mut original_intros : u8,                           // The number of NewVars __read__ so from a source expression stream,
     mut new_intros      : u8,                           // The number of NewVars __written__ to the output.
-    e                   : Expr,                         // the expression that will be interpretted as an instructon stream.
-    bindings            : &BTreeMap<ExprVar, ExprEnv>,  // These bindings are made using the `unify` function.
-    es                  : &mut std::pin::Pin<&mut OS>,  // This is the output expression stream.
-    cycled              : &mut BTreeMap<ExprVar, u8>,   // this records all detected cycles found when evaluating. The current behavior is that when a cycle is encountered a NewVar is written.
-    stack               : &mut Vec<ExprVar>,            // Used to catch cycles.
-    assignments         : &mut Vec<ExprVar>             // This records when a NewVar is written (and isn't cyclic)
+    e                   : Expr,                         // The expression that will be interpretted as an instructon stream.
+    bindings            : &BTreeMap<ExprVar, ExprEnv>,  // Bindings made from previous call to the `unify` function.
+    es                  : &mut std::pin::Pin<&mut OS>,  // The output expression stream.
+    cycled              : &mut BTreeMap<ExprVar, u8>,   // Record of all detected cycles found when evaluating. The current behavior is that when a cycle is encountered a NewVar is written.
+    stack               : &mut Vec<ExprVar>,            // Used to catch substitution cycles.
+    assignments         : &mut Vec<ExprVar>             // Record of when a NewVar is written (and isn't cyclic)
 ) -> (u8, u8) {
     // [Remy] :
-    //   The key to understanding this function is it "calls" the input expression as a "routine", and the binding expressions are "subroutines".
+    // The key to understanding this function is it "calls" the input expression as a "routine", and the binding expressions are "subroutines".
     //   What does this mean? probably the best metaphor would be that the bindings are like a library of procedures, and the first procedure to call is the first expression `e`.
     //
     //   The pair '(n, original_intros)` to __identify__ bindings. 
-    //   Note, since bindings is immutable it serves to lookup bindings that may not be from the original source expression.
-    //   This pair is also used to in conjunction with the `stack` to identify if there is a cycle.
+    //   Note, since `bindings` is immutable, it serves to lookup bindings to be substituted.
+    //   This pair is also used to in conjunction with the `stack` to identify if there is a substitution cycle.
     //   This is done by pushing the pair to the `stack`, and if the same pair is found again, it means we started a new stream from a __binding__,
     //   and that binding eventually spawned itself again. This is effectively the occurs check, but done at application time instead of at binding time.
 
@@ -206,7 +206,7 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
     loop {
         match std::pin::pin!(&mut src).resume(()) {
             // [Remy] :
-            //   It took me a while to grasp that __at least one key__ from the bindings must be the same as the
+            // It took me a while to grasp that __at least one key's `n`__ from the bindings must be the same as the
             //   initial `n` that represents the identity of the initial expression.
             //   I've done my best to avoid describing the logic of unify and apply_e without talking about MORK execs, but it actually serves as
             //   the best example of why it to behaves this way.
@@ -214,23 +214,23 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
             //   MORK rough exec shape : (exec <ground-priority> <patterns> <templates>)
             //
             //   When a MORK exec runs, it does pattern matching on its patterns, then uses those binds on the template.
-            //   since the exec is an expression, the whole expression is given a singular id (for example 0).
-            //   The patterns are split up into sub expressions, but each sub expression is still given the same expr id (0).
+            //   since the exec is an expression, the whole expression is given a singular id (for example exec_id == 0).
+            //   The patterns are split up into sub expressions, but each sub expression is still given the same expr id (exec_id == 0).
             //   The reason is that they share the same introduction variables, NewVars. In other words they have the same binding context!
             //
             //   However, when a product zipper is made to be matched with each pattern sub expression, each value in the product is a different expression.
-            //   Since they are they do not share the same binding context, the need different IDs, one for each, and distinct from the exec (!= 0).
+            //   Since they are they do not share the same binding context, the need different IDs, one for each, and distinct from the exec (product_expr_id != 0).
             //
             //   When the two sides are unified, we get bindings, but we use them on the templates.
             //   The templates share the same binding context as the patterns, because they are from the same expression.
             //   In the case of MORK execs, the first bindings we look up are the bindings associated with the patterns,
-            //   because the expression we are substituting is the template, and they share the same (0).
+            //   because the expression we are substituting is the template, and they share the same (exec_id == 0).
             //
             //   Unfortunately, __there is an extra complication__. the patterns and templates also share the same `original_intros`.
             //   This means you need to `apply_e` on the patterns first, in order to compute the original_intros value in the result.
             //
             //   So, if you are running this on the patterns, the first binding to match with `Some` will be on a `NewVar`,
-            //   But if you do this on a template, it will be in the `VarRef`` branch. 
+            //   But if you do this on a template (which comes later), it will be in the `VarRef`` branch. 
             CoroutineState::Yielded(SourceItem::Tag(Tag::NewVar)) => {
                 match bindings.get(&(n, original_intros)) {
                     None => {
@@ -239,9 +239,9 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
 
 
                         // [Remy] :
-                        //   The `Some` condition below must be understood in terms of the recursive case.
+                        // The `Some` condition below must be understood in terms of the recursive case.
                         //   One needs to consider a binding expression that was written earlier that wrote a NewVar, 
-                        //   and it gets written again. then a reference is written instead of a to have sharing.
+                        //   and it gets written again. then a reference is written instead to have sharing.
                         if let Some(pos) = assignments.iter().position(|e| *e == (n, original_intros)) {
                             // println!("{}assignments _{} for {:?} (newvar)", "  ".repeat(depth), pos + 1, (n, original_intros));
                             es.as_mut().resume(SourceItem::Tag(Tag::VarRef(pos as _)));
@@ -260,7 +260,7 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
                         
                         if let Some(introduced) = cycled.get(&(n, original_intros)) {
                             // [Remy] :
-                            //   It's not entirely clear why the algorithm continues after having cycles, 
+                            // It's not entirely clear why the algorithm continues after having cycles, 
                             //   but I hazard to guess the logic here is that __if__ this was a rational tree, all cycles should share the same reference.
 
                             if PRINT_DEBUG { println!("{}cycled _{} for {:?} (newvar)", "  ".repeat(depth), *introduced+1, (n, original_intros)) };
@@ -278,12 +278,12 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
 
                         } else {
                             // [Remy] :
-                            //   Understanding this block is crucial. The subtlety here is that we push the aforementioned `(n, original_intros)` pair
+                            // Understanding this block is crucial. The subtlety here is that we push the aforementioned `(n, original_intros)` pair
                             //   in order to recognise what streams are live and waiting for the current stream to finish. `stack` and `cycles` are what makes this
-                            //   a graph algorithm, this stack is effectively a variant of a "visited set". similar to strongly the SCC stack.
+                            //   a graph algorithm, together they are a variant of a "visited set". similar to strongly the SCC algorithim.
                             stack.push((n, original_intros));
                             // [Remy] :
-                            //   The next subtle part is that we recurse __procedurally__ via `apply_e`, but __structurally__ via the `bindings`.
+                            // The next subtle part is that we recurse __procedurally__ via `apply_e`, but __structurally__ via the `bindings`.
                             //   note how after leaving a readable trail with the `stack`, we call `apply_e` using 
                             //   the matched binding's equivalent of `n`(rhs.n) and `original_intros`(rhs.v).
                             //
@@ -291,7 +291,7 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
                             let (evars_, nvars_) = apply_e(rhs.n, rhs.v, new_intros, rhs.subsexpr(), bindings, es, cycled, stack, assignments);
                             new_intros = nvars_;
                             // [Remy] :
-                            //   Once a substitution is complete, we don't want to accidentally cause future substitutions to think they are cycling prematurely. 
+                            // Once a substitution is complete, we don't want to accidentally cause future substitutions to think they are cycling prematurely. 
                             stack.pop();
                         }
                         original_intros += 1;

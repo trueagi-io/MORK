@@ -127,42 +127,33 @@ pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem
 
 pub fn item_source<'a>(e: Expr) -> impl Coroutine<(), Yield=SourceItem<'a>, Return=usize> {
     #[coroutine] move || {
-        let mut stack: smallvec::SmallVec<[u8; 64]> = smallvec::SmallVec::new();
         let mut j: usize = 0;
-        'putting: loop {
+        let mut pending = 1usize;
+        while pending != 0 {
             match unsafe { byte_item(*e.ptr.byte_add(j)) } {
-                Tag::NewVar => { j += 1; yield SourceItem::Tag(Tag::NewVar) }
-                Tag::VarRef(r) => { j += 1; yield SourceItem::Tag(Tag::VarRef(r)) }
+                Tag::NewVar => {
+                    j += 1;
+                    pending -= 1;
+                    yield SourceItem::Tag(Tag::NewVar)
+                }
+                Tag::VarRef(r) => {
+                    j += 1;
+                    pending -= 1;
+                    yield SourceItem::Tag(Tag::VarRef(r))
+                }
                 Tag::SymbolSize(s) => {
                     let slice = unsafe { &*slice_from_raw_parts(e.ptr.byte_add(j + 1), s as usize) };
-                    yield SourceItem::Symbol(slice);
                     j += s as usize + 1;
+                    pending -= 1;
+                    yield SourceItem::Symbol(slice);
                 }
                 Tag::Arity(a) => {
-                    yield SourceItem::Tag(Tag::Arity(a));
                     j += 1;
-                    if a > 0 {
-                        stack.push(a);
-                        continue 'putting;
-                    }
-                }
-            };
-
-            'popping: loop {
-                match stack.last_mut() {
-                    None => { break 'putting }
-                    Some(k) => {
-                        *k = *k - 1;
-                        if *k != 0 { continue 'putting }
-                    }
-                }
-
-                match stack.pop() {
-                    Some(_) => { },
-                    None => break 'popping
+                    pending = pending - 1 + usize::from(a);
+                    yield SourceItem::Tag(Tag::Arity(a));
                 }
             }
-        };
+        }
         j
     }
 }
@@ -296,9 +287,160 @@ pub fn unifies_reuse_state<W>(
 
 
 
+#[cfg(test)]
 mod tests {
     use std::ops::*;
-    use crate::{item_sink, Expr, Tag, parse, item_source, SourceItem};
+    use crate::{byte_item, item_byte, item_sink, Expr, ExprEnv, Tag, parse, item_source, SourceItem};
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum ReferenceItem {
+        Tag(Tag),
+        Symbol(Vec<u8>),
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self.0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 32) as u32
+        }
+
+        fn below(&mut self, upper: u32) -> u32 {
+            self.next() % upper
+        }
+    }
+
+    fn generate_term(rng: &mut Lcg, depth: u8, introduced: &mut u8, out: &mut Vec<u8>) {
+        let choice = if depth == 0 { rng.below(3) } else { rng.below(5) };
+        match choice {
+            0 if *introduced < 63 => {
+                out.push(item_byte(Tag::NewVar));
+                *introduced += 1;
+            }
+            1 if *introduced != 0 => {
+                out.push(item_byte(Tag::VarRef(rng.below(u32::from(*introduced)) as u8)));
+            }
+            3 | 4 if depth != 0 => {
+                let arity = rng.below(5) as u8;
+                out.push(item_byte(Tag::Arity(arity)));
+                for _ in 0..arity {
+                    generate_term(rng, depth - 1, introduced, out);
+                }
+            }
+            _ => {
+                let size = rng.below(4) as u8 + 1;
+                out.push(item_byte(Tag::SymbolSize(size)));
+                for _ in 0..size {
+                    out.push(b'a' + rng.below(26) as u8);
+                }
+            }
+        }
+    }
+
+    fn reference_walk(bytes: &[u8], offset: usize, items: &mut Vec<ReferenceItem>) -> (usize, u8) {
+        match byte_item(bytes[offset]) {
+            Tag::NewVar => {
+                items.push(ReferenceItem::Tag(Tag::NewVar));
+                (1, 1)
+            }
+            Tag::VarRef(index) => {
+                items.push(ReferenceItem::Tag(Tag::VarRef(index)));
+                (1, 0)
+            }
+            Tag::SymbolSize(size) => {
+                let end = offset + usize::from(size) + 1;
+                items.push(ReferenceItem::Symbol(bytes[offset + 1..end].to_vec()));
+                (usize::from(size) + 1, 0)
+            }
+            Tag::Arity(arity) => {
+                items.push(ReferenceItem::Tag(Tag::Arity(arity)));
+                let mut span = 1;
+                let mut introductions = 0u8;
+                for _ in 0..arity {
+                    let (child_span, child_introductions) =
+                        reference_walk(bytes, offset + span, items);
+                    span += child_span;
+                    introductions = introductions.checked_add(child_introductions).unwrap();
+                }
+                (span, introductions)
+            }
+        }
+    }
+
+    fn verify_scanners(case: usize, mut bytes: Vec<u8>) {
+        let mut expected_items = Vec::new();
+        let (span, _) = reference_walk(&bytes, 0, &mut expected_items);
+        assert_eq!(span, bytes.len(), "reference span for case {case}");
+
+        let expr = Expr { ptr: bytes.as_mut_ptr() };
+        let mut expected_args = Vec::new();
+        if let Tag::Arity(arity) = byte_item(bytes[0]) {
+            let mut offset = 1usize;
+            let mut introductions = 0u8;
+            for _ in 0..arity {
+                let mut ignored_items = Vec::new();
+                let (child_span, child_introductions) =
+                    reference_walk(&bytes, offset, &mut ignored_items);
+                expected_args.push((offset as u32, introductions));
+                offset += child_span;
+                introductions = introductions.checked_add(child_introductions).unwrap();
+            }
+            assert_eq!(offset, bytes.len(), "argument spans for case {case}");
+        }
+
+        let mut actual_args = Vec::new();
+        ExprEnv::new(7, expr).args(&mut actual_args);
+        assert_eq!(actual_args.len(), expected_args.len(), "argument count for case {case}");
+        for (actual, &(offset, introductions)) in actual_args.iter().zip(&expected_args) {
+            assert_eq!(actual.n, 7, "argument namespace for case {case}");
+            assert_eq!(actual.v, introductions, "argument introductions for case {case}");
+            assert_eq!(actual.offset, offset, "argument offset for case {case}");
+            assert_eq!(actual.base.ptr, expr.ptr, "argument base for case {case}");
+        }
+
+        let mut actual_items = Vec::new();
+        let mut source = std::pin::pin!(item_source(expr));
+        let consumed = loop {
+            match source.as_mut().resume(()) {
+                CoroutineState::Yielded(SourceItem::Tag(tag)) => {
+                    actual_items.push(ReferenceItem::Tag(tag));
+                }
+                CoroutineState::Yielded(SourceItem::Symbol(symbol)) => {
+                    actual_items.push(ReferenceItem::Symbol(symbol.to_vec()));
+                }
+                CoroutineState::Complete(consumed) => break consumed,
+            }
+        };
+        assert_eq!(consumed, bytes.len(), "source span for case {case}");
+        assert_eq!(actual_items, expected_items, "source items for case {case}");
+    }
+
+    #[test]
+    fn generated_expression_scanners_match_recursive_reference() {
+        verify_scanners(0, vec![item_byte(Tag::Arity(0))]);
+
+        let mut deep = vec![item_byte(Tag::Arity(1)); 63];
+        deep.extend([item_byte(Tag::SymbolSize(1)), b'x']);
+        verify_scanners(1, deep);
+
+        let mut wide = vec![item_byte(Tag::Arity(63))];
+        wide.extend(std::iter::repeat_n(item_byte(Tag::NewVar), 63));
+        verify_scanners(2, wide);
+
+        let mut rng = Lcg(0x5eed_cafe_f00d_beef);
+        for case in 3..4099 {
+            let arity = rng.below(9) as u8;
+            let mut bytes = vec![item_byte(Tag::Arity(arity))];
+            let mut introduced = 0;
+            for _ in 0..arity {
+                generate_term(&mut rng, 6, &mut introduced, &mut bytes);
+            }
+            verify_scanners(case, bytes);
+        }
+    }
 
     #[test]
     fn basic_sink() {

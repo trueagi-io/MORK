@@ -1814,6 +1814,7 @@ impl ExprEnv {
         }
     }
 
+    #[inline(always)]
     pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
         match byte_item(*self.subsexpr().ptr) {
@@ -1825,18 +1826,35 @@ impl ExprEnv {
                     offset: self.offset + 1,
                     base: self.base,
                 };
-                for sk in 0..k {
-                    let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
-                        |c: &mut u8, o| { *c += 1; },
-                        |_, o, r| {},
-                        |_, o, _| {},
-                        |_, o, _| {},
-                        |_, o, x, y| {},
-                        |_, _, _| {});
+                for _ in 0..k {
+                    let mut pending = 1usize;
+                    let mut se_c = 0u8;
+                    let mut se_offset = 0u32;
+                    while pending != 0 {
+                        match byte_item(*env.base.ptr.add((env.offset + se_offset) as usize)) {
+                            Tag::NewVar => {
+                                se_c += 1;
+                                pending -= 1;
+                                se_offset += 1;
+                            }
+                            Tag::VarRef(_) => {
+                                pending -= 1;
+                                se_offset += 1;
+                            }
+                            Tag::SymbolSize(size) => {
+                                pending -= 1;
+                                se_offset += u32::from(size) + 1;
+                            }
+                            Tag::Arity(arity) => {
+                                pending = pending - 1 + usize::from(arity);
+                                se_offset += 1;
+                            }
+                        }
+                    }
 
                     let ne = env.clone();
                     dest.push(ne);
-                    env.offset += se_offset as u32;
+                    env.offset += se_offset;
                     env.v += se_c;
                 }
             }

@@ -1146,6 +1146,114 @@ fn sink_pure_explode_collapse_ident() {
     assert_eq!(res, "(result foo)\n");
 }
 
+fn sink_pure_compound_capture() {
+    let mut s = Space::new();
+
+    // #136: a compound capture pattern destructures the call's result, so the template
+    // sees the tuple's fields rather than the whole tuple. The second exec nests the
+    // pattern one level deeper.
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,) (O (pure (R $x $y) ($x $y) (tuple 1 2))))
+(exec 1 (,) (O (pure (S $a $b) (($a) ($b)) (tuple (tuple 3) (tuple 4)))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] R $ $"), expr!(s, "[3] R _1 _2"), &mut v);
+    s.dump_sexpr(expr!(s, "[3] S $ $"), expr!(s, "[3] S _1 _2"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "(R 1 2)\n(S 3 4)\n");
+}
+
+fn sink_pure_pattern_rejection() {
+    let mut s = Space::new();
+
+    // A result that does not unify with the pattern emits nothing: a ground element
+    // mismatch (3 vs 1), then a repeated variable against unequal fields. The third
+    // exec is the accepting control for the repeated-variable shape.
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,) (O (pure (R a $y) (3 $y) (tuple 1 2))))
+(exec 1 (,) (O (pure (R b $x) ($x $x) (tuple 1 2))))
+(exec 2 (,) (O (pure (R c $x) ($x $x) (tuple 7 7))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] R $ $"), expr!(s, "[3] R _1 _2"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "(R c 7)\n");
+}
+
+fn sink_pure_symbol_guard() {
+    let mut s = Space::new();
+
+    // A ground symbol pattern is a pure guard: only the body match whose call result
+    // equals the symbol emits. reverse_symbol(123) is 321; reverse_symbol(456) is not.
+    const SPACE_EXPRS: &str = r#"
+(A 123)
+(A 456)
+
+(exec 0 (, (A $i))
+        (O (pure (ok $i) 321 (reverse_symbol $i))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[2] ok $"), expr!(s, "[2] ok _1"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "(ok 123)\n");
+}
+
+fn sink_pure_compound_multiplicity() {
+    let mut s = Space::new();
+
+    // One capture per body match: the instantiated pattern carries the match's own
+    // ground value next to the capture variable, so each match destructures its own
+    // result and the ground position is checked per firing.
+    const SPACE_EXPRS: &str = r#"
+(N 1)
+(N 2)
+(N 3)
+
+(exec 0 (, (N $n))
+        (O (pure (P $n $a) ($a $n) (tuple 5 $n))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "[3] P $ $"), expr!(s, "[3] P _1 _2"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, "(P 1 5)\n(P 2 5)\n(P 3 5)\n");
+}
+
 fn sink_bass64url_ident() {
     let mut s = Space::new();
 
@@ -6224,6 +6332,10 @@ fn main() {
             sink_pure_dynamic_subformula();
             sink_pure_quote_collapse_symbol();
             sink_pure_explode_collapse_ident();
+            sink_pure_compound_capture();
+            sink_pure_pattern_rejection();
+            sink_pure_symbol_guard();
+            sink_pure_compound_multiplicity();
             sink_bass64url_ident();
             sink_hex_ident();
             sink_hash_expr();

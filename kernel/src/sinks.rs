@@ -1119,30 +1119,72 @@ impl Sink for PureSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
+        let mut wrap: Vec<u8> = Vec::new();
+        let mut wargs: Vec<ExprEnv> = Vec::new();
+        let mut pbuffer: Vec<u8> = Vec::new();
+        let mut pstack = Vec::new();
+        let mut passignments = Vec::new();
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
-                let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
-                prz.descend_to_byte(b);
-                debug_assert!(prz.path_exists());
-                if !prz.descend_first_k_path(size as _) { unreachable!() }
-                loop {
-                    let clen = prz.origin_path().len();
-
+            // A pattern led by a symbol or a compound is a rejection pattern (#136): evaluate
+            // the call, unify the result against the pattern, and emit the template under the
+            // resulting bindings; a result that does not unify emits nothing. The engine's own
+            // unify/apply do the matching, so data-side variables and occurs rejection behave
+            // exactly as they do in a rewrite over `(mytag <pat>)`.
+            for class in [crate::space::SIZES, crate::space::ARITIES] {
+                for b in prz.child_mask().and(&ByteMask(class)).iter() {
+                    prz.descend_to_byte(b);
+                    debug_assert!(prz.path_exists());
                     let mut rz = prz.fork_read_zipper();
-                    'vals: while rz.to_next_val() {
-                        let p = rz.origin_path();
-                        trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
-                        todo!();
+                    'triples: while rz.to_next_val() {
+                        // The value path is the concatenated (template pattern call) triple;
+                        // wrapping it in an Arity(3) gives the three subexpressions one shared
+                        // variable namespace, so the pattern's VarRefs resolve to the
+                        // template's introductions.
+                        let full = rz.origin_path();
+                        wrap.clear();
+                        wrap.push(item_byte(Tag::Arity(3)));
+                        wrap.extend_from_slice(full);
+                        wargs.clear();
+                        ExprEnv::new(0, Expr { ptr: wrap.as_mut_ptr() }).args(&mut wargs);
+                        let &[tpl_env, pat_env, call_env] = &wargs[..] else {
+                            trace!(target: "sink", "pure malformed triple {}", serialize(full));
+                            continue 'triples
+                        };
+
+                        let mut res = match self.scope.eval(ExprSource::new(call_env.subsexpr().ptr)) {
+                            Ok(res) => { res }
+                            Err(er) => { trace!(target: "pure", "err {}", er); continue 'triples }
+                        };
+                        trace!(target: "sink", "pattern guard result {:?}", serialize(&res[..]));
+
+                        let mut pairs = vec![(pat_env, ExprEnv::new(1, Expr { ptr: res.as_mut_ptr() }))];
+                        match unify(&mut pairs) {
+                            Ok(bindings) => {
+                                pbuffer.clear();
+                                if let (_, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0, 0, 0, tpl_env.subsexpr(), &bindings, pbuffer, pstack, passignments) {
+                                    let rooted = wz.root_prefix_path().len();
+                                    if pbuffer.len() > rooted {
+                                        trace!(target: "sink", "pattern guard emit '{}'", serialize(&pbuffer[..]));
+                                        wz.move_to_path(&pbuffer[rooted..]);
+                                        wz.set_val(());
+                                        changed |= true;
+                                    } else {
+                                        // A fully constant template makes the write request root
+                                        // cover the whole sink expression; nothing can be emitted
+                                        // below it. Same limitation as the variable arms.
+                                        trace!(target: "sink", "pure template within its request root, skipping");
+                                    }
+                                }
+                            }
+                            Err(f) => {
+                                trace!(target: "sink", "pattern guard rejected {:?}", f);
+                            }
+                        }
+                        self.scope.return_alloc(res);
                     }
-
-                    if !prz.to_next_k_path(size as _) { break }
+                    if !prz.ascend_byte() { unreachable!() }
                 }
-                if !prz.ascend_byte() { unreachable!() }
-            }
-
-            for b in prz.child_mask().and(&ByteMask(crate::space::ARITIES)).iter() {
-                todo!();
             }
 
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {

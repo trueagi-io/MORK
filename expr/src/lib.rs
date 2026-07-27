@@ -2038,56 +2038,76 @@ impl ExprEnv {
         }
     }
 
+    /// One past this env's own term, when a stamp says where that is; 0 when nothing does.
+    #[inline]
+    fn stamped_end(&self) -> u32 {
+        if self.ground_skip != 0 { self.offset + self.ground_skip as u32 } else { 0 }
+    }
+
+    /// Split the `k` subterms laid out consecutively at this env's focus into `dest`, threading
+    /// the de Bruijn base across them: each one's `v` is this env's `v` plus every introduction
+    /// in its preceding siblings, so all `k` resolve against a single variable namespace.
+    ///
+    /// The focus is the first subterm, not a parent tag, so the run does not have to be wrapped
+    /// in an `Arity(k)`. That is what the sinks need: their stored path is the bare operand run
+    /// of a fixed-arity form with the head already stripped, so they split it in place with the
+    /// form's operand count instead of copying it under a synthetic arity byte just to give
+    /// [`args`](ExprEnv::args) something to read `k` off.
+    pub fn subterms(&self, k: u8, dest: &mut Vec<Self>) {
+        self.subterms_from(k, 0, dest)
+    }
+
+    /// [`subterms`](ExprEnv::subterms) with the run's end supplied, or 0 when the caller does not
+    /// know it. A caller that does -- `args`, whose parent tag carries a ground stamp -- lets the
+    /// last subterm inherit that stamp, which is the one the walk below never measures because
+    /// there is no following sibling to advance to.
+    fn subterms_from(&self, k: u8, run_end: u32, dest: &mut Vec<Self>) {
+        let mut env = self.clone();
+        for sk in 0..k {
+            let ne = env.clone();
+            dest.push(ne);
+            // The traversal below exists only to advance `env` past this subterm to reach the
+            // NEXT one, so after the last it is pure waste -- and it costs O(subterm span). On a
+            // right-nested pattern, where each level's last child is the whole remaining term,
+            // paying it at every level made a descent that calls `args` per node
+            // (`Space::coreferential_transition`) quadratic in the pattern's size. Skipping it
+            // makes such a descent linear.
+            if sk + 1 == k {
+                // The one subterm the advancement walk never measures. A stamped run measures it
+                // anyway: the run's end IS the last subterm's end, and a ground run has ground
+                // subterms.
+                if run_end != 0 {
+                    dest.last_mut().unwrap().ground_skip = (run_end - env.offset) as u16;
+                }
+                break;
+            }
+            // The advancement walk visits every item regardless, so let it count the variables it
+            // passes: a subterm it saw none in earns a skip stamp for free -- independently of
+            // whether the RUN is ground, which is what lets a constant conjunct inside a
+            // variable-carrying conjunction reach `unify` stamped and settle against a stamped
+            // fact by byte comparison.
+            let (se, _, se_offset) = traverseh!((), (), (u8, bool), env.subsexpr(), (0u8, false),
+                |c: &mut (u8, bool), o| { c.0 += 1; c.1 = true; },
+                |c: &mut (u8, bool), o, r| { c.1 = true; },
+                |_, o, _| {},
+                |_, o, _| {},
+                |_, o, x, y| {},
+                |_, _, _| {});
+
+            if !se.1 && se_offset > 0 && se_offset <= u16::MAX as usize {
+                dest.last_mut().unwrap().ground_skip = se_offset as u16;
+            }
+            env.offset += se_offset as u32;
+            env.v += se.0;
+        }
+    }
+
     pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
         match byte_item(*self.subsexpr().ptr) {
             Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
             Tag::Arity(k) => {
-                let mut env = ExprEnv{
-                    n: self.n,
-                    v: self.v,
-                    offset: self.offset + 1,
-                    ground_skip: 0,
-                    base: self.base,
-                };
-                for sk in 0..k {
-                    let ne = env.clone();
-                    dest.push(ne);
-                    // The traversal below exists only to advance `env` past this child to reach
-                    // the NEXT one, so after the last child it is pure waste -- and it costs
-                    // O(child span). On a right-nested pattern, where each level's last child is
-                    // the whole remaining term, paying it at every level made a descent that
-                    // calls `args` per node (`Space::coreferential_transition`) quadratic in the
-                    // pattern's size. Skipping it makes such a descent linear.
-                    if sk + 1 == k {
-                        // The one child the advancement walk never measures. A stamped parent
-                        // measures it anyway: the parent's end IS the last child's end, and a
-                        // ground parent has ground children.
-                        if self.ground_skip != 0 {
-                            let end = self.offset + self.ground_skip as u32;
-                            dest.last_mut().unwrap().ground_skip = (end - env.offset) as u16;
-                        }
-                        break;
-                    }
-                    // The advancement walk visits every item of the child regardless, so let it
-                    // count the variables it passes: a child it saw none in earns a skip stamp
-                    // for free -- independently of whether the PARENT is ground, which is what
-                    // lets a constant conjunct inside a variable-carrying conjunction reach
-                    // `unify` stamped and settle against a stamped fact by byte comparison.
-                    let (se, _, se_offset) = traverseh!((), (), (u8, bool), env.subsexpr(), (0u8, false),
-                        |c: &mut (u8, bool), o| { c.0 += 1; c.1 = true; },
-                        |c: &mut (u8, bool), o, r| { c.1 = true; },
-                        |_, o, _| {},
-                        |_, o, _| {},
-                        |_, o, x, y| {},
-                        |_, _, _| {});
-
-                    if !se.1 && se_offset > 0 && se_offset <= u16::MAX as usize {
-                        dest.last_mut().unwrap().ground_skip = se_offset as u16;
-                    }
-                    env.offset += se_offset as u32;
-                    env.v += se.0;
-                }
+                self.offset(1).subterms_from(k, self.stamped_end(), dest)
             }
         }
         }

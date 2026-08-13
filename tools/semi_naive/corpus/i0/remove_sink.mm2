@@ -1,0 +1,9 @@
+; Pin `O` removal and addition dispatch.
+
+(victim a)
+(survivor b)
+
+(exec 0
+  (, (victim $x))
+  (O (- (victim $x))
+     (+ (removed $x))))

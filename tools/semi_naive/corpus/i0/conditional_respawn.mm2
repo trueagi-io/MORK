@@ -1,0 +1,20 @@
+; A controller respawns only while `dc` exists. Its worker clears `dc`.
+
+(dc item)
+
+(worker
+  (, (dc $x))
+  (O (- (dc $x))
+     (+ (cleared $x))))
+
+(controller
+  (, (dc $any) (worker $worker-pattern $worker-template)
+               (controller $controller-pattern $controller-template))
+  (, (exec 0 $worker-pattern $worker-template)
+     (exec 1 $controller-pattern $controller-template)))
+
+(exec 1
+  (, (dc $any) (worker $worker-pattern $worker-template)
+               (controller $controller-pattern $controller-template))
+  (, (exec 0 $worker-pattern $worker-template)
+     (exec 1 $controller-pattern $controller-template)))

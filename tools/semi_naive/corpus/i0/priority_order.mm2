@@ -1,0 +1,12 @@
+; Priority 0 must consume the token before priority 1 can observe it.
+
+(token)
+
+(exec 0
+  (, (token))
+  (O (- (token))
+     (+ (fired priority-0))))
+
+(exec 1
+  (, (token))
+  (, (fired priority-1)))

@@ -1,0 +1,8 @@
+(seed a)
+(active)
+(exec 5
+  (, (active) (exec 5 $controller-pattern $controller-template))
+  (, (exec 0 (, (seed $x)) (, (left $x)))
+     (exec 1 (, (seed $x)) (, (right $x)))
+     (exec 2 (, (active)) (O (- (active))))
+     (exec 5 $controller-pattern $controller-template)))

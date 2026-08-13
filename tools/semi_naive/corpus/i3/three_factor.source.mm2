@@ -1,0 +1,12 @@
+; Three body factors require three delta variants.
+
+(a x)
+(a y)
+(b x one)
+(b y two)
+(c one)
+(c two)
+
+(exec 7
+  (, (a $x) (b $x $y) (c $y))
+  (, (joined $x $y)))

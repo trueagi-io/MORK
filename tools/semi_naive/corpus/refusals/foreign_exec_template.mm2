@@ -1,0 +1,4 @@
+(seed a)
+(exec loop
+  (, (seed $x) (exec loop $pattern $template))
+  (, (out $x) (exec other $pattern $template) (exec loop $pattern $template)))

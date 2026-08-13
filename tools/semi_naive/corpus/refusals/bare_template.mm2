@@ -1,0 +1,2 @@
+(seed a)
+(exec 0 (, (seed $x)) (, $x))

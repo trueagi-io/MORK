@@ -1,0 +1,3 @@
+(f (fact present))
+(cand (fact absent))
+(wrapped-hit (fact present))

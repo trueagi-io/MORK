@@ -1,0 +1,12 @@
+; Both rules share one round controller and retain their source priorities.
+
+(seed a)
+(seed b)
+
+(exec 20
+  (, (seed $x))
+  (, (mid $x)))
+
+(exec 3
+  (, (mid $x))
+  (, (out $x)))

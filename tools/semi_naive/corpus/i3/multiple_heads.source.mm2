@@ -1,0 +1,8 @@
+; One match emits two heads.
+
+(seed a)
+(seed b)
+
+(exec (source 7)
+  (, (seed $x))
+  (, (left $x) (right $x)))

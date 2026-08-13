@@ -1,0 +1,10 @@
+; Test a bound payload inside a fixed whole-fact wrapper.
+
+(f (fact present))
+(cand (fact present))
+(cand (fact absent))
+
+(exec 0
+  (, (cand $x) (f $x))
+  (O (- (cand $x))
+     (+ (wrapped-hit $x))))

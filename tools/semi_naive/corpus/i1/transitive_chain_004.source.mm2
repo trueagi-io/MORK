@@ -1,0 +1,10 @@
+; Four-edge chain and one two-factor transitive-closure rule.
+
+(edge n000 n001)
+(edge n001 n002)
+(edge n002 n003)
+(edge n003 n004)
+
+(exec 0
+  (, (edge $x $y) (edge $y $z))
+  (, (edge $x $z)))

@@ -1,0 +1,3 @@
+(cand (fact absent))
+(fact present)
+(bare-hit (fact present))

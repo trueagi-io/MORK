@@ -1,0 +1,2 @@
+(seed a)
+(exec $priority (, (seed $x)) (, (seen $x)))

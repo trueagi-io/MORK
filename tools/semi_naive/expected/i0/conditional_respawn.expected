@@ -1,0 +1,3 @@
+(cleared item)
+(worker (, (dc $a)) (O (- (dc $a)) (+ (cleared $a))))
+(controller (, (dc $a) (worker $b $c) (controller $d $e)) (, (exec 0 $b $c) (exec 1 $d $e)))

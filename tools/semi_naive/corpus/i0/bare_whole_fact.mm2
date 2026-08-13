@@ -1,0 +1,10 @@
+; Test a bound bare variable as a whole-fact conjunct.
+
+(fact present)
+(cand (fact present))
+(cand (fact absent))
+
+(exec 0
+  (, (cand $x) $x)
+  (O (- (cand $x))
+     (+ (bare-hit $x))))

@@ -1,0 +1,8 @@
+(a x)
+(a y)
+(b x one)
+(b y two)
+(c one)
+(c two)
+(joined x one)
+(joined y two)

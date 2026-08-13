@@ -11,9 +11,11 @@ evaluation restricts each rule application to the facts derived in the previous
 round, so every derivation is touched once. The transform expresses that
 discipline entirely with existing MM2 machinery: wrapper relations, `O` sinks
 for removal, priorities for phase order, and a self-respawning controller for
-round choreography. `NOTES.md` holds the executable probes that pin each piece
-of kernel semantics the encoding relies on, and the design decisions built on
-them.
+round choreography. `SPEC.md` is the normative specification of the lowering:
+the accepted fragment, the exact emitted statements, and the equivalence
+theorem with its conditions. `NOTES.md` holds the executable probes that pin
+each piece of kernel semantics the encoding relies on, and the design
+decisions built on them.
 
 ## Running it
 

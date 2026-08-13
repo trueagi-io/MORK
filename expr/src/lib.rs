@@ -95,6 +95,8 @@ pub enum Tag {
     //                < 64 bytes
     Arity(u8), // [0] ... [63]
     // U64,
+
+    Fuzzy(u8),
 }
 
 // [2] <u64> '8 0 0 0 1 2
@@ -120,6 +122,8 @@ pub const fn item_byte(b: Tag) -> u8 {
         Tag::SymbolSize(s) => { debug_assert!(s > 0 && s < 64); 0b1100_0000 | s }
         Tag::VarRef(i) => { debug_assert!(i < 64); 0b1000_0000 | i }
         Tag::Arity(a) => { debug_assert!(a < 64); 0b0000_0000 | a }
+
+        Tag::Fuzzy(f) => { debug_assert!(f <= 0b0010_0000); 0b0100_0000 | f}
     }
 }
 
@@ -129,6 +133,7 @@ pub fn byte_item(b: u8) -> Tag {
     else if (b & 0b1100_0000) == 0b1100_0000 { return Tag::SymbolSize(b & 0b0011_1111) }
     else if (b & 0b1100_0000) == 0b1000_0000 { return Tag::VarRef(b & 0b0011_1111) }
     else if (b & 0b1100_0000) == 0b0000_0000 { return Tag::Arity(b & 0b0011_1111) }
+    else if (b & 0b1100_0000) == 0b0100_0000 { return Tag::Fuzzy(b & 0b0011_1111) }
     else { panic!("reserved {}", b) }
 }
 
@@ -137,6 +142,7 @@ pub const fn maybe_byte_item(b: u8) -> Result<Tag, u8> {
     else if (b & 0b1100_0000) == 0b1100_0000 { return Ok(Tag::SymbolSize(b & 0b0011_1111)) }
     else if (b & 0b1100_0000) == 0b1000_0000 { return Ok(Tag::VarRef(b & 0b0011_1111)) }
     else if (b & 0b1100_0000) == 0b0000_0000 { return Ok(Tag::Arity(b & 0b0011_1111)) }
+    else if (b & 0b1100_0000) == 0b0100_0000 { return Ok(Tag::Fuzzy(b & 0b0011_1111)) }
     else { return Err(b) }
 }
 
@@ -211,9 +217,11 @@ pub enum ExtractFailure {
 }
 use ExtractFailure::*;
 
+use crate::Tag::{Arity, NewVar};
+
 #[macro_export]
 macro_rules! traverse {
-    ($t1:ty, $t2:ty, $x:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
+    ($t1:ty, $t2:ty, $x:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr, $fuzzy:expr) => {{
         struct AnonTraversal {}
         impl Traversal<$t1, $t2> for AnonTraversal {
             #[inline(always)] fn new_var(&mut self, offset: usize) -> $t2 { ($new_var)(offset) }
@@ -222,15 +230,17 @@ macro_rules! traverse {
             #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> $t1 { ($zero)(offset, a) }
             #[inline(always)] fn add(&mut self, offset: usize, acc: $t1, sub: $t2) -> $t1 { ($add)(offset, acc, sub) }
             #[inline(always)] fn finalize(&mut self, offset: usize, acc: $t1) -> $t2 { ($finalize)(offset, acc) }
+            #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> $t2 { ($fuzzy)(offset, fuzz) }
         }
 
         execute_loop(&mut AnonTraversal{}, $x, 0).1
     }};
 }
 
+/// ($t1:ty, $t2:ty, $t3:ty, $x:expr, $v0:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr, $fuzzy:expr)
 #[macro_export]
 macro_rules! traverseh {
-    ($t1:ty, $t2:ty, $t3:ty, $x:expr, $v0:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr) => {{
+    ($t1:ty, $t2:ty, $t3:ty, $x:expr, $v0:expr, $new_var:expr, $var_ref:expr, $symbol:expr, $zero:expr, $add:expr, $finalize:expr, $fuzzy:expr) => {{
     let mut h: $t3 = $v0;
     struct State<X> { iter: u8, payload: X }
     let mut stack: SmallVec<[State<$t1>; 8]> = SmallVec::new();
@@ -256,6 +266,8 @@ macro_rules! traverseh {
                     continue 'putting;
                 }
             }
+
+            Tag::Fuzzy(f) => {j += 1; ($fuzzy)(&mut h, j-1, f) }
         };
 
         'popping: loop {
@@ -313,40 +325,40 @@ impl Expr {
     }
 
     pub fn size(self) -> usize {
-        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 1, |_, _| 1, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 1, |_, _| 1, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn leaves(self) -> usize {
-        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 1, |_, _| 0, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 1, |_, _| 0, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn expressions(self) -> usize {
-        traverse!(usize, usize, self, |_| 0, |_, _| 0, |_, _| 0, |_, _| 1, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 0, |_, _| 0, |_, _| 0, |_, _| 1, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn symbols(self) -> usize {
-        traverse!(usize, usize, self, |_| 0, |_, _| 0, |_, _| 1, |_, _| 0, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 0, |_, _| 0, |_, _| 1, |_, _| 0, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn newvars(self) -> usize {
-        traverse!(usize, usize, self, |_| 1, |_, _| 0, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 1, |_, _| 0, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn references(self) -> usize {
-        traverse!(usize, usize, self, |_| 0, |_, _| 1, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 0, |_, _| 1, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x, |_,_|1)
     }
 
     pub fn forward_references(self, at: u8) -> usize {
         traverseh!(usize, usize, u64, self, if at > 0 { (!0u64) >> (64 - at) } else { 0 },
-            |c: &mut u64, _| { *c |= 1u64 << ((*c).trailing_ones()); 0 }, |c: &mut u64, _, r| if (1u64 << r) & *c == 0 { *c |= 1u64 << r; 1 } else { 0 }, |_, _, _| 0, |_, _, _| 0, |_, _, x, y| x + y, |_, _, x| x).1
+            |c: &mut u64, _| { *c |= 1u64 << ((*c).trailing_ones()); 0 }, |c: &mut u64, _, r| if (1u64 << r) & *c == 0 { *c |= 1u64 << r; 1 } else { 0 }, |_, _, _| 0, |_, _, _| 0, |_, _, x, y| x + y, |_, _, x| x, |_,_,_|0).1
     }
 
     pub fn variables(self) -> usize {
-        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x)
+        traverse!(usize, usize, self, |_| 1, |_, _| 1, |_, _| 0, |_, _| 0, |_, x, y| x + y, |_, x| x, |_,_|0)
     }
 
     pub fn max_arity(self) -> Option<u8> {
-        traverse!(u8, Option<u8>, self, |_| None, |_, _| None, |_, _| None, |_, a| a, |_, x, y: Option<u8>| u8::max(x, y.unwrap_or(0)), |_, x| Some(x))
+        traverse!(u8, Option<u8>, self, |_| None, |_, _| None, |_, _| None, |_, a| a, |_, x, y: Option<u8>| u8::max(x, y.unwrap_or(0)), |_, x| Some(x), |_,_|None)
     }
 
     pub fn has_unbound(self) -> bool {
@@ -357,7 +369,7 @@ impl Expr {
         // traverseh!(ops::ControlFlow<(), ()>, ops::ControlFlow<(), ()>, u8, self, 0,
         //     |c: &mut u8, _| { *c += 1; ControlFlow::Continue(()) }, |c: &mut u8, _, r| { if r >= *c { ControlFlow::Break(()) } else { ControlFlow::Continue(()) } }, |_, _, _| ControlFlow::Continue(()), |_, _, _| ControlFlow::Continue(()), |_, _, l, r| { r?; l }, |_, _, l| l).1.is_break()
         traverseh!(bool, bool, u8, self, 0,
-            |c: &mut u8, _| { *c += 1; false }, |c: &mut u8, _, r| r >= *c, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+            |c: &mut u8, _| { *c += 1; false }, |c: &mut u8, _, r| r >= *c, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_|false).1
     }
 
     pub fn difference(self, other: Expr) -> Option<usize> {
@@ -393,7 +405,7 @@ impl Expr {
     pub fn prefix_non_proper(self) -> *const [u8] {
         use ControlFlow::*;
         match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
-            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a) {
+            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a, |o,_|Break(o)) {
             Break(offset) => { slice_from_raw_parts(self.ptr, offset) } // proper prefix
             Continue(offset) => { slice_from_raw_parts(self.ptr, offset - 1) } // full expr
         }
@@ -402,12 +414,30 @@ impl Expr {
     pub fn prefix(self) -> Result<*const [u8], *const [u8]> {
         use ControlFlow::*;
         match traverse!(ControlFlow<usize, usize>, ControlFlow<usize, usize>, self,
-            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a) {
+            |o| Break(o), |o, _| Break(o), |o, _| Continue(o), |o, _| Continue(o), |_, a, n| { a?; n }, |_, a| a, |o,_|Break(o)) {
             Break(offset) => { Ok(slice_from_raw_parts(self.ptr, offset)) } // proper prefix
             Continue(offset) => { Err(slice_from_raw_parts(self.ptr, offset)) } // full expr
         }
     }
-    
+}
+
+
+// The following macros are used bacause we want to guarantee that they will be inlined.
+// They have been factored out primarily for readability, the places they are used, they are boilerplate that distracts from what is different in the concerned match.
+macro_rules! expr_zipper_transfer_arity_byte {
+    ($oz:ident, $ez:ident ) => {{ /* for type checking */ let _ : &mut ExprZipper = $oz; let _ : &mut ExprZipper = &mut $ez;
+        unsafe { *$oz.root.ptr.byte_add($oz.loc) = *$ez.root.ptr.byte_add($ez.loc); $oz.loc += 1; };
+    }};
+}
+macro_rules! expr_zipper_transfer_sym {
+    ($oz:ident, $ez:ident, $sym:ident ) => {{ /* for type checking */ let _ : &mut ExprZipper = $oz; let _ : &mut ExprZipper = &mut $ez;
+        let Tag::SymbolSize(s) = $sym else {unreachable!()};
+
+        $oz.write_move(unsafe { slice_from_raw_parts($ez.root.ptr.byte_add($ez.loc), s as usize + 1).as_ref().unwrap() });
+    }};
+}
+
+impl Expr {
     pub fn substitute(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut var_count = 0;
@@ -426,8 +456,9 @@ impl Expr {
                         Some(r) => { oz.write_move(r); }
                     }
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
@@ -464,8 +495,9 @@ impl Expr {
                         oz.loc += 1;
                     }
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(_) => todo!(),
             }
 
             if !ez.next() {
@@ -495,6 +527,7 @@ impl Expr {
                 }
                 Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
+                Tag::Fuzzy(_) => todo!(),
             }
 
             if !ez.next() {
@@ -528,6 +561,7 @@ impl Expr {
                 }
                 Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
+                Tag::Fuzzy(_) => todo!(),
             }
 
             if !ez.next() {
@@ -558,8 +592,9 @@ impl Expr {
                 Tag::VarRef(r) => {
                     substitutions[r as usize].bind(additions[r as usize], oz);
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(_) => todo!(),
             }
 
             if !ez.next() {
@@ -584,8 +619,9 @@ impl Expr {
                 Tag::VarRef(r) => {
                     substitutions[r as usize].bind(additions[r as usize], oz);
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
@@ -607,8 +643,9 @@ impl Expr {
                 Tag::VarRef(i) => {
                     oz.write_var_ref(n + i); oz.loc += 1; // good
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
@@ -625,8 +662,9 @@ impl Expr {
             match ez.tag() {
                 Tag::NewVar => { oz.write_new_var(); oz.loc += 1; new_var += 1; }
                 Tag::VarRef(i) => { oz.write_var_ref(i + n); oz.loc += 1; }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
@@ -652,8 +690,9 @@ impl Expr {
                     if (i as usize) < nvars || bound[i as usize] != 255 { oz.write_var_ref(bound[i as usize]); oz.loc += 1; }
                     else { oz.write_new_var(); bound[i as usize] = nvars as u8; nvars += 1; oz.loc += 1; }
                 }
-                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
-                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
+                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
@@ -869,7 +908,7 @@ impl Expr {
             match ez.item() {
                 Ok(Tag::NewVar) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
                 Ok(Tag::VarRef(_i)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
-                Ok(Tag::SymbolSize(_s)) => { unreachable!() }
+                Ok(Tag::SymbolSize(_) | Tag::Fuzzy(_)) => { unreachable!() }
                 Ok(Tag::Arity(_)) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
                 Err(s) => { let ns = subst(s); oz.write_symbol(ns); oz.loc += 1 + ns.len(); }
             }
@@ -922,6 +961,8 @@ pub trait Traversal<A, R> {
     fn zero(&mut self, offset: usize, a: u8) -> A;
     fn add(&mut self, offset: usize, acc: A, sub: R) -> A;
     fn finalize(&mut self, offset: usize, acc: A) -> R;
+
+    fn fuzzy(&mut self, offset: usize, fuzz: u8) -> R;
 }
 
 pub struct PairTraversal<A1, A2, R1, R2, T1, T2> { t1: T1, t2: T2, pd: std::marker::PhantomData<(A1, A2, R1, R2)> }
@@ -933,6 +974,8 @@ impl <A1, A2, R1, R2, T1 : Traversal<A1, R1>, T2 : Traversal<A2, R2>> Traversal<
     fn zero(&mut self, offset: usize, a: u8) -> (A1, A2) { (self.t1.zero(offset, a), self.t2.zero(offset, a)) }
     fn add(&mut self, offset: usize, acc: (A1, A2), sub: (R1, R2)) -> (A1, A2) { (self.t1.add(offset, acc.0, sub.0), self.t2.add(offset, acc.1, sub.1)) }
     fn finalize(&mut self, offset: usize, acc: (A1, A2)) -> (R1, R2) { (self.t1.finalize(offset, acc.0), self.t2.finalize(offset, acc.1)) }
+
+    fn fuzzy(&mut self, offset: usize, fuzz: u8) -> (R1, R2) { (self.t1.fuzzy(offset, fuzz), self.t2.fuzzy(offset, fuzz)) }
 }
 
 #[allow(unused)]
@@ -954,6 +997,7 @@ fn execute<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> (usize, R
             }
             (offset, t.finalize(i + offset, acc))
         }
+        Tag::Fuzzy(f) => { (1, t.fuzzy(i, f)) }
     }
 }
 
@@ -990,6 +1034,9 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
                     stack.push(State{ iter: a, payload: acc });
                     continue 'putting;
                 }
+            }
+            Tag::Fuzzy(f) => {
+                j += 1; t.fuzzy(j - 1, f)
             }
         };
 
@@ -1060,6 +1107,11 @@ fn match2<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize),
             let r2 = t2.finalize(i2 + offset2, acc2);
             Ok((offset1, r1, offset2, r2))
         }
+        (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
+            let r1 = t1.fuzzy(i1, f1);
+            let r2 = t2.fuzzy(i2, f2);
+            Ok((1,r1,1,r2))
+        }
         _ => { Err((i1, i2)) }
     }
 }
@@ -1090,6 +1142,7 @@ let mut stack: Vec<(u8, A)> = Vec::with_capacity(8);
                 stack.push((a, acc));
                 continue 'putting;
             }
+            Tag::Fuzzy(f) => { j += 1; t.fuzzy(j - 1, f) }
         };
 
         'popping: loop {
@@ -1124,6 +1177,7 @@ impl Traversal<(), ()> for DebugTraversal {
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.string.push(' '); }; self.string.push('('); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.string.push(')'); }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () { if self.transient { self.string.push(' '); }; self.string.write_fmt(format_args!("{{{:0>4b}}}", fuzz)); }
 }
 
 impl Debug for Expr {
@@ -1143,6 +1197,7 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str> Traversal<(
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write_all(")".as_bytes()); }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () { self.out.write_fmt(format_args!(" {{{:0>4b}}}", fuzz)); }
 }
 
 struct SerializerTraversal2<'a, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8 }
@@ -1154,6 +1209,7 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, 
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write_all(")".as_bytes()); }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () { self.out.write_fmt(format_args!(" {{{:0>4b}}}", fuzz)); }
 }
 
 struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
@@ -1193,6 +1249,12 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, 
         self.out.write_all(")".as_bytes());
         if let Some(end) = acc { self.out.write_all(end.as_bytes()); }
     }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () {
+        if self.transient { self.out.write_all(" ".as_bytes()); };
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].1.as_bytes()); }
+        self.out.write_fmt(format_args!("{{{:0>4b}}}", fuzz));
+        if offset == self.targets[0].0 { self.out.write_all(self.targets[0].2.as_bytes()); self.targets = &self.targets[1..]; }
+    }
 }
 
 struct HashTraversal<H : Hasher, F : for <'b> Fn(&'b [u8], &'b mut H), G : for <'b> Fn(u8, bool, &'b mut H)> { hasher: H, map_symbol: F, map_variable: G, n: u8, o: i8 }
@@ -1216,6 +1278,9 @@ impl <H : Hasher, F : for <'b> Fn(&'b [u8], &'b mut H), G : for <'b> Fn(u8, bool
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {
         ()
     }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () {
+        todo!()
+    }
 }
 
 #[derive(Clone)]
@@ -1228,9 +1293,10 @@ pub struct ExprZipper {
 impl ExprZipper {
     #[inline] pub fn new(e: Expr) -> Self {
         match unsafe { byte_item(*e.ptr) } {
-            Tag::NewVar => { Self { root: e, loc: 0, trace: vec![] } }
-            Tag::VarRef(_r) => { Self { root: e, loc: 0, trace: vec![] } }
-            Tag::SymbolSize(_s) => { Self { root: e, loc: 0, trace: vec![] } }
+            Tag::NewVar        |
+            Tag::VarRef(_)     |
+            Tag::SymbolSize(_) |
+            Tag::Fuzzy(_)      => { Self { root: e, loc: 0, trace: vec![] } }
             Tag::Arity(a) => {
                 Self {
                     root: e,
@@ -1289,6 +1355,12 @@ impl ExprZipper {
             true
         }
     }
+    pub fn write_fuzz(&mut self, fuzz : u8) -> bool {
+        unsafe {
+            *self.root.ptr.byte_add(self.loc) = item_byte(Tag::Fuzzy(fuzz));
+            true
+        }
+    }
 
     pub fn tag_str(&self) -> String {
         match self.tag() {
@@ -1296,6 +1368,7 @@ impl ExprZipper {
             Tag::VarRef(r) => { format!("_{}", r + 1) }
             Tag::SymbolSize(s) => { format!("({})", s) }
             Tag::Arity(a) => { format!("[{}]", a) }
+            Tag::Fuzzy(f) => { format!("{{{:0>4b}}}", f) }
         }
     }
 
@@ -1388,6 +1461,7 @@ impl ExprZipper {
                         Tag::VarRef(_) => { 1 }
                         Tag::SymbolSize(n) => { n as usize + 1 }
                         Tag::Arity(_) => { self.subexpr().span().len() }
+                        Tag::Fuzzy(_) => { 1 }
                     };
 
                     // println!("returned true");
@@ -1476,6 +1550,10 @@ impl ExprZipper {
                 print!(")");
                 offset
             }
+            Ok(Tag::Fuzzy(z)) => { 
+                print!("{{{:0>4b}}}", z);
+                1
+            }
             Err(b) => {
                 print!("{}", b as usize);
                 1
@@ -1490,6 +1568,7 @@ impl ExprZipper {
             Tag::SymbolSize(s) => { 1 + (s as usize) }
             Tag::Arity(0) => { 1 }
             Tag::Arity(_a) => { unreachable!() /* expression can't end in non-zero expression */ }
+            Tag::Fuzzy(_) => { 1 }
         };
         return slice_from_raw_parts(self.root.ptr, size)
     }
@@ -1692,6 +1771,9 @@ pub fn serialize(bytes: &[u8]) -> String {
                             i += s as usize;
                         }
                     }
+                    Tag::Fuzzy(f) => {
+                        result.push_str(&format!("{{{:0>4b}}}",f));
+                    }
                 }
             },
             Err(b) => {
@@ -1750,6 +1832,7 @@ impl Traversal<(), ()> for TraverseSide {
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () {}
 }
 
 impl ExprEnv {
@@ -1790,6 +1873,7 @@ impl ExprEnv {
                 Tag::VarRef(i) => { Some((self.n, i)) }
                 Tag::SymbolSize(_) => { None }
                 Tag::Arity(_) => { None }
+                Tag::Fuzzy(_) => {None}
             }
         }
     }
@@ -1817,7 +1901,7 @@ impl ExprEnv {
     pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
         match byte_item(*self.subsexpr().ptr) {
-            Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) => { }
+            Tag::NewVar | Tag::VarRef(_) | Tag::SymbolSize(_) | Tag::Fuzzy(_) => { } 
             Tag::Arity(k) => {
                 let mut env = ExprEnv{
                     n: self.n,
@@ -1832,7 +1916,9 @@ impl ExprEnv {
                         |_, o, _| {},
                         |_, o, _| {},
                         |_, o, x, y| {},
-                        |_, _, _| {});
+                        |_, _, _| {},
+                        |_,_,_|{}
+                    );
 
                     let ne = env.clone();
                     dest.push(ne);
@@ -1864,6 +1950,7 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
     unsafe {
         loop {
             match ez.item() {
+                Ok(Tag::Fuzzy(_)) => unimplemented!(),
                 Ok(Tag::NewVar) => {
                     match bindings.get(&(n, original_intros)) {
                         None => {
@@ -1982,7 +2069,7 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
                 let t : u8 = x.1;
                 traverseh!(bool, bool, u8, e.subsexpr(), e.v,
                     |c: &mut u8, _| { let eq = *c == t; *c += 1; eq },
-                    |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+                    |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
             }
         }};
         (derefBound $t:expr) => {{
@@ -2171,7 +2258,12 @@ impl PartialEq for RelExprEnv {
                             // println!("[{}] {}", a as usize, b);
                         },
                         |_, o, x, y| {},
-                        |_, _, _| {}).0
+                        |_, _, _| {},
+                        |b : &mut bool, o, f| {
+                            let oss = byte_item(*other.0.base.ptr.add(other.0.offset as usize + o));
+                            *b &= oss == Tag::Fuzzy(f as _); // [Remy] : I assume that Fuzzy equality is not the same as fuzzy unification matching.
+                        }
+                    ).0
         }
     }
 }
@@ -2187,7 +2279,9 @@ impl std::hash::Hash for RelExprEnv {
                         |_, o, s| { state.write_u8(1); state.write(s); },
                         |_, o, a| { state.write_u8(2); state.write_u8(a); },
                         |_, o, x, y| {},
-                        |_, _, _| {});
+                        |_, _, _| {},
+                        |_,_,f| { state.write_u8(3); state.write_u8(f); }
+                    );
     }
 }
 
@@ -2276,6 +2370,7 @@ fn anti_unify_apply(
                     }
 
                     Tag::NewVar | Tag::VarRef(_) => unreachable!("decomposable() excludes vars"),
+                    Tag::Fuzzy(_) => todo!(),
                 }
             }
         } else {
@@ -2757,5 +2852,378 @@ mod tests {
             assert_eq!({ let mut hx = GxHasher::with_seed(0); lhs.hash(&mut hx); hx.finish() },
                        { let mut hx = GxHasher::with_seed(0); rhs.hash(&mut hx); hx.finish() });
         }
+    }
+}
+
+
+
+
+
+
+
+#[test]
+fn  unify_fuzzy_test(){
+    if false {
+        let mut expr_l = [item_byte(Tag::Arity(2)), item_byte(Tag::Fuzzy(0b1110)), item_byte(Tag::Fuzzy(0b0111))];
+        let mut expr_r = [item_byte(Tag::Arity(2)), item_byte(Tag::NewVar),        item_byte(Tag::VarRef(0))];
+        
+        
+        let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr()});
+        let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr()});
+        
+        let mut undo = Vec::new();
+        let mut stack = Vec::new();
+        stack.push((l,r));
+        
+        let bindings = unify_fuzzy(&mut stack, &mut undo);
+        
+        println!("undo : {:?}\nstack : {:?}\nbindings : {:?}", undo, stack, bindings);
+        
+        
+        while let Some((ptr,mask)) = undo.pop() {
+            unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+        }
+
+        println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+    }
+
+    {
+        // ((f0  $z) ($z f1) $y      (f2 f3) $y) 
+        // ($x       $x      (f4 f5) $x      $x)
+
+        let fuzzy   = |f| item_byte(Tag::Fuzzy(f));
+        let arity   = |a| item_byte(Arity(a));
+        let var_ref = |r| item_byte(Tag::VarRef(r));
+        let new_var = item_byte(Tag::NewVar);
+
+        //                (           (         f0             $z     )   (         $z          f1           )   $y                                        (         f2             f3           )   $y         ) 
+        let mut expr_l = [arity(5),   arity(2), fuzzy(0b1111), new_var,   arity(2), var_ref(0), fuzzy(0b0110),   new_var,                                  arity(2), fuzzy(0b1110), fuzzy(0b0111),   var_ref(1)];
+        //                (           $x                                  $x                                     (         f4             f5           )   $x                                        $x         )
+        let mut expr_r = [arity(5),   new_var,                            var_ref(0),                            arity(2), fuzzy(0b1100), fuzzy(0b0100),   var_ref(0),                               var_ref(0)];
+
+
+        // //                (           (         f0             $z     )   $y                                        (         f2             f3           )   $y         )   (         $z          f1           )    
+        // let mut expr_l = [arity(5),   arity(2), fuzzy(0b1111), new_var,   new_var,                                  arity(2), fuzzy(0b1110), fuzzy(0b0111),   var_ref(1),    arity(2), var_ref(0), fuzzy(0b0110),   ];
+        // //                (           $x                                  (         f4             f5           )   $x                                        $x         )   $x                                     
+        // let mut expr_r = [arity(5),   new_var,                            arity(2), fuzzy(0b1100), fuzzy(0b0100),   var_ref(0),                               var_ref(0),    var_ref(0),                            ];
+
+
+
+
+
+        let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
+        let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr() });
+
+        let mut undo = Vec::new();
+        let mut stack = Vec::new();
+        stack.push((l,r));
+
+
+        let bindings = unify_fuzzy(&mut stack, &mut undo);
+
+        println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
+        for each in  bindings.as_ref().unwrap() {
+            let view = Expr { ptr : unsafe { each.1.base.ptr.add(each.1.offset as usize) } };
+            println!("\t {:?}", each);
+            println!("\t\t\t| {:?}", view);
+
+        }
+        println!("\n");
+
+        
+        println!("l {:?}\n", l);
+        println!("r {:?}\n", r);
+
+
+        let mut out_l = Vec::with_capacity(300);
+        let mut out_r = Vec::with_capacity(300);
+        let mut s = Vec::with_capacity(300);
+        let mut a = Vec::with_capacity(300);
+
+        let b = bindings.as_ref().unwrap();
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, s , a );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, s , a );
+        
+        // the mutations don't give equal value when substitutions happen for the patterns, but this might not matter. 
+        println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
+        println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
+
+
+
+        // while let Some((ptr,mask)) = undo.pop() {
+        //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+        // }
+
+        // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+
+    }
+
+}
+
+
+#[inline(never)]
+pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
+    assert!(undo_stack.is_empty());
+
+    let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
+    let mut iterations = 0;
+    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
+
+    // [Remy] :
+    // Macros are used here primarily for inlining.
+    macro_rules! step {
+        (derefBound $t:expr) => {{
+            let mut t: ExprEnv = $t;
+            'bound: loop {
+                match t.var_opt() {
+                    None     => break 'bound t,
+                    Some(vs) => match bindings.get(&vs) {
+                                    None          => {               break    'bound t; }
+                                    Some(binding) => { t = *binding; continue 'bound    }
+                                }
+                }
+            }
+        }};
+
+        // [Remy] :
+        // Note that this block only ever gets reached, if the `match2` callback gets called.
+        //   The `match2` callback only gets called when it hits a variable or reference on a left or right hand side.
+        (push $x:expr, $y:expr) => {{
+            let _x: ExprEnv = $x;
+            let _y: ExprEnv = $y;
+            match (_x.var_opt(), _y.var_opt()) {
+                (None,None)                                                => unreachable!("Expected at leat one variable or reference."),
+                (Some(xvs), Some(yvs)) if step!(isUnbound xvs) 
+                                       && step!(isUnbound yvs)             => stack.push((_x, _y)),
+                _                      if !encountered.contains(&(_x, _y)) => { encountered.insert((_x, _y)); stack.push((_x, _y)); }
+                _                                                          => {}
+            }
+        }};
+        // [Remy] :
+        // This block only gets used in the `push` branch of the this macro.
+        (isUnbound $v:expr) => {{
+            let mut v: ExprVar = $v;
+            'unbound: loop {
+                match bindings.get(&v) {
+                    None          => break 'unbound true,
+                    Some(binding) => match binding.var_opt() {
+                                         None     => {         break    'unbound false }
+                                         Some(vs) => { v = vs; continue 'unbound       }
+                                     }
+                }
+            }
+        }};
+
+        // [Remy] :
+        // The occurs check here is actually incomplete,
+        //   but it does not remove any valid results, so it's doing filtering.
+        //   it's completeness is addressed in `apply_e`'s cycles checking map.
+        (occurs $x:expr, $e:expr) => {{
+            let x = $x;
+            let e = $e;
+            if x.0 != e.n { false }
+            else {
+                let t : u8 = x.1;
+                traverseh!(bool, bool, u8, e.subsexpr(), e.v,
+                    |c: &mut u8, _| { let eq = *c == t; *c += 1; eq },
+                    |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
+                    // |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+            }
+        }};
+    }
+
+    // let mut largs = vec![];
+    // let mut rargs = vec![];
+
+
+    // [Remy] :
+    // Note that although values on the stack are being poped, they are all pointers to data that must live longer than the unification operation,
+    //   so although we are constructing bindings from values derived from stack values (Expr pointers), the bindings will be usable after they are popped. 
+    'popping: while let Some((xpop, ypop)) = stack.pop() {
+        if PRINT_DEBUG {
+            println!("step {iterations}");
+            bindings.iter().for_each(|(k, v)| {
+                // let ov = vec![0u8; 512];
+                // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+                // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+                println!("  binding {:?} +{} {}", *k, v.v, v.show());
+                // println!("output {:?}", o);
+
+            });
+            println!();
+        }
+
+
+        if iterations > MAX_UNIFY_ITER { 
+            return Err(UnificationFailure::MaxIter(iterations))
+        }
+        iterations += 1;
+        if PRINT_DEBUG {
+            println!("popping");
+            // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
+            // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
+        }
+        // [Remy] :
+        // First, if there is a variable on either side, we dereference each in a loop as far as possible 
+        //  so that the following match can ask simply, "Are we making bindings, or comparing bindings?".
+        let dt1: ExprEnv = step!(derefBound xpop);
+        let dt2: ExprEnv = step!(derefBound ypop);
+
+        match (dt1.var_opt(), dt2.var_opt()) {
+            (None, None) => {
+                let mut ts1 = dt1.clone().v_incr_traversal();
+                let mut ts2 = dt2.clone().v_incr_traversal();
+                // [Remy] :
+                // `match2` will find cases that don't match (failure to unify), 
+                //   values that are definately equal,
+                //   and values that __may__ unify. the callback is responsible for sheduling more specific cases.
+                if let Err((o1, o2)) = match2_fuzzy(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
+                                              &mut |tag, _ts1, e1, i1, _ts2, e2, i2| {
+                                                  match tag {
+                                                      Match2FuzzyTag::Hole  => step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32)),
+                                                      Match2FuzzyTag::FuzzyNonEq([(lp,l), (rp,r)]) => unsafe {
+                                                        *lp = item_byte(Tag::Fuzzy(l & r));
+                                                        *rp = item_byte(Tag::Fuzzy(l & r));
+                                                        undo_stack.push((lp, l));
+                                                        undo_stack.push((rp, r));
+                                                      },
+                                                  }
+                                              }) {
+                    return Err(UnificationFailure::Difference(dt1, dt2));
+                }
+
+                // if dt1.same_functor(&dt2) {
+                //     largs.clear();
+                //     rargs.clear();
+                //     dt1.args(&mut largs);
+                //     dt2.args(&mut rargs);
+                //     debug_assert_eq!(largs.len(), rargs.len());
+                //
+                //     // Preorder: push children reversed so they pop in-order.
+                //     for i in (0..largs.len()).rev() {
+                //         step!(push largs[i], rargs[i]);
+                //     }
+                // } else {
+                //     return Err(UnificationFailure::Difference(dt1, dt2));
+                // }
+            }
+
+            (Some(vx), ov) => {
+                // [Remy] :
+                // The order of the `match` blocks matters here.
+                //   Only this block will check variables with other variables.
+                //   since variable comparisons are always done in this block, all variable = variable bindings are ordered
+                if let Some(sv) = ov { if vx == sv { continue 'popping } } // this guarantees that a variable won't add a binding to itself
+                
+                // If the right hand side is a structure, we technically need to do occurs checking of the left had side variable.
+                if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                
+                // [Remy] :
+                // Symbols are trivial, no extra operation needed.
+                // The final bindings made are of this form:
+                //   
+                // left_var -> right_symbol
+                // left_var -> right_var
+                // left_var -> right_structure
+                bindings.insert(vx, dt2.clone());
+            }
+            (None, Some(vy)) => {
+                // [Remy] :
+                // This block is like the block above, but it can work under the assumption that the left hand side isn't a variable.
+                if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                
+                // [Remy] :
+                // right_var -> left_structure
+                // right_var -> left_symbol
+                bindings.insert(vy, dt1.clone());
+            }
+        }
+    }
+
+    core::debug_assert!(stack.is_empty());
+    Ok(bindings)
+}
+
+
+
+
+
+enum Match2FuzzyTag {
+    Hole,
+    FuzzyNonEq([(*mut u8, u8); 2]),
+}
+
+// functor same -> functor arguments -> call recursively
+// unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
+// unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
+fn match2_fuzzy<
+    F : FnMut(Match2FuzzyTag, &mut T1, Expr, usize, &mut T2, Expr, usize),
+    A1, R1, T1 : Traversal<A1, R1>,
+    A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
+                                    t2: &mut T2, e2: Expr, i2: usize, 
+                                    hole: &mut F
+                                   ) -> Result<(usize, R1, usize, R2), (usize, usize)> {
+    match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
+        (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
+            hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
+            let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
+            let (d2, r2) = execute_loop(t2, e2, i2);
+            Ok((1, r1, d2 - i2, r2))
+        }
+        (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
+            hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
+            let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
+            let (d1, r1) = execute_loop(t1, e1, i1);
+            Ok((d1 - i1, r1, 1, r2))
+        }
+        (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
+            let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
+            let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
+            if slice1 != slice2 { Err((i1, i2)) }
+            else {
+                let d = s1 as usize + 1;
+                let r1 = t1.symbol(i1, slice1);
+                let r2 = t2.symbol(i2, slice2);
+                Ok((d, r1, d, r2))
+            }
+        }
+        (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
+            let mut offset1 = 1;
+            let mut offset2 = 1;
+            let mut acc1 = t1.zero(i1, a1);
+            let mut acc2 = t2.zero(i2, a2);
+            for k in 0..a1 {
+                let (d1, r1, d2, r2) = match2_fuzzy(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole)?;
+                acc1 = t1.add(i1 + offset1, acc1, r1);
+                acc2 = t2.add(i2 + offset2, acc2, r2);
+                offset1 += d1;
+                offset2 += d2;
+            }
+            let r1 = t1.finalize(i1 + offset1, acc1);
+            let r2 = t2.finalize(i2 + offset2, acc2);
+            Ok((offset1, r1, offset2, r2))
+        }
+        (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
+            // the two bit tag should be the same if well formed.
+            if f1 == f2 {
+                // NOOP
+            } else if f1 & f2 & 0b_0000_1111 == 0 {
+                return Err((i1, i2));
+            } else {
+                hole( unsafe {
+                        Match2FuzzyTag::FuzzyNonEq(
+                            [(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]
+                    ) },
+                    t1, e1, i1, t2, e2, i2
+                );
+            }
+
+            // [Remy] :
+            //   should the intersection be passed, or the original values?
+            let r1 = t1.fuzzy(i1, f1);
+            let r2 = t2.fuzzy(i2, f2);
+            Ok((1,r1,1,r2))
+        }
+        _ => { Err((i1, i2)) }
     }
 }

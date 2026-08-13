@@ -22,6 +22,7 @@ impl OwnedSourceItem {
             Tag::VarRef(_) => { 1 }
             Tag::SymbolSize(s) => { 1 + s as usize }
             Tag::Arity(_) => { 1 }
+            Tag::Fuzzy(_) => { 1 }
         }
     }
 }
@@ -34,6 +35,7 @@ impl PartialEq<Self> for OwnedSourceItem {
                 Tag::VarRef(_) => { true }
                 Tag::SymbolSize(s) => { self.0[1..(s as usize)+1] == other.0[1..(s as usize)+1] }
                 Tag::Arity(_) => { true }
+                Tag::Fuzzy(_) => { true }
             }
         }
     }
@@ -93,6 +95,10 @@ pub fn item_sink<W: std::io::Write>(target: &mut W) -> impl Coroutine<SourceItem
                                 continue;
                             }
                         }
+                        Tag::Fuzzy(_) => {
+                            target.write_all(&[item_byte(tag)])?;
+                            j += 1;
+                        }
                     }
                 }
                 SourceItem::Symbol(slice) => {
@@ -131,8 +137,7 @@ pub fn item_source<'a>(e: Expr) -> impl Coroutine<(), Yield=SourceItem<'a>, Retu
         let mut j: usize = 0;
         'putting: loop {
             match unsafe { byte_item(*e.ptr.byte_add(j)) } {
-                Tag::NewVar => { j += 1; yield SourceItem::Tag(Tag::NewVar) }
-                Tag::VarRef(r) => { j += 1; yield SourceItem::Tag(Tag::VarRef(r)) }
+                tag @ (Tag::NewVar | Tag::VarRef(_) | Tag::Fuzzy(_)) => { j += 1; yield SourceItem::Tag(tag) }
                 Tag::SymbolSize(s) => {
                     let slice = unsafe { &*slice_from_raw_parts(e.ptr.byte_add(j + 1), s as usize) };
                     yield SourceItem::Symbol(slice);
@@ -258,6 +263,12 @@ pub fn apply_e<'o, OS : Coroutine<SourceItem<'o>, Yield=(), Return=std::io::Resu
                 if PRINT_DEBUG { println!("{}@ \"{}\"", "  ".repeat(depth), unsafe { std::str::from_utf8_unchecked(s) }); }
                 es.as_mut().resume(SourceItem::Symbol(s));
             }
+
+            CoroutineState::Yielded(SourceItem::Tag(Tag::Fuzzy(f))) => {
+                if PRINT_DEBUG { println!("{}@ \"{{{:0>4b}}}\"", "  ".repeat(depth), f); }
+                es.as_mut().resume(SourceItem::Tag(Tag::Fuzzy(f)));
+
+            },
             CoroutineState::Complete(c) => {
                 return (original_intros, new_intros) 
             }

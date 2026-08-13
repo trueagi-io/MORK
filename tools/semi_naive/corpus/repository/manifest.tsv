@@ -10,3 +10,15 @@ programs/stv_roman|differential/corpus/programs/stv_roman.mm2|differential/expec
 unify/coref_absorbed_by_data_varref|differential/corpus/unify/coref_absorbed_by_data_varref.mm2|differential/expected/unify/coref_absorbed_by_data_varref.expected|persistent|-|-
 unify/func_type_unification|differential/corpus/unify/func_type_unification.mm2|differential/expected/unify/func_type_unification.expected|persistent|-|-
 unify/two_bipolar_equal_crossed|differential/corpus/unify/two_bipolar_equal_crossed.mm2|differential/expected/unify/two_bipolar_equal_crossed.expected|persistent|-|-
+wiki/mm2_basics_02|differential/corpus/wiki/mm2_basics_02.mm2|tools/semi_naive/expected/repository/wiki/mm2_basics_02.expected|persistent|-|-
+wiki/mm2_basics_05|differential/corpus/wiki/mm2_basics_05.mm2|differential/expected/wiki/mm2_basics_05.expected|persistent|-|-
+wiki/reachability_p1_13|differential/corpus/wiki/reachability_p1_13.mm2|tools/semi_naive/expected/repository/wiki/reachability_p1_13.expected|persistent|-|-
+wiki/reachability_p2_06|differential/corpus/wiki/reachability_p2_06.mm2|tools/semi_naive/expected/repository/wiki/reachability_p2_06.expected|persistent|-|-
+wiki/reachability_p2_07|differential/corpus/wiki/reachability_p2_07.mm2|tools/semi_naive/expected/repository/wiki/reachability_p2_07.expected|persistent|-|-
+wiki/reachability_p2_08|differential/corpus/wiki/reachability_p2_08.mm2|tools/semi_naive/expected/repository/wiki/reachability_p2_08.expected|persistent|-|-
+wiki/reachability_p3_03|differential/corpus/wiki/reachability_p3_03.mm2|tools/semi_naive/expected/repository/wiki/reachability_p3_03.expected|persistent|-|-
+wiki/reachability_p3_04|differential/corpus/wiki/reachability_p3_04.mm2|tools/semi_naive/expected/repository/wiki/reachability_p3_04.expected|persistent|-|-
+wiki/reachability_p3_09|differential/corpus/wiki/reachability_p3_09.mm2|tools/semi_naive/expected/repository/wiki/reachability_p3_09.expected|persistent|-|-
+wiki/reachability_p3_12|differential/corpus/wiki/reachability_p3_12.mm2|tools/semi_naive/expected/repository/wiki/reachability_p3_12.expected|persistent|-|-
+wiki/reachability_p3_18|differential/corpus/wiki/reachability_p3_18.mm2|differential/expected/wiki/reachability_p3_18.expected|persistent|-|-
+wiki/reachability_p4_03|differential/corpus/wiki/reachability_p4_03.mm2|tools/semi_naive/expected/repository/wiki/reachability_p4_03.expected|persistent|-|-

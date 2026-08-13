@@ -40,8 +40,8 @@ python3 -m unittest discover -s tools/semi_naive
 With one `--binary`, the driver checks every case against its checked
 expectations on that engine alone. With two, it additionally requires
 byte-identical projections and equal steps, unifications, writes, and source
-rounds across engines. The current gate is `28 cases, 0 failed`: 17 corpus and
-generated cases plus the 11 repository programs the transform accepts.
+rounds across engines. The current gate is `40 cases, 0 failed`: 17 corpus and
+generated cases plus the 23 repository programs the transform accepts.
 
 `bench.py` measures the four-quadrant Cartesian product of protocol and engine,
 `repository_bench.py` measures the accepted repository programs, and
@@ -108,14 +108,19 @@ checked refusal case:
 | `NO_RULES` | Program without a transformable rule |
 | `PARSE_ERROR` | Malformed S-expression input |
 
-Sweeping `kernel/resources/*.mm2` and `differential/corpus/**/*.mm2` (46
-programs) accepts 11: `string_convert`, `transitive`, `cross_join_dict`,
+Sweeping `kernel/resources/*.mm2` and `differential/corpus/**/*.mm2` (103
+programs) accepts 23: `string_convert`, `transitive`, `cross_join_dict`,
 `cross_join_tuple`, `lens_aunt`, `lens_composition`, `pattern_mining`,
-`stv_roman`, `coref_absorbed_by_data_varref`, `func_type_unification`, and
-`two_bipolar_equal_crossed`. `test_acceptance_sweep.py` pins the exact
-classification of all 46. The refusals are dominated by rules that respawn
-modified copies of themselves or emit other rules, which is control transfer
-the round controller cannot absorb yet.
+`stv_roman`, `coref_absorbed_by_data_varref`, `func_type_unification`,
+`two_bipolar_equal_crossed`, and twelve of the wiki examples: `mm2_basics_02`,
+`mm2_basics_05`, and the reachability programs `p1_13`, `p2_06`, `p2_07`,
+`p2_08`, `p3_03`, `p3_04`, `p3_09`, `p3_12`, `p3_18`, and `p4_03`.
+`test_acceptance_sweep.py` pins the exact classification of all 103. The
+refusals are dominated by rules that respawn modified copies of themselves or
+emit other rules, which is control transfer the round controller cannot
+absorb yet. Several accepted wiki snippets carry rules without data, so their
+persistent fixpoint is empty; they still gate bookkeeping erasure and
+first-round quiescence, an edge class the corpus previously lacked.
 
 ## What it saves, measured
 
@@ -148,10 +153,10 @@ The reduction grows with size on both families because the naive protocol
 re-derives every earlier round's results each round. The savings are
 shape-dependent: repository programs that reach their fixed point in one
 productive round have nothing for semi-naive evaluation to remove, and the
-generated controller adds counters instead (`repository_bench.py` labels nine
-of the eleven accepted programs neutral-short and the small transitive
-resource an overhead case). The transform pays on multi-round recursive
-workloads.
+generated controller adds counters instead (`repository_bench.py` labels
+twenty-one of the twenty-three accepted programs neutral-short, the small
+transitive resource an overhead case, and the step-bounded `lens_aunt` a
+bounded-source case). The transform pays on multi-round recursive workloads.
 
 ### Four-quadrant timing
 

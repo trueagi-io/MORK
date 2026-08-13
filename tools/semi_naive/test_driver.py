@@ -217,7 +217,7 @@ class DriverTest(unittest.TestCase):
 
     def test_repository_manifest_pins_persistent_and_self_respawn_cases(self):
         specs = driver.load_repository_manifest()
-        self.assertEqual(len(specs), 11)
+        self.assertEqual(len(specs), 23)
         self.assertEqual(
             [spec.label for spec in specs],
             [
@@ -232,11 +232,23 @@ class DriverTest(unittest.TestCase):
                 "unify/coref_absorbed_by_data_varref",
                 "unify/func_type_unification",
                 "unify/two_bipolar_equal_crossed",
+                "wiki/mm2_basics_02",
+                "wiki/mm2_basics_05",
+                "wiki/reachability_p1_13",
+                "wiki/reachability_p2_06",
+                "wiki/reachability_p2_07",
+                "wiki/reachability_p2_08",
+                "wiki/reachability_p3_03",
+                "wiki/reachability_p3_04",
+                "wiki/reachability_p3_09",
+                "wiki/reachability_p3_12",
+                "wiki/reachability_p3_18",
+                "wiki/reachability_p4_03",
             ],
         )
         persistent = [spec for spec in specs if spec.source_mode == "persistent"]
         natural = [spec for spec in specs if spec.source_mode == "natural"]
-        self.assertEqual(len(persistent), 10)
+        self.assertEqual(len(persistent), 22)
         self.assertTrue(all(spec.source_steps is None for spec in persistent))
         self.assertEqual(
             [(spec.label, spec.source_steps) for spec in natural],

@@ -1,0 +1,12 @@
+# label|source|expected|source-mode|source-steps|engine-specific-counters
+kernel/string_convert|kernel/resources/string_convert.mm2|differential/expected/string_convert.expected|persistent|-|-
+kernel/transitive|kernel/resources/transitive.mm2|tools/semi_naive/expected/repository/kernel/transitive.expected|persistent|-|-
+programs/cross_join_dict|differential/corpus/programs/cross_join_dict.mm2|differential/expected/programs/cross_join_dict.expected|persistent|-|-
+programs/cross_join_tuple|differential/corpus/programs/cross_join_tuple.mm2|differential/expected/programs/cross_join_tuple.expected|persistent|-|-
+programs/lens_aunt|differential/corpus/programs/lens_aunt.mm2|tools/semi_naive/expected/repository/programs/lens_aunt.expected|natural|1|unifications
+programs/lens_composition|differential/corpus/programs/lens_composition.mm2|differential/expected/programs/lens_composition.expected|persistent|-|-
+programs/pattern_mining|differential/corpus/programs/pattern_mining.mm2|differential/expected/programs/pattern_mining.expected|persistent|-|-
+programs/stv_roman|differential/corpus/programs/stv_roman.mm2|differential/expected/programs/stv_roman.expected|persistent|-|-
+unify/coref_absorbed_by_data_varref|differential/corpus/unify/coref_absorbed_by_data_varref.mm2|differential/expected/unify/coref_absorbed_by_data_varref.expected|persistent|-|-
+unify/func_type_unification|differential/corpus/unify/func_type_unification.mm2|differential/expected/unify/func_type_unification.expected|persistent|-|-
+unify/two_bipolar_equal_crossed|differential/corpus/unify/two_bipolar_equal_crossed.mm2|differential/expected/unify/two_bipolar_equal_crossed.expected|persistent|-|-

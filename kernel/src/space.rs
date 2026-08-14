@@ -33,6 +33,24 @@ pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
 pub static ACT_PATH: &'static str = "/dev/shm/";
+
+/// PROOF OF CONCEPT (single-threaded by construction): one pool of 4 GB-reserved path buffers for
+/// the whole program, shared by the leapfrog join's cursors and the ProductZipper. Reserving per
+/// query measured 1.75x on counter_machine (an mmap round trip each time); reserved once, it is
+/// address space, not memory, and the buffer's address never changes -- the invariant zero-copy
+/// path views rely on.
+pub(crate) const RESERVED_PATH_CAP: usize = 1 << 32;
+thread_local! {
+    static PATH_POOL: std::cell::RefCell<Vec<Vec<u8>>> = std::cell::RefCell::new(Vec::new());
+}
+pub(crate) fn path_pool_take() -> Vec<u8> {
+    PATH_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| Vec::with_capacity(RESERVED_PATH_CAP))
+}
+pub(crate) fn path_pool_give(buf: Vec<u8>) {
+    if buf.capacity() >= RESERVED_PATH_CAP {
+        PATH_POOL.with(|p| p.borrow_mut().push(buf));
+    }
+}
 // pub static ACT_PATH: &'static str = "/mnt/data/";
 
 /// The pattern's distinct variables as a synthetic expression of `n` `NewVar`s. Only the debug
@@ -1128,9 +1146,12 @@ impl Space {
         let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
             btm.read_zipper()
         }));
-        prz.reserve_buffers(1 << 32, 32);
-
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        // The reservation is program-lifetime and threaded, not re-made per query.
+        path_pool_give(prz.recycle_path_buf(path_pool_take()));
+        prz.reserve_buffers(1, 32);
+        let touched = Self::query_multi_raw(&mut prz, &pat_args[1..], effect);
+        path_pool_give(prz.into_path());
+        touched
     }
 
     #[inline]
@@ -1245,8 +1266,11 @@ impl Space {
         match factors.remove(0)  {
             AFactor::CompatSource(primary) => {
                 let mut prz = ProductZipper::new(primary, &mut factors[..]);
-                prz.reserve_buffers(1 << 32, 32);
-                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+                path_pool_give(prz.recycle_path_buf(path_pool_take()));
+                prz.reserve_buffers(1, 32);
+                let touched = Self::query_multi_raw(&mut prz, &pat_args[1..], effect);
+                path_pool_give(prz.into_path());
+                touched
             }
             primary => {
                 trace!(target: "query_multi_i", "PZG of {:?}", factors.len() + 1);

@@ -25,26 +25,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const QUERY_NS: u8 = 0;
 
-/// PROOF OF CONCEPT (single-threaded by construction): one pool of 4 GB-reserved path buffers for
-/// the whole program. A per-query (worse, per-factor) `reserve_buffers(1 << 32, ..)` measured 1.75x
-/// on counter_machine -- the mmap round trip per reservation -- but reserving ONCE and threading
-/// the same buffers through every join's cursors via PathMap's recycled-path constructor pays that
-/// cost a handful of times at startup and never again. A 4 GB reservation is address space, not
-/// memory: pages materialize only as paths deepen, and the buffer never moves, which is what makes
-/// long-lived views into the path sound.
-const RESERVED_PATH_CAP: usize = 1 << 32;
-thread_local! {
-    static PATH_POOL: std::cell::RefCell<Vec<Vec<u8>>> = std::cell::RefCell::new(Vec::new());
-}
-fn pool_take() -> Vec<u8> {
-    PATH_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| Vec::with_capacity(RESERVED_PATH_CAP))
-}
-fn pool_give(buf: Vec<u8>) {
-    if buf.capacity() >= RESERVED_PATH_CAP {
-        PATH_POOL.with(|p| p.borrow_mut().push(buf));
-    }
-}
-
+use crate::space::{path_pool_take as pool_take, path_pool_give as pool_give};
 /// Marks a parse record whose byte may have a sibling in the trie, i.e. a position no bulk move
 /// covered. A symbol payload is at most 63 bytes, so the record's payload field has a spare bit.
 const BRANCH_CANDIDATE: u8 = 0x80;
@@ -1130,7 +1111,6 @@ fn join_state<'a>(
         unify_stack: Vec::new(),
         free_bufs: Vec::new(),
         free_child_bufs: Vec::new(),
-        free_key_bufs: Vec::new(),
         lead_max: Vec::new(),
         on_match: None,
         loc_buf: Vec::new(),
@@ -1498,16 +1478,6 @@ struct UnifyJoin<'a> {
     /// their allocations intact. Pure storage reuse: the children and their order are exactly what
     /// a fresh `Vec<ExprEnv>` collection produced.
     free_child_bufs: Vec<Vec<ExprEnv>>,
-    /// Pool of single-candidate byte buffers for the free-variable branch of
-    /// [`Self::match_expr_at_current`], one in flight per active frame. Each holds the bytes of
-    /// that frame's CURRENT candidate only: the bindings point at them, and the buffer is next
-    /// written only after the candidate's binding is removed, so the bytes are stable for exactly
-    /// the subtree that can observe them. This is what lets the branch bind the enumerated key
-    /// without pinning the zipper's own path buffer, whose address stability a growable `Vec`
-    /// cannot promise without a `1 << 32` up-front reservation -- measured at 1.75x on the
-    /// query-dense counter machine, because the allocator serves and returns an oversize
-    /// mapping per factor per query.
-    free_key_bufs: Vec<Vec<u8>>,
     /// Reusable scratch for the mutual seek's running key in [`Self::fill_lead_candidates`]. Only
     /// live inside that call, which completes before the node recurses, so one buffer serves every
     /// depth.
@@ -1913,9 +1883,8 @@ impl UnifyJoin<'_> {
 
     /// An env viewing `bytes` where they already are. The candidate's bytes always live in memory
     /// that outlives the env: a pooled [`CandidateBuf`] entry, held by the enumerating frame for
-    /// the whole subtree that can observe the binding; a pooled single-candidate buffer with the
-    /// same discipline (see `free_key_bufs` and the free-variable branch of
-    /// [`Self::match_expr_at_current`]); or a `'static` one-byte wildcard (see
+    /// the whole subtree that can observe the binding; the zipper's reserved, address-stable path (the
+    /// free-variable branch of [`Self::match_expr_at_current`]); or a `'static` one-byte wildcard (see
     /// [`single_byte`]). So this used to copy each candidate into an arena of boxed slices -- one
     /// allocation per candidate, and a drop per entry when the arena unwound -- to buy a lifetime
     /// it already had.
@@ -2439,26 +2408,23 @@ impl UnifyJoin<'_> {
             // parse state exactly and `next` backtracks from it as if the continuation never
             // ran.
             //
-            // The env bound into `self.bindings` views a copy of the key in this frame's pooled
-            // buffer, NOT the zipper's path: the path buffer is a growable `Vec` the deeper
-            // descent extends, so an env into it is only sound under a `1 << 32` up-front
-            // reservation per zipper (nothing smaller bounds a stored fact), whose per-query
-            // mmap round trips measured 1.75x on the query-dense counter machine. The copy is
-            // the same bytes the fill used to write into the column-wide buffer -- one
-            // candidate held at a time instead of the whole column -- and it is next
-            // overwritten (or released) only after the candidate's binding is removed, so the
-            // bytes outlive every read of the binding, including the answer emit at the leaf.
-            let mut kb = self.free_key_bufs.pop().unwrap_or_default();
+            // The env bound into `self.bindings` views the ZIPPER'S PATH directly -- zero copy.
+            // Sound on two invariants: the path buffer is a program-lifetime 4 GB reservation
+            // (see `crate::space::path_pool_take`), so its address never changes and no stored
+            // fact can outgrow it; and the candidate stays LOCKED (descend_floor) for the
+            // continuation's whole subtree, so deeper descent of this cursor only appends past
+            // the candidate's bytes, never rewrites them. The bytes are next rewritten by
+            // `next()`, which runs only after the candidate's binding is removed, so every read
+            // of the binding -- including the answer emit at the leaf -- sees them intact.
             self.cursors[f].first();
             loop {
                 if self.stopped || self.cursors[f].at_end {
                     break;
                 }
                 let vars = self.cursors[f].key_var_counts();
-                kb.clear();
-                kb.extend_from_slice(
-                    self.cursors[f].key().expect("positioned: at_end was just tested"),
-                );
+                let key = self.cursors[f].key().expect("positioned: at_end was just tested");
+                // Detached from the borrow of self: valid per the reserved-buffer invariant above.
+                let kb: &[u8] = unsafe { std::slice::from_raw_parts(key.as_ptr(), key.len()) };
                 if vars.1 == 0 {
                     // Free variable against a GROUND candidate: unification degenerates to one
                     // binding, so skip the full re-unify. Precondition: `pattern` derefs (through
@@ -2474,18 +2440,17 @@ impl UnifyJoin<'_> {
                     // bytes are unchanged; like the ground-symbol direct bind below, we keep the
                     // uncompressed (deref-equivalent) map shape. Non-ground candidates (stored
                     // wildcards, schematic compounds) keep the general path.
-                    let data_env = self.data_env_for(f, &kb, vars);
+                    let data_env = self.data_env_for(f, kb, vars);
                     let previous = self.bindings.insert(free_key, data_env);
                     debug_assert!(previous.is_none(), "deref ended at a bound var");
                     self.with_locked_candidate(f, 0, cont);
                     self.bindings.remove(&free_key);
                 } else {
-                    self.match_candidate_at_cursor(f, pattern, &kb, vars, cont);
+                    self.match_candidate_at_cursor(f, pattern, kb, vars, cont);
                 }
                 self.cursors[f].next();
             }
             self.cursors[f].reset_to_floor();
-            self.free_key_bufs.push(kb);
             return;
         }
         match byte_item(unsafe { *resolved.subsexpr().ptr }) {

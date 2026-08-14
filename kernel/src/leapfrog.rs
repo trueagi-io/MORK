@@ -25,6 +25,26 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const QUERY_NS: u8 = 0;
 
+/// PROOF OF CONCEPT (single-threaded by construction): one pool of 4 GB-reserved path buffers for
+/// the whole program. A per-query (worse, per-factor) `reserve_buffers(1 << 32, ..)` measured 1.75x
+/// on counter_machine -- the mmap round trip per reservation -- but reserving ONCE and threading
+/// the same buffers through every join's cursors via PathMap's recycled-path constructor pays that
+/// cost a handful of times at startup and never again. A 4 GB reservation is address space, not
+/// memory: pages materialize only as paths deepen, and the buffer never moves, which is what makes
+/// long-lived views into the path sound.
+const RESERVED_PATH_CAP: usize = 1 << 32;
+thread_local! {
+    static PATH_POOL: std::cell::RefCell<Vec<Vec<u8>>> = std::cell::RefCell::new(Vec::new());
+}
+fn pool_take() -> Vec<u8> {
+    PATH_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| Vec::with_capacity(RESERVED_PATH_CAP))
+}
+fn pool_give(buf: Vec<u8>) {
+    if buf.capacity() >= RESERVED_PATH_CAP {
+        PATH_POOL.with(|p| p.borrow_mut().push(buf));
+    }
+}
+
 /// Marks a parse record whose byte may have a sibling in the trie, i.e. a position no bulk move
 /// covered. A symbol payload is at most 63 bytes, so the record's payload field has a spare bit.
 const BRANCH_CANDIDATE: u8 = 0x80;
@@ -171,6 +191,11 @@ impl Column {
 
 impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
     /// Build a cursor at the zipper's current focus. Not positioned until `first`/`seek` is called.
+    /// Consume the cursor, recovering its zipper (whose path buffer [`pool_give`] recycles).
+    fn into_zipper(self) -> Z {
+        self.z
+    }
+
     pub fn new(z: Z) -> Self {
         let floor = z.path().len();
         SubtermCursor {
@@ -1085,7 +1110,7 @@ fn join_state<'a>(
                 Some(ri) => &plan.reindexes[ri],
                 None => map,
             };
-            SubtermCursor::new(src.read_zipper_at_path(plan.factors[f].prefix))
+            SubtermCursor::new(src.read_zipper_at_path_from(plan.factors[f].prefix, pool_take()))
         })
         .collect();
 
@@ -1138,6 +1163,9 @@ fn run_unify_join(
     let mut state = join_state(map, &plan, var_order, nvars);
     state.want_coordinated = want_coordinated;
     state.recurse(0);
+    for cur in state.cursors.drain(..) {
+        pool_give(cur.into_zipper().into_path());
+    }
     (state.out, state.coordinated)
 }
 
@@ -1157,6 +1185,9 @@ fn run_unify_join_stream_bindings(
     let mut state = join_state(map, &plan, var_order, nvars);
     state.on_match = Some(on_match);
     state.recurse(0);
+    for cur in state.cursors.drain(..) {
+        pool_give(cur.into_zipper().into_path());
+    }
 }
 
 /// Run the join streaming each accepted assignment's per-factor original fact bytes to `on_tuple`.
@@ -1175,6 +1206,9 @@ fn run_unify_join_stream(
     let mut state = join_state(map, &plan, var_order, nvars);
     state.on_tuple = Some(on_tuple);
     state.recurse(0);
+    for cur in state.cursors.drain(..) {
+        pool_give(cur.into_zipper().into_path());
+    }
 }
 
 /// Parse an encoded conjunction body `(, p1 .. pk)` into factors, threading the body's variable

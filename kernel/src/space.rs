@@ -40,15 +40,20 @@ pub static ACT_PATH: &'static str = "/dev/shm/";
 /// address space, not memory, and the buffer's address never changes -- the invariant zero-copy
 /// path views rely on.
 pub(crate) const RESERVED_PATH_CAP: usize = 1 << 32;
+// No RefCell: the pool is per-thread by construction and its two operations are leaf calls that
+// never re-enter (take/give hold the reference for one push or pop), so the dynamic borrow flag
+// bought nothing. `UnsafeCell` keeps it a plain vector behind a thread-local.
 thread_local! {
-    static PATH_POOL: std::cell::RefCell<Vec<Vec<u8>>> = std::cell::RefCell::new(Vec::new());
+    static PATH_POOL: std::cell::UnsafeCell<Vec<Vec<u8>>> = std::cell::UnsafeCell::new(Vec::new());
 }
 pub(crate) fn path_pool_take() -> Vec<u8> {
-    PATH_POOL.with(|p| p.borrow_mut().pop()).unwrap_or_else(|| Vec::with_capacity(RESERVED_PATH_CAP))
+    PATH_POOL
+        .with(|p| unsafe { (*p.get()).pop() })
+        .unwrap_or_else(|| Vec::with_capacity(RESERVED_PATH_CAP))
 }
 pub(crate) fn path_pool_give(buf: Vec<u8>) {
     if buf.capacity() >= RESERVED_PATH_CAP {
-        PATH_POOL.with(|p| p.borrow_mut().push(buf));
+        PATH_POOL.with(|p| unsafe { (*p.get()).push(buf) });
     }
 }
 // pub static ACT_PATH: &'static str = "/mnt/data/";

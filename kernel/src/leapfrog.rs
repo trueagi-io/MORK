@@ -202,6 +202,15 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
     /// Everything consumed below the zipper's creation focus and above the current column: the
     /// factor's bound column values, concatenated. What the join's `bound[f]` used to mirror.
     #[inline]
+    /// The zipper's whole origin path: relation prefix plus every consumed column, i.e. exactly
+    /// the stored fact's bytes once all columns are consumed. Contiguous in the reserved buffer.
+    fn origin_bytes(&self) -> &[u8]
+    where
+        Z: ZipperAbsolutePath,
+    {
+        self.z.origin_path()
+    }
+
     fn consumed_bytes(&self) -> &[u8] {
         &self.z.path()[..self.col.floor]
     }
@@ -1113,7 +1122,6 @@ fn join_state<'a>(
         free_child_bufs: Vec::new(),
         lead_max: Vec::new(),
         on_match: None,
-        loc_buf: Vec::new(),
         stopped: false,
 
         #[cfg(test)]
@@ -1486,9 +1494,6 @@ struct UnifyJoin<'a> {
     /// fact as the stock contract's `loc`) here instead of collecting rows, and a `false` return
     /// stops the search. The engine dispatch uses this.
     on_match: Option<&'a mut dyn FnMut(&Bindings, Expr) -> bool>,
-    /// Scratch for the streamed `loc`: factor 0's stored fact bytes, refilled per accepted
-    /// assignment so the stream costs no allocation per answer.
-    loc_buf: Vec<u8>,
     /// Set when a stream callback asked to stop; the recursion unwinds without visiting more
     /// candidates.
     stopped: bool,
@@ -1544,18 +1549,18 @@ impl UnifyJoin<'_> {
                 // handed over exactly as stock hands one over, for the engine's post-apply
                 // `cycled` check to drop (`dispatch_touched_parity_on_transform` pins the counts).
                 // `loc` is factor 0's stored fact; refill the scratch instead of allocating.
-                let mut buf = std::mem::take(&mut self.loc_buf);
-                buf.clear();
-                self.original_fact_bytes_into(0, &mut buf);
+                // Factor 0 is never re-indexed under the identity variable order, so its stored
+                // fact is prefix + consumed columns: CONTIGUOUS on the zipper's reserved path.
+                // The `loc` the callback receives is a view of that, not a copy.
+                debug_assert!(self.originals[0].is_none(), "factor 0 re-indexed?");
                 let loc = Expr {
-                    ptr: buf.as_ptr().cast_mut(),
+                    ptr: self.cursors[0].origin_bytes().as_ptr().cast_mut(),
                 };
                 let keep = {
                     let bindings = &self.bindings;
                     let cb = self.on_match.as_mut().unwrap();
                     cb(bindings, loc)
                 };
-                self.loc_buf = buf;
                 if !keep {
                     self.stopped = true;
                 }
@@ -2388,6 +2393,16 @@ impl UnifyJoin<'_> {
         }
     }
 
+    /// The current candidate's bytes: `klen` bytes at factor `f`'s column floor. Detached
+    /// lifetime, sound per the reserved-buffer invariant (address-stable, appended past -- never
+    /// rewritten -- while the candidate is locked).
+    #[inline(always)]
+    fn key_at(&self, f: usize, klen: u32) -> &'static [u8] {
+        let key = self.cursors[f].key().expect("cursor positioned on the candidate");
+        debug_assert_eq!(key.len(), klen as usize);
+        unsafe { std::slice::from_raw_parts(key.as_ptr(), klen as usize) }
+    }
+
     fn match_expr_at_current(
         &mut self,
         f: usize,
@@ -2422,9 +2437,11 @@ impl UnifyJoin<'_> {
                     break;
                 }
                 let vars = self.cursors[f].key_var_counts();
-                let key = self.cursors[f].key().expect("positioned: at_end was just tested");
-                // Detached from the borrow of self: valid per the reserved-buffer invariant above.
-                let kb: &[u8] = unsafe { std::slice::from_raw_parts(key.as_ptr(), key.len()) };
+                // The candidate is carried as its LENGTH (a u32), not a slice: the bytes live at
+                // the cursor's floor in the reserved path buffer, and `key_at` re-derives the view
+                // where it is consumed. No pointer escapes the borrow checker's sight unlabelled.
+                let klen: u32 = self.cursors[f].key().expect("positioned").len() as u32;
+                let kb = self.key_at(f, klen);
                 if vars.1 == 0 {
                     // Free variable against a GROUND candidate: unification degenerates to one
                     // binding, so skip the full re-unify. Precondition: `pattern` derefs (through

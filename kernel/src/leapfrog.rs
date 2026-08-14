@@ -16,7 +16,8 @@
 use mork_expr::{byte_item, item_byte, unify, unify_into, Expr, ExprEnv, ExprZipper, Tag};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::{
-    ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperValues,
+    ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving,
+    ZipperPathBuffer, ZipperValues,
 };
 use pathmap::PathMap;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1070,7 +1071,18 @@ fn join_state<'a>(
                 Some(ri) => &plan.reindexes[ri],
                 None => map,
             };
-            SubtermCursor::new(src.read_zipper_at_path(plan.factors[f].prefix))
+            let mut z = src.read_zipper_at_path(plan.factors[f].prefix);
+            // The free-variable branch of `match_expr_at_current` binds envs that point INTO
+            // this zipper's path buffer, and they stay live while the join descends deeper on
+            // the same zipper, so the buffer must never reallocate underneath them. Reserve it
+            // past every reachable path once, before any env exists: every descent in this
+            // module is trie-confirmed (probed, mask-tested, or enumerated), so the path never
+            // exceeds the longest stored key, and a stored fact is one expression, whose
+            // encoding the `u32` offsets bound below `1 << 32` bytes. Same idiom and same
+            // number as `query_multi`'s ProductZipper reservation: address space only, no page
+            // is touched until the path actually grows into it.
+            z.reserve_buffers(1 << 32, 32);
+            SubtermCursor::new(z)
         })
         .collect();
 
@@ -1730,21 +1742,6 @@ impl UnifyJoin<'_> {
         self.cursors[f].has_value()
     }
 
-    /// Fill `buf` with the children of factor `f`'s current column, for the lead whose join
-    /// variable is still free (structured children and wildcards alike), in the cursor's
-    /// ascending subterm order. Enumerates on the held cursor and restores it to the column
-    /// floor.
-    fn fill_free_candidates(&mut self, f: usize, buf: &mut CandidateBuf) {
-        let cur = &mut self.cursors[f];
-        cur.first();
-        while let Some(k) = cur.key() {
-            let vars = cur.key_var_counts();
-            buf.push_from(k, vars);
-            cur.next();
-        }
-        cur.reset_to_floor();
-    }
-
     /// Fill `buf` with the LEAD's candidate values for a still-free join variable and return the
     /// index of the first candidate the mutual seek confirmed present in every restrictor.
     ///
@@ -1868,7 +1865,9 @@ impl UnifyJoin<'_> {
 
     /// An env viewing `bytes` where they already are. The candidate's bytes always live in memory
     /// that outlives the env: a pooled [`CandidateBuf`] entry, held by the enumerating frame for
-    /// the whole subtree that can observe the binding, or a `'static` one-byte wildcard (see
+    /// the whole subtree that can observe the binding; the enumerating zipper's reserved path
+    /// buffer, held descended past the bytes for that same subtree (see the free-variable branch
+    /// of [`Self::match_expr_at_current`]); or a `'static` one-byte wildcard (see
     /// [`single_byte`]). So this used to copy each candidate into an arena of boxed slices -- one
     /// allocation per candidate, and a drop per entry when the arena unwound -- to buy a lifetime
     /// it already had.
@@ -2057,7 +2056,9 @@ impl UnifyJoin<'_> {
     /// of `parts[1..]`, so stored wildcards and schematic compounds keep the unchanged path.
     ///
     /// The binding of the lead's own candidate is exactly what [`Self::match_expr_at_current`]'s
-    /// free-variable branch does, including its ground fast bind.
+    /// free-variable branch does, including its ground fast bind -- except from the buffered
+    /// bytes, re-descended per candidate: the mutual seek moves the lead cursor BETWEEN
+    /// candidates, so matching in place off the positioned cursor is not available here.
     fn consume_lead(&mut self, parts: &[usize], nr: usize, v: usize, i: usize) {
         if self.stopped {
             return;
@@ -2277,6 +2278,63 @@ impl UnifyJoin<'_> {
         self.data_intro[f] = intro;
     }
 
+    /// [`Self::with_bound_path_bytes`] for a candidate the cursor is POSITIONED on: the bytes
+    /// are already the zipper's own key, so instead of re-descending them from the column floor
+    /// (`descend_raw`, an O(len) trie walk per candidate) the floor is locked past the current
+    /// key in place (`descend_floor`, O(1)) for the continuation and restored after
+    /// (`ascend_floor`), leaving the cursor positioned on the same candidate so `next` can
+    /// resume the enumeration. The `data_intro` bookkeeping is exactly
+    /// [`Self::with_bound_path_bytes`]'s.
+    fn with_locked_candidate(
+        &mut self,
+        f: usize,
+        intro_delta: u8,
+        cont: &mut dyn FnMut(&mut Self),
+    ) {
+        let intro = self.data_intro[f];
+        self.data_intro[f] += intro_delta;
+        self.cursors[f].descend_floor();
+        cont(self);
+        self.cursors[f].ascend_floor();
+        self.data_intro[f] = intro;
+    }
+
+    /// [`Self::match_candidate`] for a candidate the cursor is POSITIONED on (`bytes` is the
+    /// cursor's own key, viewed in place): identical unify, intro-delta and trail handling, but
+    /// the accepted candidate is locked with [`Self::with_locked_candidate`] instead of
+    /// re-descended.
+    fn match_candidate_at_cursor(
+        &mut self,
+        f: usize,
+        pattern: ExprEnv,
+        bytes: &[u8],
+        vars: (u8, u8),
+        cont: &mut dyn FnMut(&mut Self),
+    ) {
+        if self.stopped {
+            return;
+        }
+        let data_env = self.data_env_for(f, bytes, vars);
+        let mark = self.trail.len();
+        self.unify_stack.clear();
+        self.unify_stack.push((pattern, data_env));
+        let mut stack = std::mem::take(&mut self.unify_stack);
+        let mut trail = std::mem::take(&mut self.trail);
+        let ok = unify_into(&mut self.bindings, &mut stack, &mut trail).is_ok();
+        self.unify_stack = stack;
+        self.trail = trail;
+        if ok {
+            // The intro delta is the candidate's NewVar count, which the enumeration walk
+            // already counted exactly -- no rescan, no `newvars` item walk.
+            self.with_locked_candidate(f, vars.0, cont);
+        }
+        // A failed unify may have inserted before failing; unwind either way. An insert target is
+        // always a previously-unbound key, so removal restores the map exactly.
+        for k in self.trail.split_off(mark) {
+            self.bindings.remove(&k);
+        }
+    }
+
     fn match_candidate(
         &mut self,
         f: usize,
@@ -2321,15 +2379,40 @@ impl UnifyJoin<'_> {
     ) {
         let resolved = self.deref_env(pattern);
         if let Some(free_key) = resolved.var_opt() {
-            // The lead enumeration: refill a pooled buffer instead of collecting a fresh
-            // `Vec<Vec<u8>>` at every node; candidates and their order are unchanged.
-            let mut buf = self.free_bufs.pop().unwrap_or_default();
-            self.fill_free_candidates(f, &mut buf);
-            for ci in 0..buf.len {
-                if self.stopped {
+            // The lead enumeration, matched OFF the cursor's path: each candidate is processed
+            // while the cursor is POSITIONED on it. This used to copy every candidate into a
+            // pooled `CandidateBuf` and then re-descend its bytes from the column floor
+            // (`descend_raw`, an O(len) trie walk per candidate); now the enumerated key IS the
+            // candidate -- `key()` points into the zipper's path buffer -- and `descend_floor`
+            // locks it in place for the continuation's whole subtree, O(1). Candidates and
+            // their order are unchanged: this is the same `first`/`next` walk the fill ran,
+            // with the continuation run at each stop. Resumption is sound because every step
+            // consumer restores the cursor to the column floor it found it at, so `ascend_floor`
+            // reinstates the candidate's parse state exactly and `next` backtracks from it as
+            // if the continuation never ran.
+            //
+            // SAFETY (why envs over `key()` may enter `self.bindings`): the bytes must stay
+            // put for the whole subtree that can observe the binding, including the answer
+            // emit at the leaf.
+            // - They are never overwritten: while locked, the continuation moves this zipper
+            //   only at or below the candidate's end (deeper columns restore their own floors;
+            //   `ascend_raw`/`ascend_floor` pairs nest), so the bytes before it are untouched
+            //   until `ascend_floor` returns here, after which the binding is removed and the
+            //   trail unwound BEFORE `next` moves the zipper.
+            // - They are never moved: `join_state` reserved the path buffer past every
+            //   reachable path, so no descent can ever reallocate it.
+            self.cursors[f].first();
+            loop {
+                if self.stopped || self.cursors[f].at_end {
                     break;
                 }
-                let vars = buf.meta[ci];
+                let vars = self.cursors[f].key_var_counts();
+                let key = self.cursors[f].key().expect("positioned: at_end was just tested");
+                // Launder the borrow: `key` aliases the zipper's path buffer, which the arms
+                // below hold across `&mut self` calls. Validity is the argument above; the
+                // envs built over it hold raw pointers regardless.
+                let bytes: &[u8] =
+                    unsafe { core::slice::from_raw_parts(key.as_ptr(), key.len()) };
                 if vars.1 == 0 {
                     // Free variable against a GROUND candidate: unification degenerates to one
                     // binding, so skip the full re-unify. Precondition: `pattern` derefs (through
@@ -2345,17 +2428,17 @@ impl UnifyJoin<'_> {
                     // bytes are unchanged; like the ground-symbol direct bind below, we keep the
                     // uncompressed (deref-equivalent) map shape. Non-ground candidates (stored
                     // wildcards, schematic compounds) keep the general path.
-                    let data_env = self.data_env_for(f, &buf.entries[ci], vars);
+                    let data_env = self.data_env_for(f, bytes, vars);
                     let previous = self.bindings.insert(free_key, data_env);
                     debug_assert!(previous.is_none(), "deref ended at a bound var");
-                    self.with_bound_path_bytes(f, &buf.entries[ci], 0, cont);
+                    self.with_locked_candidate(f, 0, cont);
                     self.bindings.remove(&free_key);
                 } else {
-                    self.match_candidate(f, pattern, &buf.entries[ci], vars, cont);
+                    self.match_candidate_at_cursor(f, pattern, bytes, vars, cont);
                 }
+                self.cursors[f].next();
             }
-            buf.len = 0;
-            self.free_bufs.push(buf);
+            self.cursors[f].reset_to_floor();
             return;
         }
         match byte_item(unsafe { *resolved.subsexpr().ptr }) {

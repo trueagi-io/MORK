@@ -1120,7 +1120,6 @@ fn join_state<'a>(
         unify_stack: Vec::new(),
         free_bufs: Vec::new(),
         free_child_bufs: Vec::new(),
-        lead_max: Vec::new(),
         on_match: None,
         stopped: false,
 
@@ -1486,10 +1485,6 @@ struct UnifyJoin<'a> {
     /// their allocations intact. Pure storage reuse: the children and their order are exactly what
     /// a fresh `Vec<ExprEnv>` collection produced.
     free_child_bufs: Vec<Vec<ExprEnv>>,
-    /// Reusable scratch for the mutual seek's running key in [`Self::fill_lead_candidates`]. Only
-    /// live inside that call, which completes before the node recurses, so one buffer serves every
-    /// depth.
-    lead_max: Vec<u8>,
     /// When set, each accepted assignment streams the join's OWN bindings (plus factor 0's stored
     /// fact as the stock contract's `loc`) here instead of collecting rows, and a `false` return
     /// stops the search. The engine dispatch uses this.
@@ -1814,33 +1809,37 @@ impl UnifyJoin<'_> {
             return confirmed_from;
         }
         'candidates: while !self.cursors[f].at_end {
-            // Copy the candidate out once so `seek` can take the cursors mutably below.
-            let (lead_max, cursors) = (&mut self.lead_max, &self.cursors);
-            lead_max.clear();
-            lead_max.extend_from_slice(cursors[f].key().unwrap());
+            // The lead candidate as a VIEW of its cursor's reserved path, not a copy: a seek only
+            // rewrites its OWN cursor's buffer, and every seek below targets a different cursor
+            // than the one whose key it reads, so the viewed bytes are stable for exactly the
+            // uses they have. (The old copy existed for the borrow checker, not for memory.)
+            let mut lead: &[u8] = {
+                let k = self.cursors[f].key().unwrap();
+                unsafe { std::slice::from_raw_parts(k.as_ptr(), k.len()) }
+            };
             for &r in restrictors {
-                let (cursors, lead_max) = (&mut self.cursors, &self.lead_max);
-                cursors[r].seek(lead_max);
-                if cursors[r].at_end {
+                self.cursors[r].seek(lead);
+                if self.cursors[r].at_end {
                     // Nothing stored at or above the candidate: every remaining candidate is a
                     // ground symbol at least as large, so none of them can match this factor.
                     break 'candidates;
                 }
-                if cursors[r].key().unwrap() != self.lead_max.as_slice() {
+                if self.cursors[r].key().unwrap() != lead {
                     // The restrictor's least value at or above the candidate is larger, so every
                     // lead value in between is a ground symbol absent from this factor. Leap there.
                     // The target is a symbol, so the lead lands on a symbol too and skips nothing
-                    // outside the prunable suffix.
-                    let (lead_max, cursors) = (&mut self.lead_max, &self.cursors);
-                    lead_max.clear();
-                    lead_max.extend_from_slice(cursors[r].key().unwrap());
-                    let (cursors, lead_max) = (&mut self.cursors, &self.lead_max);
-                    cursors[f].seek(lead_max);
+                    // outside the prunable suffix. The view moves to r's buffer; f's seek below
+                    // does not touch it.
+                    lead = {
+                        let k = self.cursors[r].key().unwrap();
+                        unsafe { std::slice::from_raw_parts(k.as_ptr(), k.len()) }
+                    };
+                    self.cursors[f].seek(lead);
                     continue 'candidates;
                 }
             }
             // The confirmed candidate IS the lead cursor's current key, so its counts are too.
-            buf.push_from(&self.lead_max, self.cursors[f].key_var_counts());
+            buf.push_from(lead, self.cursors[f].key_var_counts());
             self.cursors[f].next();
         }
         self.cursors[f].reset_to_floor();
@@ -2476,15 +2475,17 @@ impl UnifyJoin<'_> {
             Tag::SymbolSize(_) => {
                 // A symbol holds no variables, so the resolved value needs no substitution: its
                 // bytes are the subexpression span itself. `apply` stays for compound values.
-                let bytes = unsafe { resolved.subsexpr().span().as_ref().unwrap() }.to_vec();
-                let (exact, mask) = self.ground_probe(f, &bytes);
+                // A view, not a copy: the env dereferences into the body (static for the query)
+                // or a reserved path (address-stable), so the span outlives every use below.
+                let bytes = unsafe { resolved.subsexpr().span().as_ref().unwrap() };
+                let (exact, mask) = self.ground_probe(f, bytes);
                 if exact {
                     // Ground against ground: the seek established byte equality, and on ground
                     // terms byte equality is unifiability (RoutingSafe.thy,
                     // `ground_unifiable_iff_eq`), so `unify` would return the bindings unchanged.
                     // Bind the column directly; a wildcard candidate still unifies through
                     // `mork_expr::unify` below.
-                    self.with_bound_path_bytes(f, &bytes, 0, cont);
+                    self.with_bound_path_bytes(f, bytes, 0, cont);
                 }
                 for w in mask.iter() {
                     if is_wildcard_term(w) {

@@ -14,7 +14,7 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct, OwnedSourceItem, Bindings};
+use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify_reuse, UnificationFailure, apply, destruct, OwnedSourceItem, Bindings};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
@@ -1261,9 +1261,11 @@ impl Space {
     #[inline(always)]
     pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut candidate = 0;
-        // One pair buffer for the whole enumeration: `unify` drains it, so a `clear` per
-        // candidate makes it allocation-free after warmup.
+        // One pair buffer and one bindings slab for the whole enumeration: `unify_reuse` drains
+        // the pairs and generation-clears the slab, so after warmup neither is rebuilt per
+        // candidate.
         let mut pairs: Vec<(ExprEnv, ExprEnv)> = Vec::new();
+        let mut bindings = Bindings::new();
 
         while prz.to_next_val() {
             if prz.focus_factor() != prz.factor_count() - 1 { continue };
@@ -1292,13 +1294,11 @@ impl Space {
 
             // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-            let bindings = unify(&mut pairs);
-
-            match bindings {
-                Ok(bs) => {
+            match unify_reuse(&mut bindings, &mut pairs) {
+                Ok(()) => {
 
                     unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                    if !effect(Err(&bs), e) {
+                    if !effect(Err(&bindings), e) {
                         break
                     }
                 }
@@ -1328,9 +1328,10 @@ impl Space {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
-        // One pair buffer for the whole walk: `unify` drains it, so a `clear` per candidate
-        // makes it allocation-free after warmup.
+        // One pair buffer and one bindings slab for the whole walk: `unify_reuse` drains the
+        // pairs and generation-clears the slab, so after warmup neither is rebuilt per candidate.
         let mut pairs: Vec<(ExprEnv, ExprEnv)> = Vec::new();
+        let mut bindings = Bindings::new();
         let mut candidate = 0;
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
@@ -1383,12 +1384,10 @@ impl Space {
 
                         // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-                        let bindings = unify(&mut pairs);
-
-                        match bindings {
-                            Ok(bs) => {
+                        match unify_reuse(&mut bindings, &mut pairs) {
+                            Ok(()) => {
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                                if !effect(Err(&bs), e) {
+                                if !effect(Err(&bindings), e) {
                                     unsafe { longjmp(a, 1) }
                                 }
                             }

@@ -1758,20 +1758,38 @@ pub type ExprVar = (u8, u8);
 /// expressions.
 /// The solved substitution: variable key to value env, as a DIRECT-INDEXED slab. The key domain is
 /// tiny and bounded -- a body has at most 64 conjuncts (an arity byte), each namespace at most 64
-/// variables (the parser's cap) -- so `(n, v)` IS an index: `n << 6 | v`. A probe is one load with
-/// no comparisons, no ordering, no hashing; insert is one store plus a touched-list push; and the
-/// join never clones it at all (the trail unwinds it), so the slab's size costs one allocation per
-/// join, not per candidate. `touched` carries the occupied indices for iteration and O(touched)
-/// clearing; iteration order is insertion order, which no consumer depends on (bindings are only
-/// ever observed by key lookup or order-free scans).
+/// variables (the parser's cap) -- so `(n, v)` IS an index: `n << 6 | v`. A probe is one stamp
+/// compare and one load, with no ordering and no hashing; insert is one store plus a touched-list
+/// push; and the join never clones it at all (the trail unwinds it), so the slab's size costs one
+/// allocation per join, not per candidate. `touched` carries the occupied indices for iteration
+/// and O(touched) clearing; iteration order is insertion order, which no consumer depends on
+/// (bindings are only ever observed by key lookup or order-free scans).
+///
+/// Slots are GENERATION-TAGGED so the whole slab also clears in O(1): a slot is occupied only
+/// while its stamp equals `generation`, and [`Bindings::clear_fast`] bumps it so every slot reads as
+/// vacant with the allocation (and the stale values) left in place. That is what lets the
+/// per-tuple path ([`unify_reuse`]) keep ONE slab across a whole enumeration instead of building
+/// and dropping a map per candidate.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Bindings {
     slots: Vec<Option<ExprEnv>>,
+    /// Parallel to `slots`: `slots[i]` holds a live value iff `slot_gen[i] == generation` (and is
+    /// `Some`). A stale stamp reads as vacant, so old values never need erasing. Invariant:
+    /// `slot_gen.len() == slots.len()` (the two only ever resize together).
+    slot_gen: Vec<u32>,
+    /// The current generation; see [`Bindings::clear_fast`].
+    generation: u32,
     touched: Vec<u16>,
+    /// Scratch lent to [`unify_reuse`]'s delegated [`unify_into`] trail, kept on the slab so the
+    /// per-tuple caller does not pay a trail allocation per candidate. Contents are dead between
+    /// calls (`unify_reuse` clears before use); no other method observes it.
+    trail_scratch: Vec<ExprVar>,
 }
 
 impl Bindings {
-    pub fn new() -> Self { Bindings { slots: Vec::new(), touched: Vec::new() } }
+    pub fn new() -> Self {
+        Bindings { slots: Vec::new(), slot_gen: Vec::new(), generation: 0, touched: Vec::new(), trail_scratch: Vec::new() }
+    }
     #[inline(always)]
     fn idx(k: &ExprVar) -> usize {
         debug_assert!(k.1 < 64, "the parser caps variables at 63");
@@ -1779,7 +1797,10 @@ impl Bindings {
     }
     #[inline(always)]
     pub fn get(&self, k: &ExprVar) -> Option<&ExprEnv> {
-        self.slots.get(Self::idx(k)).and_then(|s| s.as_ref())
+        let i = Self::idx(k);
+        if self.slot_gen.get(i) != Some(&self.generation) { return None; }
+        // In-bounds by the `slot_gen.len() == slots.len()` invariant.
+        self.slots[i].as_ref()
     }
     #[inline(always)]
     pub fn contains_key(&self, k: &ExprVar) -> bool { self.get(k).is_some() }
@@ -1787,8 +1808,19 @@ impl Bindings {
         let i = Self::idx(&k);
         if i >= self.slots.len() {
             self.slots.resize(i + 64, None);
+            // Filling with the CURRENT stamp is sound because the paired slot is `None`, and a
+            // sentinel value would need its own wrap story; strict monotonicity between full
+            // clears guarantees no LATER generation collides with it.
+            self.slot_gen.resize(i + 64, self.generation);
         }
-        let prev = self.slots[i].replace(v);
+        let prev = if self.slot_gen[i] == self.generation {
+            self.slots[i].replace(v)
+        } else {
+            // Stale slot from before a `clear_fast`: logically vacant, whatever it still holds.
+            self.slot_gen[i] = self.generation;
+            self.slots[i] = Some(v);
+            None
+        };
         if prev.is_none() {
             self.touched.push(i as u16);
         }
@@ -1796,7 +1828,8 @@ impl Bindings {
     }
     pub fn remove(&mut self, k: &ExprVar) -> Option<ExprEnv> {
         let i = Self::idx(k);
-        let prev = self.slots.get_mut(i).and_then(|s| s.take());
+        if self.slot_gen.get(i) != Some(&self.generation) { return None; }
+        let prev = self.slots[i].take();
         if prev.is_some() {
             // The join removes by trail unwinding, newest first, so the scan from the back is
             // usually one step.
@@ -1805,6 +1838,20 @@ impl Bindings {
             }
         }
         prev
+    }
+    /// O(1) logical clear: bump the generation so every slot reads as vacant, keeping the
+    /// allocation. The 2^32nd bump would recycle a stamp that stale slots still carry, so wrap
+    /// (once per 4 billion clears) falls back to a true clear.
+    pub fn clear_fast(&mut self) {
+        self.touched.clear();
+        self.generation = match self.generation.checked_add(1) {
+            Some(g) => g,
+            None => {
+                self.slots.clear();
+                self.slot_gen.clear();
+                0
+            }
+        };
     }
     pub fn len(&self) -> usize { self.touched.len() }
     pub fn is_empty(&self) -> bool { self.touched.is_empty() }
@@ -2178,6 +2225,26 @@ pub fn unify(stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<Bindings, Unificatio
     let mut trail = Vec::new();
     unify_into(&mut bindings, stack, &mut trail)?;
     Ok(bindings)
+}
+
+/// [`unify`] with the map REUSED across calls: [`Bindings::clear_fast`] the slab (a generation
+/// bump, not a drop) and solve the equations on `stack` into it from scratch. The solutions are
+/// the same as [`unify`]'s; what changes is the cost shape -- a per-tuple caller (the
+/// ProductZipper's `query_multi_raw`) keeps one `Bindings` alive for a whole enumeration, so the
+/// slab and its trail scratch are allocated once per query instead of built and dropped per
+/// candidate tuple. On `Err` the map is left holding a partial solve; the next call's
+/// `clear_fast` erases it, so failed candidates cost no cleanup either.
+#[inline(never)]
+pub fn unify_reuse(bindings: &mut Bindings, stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<(), UnificationFailure> {
+    bindings.clear_fast();
+    // The trail is unwind bookkeeping for live-map callers; this from-scratch solve never
+    // unwinds, but [`unify_into`] records unconditionally, so lend it the slab's scratch vec
+    // (taken, to sidestep borrowing `bindings` twice) rather than allocate one per call.
+    let mut trail = std::mem::take(&mut bindings.trail_scratch);
+    trail.clear();
+    let result = unify_into(bindings, stack, &mut trail);
+    bindings.trail_scratch = trail;
+    result
 }
 
 /// [`unify`] against a LIVE map: solve the equations on `stack` with `bindings` already holding a

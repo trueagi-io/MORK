@@ -14,7 +14,7 @@ use std::{
     ops::{self, ControlFlow}, 
     ptr::{self, null, null_mut, slice_from_raw_parts, slice_from_raw_parts_mut}
 };
-use std::collections::{BTreeMap, HashMap};
+use std::{collections::{BTreeMap, HashMap}, vec};
 use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};
 use std::ops::{Coroutine, CoroutineState};
@@ -2863,52 +2863,125 @@ mod tests {
 
 #[test]
 fn  unify_fuzzy_test(){
+    let f = |f_| item_byte(Tag::Fuzzy(f_));
+    let a = |a_| item_byte(Arity(a_));
+    let r = |r_| item_byte(Tag::VarRef(r_));
+    let s = |s_| item_byte(Tag::SymbolSize(s_));
+    let n = item_byte(Tag::NewVar);
+    
     if false {
-        let mut expr_l = [item_byte(Tag::Arity(2)), item_byte(Tag::Fuzzy(0b1110)), item_byte(Tag::Fuzzy(0b0111))];
-        let mut expr_r = [item_byte(Tag::Arity(2)), item_byte(Tag::NewVar),        item_byte(Tag::VarRef(0))];
-        
-        
+        println!("\n==========================================================================================\n");
+        // ({0b1110} {0b0111})
+        let mut expr_l = [a(2), f(0b1110), f(0b0111)];
+        // ($x $x)
+        let mut expr_r = [a(2), n        , r(0)];
+        println!("expr_l {:?}", Expr{ptr : expr_l.as_mut_ptr()});
+        println!("expr_r {:?}", Expr{ptr : expr_r.as_mut_ptr()});
+        println!();
+
+
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr()});
         let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr()});
-        
+
         let mut undo = Vec::new();
         let mut stack = Vec::new();
         stack.push((l,r));
-        
-        let bindings = unify_fuzzy(&mut stack, &mut undo);
-        
-        println!("undo : {:?}\nstack : {:?}\nbindings : {:?}", undo, stack, bindings);
-        
-        
-        while let Some((ptr,mask)) = undo.pop() {
-            unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-        }
 
-        println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+        let bindings = unify_fuzzy(&mut stack, &mut undo);
+
+        // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}", undo, stack, bindings);
+
+
+
+        let mut out_l = Vec::with_capacity(300);
+        let mut out_r = Vec::with_capacity(300);
+        let mut stk = Vec::with_capacity(300);
+        let mut asn = Vec::with_capacity(300);
+
+        let b = bindings.as_ref().unwrap();
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
+
+        println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
+        println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
+
+        // while let Some((ptr,mask)) = undo.pop() {
+        //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+        // }
+
+        // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
     }
 
-    {
+    if false {
+        println!("\n==========================================================================================\n");
         // ((f0  $z) ($z f1) $y      (f2 f3) $y) 
         // ($x       $x      (f4 f5) $x      $x)
 
-        let fuzzy   = |f| item_byte(Tag::Fuzzy(f));
-        let arity   = |a| item_byte(Arity(a));
-        let var_ref = |r| item_byte(Tag::VarRef(r));
-        let new_var = item_byte(Tag::NewVar);
 
-        //                (           (         f0             $z     )   (         $z          f1           )   $y                                        (         f2             f3           )   $y         ) 
-        let mut expr_l = [arity(5),   arity(2), fuzzy(0b1111), new_var,   arity(2), var_ref(0), fuzzy(0b0110),   new_var,                                  arity(2), fuzzy(0b1110), fuzzy(0b0111),   var_ref(1)];
-        //                (           $x                                  $x                                     (         f4             f5           )   $x                                        $x         )
-        let mut expr_r = [arity(5),   new_var,                            var_ref(0),                            arity(2), fuzzy(0b1100), fuzzy(0b0100),   var_ref(0),                               var_ref(0)];
+        //                (       (     f0         $z)   (     $z    f1       )   $y                            (     f2         f3       )   $y  ) 
+        let mut expr_l = [a(5),   a(2), f(0b1111), n,    a(2), r(0), f(0b0110),   n,                            a(2), f(0b1110), f(0b0111),   r(1)];
+        //                (       $x                     $x                       (     f4         f5       )   $x                            $x  )
+        let mut expr_r = [a(5),   n,                     r(0),                    a(2), f(0b1100), f(0b0100),   r(0),                         r(0)];
+        println!("expr_l {:?}", Expr{ptr : expr_l.as_mut_ptr()});
+        println!("expr_r {:?}", Expr{ptr : expr_r.as_mut_ptr()});
 
+        let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
+        let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr() });
 
-        // //                (           (         f0             $z     )   $y                                        (         f2             f3           )   $y         )   (         $z          f1           )    
-        // let mut expr_l = [arity(5),   arity(2), fuzzy(0b1111), new_var,   new_var,                                  arity(2), fuzzy(0b1110), fuzzy(0b0111),   var_ref(1),    arity(2), var_ref(0), fuzzy(0b0110),   ];
-        // //                (           $x                                  (         f4             f5           )   $x                                        $x         )   $x                                     
-        // let mut expr_r = [arity(5),   new_var,                            arity(2), fuzzy(0b1100), fuzzy(0b0100),   var_ref(0),                               var_ref(0),    var_ref(0),                            ];
-
+        let mut undo = Vec::new();
+        let mut stack = Vec::new();
+        stack.push((l,r));
 
 
+        let bindings = unify_fuzzy(&mut stack, &mut undo);
+
+        // println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
+        for each in  bindings.as_ref().unwrap() {
+            let view = Expr { ptr : unsafe { each.1.base.ptr.add(each.1.offset as usize) } };
+            println!("\t {:?}", each);
+            println!("\t\t\t| {:?}", view);
+
+        }
+        println!("\n");
+
+        
+        println!("l {:?}", l);
+        println!("r {:?}", r);
+        println!();
+
+        let mut out_l = Vec::with_capacity(300);
+        let mut out_r = Vec::with_capacity(300);
+        let mut stk = Vec::with_capacity(300);
+        let mut asn = Vec::with_capacity(300);
+
+        let b = bindings.as_ref().unwrap();
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
+        
+        // the mutations don't give equal value when substitutions happen for the patterns, but this might not matter. 
+        println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
+        println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
+
+
+        // while let Some((ptr,mask)) = undo.pop() {
+        //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+        // }
+
+        // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+
+    }
+
+    if false {
+        println!("\n==========================================================================================\n");
+        // ( ( f0 $z )  $y          ( f2 f3 )  $y  ( $z f1 )  ) 
+        // ( $x         ( f4 f5 )   $x         $x  $x         )                                  
+
+        //                (       (     f0         $z)  $y                            (     f2         f3       )   $y       (     $z    f1       )  ) 
+        let mut expr_l = [a(5),   a(2), f(0b1111), n,   n,                            a(2), f(0b1110), f(0b0111),   r(1),    a(2), r(0), f(0b0110),   ];
+        //                (       $x                    (     f4         f5       )   $x                            $x       $x                      )                                  
+        let mut expr_r = [a(5),   n,                    a(2), f(0b1100), f(0b0100),   r(0),                         r(0),    r(0),                    ];
+        println!("expr_l {:?}", Expr{ptr : expr_l.as_mut_ptr()});
+        println!("expr_r {:?}", Expr{ptr : expr_r.as_mut_ptr()});
 
 
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
@@ -2921,7 +2994,7 @@ fn  unify_fuzzy_test(){
 
         let bindings = unify_fuzzy(&mut stack, &mut undo);
 
-        println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
+        // println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
         for each in  bindings.as_ref().unwrap() {
             let view = Expr { ptr : unsafe { each.1.base.ptr.add(each.1.offset as usize) } };
             println!("\t {:?}", each);
@@ -2931,23 +3004,22 @@ fn  unify_fuzzy_test(){
         println!("\n");
 
         
-        println!("l {:?}\n", l);
-        println!("r {:?}\n", r);
-
+        println!("l {:?}", l);
+        println!("r {:?}", r);
+        println!();
 
         let mut out_l = Vec::with_capacity(300);
         let mut out_r = Vec::with_capacity(300);
-        let mut s = Vec::with_capacity(300);
-        let mut a = Vec::with_capacity(300);
+        let mut stk = Vec::with_capacity(300);
+        let mut asn = Vec::with_capacity(300);
 
         let b = bindings.as_ref().unwrap();
-        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, s , a );
-        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, s , a );
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
         
         // the mutations don't give equal value when substitutions happen for the patterns, but this might not matter. 
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
         println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
-
 
 
         // while let Some((ptr,mask)) = undo.pop() {
@@ -2958,7 +3030,221 @@ fn  unify_fuzzy_test(){
 
     }
 
+
+    // exec Demo
+    if false {
+        println!("\n==========================================================================================\n");
+        // (? {1110} {0111} a)
+        let mut expr_a = [a(4), s(1), b'?', f(0b1110), f(0b0111), s(1), b'a'];
+        // (? {1100} {0101} b)
+        let mut expr_b = [a(4), s(1), b'?', f(0b1100), f(0b0101), s(1), b'b'];
+        // (? {1000} {0100} c)
+        let mut expr_c = [a(4), s(1), b'?', f(0b1000), f(0b0100), s(1), b'c'];
+        // (? {0100} {0100} d)
+        let mut expr_d = [a(4), s(1), b'?', f(0b0100), f(0b0100), s(1), b'd'];
+
+        println!("expr_a {:?}", Expr{ ptr: expr_a.as_mut_ptr()} );
+        println!("expr_b {:?}", Expr{ ptr: expr_b.as_mut_ptr()} );
+        println!("expr_c {:?}", Expr{ ptr: expr_c.as_mut_ptr()} );
+        println!("expr_d {:?}", Expr{ ptr: expr_d.as_mut_ptr()} );
+
+
+        // (exec 0 (, (? $x $x   $y) ) 
+        //         (, (! $x      $y) )
+        // )
+        let mut exec = [
+            a(4), s(4), b'e',
+                        b'x',
+                        b'e',
+                        b'c',
+
+                  s(1), b'0',
+
+                  a(2), s(1), b',', a(4), s(1), b'?', n, r(0), n,
+                  a(2), s(1), b',', a(3), s(1), b'!', r(0),    r(1),
+        ];
+        println!("exec {:?}", Expr{ ptr: exec.as_mut_ptr()} );
+
+        let (_prefix, mut body) = exec.split_at_mut(8);
+
+        let (mut pattern_list, mut template_list) = body.split_at_mut(9);
+        println!("pattern_list {:?}",  Expr{ ptr: pattern_list.as_mut_ptr()} );
+        println!("template_list {:?}", Expr{ ptr: template_list.as_mut_ptr()} );
+
+        let mut all_outs = Vec::new();
+
+        let mut stk = Vec::with_capacity(300);
+        let mut asn = Vec::with_capacity(300);
+
+        println!();
+
+        for each in [expr_a.as_mut_ptr(), expr_b.as_mut_ptr(), expr_c.as_mut_ptr(), expr_d.as_mut_ptr()] {
+        // for each in [expr_a.as_mut_ptr()] {
+            let l0 = ExprEnv::new(0, Expr { ptr: unsafe { pattern_list.as_mut_ptr().add(3 /* move past the comma */) } });
+            let r0 = ExprEnv::new(1, Expr { ptr: each });
+            
+            let mut undo  = Vec::new();
+            let mut stack = Vec::new();
+            stack.push((l0,r0));
+
+            let bindings = unify_fuzzy(&mut stack, &mut undo);
+
+            // println!("bindings {:?}", bindings);
+
+
+            let mut out = Vec::with_capacity(300);
+            let Ok(b) = bindings.as_ref() else { 
+                while let Some((ptr,mask)) = undo.pop() {
+                    unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+                }
+                continue;
+            };
+            apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: unsafe { template_list.as_mut_ptr().add(3) }} , b, out, stk , asn );
+
+            all_outs.push(out);
+
+
+            while let Some((ptr,mask)) = undo.pop() {
+                unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+            }
+            // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+
+        }
+
+        println!("{{");
+        for each in &mut all_outs {
+            println!("\t{:?}", Expr {ptr : each.as_mut_ptr()})
+        }
+        println!("}}");
+    }
+
+    // exec Demo, multi arg
+    if false {
+        println!("\n==========================================================================================\n");
+
+
+        // (? {1110} {0111} a)
+        let mut expr_a = [a(4), s(1), b'?', f(0b1110), f(0b0111), s(1), b'a'];
+        // (? {1100} {0101} b)
+        let mut expr_b = [a(4), s(1), b'?', f(0b1100), f(0b0101), s(1), b'b'];
+        // (? {1000} {0100} c)
+        let mut expr_c = [a(4), s(1), b'?', f(0b1000), f(0b0100), s(1), b'c'];
+        // (? {0100} {0100} d)
+        let mut expr_d = [a(4), s(1), b'?', f(0b0100), f(0b0100), s(1), b'd'];
+
+        println!("expr_a {:?}", Expr{ ptr: expr_a.as_mut_ptr()} );
+        println!("expr_b {:?}", Expr{ ptr: expr_b.as_mut_ptr()} );
+        println!("expr_c {:?}", Expr{ ptr: expr_c.as_mut_ptr()} );
+        println!("expr_d {:?}", Expr{ ptr: expr_d.as_mut_ptr()} );
+
+
+        let mut expr_y = [a(4),s(1), b'#', f(0b0011), f(0b1110) , s(1), b'y'];
+        let mut expr_z = [a(4),s(1), b'#', n        , r(1)      , s(1), b'z'];
+
+        println!("expr_y {:?}", Expr{ ptr: expr_b.as_mut_ptr()} );
+        println!("expr_z {:?}", Expr{ ptr: expr_a.as_mut_ptr()} );
+
+
+        // (exec 0 (, (? $x $x $a) (# $x $z $c) ) 
+        //         (, (! $x $a) (!! $z $c) (!!! $x $a $z $c) )
+        // )
+        let mut exec = [
+            a(4), s(4), b'e',
+                        b'x',
+                        b'e',
+                        b'c',
+
+                  s(1), b'0',
+
+                  a(3), s(1), b',', a(4), s(1), b'?', n, r(0), n,   a(4),s(1), b'#', r(0), n, n,
+                  a(4), s(1), b',', a(3), s(1), b'!',             r(0), r(1),
+                                    a(3), s(2), b'!', b'!',       r(2), r(3),
+                                    a(5), s(3), b'!', b'!', b'!', r(0), r(1), r(2), r(3),
+        ];
+
+        println!("exec          {:?}", Expr{ ptr: exec.as_mut_ptr()} );
+        let (_prefix, mut body) = exec.split_at_mut(8);
+        let (mut pattern_list, mut template_list) = body.split_at_mut(15);
+        println!("pattern_list  {:?}",  Expr{ ptr: pattern_list.as_mut_ptr()} );
+        println!("template_list {:?}",  Expr{ ptr: template_list.as_mut_ptr()} );
+
+        let mut all_outs = Vec::new();
+
+        let mut stk = Vec::with_capacity(300);
+        let mut asn = Vec::with_capacity(300);
+
+        println!();
+
+        for each_outer in [expr_a.as_mut_ptr(), expr_b.as_mut_ptr(), expr_c.as_mut_ptr(), expr_d.as_mut_ptr()] {
+            for each_inner in [expr_y.as_mut_ptr(), expr_z.as_mut_ptr()] {
+                let l0 = ExprEnv::new(0, Expr { ptr: unsafe { pattern_list.as_mut_ptr().add(3 /* move past the comma */) } });
+                let r0 = ExprEnv::new(1, Expr { ptr: each_outer });
+
+                let mut l1 = ExprEnv::new(0, Expr { ptr: unsafe { pattern_list.as_mut_ptr().add(3+6 /* move past the first argument */) } });
+                l1.v += l0.subsexpr().newvars() as u8;
+                let r1 = ExprEnv::new(1, Expr { ptr: each_inner });
+
+                let mut undo  = Vec::new();
+                let mut stack = Vec::new();
+                stack.push((l0,r0));
+                stack.push((l1,r1));
+                // println!("\tstack {:?}", stack);
+
+                let bindings = unify_fuzzy(&mut stack, &mut undo);
+                // println!("bindings {:?}", bindings);
+
+
+                let Ok(b) = bindings.as_ref() else { 
+                    while let Some((ptr,mask)) = undo.pop() {
+                        unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+                    }
+                    continue;
+                };
+
+                let mut vars     = Expr{ ptr : pattern_list.as_mut_ptr() }.variables() as u8;
+                let mut new_vars = Expr{ ptr : pattern_list.as_mut_ptr() }.newvars() as u8;
+                let mut offset   = 3;
+
+                // println!();
+                for _ in 0..3 {
+                    let mut out = Vec::new();
+                    let o       = unsafe { Expr { ptr : template_list.as_mut_ptr().add(offset) } };
+                    apply_e_clears_stacks_and_cycles_check!(0,vars,new_vars, o, b, out, stk , asn );
+                    
+                    // println!("{:?}", Expr{ptr : out.as_mut_ptr()});
+
+                    vars     += o.variables() as u8;
+                    new_vars += o.newvars()   as u8;
+                    offset   += o.span().len();
+                    
+                    all_outs.push(out);
+                }
+
+                while let Some((ptr,mask)) = undo.pop() {
+                    unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+                }
+                // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
+            }
+        }
+
+
+        all_outs.sort();
+        all_outs.dedup();
+
+        println!("{{");
+        for each in &mut all_outs {
+            println!("\t{:?}", Expr {ptr : each.as_mut_ptr()})
+        }
+        println!("}}");
+    }
 }
+
+
+
+
+
+
+
 
 
 #[inline(never)]

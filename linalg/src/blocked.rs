@@ -253,6 +253,42 @@ impl<const N: usize, const SQ: usize> NDIndex<f32> for Blocked<N, SQ> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// In-place scalar transforms
+// ─────────────────────────────────────────────────────────────────────────
+
+impl<const N: usize, const SQ: usize> crate::scalar::ScalarTransform<f32> for Blocked<N, SQ> {
+    /// Yields a chunk per *valid* row-run of each present block, skipping the
+    /// padding in edge blocks so a zero-changing transform (e.g. `exp`) never
+    /// turns padding into a spurious non-zero. Interior blocks (no column
+    /// padding) are emitted as a single contiguous chunk.
+    fn for_each_chunk(&mut self, mut f: impl FnMut(&mut [f32])) {
+        let nd = self.shape.len();
+        let rows_total = self.shape[nd - 2];
+        let cols_total = self.shape[nd - 1];
+        let blocks_per_outer = self.n_block_rows * self.n_block_cols;
+
+        for (block_idx, slot) in self.blocks.iter_mut().enumerate() {
+            let Some(block) = slot else { continue };
+            let within = block_idx % blocks_per_outer;
+            let block_row = within / self.n_block_cols;
+            let block_col = within % self.n_block_cols;
+            let valid_rows = (rows_total - block_row * N).min(N);
+            let valid_cols = (cols_total - block_col * N).min(N);
+
+            if valid_cols == N {
+                // No column padding: the valid rows are one contiguous run.
+                f(&mut block[..valid_rows * N]);
+            } else {
+                for r in 0..valid_rows {
+                    let start = r * N;
+                    f(&mut block[start..start + valid_cols]);
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Attention
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -323,6 +359,39 @@ pub fn attention<const N: usize, const SQ: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scalar::ScalarTransform;
+
+    #[test]
+    fn scalar_transform_maps_stored_cells() {
+        // Single 8×8 block, fully populated trailing dims.
+        let mut a = Blocked8::with_shape(vec![8, 8]);
+        a.set(&[0, 0], 4.0);
+        a.set(&[3, 5], 9.0);
+        a.set(&[7, 7], 16.0);
+        a.abs().sqrt();
+        assert_eq!(a.get(&[0, 0]), 2.0);
+        assert_eq!(a.get(&[3, 5]), 3.0);
+        assert_eq!(a.get(&[7, 7]), 4.0);
+    }
+
+    #[test]
+    fn scalar_transform_skips_edge_padding() {
+        // 3×5 lives in one 8×8 block — rows 3..8 and cols 5..8 are padding.
+        let mut a = Blocked8::with_shape(vec![3, 5]);
+        // Touch one cell so the block is allocated (the rest stay 0.0).
+        a.set(&[0, 0], 0.0);
+        // exp(0) = 1: every *valid* cell becomes non-zero, padding must not.
+        a.exp();
+        // All 3×5 = 15 logical cells are now 1.0.
+        for r in 0..3 {
+            for c in 0..5 {
+                assert_eq!(a.get(&[r, c]), 1.0, "valid cell ({r},{c})");
+            }
+        }
+        // nnz counts non-zeros inside present blocks; if padding had been
+        // transformed it would read 64, not 15.
+        assert_eq!(a.nnz(), 15, "padding must remain zero");
+    }
 
     fn naive_attention<const N: usize, const SQ: usize>(
         q: &Blocked<N, SQ>,

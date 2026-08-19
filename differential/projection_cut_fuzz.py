@@ -221,10 +221,17 @@ def run(binary, prog, out, reps, timeout):
     """
     best, dump = None, None
     for _ in range(reps):
+        # Clear the target first and insist the process succeeded: otherwise a crashed or
+        # timed-out run leaves the PREVIOUS run's space behind and the comparison silently
+        # passes on stale output.
+        if os.path.exists(out):
+            os.remove(out)
         try:
             r = subprocess.run([binary, "run", prog, "--steps", "2", out],
                                capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            return None, None
+        if r.returncode != 0 or not os.path.exists(out):
             return None, None
         m = TOOK.search(r.stdout.decode("utf-8", "replace"))
         ms = int(m.group(1)) if m else -1
@@ -306,9 +313,10 @@ def main():
             b_ms, b_dump = run(args.base, prog, prog + ".base.space", args.reps, args.base_timeout)
         c_ms, c_dump = run(args.cut, prog, prog + ".cut.space", args.reps, args.base_timeout)
         if c_ms is None:
-            c_ms = args.base_timeout * 1000
+            print("  case %d: the cut build did not finish or exited nonzero" % len(accepted))
+            c_ms, c_dump = args.base_timeout * 1000, None
 
-        identical = (b_dump == c_dump)
+        identical = (c_dump is not None and b_dump == c_dump)
         # The independent join models an EQUALITY join, which is what the engine performs only
         # when the joined values are ground. In the meta family the read variables bind whole
         # query expressions, so the engine joins them by UNIFICATION and renames their variables

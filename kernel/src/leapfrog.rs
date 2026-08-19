@@ -2135,13 +2135,12 @@ impl UnifyJoin<'_> {
         self.free_bufs.push(buf);
     }
 
-    /// The projection cut, as its OWN path: `v` is a singleton nothing downstream reads, so one
-    /// witness stands for its whole domain. Kept separate from [`Self::consume_lead`] so that the
-    /// enumerating path keeps the exact code it had -- a `cut` branch inside the candidate fill's
-    /// loops measured 6% on counter_machine, which is all fill and no cut.
+    /// One witness for `v`, whose whole domain nothing downstream reads.
     ///
-    /// If that one witness does not match, the level re-runs as a full enumeration, so the cut can
-    /// only ever drop a DUPLICATE answer, never the last one.
+    /// Separate from [`Self::consume_lead`] so the enumerating path keeps the code it had: a
+    /// `cut` branch inside the candidate fill's loops measured 6% on counter_machine. If the
+    /// witness does not match, the level re-runs as a full enumeration, so the cut can only ever
+    /// drop a duplicate.
     fn consume_lead_cut(&mut self, parts: &[usize], nr: usize, v: usize, i: usize) {
         if self.stopped {
             return;

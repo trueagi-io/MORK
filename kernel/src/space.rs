@@ -109,13 +109,15 @@ pub(crate) const VARS: [u64; 4] = {
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
-/// Descend the FIRST complete subterm below the focus, byte by byte along the leftmost path,
-/// and report how many bytes that took (0 if the focus is a dead end). Every path stored in the
-/// trie spells a complete expression, so the leftmost walk always closes the subterm it opened --
-/// there is nothing to backtrack. On a ProductZipper the descent also crosses the factor
-/// boundary the moment the subterm ends on a leaf, which is exactly the force-enroll this cut
-/// wants: the next factor engages without the current one being enumerated first.
-fn descend_first_subterm<Z : ZipperMoving + Zipper>(loc: &mut Z) -> usize {
+/// Descend the FIRST complete subterm below the focus, reporting how many bytes that took (0 if
+/// the focus is a dead end) and OR-ing into `var_facts` the bit of every factor whose bytes the
+/// descent found a variable in.
+///
+/// That second job is not optional. `vs!` is the only other place the walk learns a candidate is
+/// non-ground, and this descent goes around it: a leftmost subterm may well carry a variable --
+/// an arity byte sorts below a symbol byte, so a compound like `(f $z)` is exactly what gets
+/// picked -- and reporting the fact as ground would let a consumer stamp it so.
+fn descend_first_subterm<Z : ZipperMoving + Zipper + ZipperProduct>(loc: &mut Z, var_facts: &mut u64) -> usize {
     let (mut owed, mut payload) = (1u32, 0u32);
     let mut n = 0usize;
     while owed > 0 || payload > 0 {
@@ -124,7 +126,12 @@ fn descend_first_subterm<Z : ZipperMoving + Zipper>(loc: &mut Z) -> usize {
             return 0;
         }
         n += 1;
-        mork_expr::subterm_parse_step(*loc.path().last().unwrap(), &mut owed, &mut payload);
+        let b = *loc.path().last().unwrap();
+        let head = payload == 0;
+        mork_expr::subterm_parse_step(b, &mut owed, &mut payload);
+        if head && matches!(byte_item(b), Tag::NewVar | Tag::VarRef(_)) {
+            *var_facts |= 1u64 << loc.focus_factor().min(63);
+        }
     }
     n
 }
@@ -178,14 +185,13 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         Some((idx, prev))
                     } else { None };
 
-                    // Nothing downstream reads this variable's value and nothing after it in
-                    // the conjunct depends on the choice, so one witnessing subterm stands for
-                    // the whole subtrie: take the leftmost and move on instead of enumerating
-                    // every variable, size class and arity below this position.
+                    // One witnessing subterm stands for the whole subtrie, so take the leftmost
+                    // instead of enumerating every variable, size class and arity below here.
                     if e.n == 0 && e.v < 64 && (cut_mask >> e.v) & 1 == 1 {
-                        let n = descend_first_subterm(loc);
+                        let mut vf = var_facts;
+                        let n = descend_first_subterm(loc, &mut vf);
                         if n > 0 {
-                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
+                            coreferential_transition(loc, stack, references, vf, cut_mask, f);
                             loc.ascend(n);
                         }
                         if let Some((idx, prev)) = restore { references[idx] = prev; }
@@ -1133,22 +1139,13 @@ impl Space {
     /// which `query_multi` handles (or fails on) exactly as it always has, plus the encoding
     /// pathologies `parse_body_factors` rejects (a `VarRef` naming a variable the body never
     /// introduced, or more than `u8::MAX` variables).
-    /// The body variables whose VALUE nothing downstream can observe: no template reads them,
-    /// the body mentions them exactly once, and they sit in their conjunct's TRAILING run.
-    /// Returned as a bitmask over the body's variable numbering (`NewVar`s in first-occurrence
-    /// order), the numbering both engines index by.
+    /// The body variables no template reads, that the body mentions once, and that sit in their
+    /// conjunct's trailing run. A bitmask over the body's variable numbering (`NewVar`s in
+    /// first-occurrence order), which is what both engines index by.
     ///
-    /// Anything earlier in a conjunct decides which subtrie the later columns are drawn from, so
-    /// pinning it would drop answers rather than duplicates -- `(s (f $_) $y)` must keep
-    /// enumerating `$_` while `(s $y (f $_))` need not.
-    ///
-    /// Runs on every transform, so it walks each expression ONCE, from the pointer: `span()` is
-    /// itself a full walk, and calling it first would double the cost. Every bound here is
-    /// structural rather than defensive -- `byte_item` masks arities and variable indices with
-    /// `0b0011_1111`, so all three are already below 64 -- and the templates are not read at all
-    /// unless the body leaves a candidate a template could disqualify. A template stamped ground
-    /// is skipped outright: the stamp is that subterm's exact length and asserts it holds no
-    /// variable, so there is nothing in it for this walk to find.
+    /// The trailing-run condition is the soundness one: anything earlier in a conjunct decides
+    /// which subtrie the later columns come from, so `(s (f $_) $y)` must keep enumerating `$_`
+    /// while `(s $y (f $_))` need not.
     pub fn projection_cut_mask(pat_expr: Expr, templates: &[ExprEnv]) -> u64 {
         let head = unsafe { *pat_expr.ptr };
         let Tag::Arity(nargs) = byte_item(head) else { return 0 };
@@ -1196,8 +1193,6 @@ impl Space {
         }
         if !any_run { return 0 }
 
-        // A trailing run exists, but only a variable mentioned ONCE can be cut. If nothing
-        // survives that test, the templates never need reading.
         let trailing = |runs: &[(u8, u8); 64], read: u64| -> u64 {
             let mut m = 0u64;
             for c in 0..nargs as usize {
@@ -1210,6 +1205,7 @@ impl Space {
             }
             m
         };
+        // Only a variable mentioned once can be cut; if none survives that, no template is read.
         let candidates = trailing(&runs, 0);
         if candidates == 0 { return 0 }
 
@@ -1521,6 +1517,25 @@ impl Space {
                         let span_stamp = |k: usize, start: usize, end: usize| -> u16 {
                             let len = end - start;
                             let ground = var_facts & (1u64 << k.min(63)) == 0;
+                            // `stamp_ground` is unsafe for a reason: a stamp on a span that does
+                            // hold a variable makes consumers settle by memcmp and skip variable
+                            // hunts over it. Re-derive the answer here in debug builds so any
+                            // path that reaches the leaf with a wrong bit is caught at the source
+                            // rather than as a wrong answer somewhere downstream.
+                            #[cfg(debug_assertions)]
+                            if ground {
+                                let mut j = start;
+                                while j < end {
+                                    match byte_item(opath[j]) {
+                                        Tag::SymbolSize(size) => j += 1 + size as usize,
+                                        Tag::NewVar | Tag::VarRef(_) => {
+                                            panic!("fact {k} reported ground but holds a variable \
+                                                    at byte {j} of [{start},{end})");
+                                        }
+                                        Tag::Arity(_) => j += 1,
+                                    }
+                                }
+                            }
                             if ground && len <= u16::MAX as usize { len as u16 } else { 0 }
                         };
 
@@ -1632,10 +1647,9 @@ impl Space {
         let mut tpl_args = Vec::with_capacity(64);
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
-        // Only the plain `,` -> `,` write form may cut. The cut drops DUPLICATE answers, which is
-        // invisible only to a sink idempotent in them, and the `O` form and the source/sink
-        // transforms can carry aggregating sinks -- Count, Sum, And, Head/Tail, the float
-        // reductions -- whose result is a function of how many answers arrive.
+        // The cut drops duplicate answers, so only a sink idempotent in them may use it: this
+        // plain `,` -> `,` form writes into the trie, while `O` and the source/sink transforms
+        // can aggregate over how many answers arrive.
         let cut_mask = Self::projection_cut_mask(pat_expr, &tpl_args[1..]);
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| x).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
@@ -2311,10 +2325,9 @@ mod projection_cut_tests {
 
     #[test]
     fn a_body_past_the_encodings_variable_cap_opts_out_entirely() {
-        // 68 variables across two conjuncts (an arity itself caps at 63, so they cannot share
-        // one). A mask cannot name a variable it cannot index, and the encoding caps a routable
-        // body at 63 anyway, so rather than bounds-check every access the walk stops at the cap
-        // and the whole body opts out. Conservative: a zero mask is the unchanged enumeration.
+        // Rather than bounds-check every access, the walk stops at the cap and the body opts
+        // out. A zero mask is the unchanged enumeration, so that is the conservative direction.
+        // (Two conjuncts because an arity caps at 63 too.)
         let low: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
         let high: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
         let body = conj(&[rel("r", &low), rel("s", &high)]);

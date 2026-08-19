@@ -4,12 +4,22 @@ engines, check the answer spaces agree, and report the ratio. Query-only time, b
 import glob, os, re, subprocess, sys
 TOOK = re.compile(r"took (\d+) ms")
 def run(binary, prog, out, steps, reps=3):
+    """Best-of-`reps` query time and the resulting space, or (None, None) if the run failed.
+
+    The target is cleared before every attempt and the exit status is checked: without both, a
+    crashed or timed-out run leaves the PREVIOUS run's space in place and the caller compares
+    stale output, which reads as agreement.
+    """
     best = None
     for _ in range(reps):
+        if os.path.exists(out):
+            os.remove(out)
         try:
             r = subprocess.run([binary, "run", prog, "--steps", str(steps), out],
                                capture_output=True, timeout=600)
         except subprocess.TimeoutExpired:
+            return None, None
+        if r.returncode != 0 or not os.path.exists(out):
             return None, None
         m = TOOK.search(r.stdout.decode("utf-8", "replace"))
         ms = int(m.group(1)) if m else -1

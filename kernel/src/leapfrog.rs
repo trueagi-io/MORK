@@ -2708,7 +2708,7 @@ mod tests {
         assert_eq!(last, 2);
         // ... and the mask, given a template that reads only the first two, names that same one.
         let tpl = nest("out", &[var_ref(0), var_ref(1)]);
-        let mask = crate::space::Space::projection_cut_mask(be, &[Expr::from_slice(&tpl)]);
+        let mask = crate::space::Space::projection_cut_mask(be, &[ExprEnv::new(0, Expr::from_slice(&tpl))]);
         assert_eq!(mask, 1 << last);
     }
 

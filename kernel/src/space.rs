@@ -1142,94 +1142,104 @@ impl Space {
     /// pinning it would drop answers rather than duplicates -- `(s (f $_) $y)` must keep
     /// enumerating `$_` while `(s $y (f $_))` need not.
     ///
-    /// This runs on every transform, so it is one allocation-free pass driven by the encoding's
-    /// own [`mork_expr::subterm_parse_step`], and it does not read the templates AT ALL unless
-    /// the body offers a candidate a template could disqualify. That is what keeps a body with
-    /// nothing to cut -- three quarters of counter_machine's -- from paying for a template walk.
-    pub fn projection_cut_mask(pat_expr: Expr, templates: &[Expr]) -> u64 {
-        let pb = unsafe { pat_expr.span().as_ref().unwrap() };
-        if pb.is_empty() { return 0 }
-        let Tag::Arity(nargs) = byte_item(pb[0]) else { return 0 };
+    /// Runs on every transform, so it walks each expression ONCE, from the pointer: `span()` is
+    /// itself a full walk, and calling it first would double the cost. Every bound here is
+    /// structural rather than defensive -- `byte_item` masks arities and variable indices with
+    /// `0b0011_1111`, so all three are already below 64 -- and the templates are not read at all
+    /// unless the body leaves a candidate a template could disqualify. A template stamped ground
+    /// is skipped outright: the stamp is that subterm's exact length and asserts it holds no
+    /// variable, so there is nothing in it for this walk to find.
+    pub fn projection_cut_mask(pat_expr: Expr, templates: &[ExprEnv]) -> u64 {
+        let head = unsafe { *pat_expr.ptr };
+        let Tag::Arity(nargs) = byte_item(head) else { return 0 };
+        debug_assert!((nargs as usize) < 64, "byte_item masks an arity to six bits");
 
-        // Pass one over the body: count every variable's mentions, and record per conjunct how
-        // long its trailing run of `NewVar`s is and how many variables its end had numbered.
+        // One pass over the body, from the pointer: count every variable's mentions, and record
+        // per conjunct how long its trailing run of `NewVar`s is and how many variables its end
+        // had numbered.
         let mut occ = [0u32; 64];
-        let mut nv = 0u16;
-        let mut runs = [(0u8, 0u16); 64];
+        let mut nv = 0usize;
+        let mut runs = [(0u8, 0u8); 64];
         let mut any_run = false;
         let mut i = 1usize;
-        for c in 0..(nargs as usize).min(64) {
+        for c in 0..nargs as usize {
             let (mut owed, mut payload) = (1u32, 0u32);
             let mut run = 0u8;
-            while owed > 0 && i < pb.len() {
-                let b = pb[i];
-                let head = payload == 0;
-                mork_expr::subterm_parse_step(b, &mut owed, &mut payload);
+            while owed > 0 {
+                let b = unsafe { *pat_expr.ptr.add(i) };
+                let tag = byte_item(b);
                 i += 1;
-                // A symbol's payload is skipped in one step rather than stepped through, so this
-                // walk is per ITEM rather than per byte.
-                if payload > 0 {
-                    i += payload as usize;
-                    payload = 0;
-                }
-                if !head { continue }
-                match byte_item(b) {
+                owed -= 1;
+                match tag {
+                    // A symbol's payload is stepped over in one go, so this walk is per ITEM.
+                    Tag::SymbolSize(size) => { i += size as usize; run = 0; }
+                    Tag::Arity(a) => { owed += a as u32; run = 0; }
                     Tag::NewVar => {
-                        if nv < 64 { occ[nv as usize] += 1 }
-                        nv = nv.saturating_add(1);
+                        // The encoding caps a routable body at 63 variables, and a mask cannot
+                        // name what it cannot index: a body past the cap simply opts out.
+                        if nv >= 64 { return 0 }
+                        occ[nv] += 1;
+                        nv += 1;
                         run = run.saturating_add(1);
-                        continue;
                     }
-                    Tag::VarRef(r) => { if (r as usize) < 64 { occ[r as usize] += 1 } }
-                    _ => {}
+                    Tag::VarRef(r) => {
+                        debug_assert!((r as usize) < 64, "byte_item masks a VarRef to six bits");
+                        occ[r as usize] += 1;
+                        run = 0;
+                    }
                 }
-                run = 0;
+                let _ = payload;
             }
-            runs[c] = (run, nv);
+            debug_assert!(nv <= 64);
+            runs[c] = (run, nv as u8);
             any_run |= run > 0;
         }
         if !any_run { return 0 }
 
         // A trailing run exists, but only a variable mentioned ONCE can be cut. If nothing
         // survives that test, the templates never need reading.
-        let mut candidates = 0u64;
-        for c in 0..(nargs as usize).min(64) {
-            let (run, end) = runs[c];
-            for k in 0..run as usize {
-                let Some(v) = (end as usize).checked_sub(1 + k) else { break };
-                if v >= 64 || occ[v] != 1 { break }
-                candidates |= 1u64 << v;
-            }
-        }
-        if candidates == 0 { return 0 }
-
-        // Pass two, now earned: which of them does some template read?
-        let mut read = 0u64;
-        for t in templates.iter() {
-            let tb = unsafe { t.span().as_ref().unwrap() };
-            let mut j = 0usize;
-            while j < tb.len() {
-                match byte_item(tb[j]) {
-                    Tag::VarRef(r) => { if (r as usize) < 64 { read |= 1u64 << r } j += 1; }
-                    Tag::NewVar => j += 1,
-                    Tag::SymbolSize(size) => j += 1 + size as usize,
-                    Tag::Arity(_) => j += 1,
+        let trailing = |runs: &[(u8, u8); 64], read: u64| -> u64 {
+            let mut m = 0u64;
+            for c in 0..nargs as usize {
+                let (run, end) = runs[c];
+                for k in 0..run as usize {
+                    let Some(v) = (end as usize).checked_sub(1 + k) else { break };
+                    if occ[v] != 1 || (read >> v) & 1 == 1 { break }
+                    m |= 1u64 << v;
                 }
             }
+            m
+        };
+        let candidates = trailing(&runs, 0);
+        if candidates == 0 { return 0 }
+
+        // Now earned: which of them does some template read? A ground-stamped template holds no
+        // variable by the stamp's own contract, so it is skipped without being walked.
+        let mut read = 0u64;
+        for t in templates.iter() {
+            if t.ground_stamp() != 0 { continue }
+            let e = t.subsexpr();
+            let (mut owed, mut j) = (1u32, 0usize);
+            while owed > 0 {
+                let b = unsafe { *e.ptr.add(j) };
+                j += 1;
+                owed -= 1;
+                match byte_item(b) {
+                    Tag::SymbolSize(size) => j += size as usize,
+                    Tag::Arity(a) => owed += a as u32,
+                    Tag::NewVar => {}
+                    Tag::VarRef(r) => {
+                        debug_assert!((r as usize) < 64, "byte_item masks a VarRef to six bits");
+                        read |= 1u64 << r;
+                    }
+                }
+            }
+            // Every candidate is spoken for; nothing can be cut, so stop reading templates.
             if read & candidates == candidates { return 0 }
         }
 
         // A read variable stops its conjunct's run at that point, not just for itself.
-        let mut mask = 0u64;
-        for c in 0..(nargs as usize).min(64) {
-            let (run, end) = runs[c];
-            for k in 0..run as usize {
-                let Some(v) = (end as usize).checked_sub(1 + k) else { break };
-                if v >= 64 || occ[v] != 1 || (read >> v) & 1 == 1 { break }
-                mask |= 1u64 << v;
-            }
-        }
-        mask
+        trailing(&runs, read)
     }
 
     pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, cut_mask: u64, mut effect: F) -> usize {
@@ -1626,7 +1636,7 @@ impl Space {
         // invisible only to a sink idempotent in them, and the `O` form and the source/sink
         // transforms can carry aggregating sinks -- Count, Sum, And, Head/Tail, the float
         // reductions -- whose result is a function of how many answers arrive.
-        let cut_mask = Self::projection_cut_mask(pat_expr, &templates[..]);
+        let cut_mask = Self::projection_cut_mask(pat_expr, &tpl_args[1..]);
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| x).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
@@ -2219,7 +2229,10 @@ mod projection_cut_tests {
 
     fn mask(body: &[u8], templates: &[Vec<u8>]) -> u64 {
         let be = Expr::from_slice(body);
-        let ts: Vec<Expr> = templates.iter().map(|t| Expr::from_slice(&t[..])).collect();
+        let ts: Vec<ExprEnv> = templates
+            .iter()
+            .map(|t| ExprEnv::new(0, Expr::from_slice(&t[..])))
+            .collect();
         Space::projection_cut_mask(be, &ts[..])
     }
 
@@ -2297,19 +2310,20 @@ mod projection_cut_tests {
     }
 
     #[test]
-    fn variables_past_the_encodings_bound_are_never_marked() {
-        // 68 variables across two conjuncts (arity itself caps at 63, so they cannot share one).
-        // The first conjunct's trailing run is nameable and gets marked down to the variable the
-        // template reads. The second conjunct ENDS in variables past bit 63, which the mask
-        // cannot name -- so its run stops dead at the first of them rather than wrapping a bit
-        // onto some other variable.
+    fn a_body_past_the_encodings_variable_cap_opts_out_entirely() {
+        // 68 variables across two conjuncts (an arity itself caps at 63, so they cannot share
+        // one). A mask cannot name a variable it cannot index, and the encoding caps a routable
+        // body at 63 anyway, so rather than bounds-check every access the walk stops at the cap
+        // and the whole body opts out. Conservative: a zero mask is the unchanged enumeration.
         let low: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
         let high: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
         let body = conj(&[rel("r", &low), rel("s", &high)]);
-        let tpl = rel("out", &[vr(0)]);
-        let m = mask(&body, &[tpl]);
-        let expected: u64 = ((1u64 << 34) - 1) & !1; // bits 1..=33
-        assert_eq!(m, expected);
+        assert_eq!(mask(&body, &[rel("out", &[vr(0)])]), 0);
+        // ... while a body at the cap still marks normally.
+        let at_cap: Vec<Vec<u8>> = (0..40).map(|_| nv()).collect();
+        let body = conj(&[rel("r", &at_cap)]);
+        let m = mask(&body, &[rel("out", &[vr(0)])]);
+        assert_eq!(m, ((1u64 << 40) - 1) & !1, "bits 1..=39, stopping at the one the template reads");
     }
 
     #[test]

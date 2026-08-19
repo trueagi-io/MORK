@@ -40,8 +40,15 @@ def main(d, steps, prefixes):
                 continue
             row, agree = [], []
             for e in ["lf", "pz"]:
-                bn, bd = run(f"/tmp/paj-v4-{e}", base, f"/tmp/bp_{n}_{e}_n.space", steps)
-                on, od = run(f"/tmp/paj-v4-{e}", v, f"/tmp/bp_{n}_{e}_o.space", steps)
+                # ABBA: time each program twice, on either side of the other, and keep the best
+                # of each. Always running the baseline first biases a long benchmark against
+                # whichever runs second, because drift over the pair is monotonic.
+                bn1, bd = run(f"/tmp/paj-v4-{e}", base, f"/tmp/bp_{n}_{e}_n.space", steps)
+                on1, od = run(f"/tmp/paj-v4-{e}", v, f"/tmp/bp_{n}_{e}_o.space", steps)
+                on2, _ = run(f"/tmp/paj-v4-{e}", v, f"/tmp/bp_{n}_{e}_o.space", steps)
+                bn2, _ = run(f"/tmp/paj-v4-{e}", base, f"/tmp/bp_{n}_{e}_n.space", steps)
+                bn = min(x for x in (bn1, bn2) if x is not None) if (bn1 or bn2) else None
+                on = min(x for x in (on1, on2) if x is not None) if (on1 or on2) else None
                 if bn is None or on is None:
                     row += ["t/o", "t/o", 0.0]; agree.append("?"); continue
                 row += [bn, on, bn / max(on, 0.5)]

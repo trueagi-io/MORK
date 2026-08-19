@@ -965,6 +965,24 @@ pub fn unify_join_zipper_partial(
     run_unify_join(map, factors, var_order, nvars, false).0
 }
 
+/// As [`unify_join_zipper_partial`], but under the projection cut: `cut_mask` names the variables
+/// whose value nothing downstream reads. TEST tooling -- it is how the cut's answers are compared
+/// against the enumeration they stand in for.
+#[cfg(test)]
+fn unify_join_zipper_cut(
+    map: &PathMap<()>,
+    factors: &[Factor],
+    var_order: &[usize],
+    nvars: usize,
+    cut_mask: u64,
+) -> BTreeSet<Vec<Option<Vec<u8>>>> {
+    let plan = join_plan(map, factors, var_order, nvars).expect("factors must flatten into steps");
+    let mut state = join_state(map, &plan, var_order, nvars);
+    state.cut_mask = cut_mask;
+    state.recurse(0);
+    state.out
+}
+
 /// As [`unify_join_zipper_partial`], but returns each answer as one variable-coordinated tuple
 /// encoding (query variables `0..nvars` in order, sharing one intro map), so a free variable that
 /// spans answer positions renders with coordinated NewVar/VarRef the way MORK's emit does.
@@ -1094,6 +1112,7 @@ fn join_state<'a>(
         on_match: None,
         loc_buf: Vec::new(),
         stopped: false,
+        cut_mask: 0,
 
         #[cfg(test)]
         out: BTreeSet::new(),
@@ -1134,11 +1153,13 @@ fn run_unify_join_stream_bindings(
     factors: &[Factor],
     var_order: &[usize],
     nvars: usize,
+    cut_mask: u64,
     on_match: &mut dyn FnMut(&Bindings, Expr) -> bool,
 ) {
     let plan = join_plan(map, factors, var_order, nvars)
         .expect("parsed factors must flatten into steps");
     let mut state = join_state(map, &plan, var_order, nvars);
+    state.cut_mask = cut_mask;
     state.on_match = Some(on_match);
     state.recurse(0);
 }
@@ -1319,6 +1340,7 @@ fn scan_subterm(body: Expr, at: usize, intro: &mut u8) -> Option<SubtermScan> {
 pub fn query_multi_leapfrog<F: FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
     map: &PathMap<()>,
     pat_expr: Expr,
+    cut_mask: u64,
     mut effect: F,
 ) -> usize {
     // The join owns every body the engine hands it, so parsing is a precondition rather than a
@@ -1355,7 +1377,7 @@ pub fn query_multi_leapfrog<F: FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
         // per-answer allocation of the emit path (a BTreeMap deep clone) is gone.
         effect(Err(bindings), loc)
     };
-    run_unify_join_stream_bindings(map, &factors, &var_order, nvars, &mut on_match);
+    run_unify_join_stream_bindings(map, &factors, &var_order, nvars, cut_mask, &mut on_match);
     candidate
 }
 
@@ -1456,6 +1478,10 @@ struct UnifyJoin<'a> {
     /// fact as the stock contract's `loc`) here instead of collecting rows, and a `false` return
     /// stops the search. The engine dispatch uses this.
     on_match: Option<&'a mut dyn FnMut(&Bindings, Expr) -> bool>,
+    /// Body variables whose value nothing downstream reads, as
+    /// [`crate::space::Space::projection_cut_mask`] computed it. Zero for every caller with no
+    /// template to project through, which is the unchanged enumeration.
+    cut_mask: u64,
     /// Scratch for the streamed `loc`: factor 0's stored fact bytes, refilled per accepted
     /// assignment so the stream costs no allocation per answer.
     loc_buf: Vec<u8>,
@@ -1584,6 +1610,10 @@ impl UnifyJoin<'_> {
         // The leapfrog principle: lead with the smallest domain so the leading factor enumerates
         // few candidates and the rest seek. This is what makes a selective factor, say (e a $y)
         // with a few edges, drive the join instead of the whole relation.
+        if parts.len() == 1 && v < 64 && (self.cut_mask >> v) & 1 == 1 {
+            self.consume_lead_cut(&parts, 0, v, i);
+            return;
+        }
         self.rank_parts(&mut parts);
         let nr = self.partition_restrictors(&mut parts);
         self.consume_lead(&parts, nr, v, i);
@@ -2105,6 +2135,61 @@ impl UnifyJoin<'_> {
         self.free_bufs.push(buf);
     }
 
+    /// The projection cut, as its OWN path: `v` is a singleton nothing downstream reads, so one
+    /// witness stands for its whole domain. Kept separate from [`Self::consume_lead`] so that the
+    /// enumerating path keeps the exact code it had -- a `cut` branch inside the candidate fill's
+    /// loops measured 6% on counter_machine, which is all fill and no cut.
+    ///
+    /// If that one witness does not match, the level re-runs as a full enumeration, so the cut can
+    /// only ever drop a DUPLICATE answer, never the last one.
+    fn consume_lead_cut(&mut self, parts: &[usize], nr: usize, v: usize, i: usize) {
+        if self.stopped {
+            return;
+        }
+        let f = parts[0];
+        let pattern = self.query_var_env(v);
+        let free_key = self
+            .deref_env(pattern)
+            .var_opt()
+            .expect("the lead level runs only for a still-free join variable");
+        let mut buf = self.free_bufs.pop().unwrap_or_default();
+        {
+            // One candidate, wherever the column's enumeration starts.
+            let cur = &mut self.cursors[f];
+            cur.first();
+            if let Some(k) = cur.key() {
+                let vars = cur.key_var_counts();
+                buf.push_from(k, vars);
+            }
+            cur.reset_to_floor();
+        }
+        let mut matched = false;
+        if buf.len > 0 {
+            let cand = &buf.entries[0];
+            let mut cont = |this: &mut Self| {
+                matched = true;
+                this.next_step[f] += 1;
+                this.consume_var_parts(&parts[1..], 0, v, i);
+                this.next_step[f] -= 1;
+            };
+            let vars = buf.meta[0];
+            if vars.1 == 0 {
+                let data_env = self.data_env_for(f, cand, vars);
+                let previous = self.bindings.insert(free_key, data_env);
+                debug_assert!(previous.is_none(), "deref ended at a bound var");
+                self.with_bound_path_bytes(f, cand, 0, &mut cont);
+                self.bindings.remove(&free_key);
+            } else {
+                self.match_candidate(f, pattern, cand, vars, &mut cont);
+            }
+        }
+        buf.len = 0;
+        self.free_bufs.push(buf);
+        if !matched && !self.stopped {
+            self.consume_lead(parts, nr, v, i);
+        }
+    }
+
     /// Consume the confirmed column of each restrictor in turn, then continue. The mutual seek
     /// established that `value` -- a ground symbol -- is stored at this column and that the column
     /// holds no stored variable, so `consume_col` would seek to exactly this value, bind it with no
@@ -2564,6 +2649,67 @@ mod tests {
         let mut v = vec![item_byte(Tag::Arity(total_arity as u8))];
         v.extend(sym(rel));
         v
+    }
+
+    /// The projection cut must answer exactly what the enumeration answers, once the variable
+    /// nobody reads is projected away -- and it must actually be doing something, which the
+    /// uncut row count pins.
+    #[test]
+    fn the_projection_cut_keeps_every_answer_it_is_allowed_to_lose() {
+        let mut map = PathMap::<()>::new();
+        map.insert(&nest("r", &[sym("a")]), ());
+        map.insert(&nest("r", &[sym("b")]), ());
+        // `a` witnesses four values of the don't-care column, `b` exactly one: the cut has to
+        // collapse the four without losing `b`, whose only witness is the last one.
+        for w in ["p", "q", "s", "t"] {
+            map.insert(&nest("s", &[sym("a"), sym(w)]), ());
+        }
+        map.insert(&nest("s", &[sym("b"), sym("t")]), ());
+
+        // (, (r $x) (s $x $_)) -- $x is 0, the don't-care is 1.
+        let body = conj(&[
+            nest("r", &[new_var()]),
+            nest("s", &[var_ref(0), new_var()]),
+        ]);
+        let be = Expr::from_slice(&body);
+        let (factors, nvars) = parse_body_factors(&be).unwrap();
+        let var_order: Vec<usize> = (0..nvars).collect();
+        assert_eq!(nvars, 2);
+
+        let full = unify_join_zipper_cut(&map, &factors, &var_order, nvars, 0);
+        let cut = unify_join_zipper_cut(&map, &factors, &var_order, nvars, 1 << 1);
+
+        // The cut is not vacuous: the enumeration answers five rows, the cut two.
+        assert_eq!(full.len(), 5);
+        assert_eq!(cut.len(), 2);
+        // Projected on the variable anything downstream can actually read, they agree.
+        let project = |rows: &BTreeSet<Vec<Option<Vec<u8>>>>| -> BTreeSet<Option<Vec<u8>>> {
+            rows.iter().map(|row| row[0].clone()).collect()
+        };
+        assert_eq!(project(&cut), project(&full));
+        assert_eq!(project(&cut).len(), 2);
+    }
+
+    /// The mask is computed in `space.rs` over the body's bytes and indexed in the join by the id
+    /// `parse_body_factors` assigns. Both number variables by first occurrence; this pins that
+    /// they agree, because a disagreement would silently cut the WRONG variable.
+    #[test]
+    fn the_masks_variable_numbering_is_the_joins_numbering() {
+        let body = conj(&[
+            nest("r", &[new_var(), new_var()]),
+            nest("s", &[var_ref(1), new_var()]),
+        ]);
+        let be = Expr::from_slice(&body);
+        let (factors, nvars) = parse_body_factors(&be).unwrap();
+        assert_eq!(nvars, 3);
+        // The join reads the third variable as the second ARGUMENT of factor 1 ...
+        // Column 0 is the relation head, so the second argument is `cols[2]`.
+        let FactorColumn::Var(last) = factors[1].cols[2] else { panic!("expected a join variable") };
+        assert_eq!(last, 2);
+        // ... and the mask, given a template that reads only the first two, names that same one.
+        let tpl = nest("out", &[var_ref(0), var_ref(1)]);
+        let mask = crate::space::Space::projection_cut_mask(be, &[Expr::from_slice(&tpl)]);
+        assert_eq!(mask, 1 << last);
     }
 
     #[test]

@@ -1,0 +1,70 @@
+;; @expect
+;; @steps  40
+;; @desc   Decomposition lowerings, each computed BOTH ways so the expected space pins the
+;; @desc   staged form equal to the naive one: a 6-cycle split into two bags, a 4-clique staged
+;; @desc   through triangles, and the wiki Reachability-P2 crafting join reduced per ingredient
+;; @desc   side. A divergence in any of them changes this program's space.
+
+;; ---------------------------------------------------------------- 6-cycle, ghw 2 < rho* 3
+(e a b)
+(e b c)
+(e c d)
+(e d f)
+(e f g)
+(e g a)
+(e a c)
+(e c f)
+(e f a)
+(exec (0 0) (, (e $a $b) (e $b $c) (e $c $d) (e $d $f) (e $f $g) (e $g $a)) (, (cycN $a)))
+;; two bags of three edges; the first is materialised as its PROJECTED endpoints, which is what
+;; shares the suffix across every binding of the discarded middle variables
+(exec (1 0) (, (e $a $b) (e $b $c) (e $c $d)) (, (p3 $a $d)))
+(exec (1 1) (, (p3 $a $d) (e $d $f) (e $f $g) (e $g $a)) (, (cycS $a)))
+
+;; ---------------------------------------------------------------- 4-clique
+(edge n0 n1)
+(edge n0 n2)
+(edge n0 n3)
+(edge n1 n2)
+(edge n1 n3)
+(edge n2 n3)
+(edge n1 n4)
+(edge n2 n4)
+(exec (2 0) (, (edge $x0 $x1) (edge $x0 $x2) (edge $x0 $x3)
+                (edge $x1 $x2) (edge $x1 $x3) (edge $x2 $x3))
+            (, (c4N $x0 $x1 $x2 $x3)))
+;; staged through the triangle bag. Every variable is named by the template, so nothing is
+;; projected away and leapfrog has nothing to share -- kept as the contrast to the 6-cycle.
+(exec (3 0) (, (edge $x0 $x1) (edge $x0 $x2) (edge $x1 $x2)) (, (tri $x0 $x1 $x2)))
+(exec (3 1) (, (tri $x0 $x1 $x2) (edge $x0 $x3) (edge $x1 $x3) (edge $x2 $x3))
+            (, (c4S $x0 $x1 $x2 $x3)))
+
+;; ---------------------------------------------------------------- crafting (wiki P2 exec (1 3))
+(recipe r0 (numIngredients 2))
+(recipe r0 (result (id itemA)))
+(recipe r0 (pattern 0 sx0))
+(recipe r0 (pattern 1 sy0))
+(recipe r0 (key (sx0 wood)))
+(recipe r0 (key (sx0 stone)))
+(recipe r0 (key (sy0 coal)))
+(recipe r1 (numIngredients 2))
+(recipe r1 (result (id itemB)))
+(recipe r1 (pattern 0 sx1))
+(recipe r1 (pattern 1 sy1))
+(recipe r1 (key (sx1 gold)))
+(recipe r1 (key (sy1 missing)))
+(inventory wood)
+(inventory stone)
+(inventory coal)
+(inventory gold)
+(exec (4 0) (, (recipe $p (numIngredients 2)) (recipe $p (result (id $n)))
+                (recipe $p (pattern 0 $x)) (recipe $p (key ($x $xi)))
+                (recipe $p (pattern 1 $y)) (recipe $p (key ($y $yi)))
+                (inventory $xi) (inventory $yi))
+            (, (craftN $n)))
+;; each ingredient side is satisfiable independently given the recipe, and everything but the
+;; product name is projected away: reduce each side to a witness on $p, then combine
+(exec (5 0) (, (recipe $p (pattern 0 $x)) (recipe $p (key ($x $xi))) (inventory $xi)) (, (ok0 $p)))
+(exec (5 1) (, (recipe $p (pattern 1 $y)) (recipe $p (key ($y $yi))) (inventory $yi)) (, (ok1 $p)))
+(exec (5 2) (, (recipe $p (numIngredients 2)) (ok0 $p) (ok1 $p) (recipe $p (result (id $n))))
+            (, (craftS $n)))

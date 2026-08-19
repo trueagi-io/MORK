@@ -109,8 +109,28 @@ pub(crate) const VARS: [u64; 4] = {
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
+/// Descend the FIRST complete subterm below the focus, byte by byte along the leftmost path,
+/// and report how many bytes that took (0 if the focus is a dead end). Every path stored in the
+/// trie spells a complete expression, so the leftmost walk always closes the subterm it opened --
+/// there is nothing to backtrack. On a ProductZipper the descent also crosses the factor
+/// boundary the moment the subterm ends on a leaf, which is exactly the force-enroll this cut
+/// wants: the next factor engages without the current one being enumerated first.
+fn descend_first_subterm<Z : ZipperMoving + Zipper>(loc: &mut Z) -> usize {
+    let (mut owed, mut payload) = (1u32, 0u32);
+    let mut n = 0usize;
+    while owed > 0 || payload > 0 {
+        if !loc.descend_first_byte() {
+            loc.ascend(n);
+            return 0;
+        }
+        n += 1;
+        mork_expr::subterm_parse_step(*loc.path().last().unwrap(), &mut owed, &mut payload);
+    }
+    n
+}
+
 fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
-    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, f: &mut F) {
+    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, cut_mask: u64, f: &mut F) {
     macro_rules! vs {
         ($e:expr, $nv:expr) => {{
             let m = loc.child_mask().and(&ByteMask(VARS));
@@ -133,7 +153,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                 loc.descend_to_byte(b);
                 debug_assert!(loc.path_exists());
                 let vf = var_facts | (1u64 << loc.focus_factor().min(63));
-                coreferential_transition(loc, stack, references, vf, f);
+                coreferential_transition(loc, stack, references, vf, cut_mask, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
             }
         }};
@@ -158,6 +178,21 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         Some((idx, prev))
                     } else { None };
 
+                    // Nothing downstream reads this variable's value and nothing after it in
+                    // the conjunct depends on the choice, so one witnessing subterm stands for
+                    // the whole subtrie: take the leftmost and move on instead of enumerating
+                    // every variable, size class and arity below this position.
+                    if e.n == 0 && e.v < 64 && (cut_mask >> e.v) & 1 == 1 {
+                        let n = descend_first_subterm(loc);
+                        if n > 0 {
+                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
+                            loc.ascend(n);
+                        }
+                        if let Some((idx, prev)) = restore { references[idx] = prev; }
+                        stack.push(e);
+                        return;
+                    }
+
                     vs!(e, true);
 
                     let m = loc.child_mask().and(&ByteMask(SIZES));
@@ -168,7 +203,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         debug_assert!(loc.path_exists());
                         if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
                         loop {
-                            coreferential_transition(loc, stack, references, var_facts, f);   
+                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);   
                             if !loc.to_next_k_path(size as _) { break }
                         }
                         if !loc.ascend_byte() { unreachable_unchecked() }
@@ -183,7 +218,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
                         for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
-                        coreferential_transition(loc, stack, references, var_facts, f);
+                        coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
                     }
@@ -209,14 +244,14 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                     };
                     stack.push(addition);
                     vs!(e, false);
-                    coreferential_transition(loc, stack, references, var_facts, f);
+                    coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                     stack.pop();
                 }
                 Tag::SymbolSize(size) => {
                     vs!(e, false);
                     if loc.descend_to_existing_byte(e_byte) {
                         if loc.descend_to_check(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
-                            coreferential_transition(loc, stack, references, var_facts, f);
+                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         }
                         loc.ascend((size as usize) + 1); // The expression length + the e_byte
                     }
@@ -227,7 +262,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         let stackl = stack.len();
                         e.args(&mut stack);
                         stack[stackl..].reverse();
-                        coreferential_transition(loc, stack, references, var_facts, f);
+                        coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         stack.truncate(stack.len() - arity as usize);
                         loc.ascend_byte();
                     }
@@ -1098,22 +1133,128 @@ impl Space {
     /// which `query_multi` handles (or fails on) exactly as it always has, plus the encoding
     /// pathologies `parse_body_factors` rejects (a `VarRef` naming a variable the body never
     /// introduced, or more than `u8::MAX` variables).
-    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    /// The body variables whose VALUE nothing downstream can observe: no template reads them,
+    /// the body mentions them exactly once, and they sit in their conjunct's TRAILING run.
+    /// Returned as a bitmask over the body's variable numbering (`NewVar`s in first-occurrence
+    /// order), the numbering both engines index by.
+    ///
+    /// Anything earlier in a conjunct decides which subtrie the later columns are drawn from, so
+    /// pinning it would drop answers rather than duplicates -- `(s (f $_) $y)` must keep
+    /// enumerating `$_` while `(s $y (f $_))` need not.
+    ///
+    /// This runs on every transform, so it is one allocation-free pass driven by the encoding's
+    /// own [`mork_expr::subterm_parse_step`], and it does not read the templates AT ALL unless
+    /// the body offers a candidate a template could disqualify. That is what keeps a body with
+    /// nothing to cut -- three quarters of counter_machine's -- from paying for a template walk.
+    pub fn projection_cut_mask(pat_expr: Expr, templates: &[Expr]) -> u64 {
+        let pb = unsafe { pat_expr.span().as_ref().unwrap() };
+        if pb.is_empty() { return 0 }
+        let Tag::Arity(nargs) = byte_item(pb[0]) else { return 0 };
+
+        // Pass one over the body: count every variable's mentions, and record per conjunct how
+        // long its trailing run of `NewVar`s is and how many variables its end had numbered.
+        let mut occ = [0u32; 64];
+        let mut nv = 0u16;
+        let mut runs = [(0u8, 0u16); 64];
+        let mut any_run = false;
+        let mut i = 1usize;
+        for c in 0..(nargs as usize).min(64) {
+            let (mut owed, mut payload) = (1u32, 0u32);
+            let mut run = 0u8;
+            while owed > 0 && i < pb.len() {
+                let b = pb[i];
+                let head = payload == 0;
+                mork_expr::subterm_parse_step(b, &mut owed, &mut payload);
+                i += 1;
+                // A symbol's payload is skipped in one step rather than stepped through, so this
+                // walk is per ITEM rather than per byte.
+                if payload > 0 {
+                    i += payload as usize;
+                    payload = 0;
+                }
+                if !head { continue }
+                match byte_item(b) {
+                    Tag::NewVar => {
+                        if nv < 64 { occ[nv as usize] += 1 }
+                        nv = nv.saturating_add(1);
+                        run = run.saturating_add(1);
+                        continue;
+                    }
+                    Tag::VarRef(r) => { if (r as usize) < 64 { occ[r as usize] += 1 } }
+                    _ => {}
+                }
+                run = 0;
+            }
+            runs[c] = (run, nv);
+            any_run |= run > 0;
+        }
+        if !any_run { return 0 }
+
+        // A trailing run exists, but only a variable mentioned ONCE can be cut. If nothing
+        // survives that test, the templates never need reading.
+        let mut candidates = 0u64;
+        for c in 0..(nargs as usize).min(64) {
+            let (run, end) = runs[c];
+            for k in 0..run as usize {
+                let Some(v) = (end as usize).checked_sub(1 + k) else { break };
+                if v >= 64 || occ[v] != 1 { break }
+                candidates |= 1u64 << v;
+            }
+        }
+        if candidates == 0 { return 0 }
+
+        // Pass two, now earned: which of them does some template read?
+        let mut read = 0u64;
+        for t in templates.iter() {
+            let tb = unsafe { t.span().as_ref().unwrap() };
+            let mut j = 0usize;
+            while j < tb.len() {
+                match byte_item(tb[j]) {
+                    Tag::VarRef(r) => { if (r as usize) < 64 { read |= 1u64 << r } j += 1; }
+                    Tag::NewVar => j += 1,
+                    Tag::SymbolSize(size) => j += 1 + size as usize,
+                    Tag::Arity(_) => j += 1,
+                }
+            }
+            if read & candidates == candidates { return 0 }
+        }
+
+        // A read variable stops its conjunct's run at that point, not just for itself.
+        let mut mask = 0u64;
+        for c in 0..(nargs as usize).min(64) {
+            let (run, end) = runs[c];
+            for k in 0..run as usize {
+                let Some(v) = (end as usize).checked_sub(1 + k) else { break };
+                if v >= 64 || occ[v] != 1 || (read >> v) & 1 == 1 { break }
+                mask |= 1u64 << v;
+            }
+        }
+        mask
+    }
+
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, cut_mask: u64, mut effect: F) -> usize {
         // Which engine answers the space-to-space transform is a compile-time choice and nothing
         // more: with the `leapfrog` feature the join owns every body, and without it the module
         // does not exist. `query_multi` stays reachable for the paths that are not dispatched --
         // the pattern-directed dumps and the interpreted source/sink transforms.
         #[cfg(feature = "leapfrog")]
         {
-            crate::leapfrog::query_multi_leapfrog(btm, pat_expr, effect)
+            crate::leapfrog::query_multi_leapfrog(btm, pat_expr, cut_mask, effect)
         }
         #[cfg(not(feature = "leapfrog"))]
         {
-            Self::query_multi(btm, pat_expr, effect)
+            Self::query_multi_proj(btm, pat_expr, cut_mask, effect)
         }
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, effect: F) -> usize {
+        Self::query_multi_proj(btm, pat_expr, 0, effect)
+    }
+
+    /// [`Self::query_multi`] under the projection cut: `cut_mask` names the body variables whose
+    /// value nothing downstream reads, which the descent answers with one subterm instead of
+    /// every one. A zero mask is the unchanged walk.
+    pub fn query_multi_proj<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, cut_mask: u64, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
@@ -1130,7 +1271,7 @@ impl Space {
         }));
         prz.reserve_buffers(1 << 32, 32);
 
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        Self::query_multi_raw_proj(&mut prz, &pat_args[1..], cut_mask, effect)
     }
 
     #[inline]
@@ -1257,9 +1398,15 @@ impl Space {
         }
     }
 
-    #[cfg(feature="no_search")]
+    /// The zero-mask wrapper every other caller keeps using: sinks, dumps and the interpreted
+    /// source/sink transforms are byte-for-byte the unchanged walk.
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(prz: &mut PZ, sources: &[ExprEnv], effect: F) -> usize {
+        Self::query_multi_raw_proj(prz, sources, 0, effect)
+    }
+
+    #[cfg(feature="no_search")]
+    pub fn query_multi_raw_proj<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], cut_mask: u64, mut effect: F) -> usize {
         let mut candidate = 0;
         // One pair buffer for the whole enumeration: `unify` drains it, so a `clear` per
         // candidate makes it allocation-free after warmup.
@@ -1324,7 +1471,7 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw_proj<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], cut_mask: u64, mut effect: F) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
@@ -1338,7 +1485,7 @@ impl Space {
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, &mut |loc, var_facts| {
+                coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, cut_mask, &mut |loc, var_facts| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1475,6 +1622,11 @@ impl Space {
         let mut tpl_args = Vec::with_capacity(64);
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+        // Only the plain `,` -> `,` write form may cut. The cut drops DUPLICATE answers, which is
+        // invisible only to a sink idempotent in them, and the `O` form and the source/sink
+        // transforms can carry aggregating sinks -- Count, Sum, And, Head/Tail, the float
+        // reductions -- whose result is a function of how many answers arrive.
+        let cut_mask = Self::projection_cut_mask(pat_expr, &templates[..]);
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| x).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
@@ -1520,7 +1672,7 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, cut_mask, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -2030,5 +2182,139 @@ impl Drop for Space {
             // z3.terminate();
             drop(z3.stdin.take())
         }
+    }
+}
+
+#[cfg(test)]
+mod projection_cut_tests {
+    use super::*;
+
+    fn sym(t: &str) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::SymbolSize(t.len() as u8))];
+        v.extend_from_slice(t.as_bytes());
+        v
+    }
+    fn raw_sym(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::SymbolSize(payload.len() as u8))];
+        v.extend_from_slice(payload);
+        v
+    }
+    fn nest(parts: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::Arity(parts.len() as u8))];
+        for p in parts { v.extend_from_slice(p) }
+        v
+    }
+    fn rel(name: &str, args: &[Vec<u8>]) -> Vec<u8> {
+        let mut parts = vec![sym(name)];
+        parts.extend_from_slice(args);
+        nest(&parts)
+    }
+    fn conj(factors: &[Vec<u8>]) -> Vec<u8> {
+        let mut parts = vec![sym(",")];
+        parts.extend_from_slice(factors);
+        nest(&parts)
+    }
+    fn nv() -> Vec<u8> { vec![item_byte(Tag::NewVar)] }
+    fn vr(i: u8) -> Vec<u8> { vec![item_byte(Tag::VarRef(i))] }
+
+    fn mask(body: &[u8], templates: &[Vec<u8>]) -> u64 {
+        let be = Expr::from_slice(body);
+        let ts: Vec<Expr> = templates.iter().map(|t| Expr::from_slice(&t[..])).collect();
+        Space::projection_cut_mask(be, &ts[..])
+    }
+
+    #[test]
+    fn trailing_singleton_no_template_reads_is_cut() {
+        // (, (r $x $y) (s $y $_))  ->  (out $x $y):  only $_ (index 2) is cuttable.
+        let body = conj(&[rel("r", &[nv(), nv()]), rel("s", &[vr(1), nv()])]);
+        let tpl = rel("out", &[vr(0), vr(1)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 2);
+    }
+
+    #[test]
+    fn a_variable_a_template_reads_is_never_cut() {
+        // The same body, but the template now reads $_ as well: nothing is cuttable.
+        let body = conj(&[rel("r", &[nv(), nv()]), rel("s", &[vr(1), nv()])]);
+        let tpl = rel("out", &[vr(0), vr(2)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+    }
+
+    #[test]
+    fn a_repeated_variable_is_never_cut() {
+        // $y and $z are join variables: no template reads them, but pinning one to a single
+        // value would change which tuples the OTHER factors can still match.
+        let body = conj(&[
+            rel("r", &[nv(), nv()]),
+            rel("s", &[vr(1), nv()]),
+            rel("t", &[vr(2)]),
+        ]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+    }
+
+    #[test]
+    fn only_the_conjuncts_trailing_run_is_cut() {
+        // (, (s (f $_) $y)): $_ decides the subtrie $y is drawn from, so it must keep
+        // enumerating even though nothing reads it.
+        let body = conj(&[rel("s", &[rel("f", &[nv()]), nv()])]);
+        let tpl = rel("out", &[vr(1)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+        // Swapped, the same variable IS the trailing item -- nested inside `(f ...)` or not.
+        let body = conj(&[rel("s", &[nv(), rel("f", &[nv()])])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 1);
+    }
+
+    #[test]
+    fn a_run_of_trailing_dont_cares_is_cut_whole() {
+        let body = conj(&[rel("s", &[nv(), nv(), nv()])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), (1 << 1) | (1 << 2));
+    }
+
+    #[test]
+    fn every_template_is_consulted() {
+        // The second template is the only reader of $y: one template is not enough to conclude
+        // a variable is unread.
+        let body = conj(&[rel("r", &[nv(), nv()])]);
+        let first = rel("out", &[vr(0)]);
+        let second = rel("also", &[vr(1)]);
+        assert_eq!(mask(&body, &[first.clone()]), 1 << 1);
+        assert_eq!(mask(&body, &[first, second]), 0);
+    }
+
+    #[test]
+    fn a_symbol_payload_that_spells_a_variable_tag_is_not_read_as_one() {
+        // The payload carries the NewVar and VarRef tag bytes. Counting them as variables would
+        // shift the numbering and mark the wrong bit.
+        let poison = raw_sym(&[item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))]);
+        let body = conj(&[rel("r", &[nv(), poison.clone()]), rel("s", &[vr(0), nv()])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 1);
+        // ... and in the template, where it would otherwise fake a read of variable 0.
+        let tpl_poison = rel("out", &[vr(1), poison]);
+        assert_eq!(mask(&body, &[tpl_poison]), 0);
+    }
+
+    #[test]
+    fn variables_past_the_encodings_bound_are_never_marked() {
+        // 68 variables across two conjuncts (arity itself caps at 63, so they cannot share one).
+        // The first conjunct's trailing run is nameable and gets marked down to the variable the
+        // template reads. The second conjunct ENDS in variables past bit 63, which the mask
+        // cannot name -- so its run stops dead at the first of them rather than wrapping a bit
+        // onto some other variable.
+        let low: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
+        let high: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
+        let body = conj(&[rel("r", &low), rel("s", &high)]);
+        let tpl = rel("out", &[vr(0)]);
+        let m = mask(&body, &[tpl]);
+        let expected: u64 = ((1u64 << 34) - 1) & !1; // bits 1..=33
+        assert_eq!(m, expected);
+    }
+
+    #[test]
+    fn a_body_with_no_variables_cuts_nothing() {
+        let body = conj(&[rel("r", &[sym("a")])]);
+        assert_eq!(mask(&body, &[rel("out", &[sym("b")])]), 0);
     }
 }

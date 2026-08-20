@@ -1,7 +1,7 @@
 #![feature(string_from_utf8_lossy_owned)]
 
 use mork::{expr, prefix, sexpr, space};
-use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
+use mork::space::{transitions, unifications, writes, Space, act_path};
 use mork_frontend::bytestring_parser::Parser;
 use mork_expr::{item_byte, serialize, SourceItem, Tag};
 use pathmap::PathMap;
@@ -2047,7 +2047,7 @@ fn source_act_two_bipolar_equal_crossed() {
     "#;
 
         act_s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-        act_s.backup_tree(format!("{ACT_PATH}two_bipolar_equal_crossed.act")).unwrap();
+        act_s.backup_tree(format!("{}two_bipolar_equal_crossed.act", act_path())).unwrap();
     };
 
     let mut s = Space::new();
@@ -2079,7 +2079,7 @@ fn source_space_act_two_bipolar_equal_crossed() {
     "#;
 
         act_s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-        act_s.backup_tree(format!("{ACT_PATH}space_two_bipolar_equal_crossed.act")).unwrap();
+        act_s.backup_tree(format!("{}space_two_bipolar_equal_crossed.act", act_path())).unwrap();
     };
 
     let mut s = Space::new();
@@ -3072,7 +3072,7 @@ fn sink_act_readback() {
 
     {
         let mut s = Space::new();
-        s.restore_tree(format!("{}sink_act_readback.act", ACT_PATH));
+        s.restore_tree(format!("{}sink_act_readback.act", act_path()));
         let mut v = vec![];
         s.dump_all_sexpr(&mut v).unwrap();
         let res = String::from_utf8_lossy_owned(v);
@@ -3100,7 +3100,7 @@ fn sink_act_mixed_readback() {
 
     {
         let mut s = Space::new();
-        s.restore_tree(format!("{}sink_act_mixed_readback.act", ACT_PATH));
+        s.restore_tree(format!("{}sink_act_mixed_readback.act", act_path()));
         let mut v = vec![];
         s.dump_all_sexpr(&mut v).unwrap();
         let res = String::from_utf8_lossy_owned(v);
@@ -3706,7 +3706,7 @@ fn bench_logic_query_act() {
 
     // let mut expr_buf = vec![];
     // std::fs::File::open(format!("{PROJECT_PATH}/resources/big.act")).unwrap().read_to_end(&mut expr_buf).unwrap();
-    std::fs::copy(format!("{PROJECT_PATH}/resources/big.act"), format!("{}big.act", ACT_PATH));
+    std::fs::copy(format!("{PROJECT_PATH}/resources/big.act"), format!("{}big.act", act_path()));
 
     let mut t0 = Instant::now();
     s.add_all_sexpr(b"(exec 0 (I (ACT big (axiom $x)) (ACT big (axiom $x))) (, (combined $x)))").unwrap();

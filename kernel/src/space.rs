@@ -32,8 +32,44 @@ pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
-pub static ACT_PATH: &'static str = "/dev/shm/";
-// pub static ACT_PATH: &'static str = "/mnt/data/";
+/// Where `ArenaCompactTree` files are written and mmapped from, always ending in a separator.
+///
+/// Set the `ACT_PATH` environment variable to choose the directory. Otherwise the default is the
+/// best temporary location the platform offers: on Linux `/dev/shm`, a tmpfs, so an ACT never
+/// reaches a disk; elsewhere the OS temp directory, which is `TMPDIR` on macOS (launchd always
+/// sets it, per-user) and `TEMP`/`TMP` on Windows -- neither has a `/dev/shm` to fall back to,
+/// which is why the old hardcoded one made every ACT test fail off Linux.
+///
+/// The directory is created if it does not exist, so a caller pointing `ACT_PATH` at a fresh
+/// path does not have to make it first.
+pub fn act_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let mut p = std::env::var("ACT_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(default_act_dir);
+        if !p.ends_with('/') && !p.ends_with(std::path::MAIN_SEPARATOR) {
+            p.push(std::path::MAIN_SEPARATOR);
+        }
+        if let Err(e) = std::fs::create_dir_all(&p) {
+            warn!(target: "act", "ACT_PATH {p} is not usable: {e}");
+        }
+        p
+    })
+}
+
+fn default_act_dir() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        // A tmpfs when it is mounted, which is the point: an ACT stays in memory.
+        if std::path::Path::new("/dev/shm").is_dir() {
+            return "/dev/shm".to_string();
+        }
+    }
+    // `temp_dir` reads TMPDIR on macOS and TEMP/TMP on Windows, and falls back to /tmp on unix.
+    std::env::temp_dir().to_string_lossy().into_owned()
+}
 
 /// The pattern's distinct variables as a synthetic expression of `n` `NewVar`s. Only the debug
 /// cross-check of [`mork_expr::pattern_cycles_and_intros`] applies it now; the live path needs no
@@ -1292,7 +1328,7 @@ impl Space {
             ResourceRequest::ACT(name) => {
                 let act = mmaps.as_mut().unwrap().entry(OwnedSourceItem::from(name)).or_insert_with(|| {
                     trace!(target: "query_multi_i", "open new ACT {}", name);
-                    ArenaCompactTree::open_mmap(format!("{ACT_PATH}{name}.act")).unwrap()
+                    ArenaCompactTree::open_mmap(format!("{}{name}.act", act_path())).unwrap()
                 });
                 trace!(target: "query_multi_i", "taking RZ of {}", name);
                 Resource::ACT(act.read_zipper())

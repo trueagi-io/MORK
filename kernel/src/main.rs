@@ -852,6 +852,80 @@ f
 /// A bare top-level SYMBOL conjunct is an existence check on that atom: the body fires when the
 /// symbol is present and never when it is absent. It is also a shape the leapfrog join declines
 /// (no arity, so no columns to seek), so this covers the fallback under either feature setting.
+/// The projection cut: a body variable no template reads, mentioned once, in its conjunct's
+/// trailing run, may be answered with ONE witness instead of its whole domain. What matters is
+/// that this never changes the answer set -- so every shape below is checked, including the ones
+/// the cut must refuse.
+fn projection_cut_variables() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(r a)
+(r b)
+(s a p)
+(s a q)
+(s a t)
+(s b t)
+(gg p 1)
+(gg p 2)
+(gg q 3)
+(hh (kk p 1))
+(hh (kk p 2))
+(hh (kk q 3))
+(jl 1)
+(jl 2)
+(jl 3)
+(jr 2)
+(jr 3)
+(jr 4)
+(je 7)
+(sv k plain)
+(sv k (f $z))
+(sv k (g $w $v))
+(exec (0 0) (, (r $x) (s $x $_)) (, (cut1 $x)))
+(exec (0 1) (, (gg $m $n)) (, (keep1 $n)))
+(exec (0 2) (, (hh (kk $mm $nn))) (, (keep2 $nn)))
+(exec (0 3) (, (jl $p) (jr $p) (je $q)) (, (keep3 $q)))
+(exec (0 4) (, (sv $y $_)) (, (cut2 $y)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+    let t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+    println!("result: {res}");
+    let rows = |p: &str| res.lines().filter(|l| l.starts_with(p)).count();
+
+    // `$_` is trailing, mentioned once, and unread: `a` has three witnesses and `b` one, and the
+    // answer is one row each either way.
+    assert!(res.contains("(cut1 a)
+") && res.contains("(cut1 b)
+"), "both keys must answer");
+    assert_eq!(rows("(cut1 "), 2, "one row per key, whatever the fan-out");
+
+    // A witness may be schematic. `(f $z)` is what a leftmost descent reaches -- an arity byte
+    // sorts below a symbol byte -- so this is also the shape that catches a cut reporting a
+    // variable-carrying fact as ground.
+    assert_eq!(rows("(cut2 "), 1, "schematic witnesses collapse to the one key");
+    assert!(res.contains("(cut2 k)
+"));
+
+    // `$m` is NOT trailing: it decides which subtrie `$n` is drawn from, so pinning it would drop
+    // `$n` values rather than duplicates. All three must survive, nested or not.
+    assert_eq!(rows("(keep1 "), 3, "a non-trailing don't-care must keep enumerating");
+    assert_eq!(rows("(keep2 "), 3, "... one level down as well");
+
+    // `$p` is unread but mentioned twice, so it is a join variable and must still intersect:
+    // jl and jr agree on 2 and 3, so the body holds and `$q` comes through exactly once.
+    assert_eq!(rows("(keep3 "), 1, "a repeated variable is a join variable, not a don't-care");
+    assert!(res.contains("(keep3 7)
+"));
+}
+
 fn top_level_symbol() {
     let mut s = Space::new();
 
@@ -6279,6 +6353,7 @@ fn main() {
             data_varref_absorbs_query_compound_newvars();
             top_level_match();
             top_level_symbol();
+            projection_cut_variables();
             large_statement();
 
             process_calculus_reverse();

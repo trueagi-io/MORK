@@ -47,8 +47,9 @@ def main(d, steps, prefixes):
                 on1, od = run(f"/tmp/paj-v4-{e}", v, f"/tmp/bp_{n}_{e}_o.space", steps)
                 on2, _ = run(f"/tmp/paj-v4-{e}", v, f"/tmp/bp_{n}_{e}_o.space", steps)
                 bn2, _ = run(f"/tmp/paj-v4-{e}", base, f"/tmp/bp_{n}_{e}_n.space", steps)
-                bn = min(x for x in (bn1, bn2) if x is not None) if (bn1 or bn2) else None
-                on = min(x for x in (on1, on2) if x is not None) if (on1 or on2) else None
+                # `if (bn1 or bn2)` would read a genuine 0 ms as failure; only None is failure.
+                best = lambda *xs: min([x for x in xs if x is not None], default=None)
+                bn, on = best(bn1, bn2), best(on1, on2)
                 if bn is None or on is None:
                     row += ["t/o", "t/o", 0.0]; agree.append("?"); continue
                 row += [bn, on, bn / max(on, 0.5)]

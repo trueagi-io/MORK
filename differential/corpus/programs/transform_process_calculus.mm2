@@ -9,18 +9,34 @@
 (pN (? c0 p0 (! c1 p1)))
 (pN (? c1 p1 (! c2 p2)))
 (pN (? c2 p2 (! c3 p3)))
-(pN (? c3 p3 (! c4 p4)))
+(pN (? c3 p3 (! r0 q0)))
+(pN (? r0 q0 (? r1 q1 (! deep ok))))
+(pN (? r1 q1 (! early seen)))
+(pN (! r1 q1))
 (pN (! c0 p0))
 (pD (? c0 p0 (! c1 p1)))
 (pD (? c1 p1 (! c2 p2)))
 (pD (? c2 p2 (! c3 p3)))
-(pD (? c3 p3 (! c4 p4)))
+(pD (? c3 p3 (! r0 q0)))
+(pD (? r0 q0 (? r1 q1 (! deep ok))))
+(pD (? r1 q1 (! early seen)))
+(pD (! r1 q1))
 (pD (! c0 p0))
-(dmsg (! c0 p0))
+(dD (? c0 p0 (! c1 p1)))
+(dD (? c1 p1 (! c2 p2)))
+(dD (? c2 p2 (! c3 p3)))
+(dD (? c3 p3 (! r0 q0)))
+(dD (? r0 q0 (? r1 q1 (! deep ok))))
+(dD (? r1 q1 (! early seen)))
+(dD (! r1 q1))
+(dD (! c0 p0))
 (pC (? c0 p0 (! c1 p1)))
 (pC (? c1 p1 (! c2 p2)))
 (pC (? c2 p2 (! c3 p3)))
-(pC (? c3 p3 (! c4 p4)))
+(pC (? c3 p3 (! r0 q0)))
+(pC (? r0 q0 (? r1 q1 (! deep ok))))
+(pC (? r1 q1 (! early seen)))
+(pC (! r1 q1))
 (pC (! c0 p0))
 (fN (S (S (S (S (S (S Z)))))))
 (fD (S (S (S (S (S (S Z)))))))
@@ -30,12 +46,17 @@
 (exec (1 Z) (, (exec (1 $l) $p $t) (fN (S $k)) (pN (? $c $pl $b)) (pN (! $c $pl)))
             (O (+ (exec (1 (S $l)) $p $t)) (+ (pN $b)) (+ (fN $k)) (- (fN (S $k)))))
 
-;; (b) delta on the message side. Promotion is folded INTO the rule: a separate promotion exec
-;; would be starved, because this family re-adds itself and sorts first, so it would consume all
-;; the fuel before the promoter ever ran.
-(exec (2 Z) (, (exec (2 $l) $p $t) (fD (S $k)) (pD (? $c $pl $b)) (dmsg (! $c $pl)))
-            (O (+ (exec (2 (S $l)) $p $t)) (+ (pD $b)) (+ (dmsg $b))
-               (- (dmsg (! $c $pl))) (+ (fD $k)) (- (fD (S $k)))))
+;; (b) SYMMETRIC delta. A self-join over one relation needs both arms: new receivers against
+;; every message, and every receiver against new messages. With only the second, a communication
+;; that derives a RECEIVER never reacts with a message already in the soup -- which is what the
+;; (? r0 ..) pair above is here to catch.
+((armD 0) (, (dD (? $c $pl $b)) (pD (! $c $pl)))
+          (O (+ (pD $b)) (+ (dD $b)) (- (dD (? $c $pl $b)))))
+((armD 1) (, (pD (? $c $pl $b)) (dD (! $c $pl)))
+          (O (+ (pD $b)) (+ (dD $b)) (- (dD (! $c $pl)))))
+(exec (2 (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z))))))))))))
+      (, (exec (2 (IC $x $y (S $c))) $sp $st) ((armD $x) $p $t))
+      (, (exec (2 (IC $y $x $c)) $sp $st) (exec (2 (R $x)) $p $t)))
 
 ;; (c) consuming: the reagents are retired, so no intermediate is ever kept and the
 ;; re-derivation is removed at its source rather than filtered afterwards

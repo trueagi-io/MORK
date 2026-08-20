@@ -1398,7 +1398,10 @@ fn sink_hash_expr() {
     let res = String::from_utf8_lossy_owned(v);
 
     println!("result: {res}");
-    assert_eq!(res, "(result XoicVnQv2bk)\n(result tspt4QCdRB8)\n");
+    // gxhash 3.x, which #146 made actually compile -- the previous constants came from the
+    // hasher that was silently used while the `gxhash` cfg never matched. Stable across
+    // platforms for a given major version, per gxhash's own guarantee.
+    assert_eq!(res, "(result -Egab4rQ3Nc)\n(result ru8oOBGFlq0)\n");
 }
 
 fn sink_even_half() {

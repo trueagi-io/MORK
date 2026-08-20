@@ -16,6 +16,7 @@ default-members = ["kernel/"]
 
 [workspace.package]
 edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
 # Internal to MORK
@@ -30,4 +31,4 @@ mork = {path = "./kernel"}
 gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for dag_serialization
 log = { version = "0.4.27" }
 env_logger = "0.11.8"
-pathmap = { path = "../PathMap/", version = "0.3.0", features = ["jemalloc", "arena_compact", "nightly"] }
+pathmap = { path = "../PathMap/", version = "0.3.0", features = ["arena_compact", "nightly"] }

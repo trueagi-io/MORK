@@ -78,12 +78,26 @@ impl <'a> Context<'a> {
 pub trait Parser {
   fn tokenizer<'r>(&mut self, s: &[u8]) -> &'r [u8];
 
-  fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
-    use ParserError::*;
+  /// Skip everything that can sit between elements and carries no value: whitespace and line
+  /// comments. Both loops below must skip exactly this set. They did not, and a comment where an
+  /// element could start was read as the start of an element.
+  fn skip_trivia<'a>(it: &mut Context<'a>) -> Result<(), ParserError> {
     while it.has_next() {
       match it.peek()? {
         b';' => { while it.has_next() && it.next()? != b'\n' {} }
         c if isWhitespace(c) => { it.next()?; }
+        _ => break,
+      }
+    }
+    Ok(())
+  }
+
+  fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
+    use ParserError::*;
+    loop {
+      Self::skip_trivia(it)?;
+      if !it.has_next() { break }
+      match it.peek()? {
         b'$' => {
           let id = {
             let start = it.loc;
@@ -107,18 +121,17 @@ pub trait Parser {
           target.write_arity(0);
           target.loc += 1;
           it.next()?;
+          // Skip trivia, then read children until the bracket. The loop does not inspect what it
+          // is looking at: anything that is not `)` starts a child.
+          Self::skip_trivia(it)?;
           while it.peek()? != b')' {
-            match it.peek()? {
-              c if isWhitespace(c) => { it.next()?; }
-              _ => {
-                self.sexpr(it, target)?;
-                unsafe {
-                  let p = target.root.ptr.byte_add(arity_loc);
-                  if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }
-                  else { return Err(NotArity) }
-                }
-              }
+            self.sexpr(it, target)?;
+            unsafe {
+              let p = target.root.ptr.byte_add(arity_loc);
+              if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }
+              else { return Err(NotArity) }
             }
+            Self::skip_trivia(it)?;
           }
           it.next()?;
           return Ok(())

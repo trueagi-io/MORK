@@ -93,10 +93,20 @@ pub trait Parser {
   }
 
   fn sexpr<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
+    Self::skip_trivia(it)?;
+    // Exhausted input is how the caller's loop terminates, so it stays an error, not an Ok.
+    if !it.has_next() { return Err(ParserError::InputFinished) }
+    self.sexpr_at(it, target)
+  }
+
+  /// [`sexpr`](Parser::sexpr) with the cursor already on an element's first byte, which is what
+  /// every caller below has just established. Splitting it keeps `sexpr`'s contract -- call it
+  /// anywhere and it finds the next element -- without skipping trivia twice per element: the
+  /// bracket loop skips to decide whether it is looking at `)`, and would then skip again on
+  /// entry to the child.
+  fn sexpr_at<'a>(&mut self, it: &mut Context<'a>, target: &mut ExprZipper) -> Result<(), ParserError> {
     use ParserError::*;
-    loop {
-      Self::skip_trivia(it)?;
-      if !it.has_next() { break }
+    {
       match it.peek()? {
         b'$' => {
           let id = {
@@ -125,7 +135,7 @@ pub trait Parser {
           // is looking at: anything that is not `)` starts a child.
           Self::skip_trivia(it)?;
           while it.peek()? != b')' {
-            self.sexpr(it, target)?;
+            self.sexpr_at(it, target)?;
             unsafe {
               let p = target.root.ptr.byte_add(arity_loc);
               if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }

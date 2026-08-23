@@ -1,0 +1,65 @@
+use mork_frontend::json_parser::{Error, Parser, Transcriber};
+
+#[derive(Default)]
+struct EventTranscriber;
+
+impl Transcriber for EventTranscriber {
+    fn descend_index(&mut self, _i: usize, _first: bool) {}
+
+    fn ascend_index(&mut self, _i: usize, _last: bool) {}
+
+    fn write_empty_array(&mut self) {}
+
+    fn descend_key(&mut self, _k: &str, _first: bool) {}
+
+    fn ascend_key(&mut self, _k: &str, _last: bool) {}
+
+    fn write_empty_object(&mut self) {}
+
+    fn write_string(&mut self, _s: &str) {}
+
+    fn write_number(&mut self, _negative: bool, _mantissa: u64, _exponent: i16) {}
+
+    fn write_true(&mut self) {}
+
+    fn write_false(&mut self) {}
+
+    fn write_null(&mut self) {}
+
+    fn begin(&mut self) {}
+
+    fn end(&mut self) {}
+}
+
+fn parse_error(input: &str) -> Error {
+    let mut parser = Parser::new(input);
+    let mut transcriber = EventTranscriber;
+    parser.parse(&mut transcriber).unwrap_err()
+}
+
+#[test]
+fn huge_positive_exponent_reports_depth_limit() {
+    assert_eq!(parse_error("1e9999999999"), Error::ExceededDepthLimit);
+}
+
+#[test]
+fn huge_negative_exponent_reports_depth_limit() {
+    assert_eq!(parse_error("1e-9999999999"), Error::ExceededDepthLimit);
+}
+
+#[test]
+fn huge_fractional_exponent_reports_depth_limit() {
+    let input = format!("0.{}", "0".repeat(i16::MAX as usize + 2));
+
+    assert_eq!(parse_error(&input), Error::ExceededDepthLimit);
+}
+
+#[test]
+fn truncated_string_reports_unexpected_end() {
+    assert_eq!(parse_error(r#""unterminated"#), Error::UnexpectedEndOfJson);
+}
+
+#[test]
+fn truncated_unicode_escape_reports_unexpected_end() {
+    assert_eq!(parse_error(r#"{"bad": "\u12"#), Error::UnexpectedEndOfJson);
+}

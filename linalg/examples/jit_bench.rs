@@ -1,13 +1,14 @@
 //! Quick comparison: JIT einsum vs the interpreted VM, dense f32.
 //!
 //! Run with: `cargo run --release --features jit --example jit_bench`
+//! BLAS comparison: `cargo run --release --features jit,blas --example jit_bench`
 
 use std::time::Instant;
 
 use linalg::csr::Csr;
 use linalg::dense::Dense;
 use linalg::einsum::{einsum, einsum_homogenous};
-use linalg::jit::{EinsumF32Jit, JitInput};
+use linalg::jit::{EinsumF32Jit, EinsumF32Plan, JitInput};
 use linalg::tensor::NDIndex;
 
 fn fill_rand(t: &mut Dense<f32>, mut state: u64) {
@@ -58,6 +59,42 @@ fn bench_matmul(n: usize, iters: u32) {
     );
 }
 
+#[cfg(feature = "blas")]
+fn bench_matmul_native(n: usize, iters: u32) {
+    let mut a = Dense::<f32>::zeros(vec![n, n]);
+    let mut b = Dense::<f32>::zeros(vec![n, n]);
+    fill_rand(&mut a, 1);
+    fill_rand(&mut b, 2);
+
+    let jit = EinsumF32Jit::compile(
+        "ab,bc->ac",
+        &[JitInput::Dense(&a), JitInput::Dense(&b)],
+        &[vec![n, n]],
+    )
+    .unwrap();
+    let plan = EinsumF32Plan::compile(
+        "ab,bc->ac",
+        &[JitInput::Dense(&a), JitInput::Dense(&b)],
+        &[vec![n, n]],
+    )
+    .unwrap();
+    let backend = plan.backend();
+
+    let jit_us = time(iters, || {
+        let mut c = Dense::<f32>::zeros(vec![n, n]);
+        jit.run(&[JitInput::Dense(&a), JitInput::Dense(&b)], &mut [&mut c]);
+    });
+    let plan_us = time(iters, || {
+        let mut c = Dense::<f32>::zeros(vec![n, n]);
+        plan.run(&[JitInput::Dense(&a), JitInput::Dense(&b)], &mut [&mut c]);
+    });
+
+    println!(
+        "  matmul {n:>4}x{n:<4}  JIT {jit_us:>10.2} µs   plan({backend:?}) {plan_us:>9.2} µs   ({:.1}× JIT)",
+        jit_us / plan_us,
+    );
+}
+
 /// Same dense matmul `"ab,bc->ac"`, but timing three dispatch paths
 /// side-by-side: monomorphic VM (`einsum_homogenous`, inlined NDIndex
 /// calls), dyn VM (`einsum`, vtable per element), and JIT (native code).
@@ -102,6 +139,92 @@ fn bench_matmul_dispatch(n: usize, iters: u32) {
     );
 }
 
+#[cfg(feature = "blas")]
+fn bench_attention_native(b: usize, h: usize, qk: usize, d: usize, iters: u32) {
+    let q_shape = vec![b, h, qk, d];
+    let k_shape = vec![b, h, qk, d];
+    let out_shape = vec![b, h, qk, qk];
+
+    let mut q = Dense::<f32>::zeros(q_shape);
+    let mut k = Dense::<f32>::zeros(k_shape);
+    fill_rand(&mut q, 11);
+    fill_rand(&mut k, 13);
+
+    let jit = EinsumF32Jit::compile(
+        "bhqd,bhkd->bhqk",
+        &[JitInput::Dense(&q), JitInput::Dense(&k)],
+        std::slice::from_ref(&out_shape),
+    )
+    .unwrap();
+    let plan = EinsumF32Plan::compile(
+        "bhqd,bhkd->bhqk",
+        &[JitInput::Dense(&q), JitInput::Dense(&k)],
+        std::slice::from_ref(&out_shape),
+    )
+    .unwrap();
+    let backend = plan.backend();
+
+    let jit_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        jit.run(&[JitInput::Dense(&q), JitInput::Dense(&k)], &mut [&mut o]);
+    });
+    let plan_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        plan.run(&[JitInput::Dense(&q), JitInput::Dense(&k)], &mut [&mut o]);
+    });
+
+    println!(
+        "  b={b:<2} h={h:<2} q=k={qk:<3} d={d:<3}  JIT {jit_us:>10.2} µs   plan({backend:?}) {plan_us:>9.2} µs   ({:.1}× JIT)",
+        jit_us / plan_us,
+    );
+}
+
+#[cfg(feature = "blas")]
+fn bench_attention_apply_native(b: usize, h: usize, qk: usize, d: usize, iters: u32) {
+    let scores_shape = vec![b, h, qk, qk];
+    let v_shape = vec![b, h, qk, d];
+    let out_shape = vec![b, h, qk, d];
+
+    let mut scores = Dense::<f32>::zeros(scores_shape);
+    let mut v = Dense::<f32>::zeros(v_shape);
+    fill_rand(&mut scores, 17);
+    fill_rand(&mut v, 19);
+
+    let jit = EinsumF32Jit::compile(
+        "bhqk,bhkd->bhqd",
+        &[JitInput::Dense(&scores), JitInput::Dense(&v)],
+        std::slice::from_ref(&out_shape),
+    )
+    .unwrap();
+    let plan = EinsumF32Plan::compile(
+        "bhqk,bhkd->bhqd",
+        &[JitInput::Dense(&scores), JitInput::Dense(&v)],
+        std::slice::from_ref(&out_shape),
+    )
+    .unwrap();
+    let backend = plan.backend();
+
+    let jit_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        jit.run(
+            &[JitInput::Dense(&scores), JitInput::Dense(&v)],
+            &mut [&mut o],
+        );
+    });
+    let plan_us = time(iters, || {
+        let mut o = Dense::<f32>::zeros(out_shape.clone());
+        plan.run(
+            &[JitInput::Dense(&scores), JitInput::Dense(&v)],
+            &mut [&mut o],
+        );
+    });
+
+    println!(
+        "  b={b:<2} h={h:<2} q=k={qk:<3} d={d:<3}  JIT {jit_us:>10.2} µs   plan({backend:?}) {plan_us:>9.2} µs   ({:.1}× JIT)",
+        jit_us / plan_us,
+    );
+}
+
 /// Attention shape: Q · Kᵀ over the (b, h) batch — `"bhqd,bhkd->bhqk"`.
 /// Q has shape `[b, h, qk, d]`, K has shape `[b, h, qk, d]`, output is
 /// `[b, h, qk, qk]`. Inner contraction is over `d`.
@@ -118,7 +241,7 @@ fn bench_attention(b: usize, h: usize, qk: usize, d: usize, iters: u32) {
     let jit = EinsumF32Jit::compile(
         "bhqd,bhkd->bhqk",
         &[JitInput::Dense(&q), JitInput::Dense(&k)],
-        &[out_shape.clone()],
+        std::slice::from_ref(&out_shape),
     )
     .unwrap();
 
@@ -174,6 +297,13 @@ fn bench_csr_dense(n: usize, per_row: usize, cols: usize, iters: u32) {
         &[vec![n, cols]],
     )
     .unwrap();
+    let plan = EinsumF32Plan::compile(
+        "ab,bc->ac",
+        &[JitInput::Csr(&a), JitInput::Dense(&x)],
+        &[vec![n, cols]],
+    )
+    .unwrap();
+    let backend = plan.backend();
 
     let vm_us = time(iters, || {
         let mut y = Dense::<f32>::zeros(vec![n, cols]);
@@ -188,9 +318,14 @@ fn bench_csr_dense(n: usize, per_row: usize, cols: usize, iters: u32) {
         let mut y = Dense::<f32>::zeros(vec![n, cols]);
         jit.run(&[JitInput::Csr(&a), JitInput::Dense(&x)], &mut [&mut y]);
     });
+    let plan_us = time(iters, || {
+        let mut y = Dense::<f32>::zeros(vec![n, cols]);
+        plan.run(&[JitInput::Csr(&a), JitInput::Dense(&x)], &mut [&mut y]);
+    });
     println!(
-        "  CSR({n}x{n}, {per_row}/row) x Dense({n}x{cols})   VM {vm_us:>10.2} µs   JIT {jit_us:>9.2} µs   {:>6.1}× faster",
-        vm_us / jit_us
+        "  CSR({n}x{n}, {per_row}/row) x Dense({n}x{cols})   VM {vm_us:>10.2} µs   JIT {jit_us:>9.2} µs   plan({backend:?}) {plan_us:>9.2} µs   (plan {:.1}× VM, {:.1}× JIT)",
+        vm_us / plan_us,
+        jit_us / plan_us,
     );
 }
 
@@ -207,10 +342,31 @@ fn main() {
     bench_matmul_dispatch(64, 200);
     bench_matmul_dispatch(128, 30);
 
+    #[cfg(feature = "blas")]
+    {
+        println!("\ndense native backend: cranelift JIT vs OpenBLAS\n");
+        bench_matmul_native(64, 1000);
+        bench_matmul_native(128, 200);
+        bench_matmul_native(256, 40);
+    }
+
     println!("\nattention: bhqd,bhkd->bhqk (Q · Kᵀ over batched heads) — mono / dyn / JIT\n");
     bench_attention(2, 4, 16, 32, 2000);
     bench_attention(4, 8, 64, 64, 80);
     bench_attention(8, 12, 128, 64, 8);
+
+    #[cfg(feature = "blas")]
+    {
+        println!("\nattention native backend: cranelift JIT vs OpenBLAS\n");
+        bench_attention_native(2, 4, 16, 32, 2000);
+        bench_attention_native(4, 8, 64, 64, 80);
+        bench_attention_native(8, 12, 128, 64, 8);
+
+        println!("\nattention value backend: cranelift JIT vs OpenBLAS\n");
+        bench_attention_apply_native(2, 4, 16, 32, 2000);
+        bench_attention_apply_native(4, 8, 64, 64, 80);
+        bench_attention_apply_native(8, 12, 128, 64, 8);
+    }
 
     println!("\nsparse: CSR x Dense (native sparse row iteration) vs the VM\n");
     bench_csr_dense(256, 8, 32, 2000);

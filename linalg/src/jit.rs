@@ -31,8 +31,8 @@
 //!   skipped at native speed.
 //! - **Shape-specialized.** Dimensions are baked in as constants, so a given
 //!   [`EinsumF32Jit`] is valid only for the exact shapes (and per-input
-//!   dense/sparse kinds) it was compiled for; [`run`](EinsumF32Jit::run)
-//!   asserts this.
+//!   dense/sparse kinds) it was compiled for; [`try_run`](EinsumF32Jit::try_run)
+//!   validates this before entering generated code.
 //! - **Layout seam.** [`Layout`] abstracts random-access element addressing.
 //!   `DenseLayout` is the only implementor (CSR has no constant-time random
 //!   address, so it participates through sparse iteration instead).
@@ -91,15 +91,17 @@ use std::fmt;
 use std::mem;
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{types, AbiParam, Block, InstBuilder, MemFlags, Type, Value};
+use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlags, Type, Value, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
+#[cfg(feature = "blas")]
+use crate::blas_backend::{attention_apply_f32, attention_scores_f32, matmul_f32};
 use crate::csr::Csr;
 use crate::dense::Dense;
-use crate::einsum::{parse_spec, InvalidSpec};
+use crate::einsum::{InvalidSpec, parse_spec};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Errors
@@ -131,6 +133,120 @@ impl fmt::Display for JitError {
 }
 
 impl std::error::Error for JitError {}
+
+/// Failure executing a compiled JIT program against concrete tensors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JitRunError {
+    /// The caller supplied a different number of inputs than the program was
+    /// compiled for.
+    InputCountMismatch { expected: usize, got: usize },
+    /// The caller supplied a different number of outputs than the program was
+    /// compiled for.
+    OutputCountMismatch { expected: usize, got: usize },
+    /// An input changed dense/sparse kind after compilation.
+    InputKindMismatch {
+        input: usize,
+        expected_sparse: bool,
+        got_sparse: bool,
+    },
+    /// An input shape changed after compilation.
+    InputShapeMismatch {
+        input: usize,
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
+    /// An output shape does not match the compiled output shape.
+    OutputShapeMismatch {
+        output: usize,
+        expected: Vec<usize>,
+        got: Vec<usize>,
+    },
+    /// A native backend failed after ordinary shape/kind validation.
+    BackendExecution {
+        backend: &'static str,
+        message: String,
+    },
+}
+
+impl fmt::Display for JitRunError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JitRunError::InputCountMismatch { expected, got } => {
+                write!(
+                    f,
+                    "input count mismatch: got {got}, compiled for {expected}"
+                )
+            }
+            JitRunError::OutputCountMismatch { expected, got } => {
+                write!(
+                    f,
+                    "output count mismatch: got {got}, compiled for {expected}"
+                )
+            }
+            JitRunError::InputKindMismatch {
+                input,
+                expected_sparse,
+                got_sparse,
+            } => write!(
+                f,
+                "input {input} kind mismatch: got {}, compiled for {}",
+                if *got_sparse { "sparse" } else { "dense" },
+                if *expected_sparse { "sparse" } else { "dense" },
+            ),
+            JitRunError::InputShapeMismatch {
+                input,
+                expected,
+                got,
+            } => write!(
+                f,
+                "input {input} shape mismatch: got {got:?}, compiled for {expected:?}",
+            ),
+            JitRunError::OutputShapeMismatch {
+                output,
+                expected,
+                got,
+            } => write!(
+                f,
+                "output {output} shape mismatch: got {got:?}, compiled for {expected:?}",
+            ),
+            JitRunError::BackendExecution { backend, message } => {
+                write!(f, "{backend} execution failed: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for JitRunError {}
+
+/// Failure compiling or executing an automatically planned one-shot einsum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EinsumF32Error {
+    Compile(JitError),
+    Run(JitRunError),
+}
+
+impl fmt::Display for EinsumF32Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Compile(err) => write!(f, "{err}"),
+            Self::Run(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for EinsumF32Error {}
+
+impl From<JitError> for EinsumF32Error {
+    fn from(value: JitError) -> Self {
+        Self::Compile(value)
+    }
+}
+
+impl From<JitRunError> for EinsumF32Error {
+    fn from(value: JitRunError) -> Self {
+        Self::Run(value)
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public input handle
@@ -177,8 +293,17 @@ impl<'a> SparseView<'a> {
             row_ptr.len(),
             rows + 1
         );
-        assert_eq!(col_idx.len(), values.len(), "col_idx and values length differ");
-        Self { shape, row_ptr, col_idx, values }
+        assert_eq!(
+            col_idx.len(),
+            values.len(),
+            "col_idx and values length differ"
+        );
+        Self {
+            shape,
+            row_ptr,
+            col_idx,
+            values,
+        }
     }
 }
 
@@ -230,6 +355,66 @@ impl JitInput<'_> {
 struct InputSpec {
     is_sparse: bool,
     shape: Vec<usize>,
+}
+
+fn input_specs(inputs: &[JitInput]) -> Vec<InputSpec> {
+    inputs
+        .iter()
+        .map(|input| InputSpec {
+            is_sparse: input.is_sparse(),
+            shape: input.shape(),
+        })
+        .collect()
+}
+
+fn validate_run(
+    inputs: &[JitInput],
+    outputs: &[&mut Dense<f32>],
+    compiled_inputs: &[InputSpec],
+    compiled_output_shapes: &[Vec<usize>],
+) -> Result<(), JitRunError> {
+    if inputs.len() != compiled_inputs.len() {
+        return Err(JitRunError::InputCountMismatch {
+            expected: compiled_inputs.len(),
+            got: inputs.len(),
+        });
+    }
+    if outputs.len() != compiled_output_shapes.len() {
+        return Err(JitRunError::OutputCountMismatch {
+            expected: compiled_output_shapes.len(),
+            got: outputs.len(),
+        });
+    }
+    for (i, inp) in inputs.iter().enumerate() {
+        let spec = &compiled_inputs[i];
+        let got_sparse = inp.is_sparse();
+        if got_sparse != spec.is_sparse {
+            return Err(JitRunError::InputKindMismatch {
+                input: i,
+                expected_sparse: spec.is_sparse,
+                got_sparse,
+            });
+        }
+        let got_shape = inp.shape();
+        if got_shape != spec.shape {
+            return Err(JitRunError::InputShapeMismatch {
+                input: i,
+                expected: spec.shape.clone(),
+                got: got_shape,
+            });
+        }
+    }
+    for (o, out) in outputs.iter().enumerate() {
+        if out.shape != compiled_output_shapes[o] {
+            return Err(JitRunError::OutputShapeMismatch {
+                output: o,
+                expected: compiled_output_shapes[o].clone(),
+                got: out.shape.clone(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -407,65 +592,527 @@ impl EinsumF32Jit {
 
     /// Execute against concrete tensors.
     ///
-    /// Panics if any input/output count, kind, or shape does not match what
-    /// this program was compiled for. Outputs must be pre-zeroed.
-    pub fn run(&self, inputs: &[JitInput], outputs: &mut [&mut Dense<f32>]) {
-        assert_eq!(
-            inputs.len(),
-            self.inputs.len(),
-            "input count mismatch: got {}, compiled for {}",
-            inputs.len(),
-            self.inputs.len()
-        );
-        assert_eq!(
-            outputs.len(),
-            self.output_shapes.len(),
-            "output count mismatch: got {}, compiled for {}",
-            outputs.len(),
-            self.output_shapes.len()
-        );
-        for (i, inp) in inputs.iter().enumerate() {
-            let spec = &self.inputs[i];
-            assert_eq!(
-                inp.is_sparse(), spec.is_sparse,
-                "input {i} kind mismatch (dense vs sparse)"
-            );
-            assert_eq!(
-                inp.shape(), spec.shape,
-                "input {i} shape mismatch: got {:?}, compiled for {:?}",
-                inp.shape(), spec.shape
-            );
-        }
-        for (o, out) in outputs.iter().enumerate() {
-            assert_eq!(
-                out.shape, self.output_shapes[o],
-                "output {o} shape mismatch: got {:?}, compiled for {:?}",
-                out.shape, self.output_shapes[o]
-            );
-        }
+    /// Returns an error if any input/output count, kind, or shape does not
+    /// match what this program was compiled for. Outputs must be pre-zeroed.
+    pub fn try_run(
+        &self,
+        inputs: &[JitInput],
+        outputs: &mut [&mut Dense<f32>],
+    ) -> Result<(), JitRunError> {
+        validate_run(inputs, outputs, &self.inputs, &self.output_shapes)?;
 
         let mut in_ptrs: Vec<*const u8> = Vec::new();
         for inp in inputs {
             inp.push_ptrs(&mut in_ptrs);
         }
-        let out_ptrs: Vec<*mut u8> =
-            outputs.iter_mut().map(|d| d.data.as_mut_ptr() as *mut u8).collect();
+        let out_ptrs: Vec<*mut u8> = outputs
+            .iter_mut()
+            .map(|d| d.data.as_mut_ptr() as *mut u8)
+            .collect();
         // SAFETY: the generated code reads exactly the pointer slots that the
         // inputs above produce (kinds asserted to match what was compiled),
         // and addresses only elements within the validated shapes.
         (self.func)(in_ptrs.as_ptr(), out_ptrs.as_ptr());
+        Ok(())
+    }
+
+    /// Execute against concrete tensors, panicking on validation failure.
+    ///
+    /// Prefer [`try_run`](Self::try_run) when the caller can surface execution
+    /// errors. Outputs must be pre-zeroed.
+    pub fn run(&self, inputs: &[JitInput], outputs: &mut [&mut Dense<f32>]) {
+        if let Err(err) = self.try_run(inputs, outputs) {
+            panic!("JIT execution failed: {err}");
+        }
     }
 }
 
-/// One-shot compile + run + free, matching the shape of
+/// Backend selected by [`EinsumF32Plan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EinsumF32Backend {
+    /// The general Cranelift loop-nest backend.
+    CraneliftJit,
+    /// Native sparse-row iteration for `Sparse x Dense -> Dense` matmul.
+    SparseDenseMatmul,
+    /// OpenBLAS-backed dense rank-2 matrix multiplication.
+    #[cfg(feature = "blas")]
+    BlasMatmul,
+    /// OpenBLAS-backed dense batched attention score computation.
+    #[cfg(feature = "blas")]
+    BlasAttentionScores,
+    /// OpenBLAS-backed dense batched attention value application.
+    #[cfg(feature = "blas")]
+    BlasAttentionApply,
+}
+
+/// A compiled dense/sparse einsum that chooses the fastest available backend
+/// for the recognized shape and falls back to [`EinsumF32Jit`] otherwise.
+pub struct EinsumF32Plan {
+    inner: EinsumF32PlanInner,
+}
+
+enum EinsumF32PlanInner {
+    Jit(Box<EinsumF32Jit>),
+    SparseDenseMatmul {
+        inputs: Vec<InputSpec>,
+        output_shapes: Vec<Vec<usize>>,
+    },
+    #[cfg(feature = "blas")]
+    Blas {
+        kernel: BlasKernel,
+        inputs: Vec<InputSpec>,
+        output_shapes: Vec<Vec<usize>>,
+    },
+}
+
+struct SparseRows<'a> {
+    shape: &'a [usize],
+    row_ptr: &'a [usize],
+    col_idx: &'a [u32],
+    values: &'a [f32],
+}
+
+fn dense_arg<'a>(
+    inputs: &'a [JitInput],
+    index: usize,
+    backend: &'static str,
+) -> Result<&'a Dense<f32>, JitRunError> {
+    match &inputs[index] {
+        JitInput::Dense(dense) => Ok(*dense),
+        _ => Err(JitRunError::BackendExecution {
+            backend,
+            message: format!("input {index} is not dense after validation"),
+        }),
+    }
+}
+
+fn dense_output<'a>(
+    outputs: &'a mut [&mut Dense<f32>],
+    backend: &'static str,
+) -> Result<&'a mut Dense<f32>, JitRunError> {
+    outputs
+        .get_mut(0)
+        .map(|output| &mut **output)
+        .ok_or_else(|| JitRunError::BackendExecution {
+            backend,
+            message: "missing dense output after validation".to_string(),
+        })
+}
+
+fn sparse_rows_arg<'a>(
+    inputs: &'a [JitInput],
+    index: usize,
+    backend: &'static str,
+) -> Result<SparseRows<'a>, JitRunError> {
+    match &inputs[index] {
+        JitInput::Csr(csr) => Ok(SparseRows {
+            shape: &csr.shape,
+            row_ptr: &csr.row_ptr,
+            col_idx: &csr.col_idx,
+            values: &csr.values,
+        }),
+        JitInput::Sparse(view) => Ok(SparseRows {
+            shape: &view.shape,
+            row_ptr: view.row_ptr,
+            col_idx: view.col_idx,
+            values: view.values,
+        }),
+        JitInput::Dense(_) => Err(JitRunError::BackendExecution {
+            backend,
+            message: format!("input {index} is not sparse after validation"),
+        }),
+    }
+}
+
+fn all_distinct(slots: &[u8]) -> bool {
+    let mut seen = [false; 26];
+    for &slot in slots {
+        if seen[slot as usize] {
+            return false;
+        }
+        seen[slot as usize] = true;
+    }
+    true
+}
+
+fn is_rank2_matmul_pattern(input_patterns: &[Vec<u8>], output_patterns: &[Vec<u8>]) -> bool {
+    let a = &input_patterns[0];
+    let b = &input_patterns[1];
+    let out = &output_patterns[0];
+    a.len() == 2
+        && b.len() == 2
+        && out.len() == 2
+        && a[1] == b[0]
+        && out.as_slice() == [a[0], b[1]]
+        && all_distinct(&[a[0], a[1], b[1]])
+}
+
+fn rank2_matmul_shape(input_shapes: &[Vec<usize>], output_shapes: &[Vec<usize>]) -> bool {
+    if input_shapes[0].len() != 2 || input_shapes[1].len() != 2 || output_shapes[0].len() != 2 {
+        return false;
+    }
+
+    let rows = input_shapes[0][0];
+    let inner = input_shapes[0][1];
+    let cols = input_shapes[1][1];
+    input_shapes[1][0] == inner && output_shapes[0].as_slice() == [rows, cols]
+}
+
+fn is_rank2_matmul(
+    input_patterns: &[Vec<u8>],
+    output_patterns: &[Vec<u8>],
+    input_shapes: &[Vec<usize>],
+    output_shapes: &[Vec<usize>],
+) -> bool {
+    is_rank2_matmul_pattern(input_patterns, output_patterns)
+        && rank2_matmul_shape(input_shapes, output_shapes)
+}
+
+fn sparse_dense_matmul_matches(
+    spec: &str,
+    inputs: &[JitInput],
+    output_shapes: &[Vec<usize>],
+) -> bool {
+    let Ok(parsed) = parse_spec(spec, inputs.len()) else {
+        return false;
+    };
+    if inputs.len() != 2
+        || parsed.outputs.len() != 1
+        || output_shapes.len() != 1
+        || !inputs[0].is_sparse()
+        || !matches!(inputs[1], JitInput::Dense(_))
+    {
+        return false;
+    }
+
+    let input_shapes: Vec<Vec<usize>> = inputs.iter().map(|input| input.shape()).collect();
+    is_rank2_matmul(
+        &parsed.inputs,
+        &parsed.outputs,
+        &input_shapes,
+        output_shapes,
+    )
+}
+
+fn run_sparse_dense_matmul(
+    inputs: &[JitInput],
+    outputs: &mut [&mut Dense<f32>],
+) -> Result<(), JitRunError> {
+    let a = sparse_rows_arg(inputs, 0, "sparse-dense matmul")?;
+    let x = dense_arg(inputs, 1, "sparse-dense matmul")?;
+    let out = dense_output(outputs, "sparse-dense matmul")?;
+    let rows = a.shape[0];
+    let cols = x.shape[1];
+
+    for row in 0..rows {
+        let out_base = row * cols;
+        let out_row = &mut out.data[out_base..out_base + cols];
+        for idx in a.row_ptr[row]..a.row_ptr[row + 1] {
+            let k = a.col_idx[idx] as usize;
+            let x_base = k * cols;
+            let x_row = &x.data[x_base..x_base + cols];
+            let a_val = a.values[idx];
+            for (out_val, &x_val) in out_row.iter_mut().zip(x_row) {
+                *out_val += a_val * x_val;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "blas")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlasKernel {
+    Matmul,
+    AttentionScores,
+    AttentionApply,
+}
+
+#[cfg(feature = "blas")]
+impl BlasKernel {
+    fn from_spec(spec: &str, inputs: &[JitInput], output_shapes: &[Vec<usize>]) -> Option<Self> {
+        let parsed = parse_spec(spec, inputs.len()).ok()?;
+        if inputs.len() != 2
+            || parsed.outputs.len() != 1
+            || output_shapes.len() != 1
+            || !inputs
+                .iter()
+                .all(|input| matches!(input, JitInput::Dense(_)))
+        {
+            return None;
+        }
+
+        let input_shapes: Vec<Vec<usize>> = inputs.iter().map(|input| input.shape()).collect();
+        if is_rank2_matmul(
+            &parsed.inputs,
+            &parsed.outputs,
+            &input_shapes,
+            output_shapes,
+        ) {
+            return Some(Self::Matmul);
+        }
+        if is_dense_attention_scores(
+            &parsed.inputs,
+            &parsed.outputs,
+            &input_shapes,
+            output_shapes,
+        ) {
+            return Some(Self::AttentionScores);
+        }
+        if is_dense_attention_apply(
+            &parsed.inputs,
+            &parsed.outputs,
+            &input_shapes,
+            output_shapes,
+        ) {
+            return Some(Self::AttentionApply);
+        }
+        None
+    }
+
+    fn backend(self) -> EinsumF32Backend {
+        match self {
+            Self::Matmul => EinsumF32Backend::BlasMatmul,
+            Self::AttentionScores => EinsumF32Backend::BlasAttentionScores,
+            Self::AttentionApply => EinsumF32Backend::BlasAttentionApply,
+        }
+    }
+
+    fn run(self, inputs: &[JitInput], outputs: &mut [&mut Dense<f32>]) -> Result<(), JitRunError> {
+        match self {
+            Self::Matmul => {
+                let a = dense_arg(inputs, 0, "BLAS matmul")?;
+                let b = dense_arg(inputs, 1, "BLAS matmul")?;
+                let out = dense_output(outputs, "BLAS matmul")?;
+                matmul_f32(a, b, out).map_err(|err| JitRunError::BackendExecution {
+                    backend: "BLAS matmul",
+                    message: err.to_string(),
+                })
+            }
+            Self::AttentionScores => {
+                let q = dense_arg(inputs, 0, "BLAS attention")?;
+                let k = dense_arg(inputs, 1, "BLAS attention")?;
+                let out = dense_output(outputs, "BLAS attention")?;
+                attention_scores_f32(q, k, out).map_err(|err| JitRunError::BackendExecution {
+                    backend: "BLAS attention",
+                    message: err.to_string(),
+                })
+            }
+            Self::AttentionApply => {
+                let scores = dense_arg(inputs, 0, "BLAS attention apply")?;
+                let v = dense_arg(inputs, 1, "BLAS attention apply")?;
+                let out = dense_output(outputs, "BLAS attention apply")?;
+                attention_apply_f32(scores, v, out).map_err(|err| JitRunError::BackendExecution {
+                    backend: "BLAS attention apply",
+                    message: err.to_string(),
+                })
+            }
+        }
+    }
+}
+
+#[cfg(feature = "blas")]
+fn rank4_binary_pattern<'a>(
+    input_patterns: &'a [Vec<u8>],
+    output_patterns: &'a [Vec<u8>],
+) -> Option<(&'a [u8], &'a [u8], &'a [u8])> {
+    let left = input_patterns[0].as_slice();
+    let right = input_patterns[1].as_slice();
+    let out = output_patterns[0].as_slice();
+    (left.len() == 4 && right.len() == 4 && out.len() == 4).then_some((left, right, out))
+}
+
+#[cfg(feature = "blas")]
+fn rank4_binary_shapes(
+    input_shapes: &[Vec<usize>],
+    output_shapes: &[Vec<usize>],
+) -> Option<([usize; 4], [usize; 4], [usize; 4])> {
+    if input_shapes[0].len() != 4 || input_shapes[1].len() != 4 || output_shapes[0].len() != 4 {
+        return None;
+    }
+    Some((
+        input_shapes[0].as_slice().try_into().ok()?,
+        input_shapes[1].as_slice().try_into().ok()?,
+        output_shapes[0].as_slice().try_into().ok()?,
+    ))
+}
+
+#[cfg(feature = "blas")]
+fn is_dense_attention_scores(
+    input_patterns: &[Vec<u8>],
+    output_patterns: &[Vec<u8>],
+    input_shapes: &[Vec<usize>],
+    output_shapes: &[Vec<usize>],
+) -> bool {
+    let Some((q, k, out)) = rank4_binary_pattern(input_patterns, output_patterns) else {
+        return false;
+    };
+    if q[0] != k[0]
+        || q[1] != k[1]
+        || q[3] != k[3]
+        || out != [q[0], q[1], q[2], k[2]]
+        || !all_distinct(&[q[0], q[1], q[2], k[2], q[3]])
+    {
+        return false;
+    }
+    let Some((q_shape, k_shape, out_shape)) = rank4_binary_shapes(input_shapes, output_shapes)
+    else {
+        return false;
+    };
+
+    let [batch, heads, query, dim] = q_shape;
+    let key = k_shape[2];
+    k_shape[0] == batch
+        && k_shape[1] == heads
+        && k_shape[3] == dim
+        && out_shape == [batch, heads, query, key]
+}
+
+#[cfg(feature = "blas")]
+fn is_dense_attention_apply(
+    input_patterns: &[Vec<u8>],
+    output_patterns: &[Vec<u8>],
+    input_shapes: &[Vec<usize>],
+    output_shapes: &[Vec<usize>],
+) -> bool {
+    let Some((scores, v, out)) = rank4_binary_pattern(input_patterns, output_patterns) else {
+        return false;
+    };
+    if scores[0] != v[0]
+        || scores[1] != v[1]
+        || scores[3] != v[2]
+        || out != [scores[0], scores[1], scores[2], v[3]]
+        || !all_distinct(&[scores[0], scores[1], scores[2], scores[3], v[3]])
+    {
+        return false;
+    }
+    let Some((scores_shape, v_shape, out_shape)) = rank4_binary_shapes(input_shapes, output_shapes)
+    else {
+        return false;
+    };
+
+    let [batch, heads, query, key] = scores_shape;
+    let dim = v_shape[3];
+    v_shape[0] == batch
+        && v_shape[1] == heads
+        && v_shape[2] == key
+        && out_shape == [batch, heads, query, dim]
+}
+
+impl EinsumF32Plan {
+    /// Compile `spec`, selecting a specialized native backend when available.
+    pub fn compile(
+        spec: &str,
+        inputs: &[JitInput],
+        output_shapes: &[Vec<usize>],
+    ) -> Result<Self, JitError> {
+        if sparse_dense_matmul_matches(spec, inputs, output_shapes) {
+            return Ok(Self {
+                inner: EinsumF32PlanInner::SparseDenseMatmul {
+                    inputs: input_specs(inputs),
+                    output_shapes: output_shapes.to_vec(),
+                },
+            });
+        }
+
+        #[cfg(feature = "blas")]
+        {
+            if let Some(kernel) = BlasKernel::from_spec(spec, inputs, output_shapes) {
+                return Ok(Self {
+                    inner: EinsumF32PlanInner::Blas {
+                        kernel,
+                        inputs: input_specs(inputs),
+                        output_shapes: output_shapes.to_vec(),
+                    },
+                });
+            }
+        }
+
+        Ok(Self {
+            inner: EinsumF32PlanInner::Jit(Box::new(EinsumF32Jit::compile(
+                spec,
+                inputs,
+                output_shapes,
+            )?)),
+        })
+    }
+
+    /// The backend selected at compile time.
+    pub fn backend(&self) -> EinsumF32Backend {
+        match &self.inner {
+            EinsumF32PlanInner::Jit(_) => EinsumF32Backend::CraneliftJit,
+            EinsumF32PlanInner::SparseDenseMatmul { .. } => EinsumF32Backend::SparseDenseMatmul,
+            #[cfg(feature = "blas")]
+            EinsumF32PlanInner::Blas { kernel, .. } => kernel.backend(),
+        }
+    }
+
+    /// Execute against concrete tensors, validating counts, kinds and shapes.
+    pub fn try_run(
+        &self,
+        inputs: &[JitInput],
+        outputs: &mut [&mut Dense<f32>],
+    ) -> Result<(), JitRunError> {
+        match &self.inner {
+            EinsumF32PlanInner::Jit(jit) => jit.try_run(inputs, outputs),
+            EinsumF32PlanInner::SparseDenseMatmul {
+                inputs: compiled_inputs,
+                output_shapes,
+            } => {
+                validate_run(inputs, outputs, compiled_inputs, output_shapes)?;
+                run_sparse_dense_matmul(inputs, outputs)
+            }
+            #[cfg(feature = "blas")]
+            EinsumF32PlanInner::Blas {
+                kernel,
+                inputs: compiled_inputs,
+                output_shapes,
+            } => {
+                validate_run(inputs, outputs, compiled_inputs, output_shapes)?;
+                kernel.run(inputs, outputs)
+            }
+        }
+    }
+
+    /// Execute against concrete tensors, panicking on validation failure.
+    pub fn run(&self, inputs: &[JitInput], outputs: &mut [&mut Dense<f32>]) {
+        if let Err(err) = self.try_run(inputs, outputs) {
+            panic!("einsum plan execution failed: {err}");
+        }
+    }
+}
+
+/// One-shot compile + run + free through [`EinsumF32Plan`], matching the
+/// shape of [`crate::einsum::einsum`]. Output shapes are taken from the
+/// passed-in `Dense` outputs.
+///
+/// Prefer this over manually instantiating [`EinsumF32Jit`] when the caller
+/// wants the fastest available backend for a known shape but does not need to
+/// reuse a compiled program. It can select native sparse-dense matmul, BLAS
+/// dense kernels (with feature `blas`), or the Cranelift JIT fallback.
+pub fn einsum_auto(
+    spec: &str,
+    inputs: &[JitInput],
+    outputs: &mut [&mut Dense<f32>],
+) -> Result<EinsumF32Backend, EinsumF32Error> {
+    let output_shapes: Vec<Vec<usize>> = outputs.iter().map(|o| o.shape.clone()).collect();
+    let plan = EinsumF32Plan::compile(spec, inputs, &output_shapes)?;
+    let backend = plan.backend();
+    plan.try_run(inputs, outputs)?;
+    Ok(backend)
+}
+
+/// One-shot compile + run + free, matching the historic shape of
 /// [`crate::einsum::einsum`]. Output shapes are taken from the passed-in
 /// `Dense` outputs.
 ///
 /// JIT compile is ~hundreds of µs, so this amortizes badly across repeated
-/// calls with the same spec — prefer [`EinsumF32Jit::compile`] +
-/// [`run`](EinsumF32Jit::run) when reusing a program. This wrapper exists
-/// for one-off / scripty use where the convenience matters more than the
-/// per-call compile cost.
+/// calls with the same spec — prefer [`EinsumF32Plan::compile`] +
+/// [`run`](EinsumF32Plan::run) when reusing a program. This wrapper exists
+/// for compatibility with older code that asked for a JIT-shaped one-shot
+/// helper; internally it now uses [`EinsumF32Plan`] so recognized kernels get
+/// the same native backends as planner users.
 ///
 /// # Example
 ///
@@ -488,11 +1135,9 @@ pub fn einsum_jit(
     inputs: &[JitInput],
     outputs: &mut [&mut Dense<f32>],
 ) -> Result<(), JitError> {
-    let output_shapes: Vec<Vec<usize>> =
-        outputs.iter().map(|o| o.shape.clone()).collect();
-    let jit = EinsumF32Jit::compile(spec, inputs, &output_shapes)?;
-    jit.run(inputs, outputs);
-    // jit is dropped here — its Drop impl frees the JIT'd code memory.
+    let output_shapes: Vec<Vec<usize>> = outputs.iter().map(|o| o.shape.clone()).collect();
+    let plan = EinsumF32Plan::compile(spec, inputs, &output_shapes)?;
+    plan.run(inputs, outputs);
     Ok(())
 }
 
@@ -513,7 +1158,11 @@ enum LoopOp {
     Dense { slot: u8 },
     /// Iterate the stored non-zeros of `inputs[input_idx]`'s compound row
     /// (formed from `leading`), binding `col_slot` to each column index.
-    Sparse { input_idx: usize, leading: Vec<u8>, col_slot: u8 },
+    Sparse {
+        input_idx: usize,
+        leading: Vec<u8>,
+        col_slot: u8,
+    },
 }
 
 /// Greedy schedule mirroring the VM: prefer a sparse row loop whose leading
@@ -683,13 +1332,24 @@ impl RowLayout for CsrRowLayout {
 
 /// Base pointer(s) plus the layout for one input, as loaded at function entry.
 enum InputBase {
-    Dense { layout: DenseLayout, base: Value },
-    Row { layout: Box<dyn RowLayout>, bases: Vec<Value> },
+    Dense {
+        layout: DenseLayout,
+        base: Value,
+    },
+    Row {
+        layout: Box<dyn RowLayout>,
+        bases: Vec<Value>,
+    },
 }
 
 /// Open a dense counted loop `for v in 0..dim`. Returns `(header, exit)`;
 /// afterwards the builder sits in the (sealed) loop body.
-fn open_dense_loop(b: &mut FunctionBuilder, ptr_ty: Type, v: Variable, dim: usize) -> (Block, Block) {
+fn open_dense_loop(
+    b: &mut FunctionBuilder,
+    ptr_ty: Type,
+    v: Variable,
+    dim: usize,
+) -> (Block, Block) {
     let zero = b.ins().iconst(ptr_ty, 0);
     b.def_var(v, zero);
     let header = b.create_block();
@@ -765,8 +1425,10 @@ fn emit_product(
         } else {
             match &bases[i] {
                 InputBase::Dense { layout, base } => {
-                    let idx_vals: Vec<Value> =
-                        pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();
+                    let idx_vals: Vec<Value> = pattern
+                        .iter()
+                        .map(|&s| b.use_var(vars[s as usize]))
+                        .collect();
                     let addr = layout.emit_elem_addr(b, ptr_ty, *base, &idx_vals);
                     b.ins().load(types::F32, MemFlags::trusted(), addr, 0)
                 }
@@ -810,7 +1472,10 @@ fn codegen(
         .map(|(pat, &sp)| {
             if sp {
                 let n = pat.len();
-                Some(SparseAxes { leading: pat[..n - 1].to_vec(), col: pat[n - 1] })
+                Some(SparseAxes {
+                    leading: pat[..n - 1].to_vec(),
+                    col: pat[n - 1],
+                })
             } else {
                 None
             }
@@ -834,9 +1499,16 @@ fn codegen(
             }
         }
     }
-    let free: Vec<u8> = order.iter().copied().filter(|&s| in_output[s as usize]).collect();
-    let contracted: Vec<u8> =
-        order.iter().copied().filter(|&s| !in_output[s as usize]).collect();
+    let free: Vec<u8> = order
+        .iter()
+        .copied()
+        .filter(|&s| in_output[s as usize])
+        .collect();
+    let contracted: Vec<u8> = order
+        .iter()
+        .copied()
+        .filter(|&s| !in_output[s as usize])
+        .collect();
 
     // Sparse-aware plan (used whenever any input is sparse, or for multi-output).
     let plan = schedule(inputs, outputs, &sparse_axes);
@@ -860,8 +1532,10 @@ fn codegen(
 
     // Row-major dense layouts for outputs (outputs are always dense).
     let axis_dims = |pat: &[u8]| -> Vec<usize> { pat.iter().map(|&s| dims[s as usize]).collect() };
-    let out_layouts: Vec<DenseLayout> =
-        outputs.iter().map(|p| DenseLayout::new(&axis_dims(p))).collect();
+    let out_layouts: Vec<DenseLayout> = outputs
+        .iter()
+        .map(|p| DenseLayout::new(&axis_dims(p)))
+        .collect();
 
     let mut module = new_module();
     let ptr_ty = module.target_config().pointer_type();
@@ -883,7 +1557,13 @@ fn codegen(
         let acc = b.declare_var(types::F32);
         let val_vars: Vec<Option<Variable>> = is_sparse
             .iter()
-            .map(|&sp| if sp { Some(b.declare_var(types::F32)) } else { None })
+            .map(|&sp| {
+                if sp {
+                    Some(b.declare_var(types::F32))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         let entry = b.create_block();
@@ -911,18 +1591,25 @@ fn codegen(
                         )
                     })
                     .collect();
-                bases.push(InputBase::Row { layout, bases: input_bases });
+                bases.push(InputBase::Row {
+                    layout,
+                    bases: input_bases,
+                });
                 slot += n as i32;
             } else {
-                let base =
-                    b.ins().load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
+                let base = b
+                    .ins()
+                    .load(ptr_ty, MemFlags::trusted(), ins_ptr, slot * ptr_bytes);
                 let layout = DenseLayout::new(&axis_dims(&inputs[i]));
                 bases.push(InputBase::Dense { layout, base });
                 slot += 1;
             }
         }
         let out_bases: Vec<Value> = (0..outputs.len())
-            .map(|i| b.ins().load(ptr_ty, MemFlags::trusted(), outs_ptr, i as i32 * ptr_bytes))
+            .map(|i| {
+                b.ins()
+                    .load(ptr_ty, MemFlags::trusted(), outs_ptr, i as i32 * ptr_bytes)
+            })
             .collect();
 
         if !any_sparse && outputs.len() == 1 {
@@ -930,13 +1617,19 @@ fn codegen(
             // for free: { acc = 0; for contracted { acc += prod }; out = acc }
             let mut free_loops = Vec::new();
             for &s in &free {
-                free_loops.push((vars[s as usize], open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize])));
+                free_loops.push((
+                    vars[s as usize],
+                    open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize]),
+                ));
             }
             let zero = b.ins().f32const(0.0);
             b.def_var(acc, zero);
             let mut c_loops = Vec::new();
             for &s in &contracted {
-                c_loops.push((vars[s as usize], open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize])));
+                c_loops.push((
+                    vars[s as usize],
+                    open_dense_loop(&mut b, ptr_ty, vars[s as usize], dims[s as usize]),
+                ));
             }
 
             let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
@@ -948,8 +1641,10 @@ fn codegen(
                 close_loop(&mut b, iv, h, e);
             }
             let acc_val = b.use_var(acc);
-            let idx_vals: Vec<Value> =
-                outputs[0].iter().map(|&s| b.use_var(vars[s as usize])).collect();
+            let idx_vals: Vec<Value> = outputs[0]
+                .iter()
+                .map(|&s| b.use_var(vars[s as usize]))
+                .collect();
             let addr = out_layouts[0].emit_elem_addr(&mut b, ptr_ty, out_bases[0], &idx_vals);
             b.ins().store(MemFlags::trusted(), acc_val, addr, 0);
             for (iv, (h, e)) in free_loops.into_iter().rev() {
@@ -969,14 +1664,15 @@ fn codegen(
                         );
                         opened.push((vars[*slot as usize], h, e));
                     }
-                    LoopOp::Sparse { input_idx, leading, col_slot } => {
+                    LoopOp::Sparse {
+                        input_idx,
+                        leading,
+                        col_slot,
+                    } => {
                         let strides = leading_strides(leading, dims);
-                        let compound =
-                            emit_compound_row(&mut b, ptr_ty, leading, &strides, &vars);
+                        let compound = emit_compound_row(&mut b, ptr_ty, leading, &strides, &vars);
                         let (layout, input_bases) = match &bases[*input_idx] {
-                            InputBase::Row { layout, bases } => {
-                                (layout.as_ref(), bases.as_slice())
-                            }
+                            InputBase::Row { layout, bases } => (layout.as_ref(), bases.as_slice()),
                             InputBase::Dense { .. } => {
                                 unreachable!("sparse op on dense input")
                             }
@@ -996,10 +1692,11 @@ fn codegen(
 
             let prod = emit_product(&mut b, ptr_ty, inputs, &bases, &val_vars, &vars);
             for (oi, pattern) in outputs.iter().enumerate() {
-                let idx_vals: Vec<Value> =
-                    pattern.iter().map(|&s| b.use_var(vars[s as usize])).collect();
-                let addr =
-                    out_layouts[oi].emit_elem_addr(&mut b, ptr_ty, out_bases[oi], &idx_vals);
+                let idx_vals: Vec<Value> = pattern
+                    .iter()
+                    .map(|&s| b.use_var(vars[s as usize]))
+                    .collect();
+                let addr = out_layouts[oi].emit_elem_addr(&mut b, ptr_ty, out_bases[oi], &idx_vals);
                 let cur = b.ins().load(types::F32, MemFlags::trusted(), addr, 0);
                 let sum = b.ins().fadd(cur, prod);
                 b.ins().store(MemFlags::trusted(), sum, addr, 0);
@@ -1017,7 +1714,9 @@ fn codegen(
     let id = module
         .declare_function("einsum", Linkage::Export, &ctx.func.signature)
         .expect("declare_function");
-    module.define_function(id, &mut ctx).expect("define_function");
+    module
+        .define_function(id, &mut ctx)
+        .expect("define_function");
     module.clear_context(&mut ctx);
     module.finalize_definitions().expect("finalize_definitions");
 
@@ -1091,10 +1790,13 @@ mod tests {
     #[test]
     fn three_input_chain() {
         let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
-        let b = dense(vec![3, 4], &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.]);
+        let b = dense(
+            vec![3, 4],
+            &[1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.],
+        );
         let c = dense(vec![4, 2], &[1., 2., 3., 4., 5., 6., 7., 8.]);
-        let jit = EinsumF32Jit::compile("ab,bc,cd->ad", &[d(&a), d(&b), d(&c)], &[vec![2, 2]])
-            .unwrap();
+        let jit =
+            EinsumF32Jit::compile("ab,bc,cd->ad", &[d(&a), d(&b), d(&c)], &[vec![2, 2]]).unwrap();
         let mut out = Dense::<f32>::zeros(vec![2, 2]);
         jit.run(&[d(&a), d(&b), d(&c)], &mut [&mut out]);
         assert_eq!(out.data, vec![22., 28., 49., 64.]);
@@ -1104,12 +1806,8 @@ mod tests {
     fn multi_output() {
         let a = dense(vec![2, 2], &[1., 2., 3., 4.]);
         let b = dense(vec![2, 2], &[5., 6., 7., 8.]);
-        let jit = EinsumF32Jit::compile(
-            "ab,bc->ac,ca",
-            &[d(&a), d(&b)],
-            &[vec![2, 2], vec![2, 2]],
-        )
-        .unwrap();
+        let jit = EinsumF32Jit::compile("ab,bc->ac,ca", &[d(&a), d(&b)], &[vec![2, 2], vec![2, 2]])
+            .unwrap();
         let mut ac = Dense::<f32>::zeros(vec![2, 2]);
         let mut ca = Dense::<f32>::zeros(vec![2, 2]);
         jit.run(&[d(&a), d(&b)], &mut [&mut ac, &mut ca]);
@@ -1136,6 +1834,26 @@ mod tests {
     /// 3×3 cyclic permutation: edges (0,1),(1,2),(2,0) with value 1.
     fn cyclic_perm() -> Csr<u32, f32> {
         Csr::<u32, f32>::from_coo(3, &mut vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)])
+    }
+
+    fn rectangular_sparse_fixture() -> (Vec<usize>, Vec<u32>, Vec<f32>, Dense<f32>, Dense<f32>) {
+        (
+            vec![0usize, 2, 3],
+            vec![1u32, 2, 0],
+            vec![2.0f32, 3.0, 1.0],
+            dense(vec![2, 3], &[0., 2., 3., 1., 0., 0.]),
+            dense(
+                vec![3, 4],
+                &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.],
+            ),
+        )
+    }
+
+    fn dense_reference_matmul(a_dense: &Dense<f32>, x: &Dense<f32>) -> Vec<f32> {
+        let de = EinsumF32Jit::compile("ab,bc->ac", &[d(a_dense), d(x)], &[vec![2, 4]]).unwrap();
+        let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
+        de.run(&[d(a_dense), d(x)], &mut [&mut y_de]);
+        y_de.data
     }
 
     #[test]
@@ -1210,50 +1928,35 @@ mod tests {
     #[test]
     fn rectangular_csr_input() {
         // A non-square Csr (2×3) passed via the JitInput::Csr path.
-        let a = Csr::<u32, f32>::from_parts(
-            vec![2, 3],
-            vec![0, 2, 3],
-            vec![1, 2, 0],
-            vec![2.0, 3.0, 1.0],
-        );
-        let a_dense = dense(vec![2, 3], &[0., 2., 3., 1., 0., 0.]);
-        let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+        let (row_ptr, col_idx, values, a_dense, x) = rectangular_sparse_fixture();
+        let a = Csr::<u32, f32>::from_parts(vec![2, 3], row_ptr, col_idx, values);
 
         let sp =
             EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![2, 4]]).unwrap();
         let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
         sp.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut y_sp]);
 
-        let de = EinsumF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
-        let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
-        de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
-
-        assert_eq!(y_sp.data, y_de.data);
+        assert_eq!(y_sp.data, dense_reference_matmul(&a_dense, &x));
     }
 
     #[test]
     fn rectangular_sparse_times_dense() {
         // Non-square sparse A (2×3): A[0,1]=2, A[0,2]=3, A[1,0]=1.
-        let row_ptr = vec![0usize, 2, 3];
-        let col_idx = vec![1u32, 2, 0];
-        let values = vec![2.0f32, 3.0, 1.0];
+        let (row_ptr, col_idx, values, a_dense, x) = rectangular_sparse_fixture();
         let a = SparseView::new(vec![2, 3], &row_ptr, &col_idx, &values);
-        let a_dense = dense(vec![2, 3], &[0., 2., 3., 1., 0., 0.]);
-        let x = dense(vec![3, 4], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
 
-        let sp =
-            EinsumF32Jit::compile("ab,bc->ac", &[JitInput::Sparse(a.clone()), d(&x)], &[vec![2, 4]])
-                .unwrap();
+        let sp = EinsumF32Jit::compile(
+            "ab,bc->ac",
+            &[JitInput::Sparse(a.clone()), d(&x)],
+            &[vec![2, 4]],
+        )
+        .unwrap();
         let mut y_sp = Dense::<f32>::zeros(vec![2, 4]);
         sp.run(&[JitInput::Sparse(a), d(&x)], &mut [&mut y_sp]);
 
         // Cross-check against the dense-equivalent JIT (engine already
         // validated against the VM for dense).
-        let de = EinsumF32Jit::compile("ab,bc->ac", &[d(&a_dense), d(&x)], &[vec![2, 4]]).unwrap();
-        let mut y_de = Dense::<f32>::zeros(vec![2, 4]);
-        de.run(&[d(&a_dense), d(&x)], &mut [&mut y_de]);
-
-        assert_eq!(y_sp.data, y_de.data);
+        assert_eq!(y_sp.data, dense_reference_matmul(&a_dense, &x));
     }
 
     #[test]
@@ -1312,11 +2015,17 @@ mod tests {
 
         let mut state = 0x2545F4914F6CDD1Du64;
         let mut next = || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((state >> 33) as f32 / u32::MAX as f32) * 2.0 - 1.0
         };
         let mut rand_dense = |shape: Vec<usize>| {
-            let n: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+            let n: usize = if shape.is_empty() {
+                1
+            } else {
+                shape.iter().product()
+            };
             let data: Vec<f32> = (0..n).map(|_| next()).collect();
             dense(shape, &data)
         };
@@ -1342,13 +2051,17 @@ mod tests {
             )
             .unwrap();
 
-            let mut jit_outs: Vec<Dense<f32>> =
-                out_shapes.iter().map(|s| Dense::<f32>::zeros(s.to_vec())).collect();
+            let mut jit_outs: Vec<Dense<f32>> = out_shapes
+                .iter()
+                .map(|s| Dense::<f32>::zeros(s.to_vec()))
+                .collect();
             let mut jit_refs: Vec<&mut Dense<f32>> = jit_outs.iter_mut().collect();
             jit.run(&jit_inputs, &mut jit_refs);
 
-            let mut vm_outs: Vec<Dense<f32>> =
-                out_shapes.iter().map(|s| Dense::<f32>::zeros(s.to_vec())).collect();
+            let mut vm_outs: Vec<Dense<f32>> = out_shapes
+                .iter()
+                .map(|s| Dense::<f32>::zeros(s.to_vec()))
+                .collect();
             let mut vm_refs: Vec<&mut Dense<f32>> = vm_outs.iter_mut().collect();
             einsum_homogenous::<f32, _, _>(spec, &in_refs, &mut vm_refs).unwrap();
 
@@ -1363,6 +2076,128 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "blas")]
+    #[test]
+    fn plan_selects_blas_for_dense_matmul() {
+        let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let b = dense(vec![3, 2], &[7., 8., 9., 10., 11., 12.]);
+        let plan = EinsumF32Plan::compile("ab,bc->ac", &[d(&a), d(&b)], &[vec![2, 2]]).unwrap();
+        assert_eq!(plan.backend(), EinsumF32Backend::BlasMatmul);
+
+        let mut c = Dense::<f32>::zeros(vec![2, 2]);
+        plan.run(&[d(&a), d(&b)], &mut [&mut c]);
+        assert_eq!(c.data, vec![58., 64., 139., 154.]);
+    }
+
+    #[test]
+    fn plan_inner_keeps_jit_backend_boxed() {
+        assert!(
+            std::mem::size_of::<EinsumF32PlanInner>() <= 128,
+            "large JIT fallback payload should stay behind indirection"
+        );
+    }
+
+    #[cfg(feature = "blas")]
+    #[test]
+    fn plan_selects_blas_for_attention_scores() {
+        let q = dense(vec![1, 1, 2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let k = dense(vec![1, 1, 2, 3], &[7., 8., 9., 10., 11., 12.]);
+        let plan = EinsumF32Plan::compile("bhqd,bhkd->bhqk", &[d(&q), d(&k)], &[vec![1, 1, 2, 2]])
+            .unwrap();
+        assert_eq!(plan.backend(), EinsumF32Backend::BlasAttentionScores);
+
+        let mut out = Dense::<f32>::zeros(vec![1, 1, 2, 2]);
+        plan.run(&[d(&q), d(&k)], &mut [&mut out]);
+        assert_eq!(out.get(&[0, 0, 0, 0]), 50.0);
+        assert_eq!(out.get(&[0, 0, 0, 1]), 68.0);
+        assert_eq!(out.get(&[0, 0, 1, 0]), 122.0);
+        assert_eq!(out.get(&[0, 0, 1, 1]), 167.0);
+    }
+
+    #[cfg(feature = "blas")]
+    #[test]
+    fn plan_selects_blas_for_attention_apply() {
+        let scores = dense(vec![1, 1, 2, 2], &[0.25, 0.75, 0.5, 0.5]);
+        let v = dense(vec![1, 1, 2, 3], &[10., 20., 30., 14., 28., 42.]);
+        let plan =
+            EinsumF32Plan::compile("bhqk,bhkd->bhqd", &[d(&scores), d(&v)], &[vec![1, 1, 2, 3]])
+                .unwrap();
+        assert_eq!(plan.backend(), EinsumF32Backend::BlasAttentionApply);
+
+        let mut out = Dense::<f32>::zeros(vec![1, 1, 2, 3]);
+        plan.run(&[d(&scores), d(&v)], &mut [&mut out]);
+        assert_eq!(out.data, vec![13., 26., 39., 12., 24., 36.]);
+    }
+
+    #[test]
+    fn plan_selects_native_sparse_dense_matmul_for_csr() {
+        let a = cyclic_perm();
+        let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
+        let plan = EinsumF32Plan::compile("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &[vec![3, 2]])
+            .unwrap();
+        assert_eq!(plan.backend(), EinsumF32Backend::SparseDenseMatmul);
+
+        let mut y = Dense::<f32>::zeros(vec![3, 2]);
+        plan.run(&[JitInput::Csr(&a), d(&x)], &mut [&mut y]);
+        assert_eq!(y.data, vec![3., 4., 5., 6., 1., 2.]);
+    }
+
+    #[test]
+    fn plan_selects_native_sparse_dense_matmul_for_sparse_view() {
+        let row_ptr = vec![0usize, 2, 3];
+        let col_idx = vec![1u32, 2, 0];
+        let values = vec![2.0f32, 3.0, 1.0];
+        let a = SparseView::new(vec![2, 3], &row_ptr, &col_idx, &values);
+        let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
+        let plan = EinsumF32Plan::compile(
+            "ab,bc->ac",
+            &[JitInput::Sparse(a.clone()), d(&x)],
+            &[vec![2, 2]],
+        )
+        .unwrap();
+        assert_eq!(plan.backend(), EinsumF32Backend::SparseDenseMatmul);
+
+        let mut y = Dense::<f32>::zeros(vec![2, 2]);
+        plan.run(&[JitInput::Sparse(a), d(&x)], &mut [&mut y]);
+        assert_eq!(y.data, vec![21., 26., 1., 2.]);
+    }
+
+    #[test]
+    fn einsum_auto_returns_selected_backend_and_runs() {
+        let a = cyclic_perm();
+        let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
+        let mut y = Dense::<f32>::zeros(vec![3, 2]);
+
+        let backend = einsum_auto("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &mut [&mut y]).unwrap();
+
+        assert_eq!(backend, EinsumF32Backend::SparseDenseMatmul);
+        assert_eq!(y.data, vec![3., 4., 5., 6., 1., 2.]);
+    }
+
+    #[cfg(feature = "blas")]
+    #[test]
+    fn einsum_auto_returns_blas_backend_for_dense_matmul() {
+        let a = dense(vec![2, 3], &[1., 2., 3., 4., 5., 6.]);
+        let b = dense(vec![3, 2], &[7., 8., 9., 10., 11., 12.]);
+        let mut c = Dense::<f32>::zeros(vec![2, 2]);
+
+        let backend = einsum_auto("ab,bc->ac", &[d(&a), d(&b)], &mut [&mut c]).unwrap();
+
+        assert_eq!(backend, EinsumF32Backend::BlasMatmul);
+        assert_eq!(c.data, vec![58., 64., 139., 154.]);
+    }
+
+    #[test]
+    fn einsum_jit_uses_planner_compatible_one_shot_path() {
+        let a = cyclic_perm();
+        let x = dense(vec![3, 2], &[1., 2., 3., 4., 5., 6.]);
+        let mut y = Dense::<f32>::zeros(vec![3, 2]);
+
+        einsum_jit("ab,bc->ac", &[JitInput::Csr(&a), d(&x)], &mut [&mut y]).unwrap();
+
+        assert_eq!(y.data, vec![3., 4., 5., 6., 1., 2.]);
+    }
+
     #[test]
     fn spec_errors_surface() {
         let a = dense(vec![2, 3], &[0.; 6]);
@@ -1374,7 +2209,9 @@ mod tests {
         );
         assert_eq!(
             EinsumF32Jit::compile("ab,bc->az", &[d(&a), d(&b)], &[vec![2, 2]]).err(),
-            Some(JitError::Spec(InvalidSpec::UnboundOutputIndex { index: 'z' })),
+            Some(JitError::Spec(InvalidSpec::UnboundOutputIndex {
+                index: 'z'
+            })),
         );
         assert_eq!(
             EinsumF32Jit::compile("ab,bc->ac", &[d(&a), d(&b_bad)], &[vec![2, 2]]).err(),
@@ -1383,6 +2220,63 @@ mod tests {
                 expected: 3,
                 got: 4
             })),
+        );
+    }
+
+    #[test]
+    fn run_errors_surface_without_panicking() {
+        let a = dense(vec![2, 3], &[0.; 6]);
+        let b = dense(vec![3, 2], &[0.; 6]);
+        let jit = EinsumF32Jit::compile("ab,bc->ac", &[d(&a), d(&b)], &[vec![2, 2]]).unwrap();
+
+        let mut out = Dense::<f32>::zeros(vec![2, 2]);
+        assert_eq!(
+            jit.try_run(&[d(&a)], &mut [&mut out]),
+            Err(JitRunError::InputCountMismatch {
+                expected: 2,
+                got: 1,
+            }),
+        );
+
+        let mut no_outputs: [&mut Dense<f32>; 0] = [];
+        assert_eq!(
+            jit.try_run(&[d(&a), d(&b)], &mut no_outputs),
+            Err(JitRunError::OutputCountMismatch {
+                expected: 1,
+                got: 0,
+            }),
+        );
+
+        let csr = cyclic_perm();
+        let mut out = Dense::<f32>::zeros(vec![2, 2]);
+        assert_eq!(
+            jit.try_run(&[JitInput::Csr(&csr), d(&b)], &mut [&mut out]),
+            Err(JitRunError::InputKindMismatch {
+                input: 0,
+                expected_sparse: false,
+                got_sparse: true,
+            }),
+        );
+
+        let b_bad = dense(vec![4, 2], &[0.; 8]);
+        let mut out = Dense::<f32>::zeros(vec![2, 2]);
+        assert_eq!(
+            jit.try_run(&[d(&a), d(&b_bad)], &mut [&mut out]),
+            Err(JitRunError::InputShapeMismatch {
+                input: 1,
+                expected: vec![3, 2],
+                got: vec![4, 2],
+            }),
+        );
+
+        let mut out_bad = Dense::<f32>::zeros(vec![2, 3]);
+        assert_eq!(
+            jit.try_run(&[d(&a), d(&b)], &mut [&mut out_bad]),
+            Err(JitRunError::OutputShapeMismatch {
+                output: 0,
+                expected: vec![2, 2],
+                got: vec![2, 3],
+            }),
         );
     }
 }

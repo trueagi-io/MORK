@@ -4760,6 +4760,62 @@ fn bench_transitive_no_unify(nnodes: usize, nedges: usize) {
 }
 
 
+/// The k-clique rule, written star-first: every edge out of `$x0`, then every cross edge. This
+/// is the order `bench clique` and `bench clique_scaling` both put to the engine.
+fn clique_query(k: usize) -> String {
+    format!("(exec 0 (,{}) (, ({}-clique{})))",
+        (0..k).flat_map(|i| ((i + 1)..k).map(move |j| format!(" (edge $x{} $x{})", i, j))).collect::<String>(),
+        k,
+        (0..k).map(|i| format!(" $x{}", i)).collect::<String>()
+    )
+}
+
+/// A random irreflexive graph on `nnodes` vertices with `nedges` distinct edges, from a fixed
+/// seed, written as ordered pairs.
+fn clique_graph(nnodes: usize, nedges: usize) -> HashSet<String> {
+    use rand::{rngs::StdRng, SeedableRng, Rng};
+    let mut rng = StdRng::from_seed([0; 32]);
+    let mut edges: HashSet<String> = HashSet::new();
+    // irreflexive degeneracy ordered graph
+    while edges.len() < nedges {
+        let i = rng.random_range(0..nnodes);
+        let j = rng.random_range(0..nnodes);
+        if i == j { continue }
+        if i < j { edges.insert(format!("(edge {i} {j})\n")); }
+        else { edges.insert(format!("(edge {j} {i})\n")); }
+    }
+    edges
+}
+
+/// `bench clique` at constant average degree, grown, so the SHAPE of a join order's cost can be
+/// read off rather than one point of it.
+///
+/// The shipped `clique` bench is a single DENSE graph -- 200 vertices, 3,600 edges, average
+/// degree 36 -- and a dense graph hides how an order scales, because nearly every pair of
+/// vertices is an edge. This holds average degree at 10 and grows the graph, and reports
+/// `transitions`, the engine's own search counter: machine-independent, and directly comparable
+/// between two builds. Fit log(transitions) against log(|E|) for the exponent.
+fn bench_clique_scaling(max_clique: usize) {
+    println!("{:>6} {:>6}{}", "|V|", "|E|",
+        (3..=max_clique).map(|k| format!(" {:>22}", format!("{k}-clique"))).collect::<String>());
+    for nedges in [300usize, 800, 1300, 2100, 3400] {
+        let nnodes = nedges / 5;   // |E| = |V| * degree / 2, at degree 10
+        let mut s = Space::new();
+        s.add_all_sexpr(clique_graph(nnodes, nedges).into_iter().collect::<String>().as_bytes()).unwrap();
+
+        let mut row = String::new();
+        for k in 3..=max_clique {
+            s.add_sexpr(clique_query(k).as_bytes(), expr!(s, "$"), expr!(s, "_1"));
+            let before = unsafe { transitions };
+            s.metta_calculus(1);
+            let walked = unsafe { transitions } - before;
+            let found = s.btm.read_zipper_at_path([item_byte(Tag::Arity((k + 1) as _))]).val_count();
+            row.push_str(&format!(" {:>22}", format!("{walked} ({found} found)")));
+        }
+        println!("{nnodes:>6} {nedges:>6}{row}");
+    }
+}
+
 fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
     fn binom_as_f64(n: u64, k: u64) -> f64 {
         if k > n { return 0.0; }
@@ -4792,30 +4848,8 @@ fn bench_clique_no_unify(nnodes: usize, nedges: usize, max_clique: usize) {
         binom_as_f64(n, k) * expected_fraction_kclique_gne(n, e, k)
     }
 
-    fn clique_query(k: usize) -> String {
-        format!("(exec 0 (,{}) (, ({}-clique{})))",
-            (0..k).flat_map(|i| ((i + 1)..k).map(move |j| format!(" (edge $x{} $x{})", i, j))).collect::<String>(),
-            k,
-            (0..k).map(|i| format!(" $x{}", i)).collect::<String>()
-        )
-    }
-
-    use rand::{rngs::StdRng, SeedableRng, Rng};
-    let mut rng = StdRng::from_seed([0; 32]);
     let mut s = Space::new();
-
-    let mut edges: HashSet<String> = HashSet::new();
-
-    // irreflexive degeneracy ordered graph
-    while edges.len() < nedges {
-        let i = rng.random_range(0..nnodes);
-        let j = rng.random_range(0..nnodes);
-        if i == j { continue }
-        if i < j { edges.insert(format!("(edge {i} {j})\n")); }
-        else { edges.insert(format!("(edge {j} {i})\n")); }
-    }
-
-    s.add_all_sexpr(edges.into_iter().collect::<String>().as_bytes()).unwrap();
+    s.add_all_sexpr(clique_graph(nnodes, nedges).into_iter().collect::<String>().as_bytes()).unwrap();
     println!("constructed {} nodes {} edges", nnodes, nedges);
 
     for k in 3..(max_clique+1) {
@@ -6243,6 +6277,7 @@ fn main() {
                     "counter_machine" => { bench_cm0(50); }
                     "transitive" => { bench_transitive_no_unify(50000, 1000000); }
                     "clique" => { bench_clique_no_unify(200, 3600, 5); }
+                    "clique_scaling" => { bench_clique_scaling(5); }
                     "finite_domain" => { bench_finite_domain(10_000); }
                     "process_calculus" => { process_calculus_bench(1000, 200, 200); }
                     "exponential" => { exponential(32); }

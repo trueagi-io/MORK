@@ -1107,13 +1107,125 @@ impl Space {
         {
             crate::leapfrog::query_multi_leapfrog(btm, pat_expr, effect)
         }
-        #[cfg(not(feature = "leapfrog"))]
+        #[cfg(all(not(feature = "leapfrog"), feature = "conjunct_order"))]
+        {
+            Self::query_multi_planned(btm, pat_expr, effect)
+        }
+        #[cfg(all(not(feature = "leapfrog"), not(feature = "conjunct_order")))]
         {
             Self::query_multi(btm, pat_expr, effect)
         }
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+
+    fn append_renormalized_query_var(
+        out: &mut Vec<u8>,
+        var_map: &mut [u8; 64],
+        next_var: &mut u8,
+        original_var: usize,
+    ) -> Option<()> {
+        if original_var >= var_map.len() {
+            return None;
+        }
+        match var_map[original_var] {
+            u8::MAX => {
+                if (*next_var as usize) >= var_map.len() {
+                    return None;
+                }
+                var_map[original_var] = *next_var;
+                *next_var += 1;
+                out.push(item_byte(Tag::NewVar));
+            }
+            planned_var => out.push(item_byte(Tag::VarRef(planned_var))),
+        }
+        Some(())
+    }
+
+    fn append_renormalized_query_factor(
+        source: ExprEnv,
+        var_map: &mut [u8; 64],
+        next_var: &mut u8,
+        out: &mut Vec<u8>,
+    ) -> Option<()> {
+        let mut ez = ExprZipper::new(source.subsexpr());
+        let mut local_newvars = source.v;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    Self::append_renormalized_query_var(out, var_map, next_var, local_newvars as usize)?;
+                    local_newvars = local_newvars.checked_add(1)?;
+                }
+                Tag::VarRef(original_var) => {
+                    Self::append_renormalized_query_var(out, var_map, next_var, original_var as usize)?;
+                }
+                Tag::SymbolSize(size) => unsafe {
+                    out.extend_from_slice(
+                        slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), size as usize + 1)
+                            .as_ref()
+                            .unwrap(),
+                    );
+                },
+                Tag::Arity(_) => unsafe { out.push(*ez.root.ptr.byte_add(ez.loc)) },
+            }
+            if !ez.next() {
+                break;
+            }
+        }
+        Some(())
+    }
+
+    /// Re-encodes `sources` in `plan` order with variables renumbered to that order: the first
+    /// factor's variables become the leading NewVars and later factors' shared variables become
+    /// VarRefs back to them, so a reordered descent keeps coreference intact. Returns the backing
+    /// buffers plus the re-based `ExprEnv`s, or `None` when the renumbering does not re-encode
+    /// (64 or more distinct variables).
+    fn renormalize_query_factors(
+        sources: &[ExprEnv],
+        plan: &[usize],
+    ) -> Option<(Vec<Vec<u8>>, Vec<ExprEnv>)> {
+        let mut var_map = [u8::MAX; 64];
+        let mut next_var = 0;
+        let mut buffers = Vec::with_capacity(plan.len());
+        let mut bases = Vec::with_capacity(plan.len());
+
+        for &source_idx in plan {
+            let source = sources[source_idx];
+            let capacity = unsafe { source.subsexpr().span().as_ref().unwrap().len() };
+            let mut buffer = Vec::with_capacity(capacity);
+            let base = next_var;
+            Self::append_renormalized_query_factor(source, &mut var_map, &mut next_var, &mut buffer)?;
+            buffers.push(buffer);
+            bases.push(base);
+        }
+
+        let planned_sources = buffers
+            .iter()
+            .zip(bases)
+            .map(|(buffer, v)| ExprEnv::with_intro(0, v, Expr { ptr: buffer.as_ptr().cast_mut() }))
+            .collect();
+        Some((buffers, planned_sources))
+    }
+
+    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, effect: F) -> usize {
+        Self::query_multi_ordered::<false, F>(btm, pat_expr, effect)
+    }
+
+    /// [`query_multi`](Self::query_multi) for a caller whose consumer does not depend on the
+    /// ORDER answers arrive in, which lets the descent choose its factor order
+    /// (`conjunct_order`) instead of taking the conjunction's written one.
+    ///
+    /// Every consumer that folds over the match set in arrival order must keep using
+    /// `query_multi`, because a reorder changes which answer is first and how many arrive
+    /// before a short-circuit.
+    pub fn query_multi_planned<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, effect: F) -> usize {
+        Self::query_multi_ordered::<true, F>(btm, pat_expr, effect)
+    }
+
+    /// `MAY_REORDER` is a const parameter rather than an argument so the two callers
+    /// monomorphise: in the `false` instantiation, and in every build without the
+    /// `conjunct_order` feature, the planner call is dead code and this compiles to exactly
+    /// what `query_multi` compiled to before there was a planner.
+    fn query_multi_ordered<const MAY_REORDER: bool, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
@@ -1130,7 +1242,27 @@ impl Space {
         }));
         prz.reserve_buffers(1 << 32, 32);
 
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        // The descent order IS the nested-loop join order, so a body whose conjuncts are
+        // written star-first pays the star. Re-encode into the planned order: descend
+        // RENORMALIZED factors, unify against the ORIGINAL sources, so bindings stay keyed in
+        // the pattern's own namespace.
+        let sources = &pat_args[1..];
+        #[cfg(all(not(feature = "no_search"), feature = "conjunct_order"))]
+        if MAY_REORDER {
+            if let Some(plan) = crate::conjunct_order::plan_cached(btm, pat_expr) {
+                if let Some((buffers, planned)) = Self::renormalize_query_factors(sources, &plan) {
+                    let unify: Vec<ExprEnv> = plan.iter().map(|&i| sources[i]).collect();
+                    let touched = Self::query_multi_raw_with_unification_sources(
+                        &mut prz, &planned, &unify, effect,
+                    );
+                    // `planned` holds raw pointers into `buffers`, so the buffers have to
+                    // outlive the descent; the explicit drop is where that is stated.
+                    drop(buffers);
+                    return touched;
+                }
+            }
+        }
+        Self::query_multi_raw(&mut prz, sources, effect)
     }
 
     #[inline]
@@ -1322,10 +1454,37 @@ impl Space {
         candidate
     }
 
+    /// The identity-sourced form: descend and unify against the same factor list.
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
-        let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(prz: &mut PZ, sources: &[ExprEnv], effect: F) -> usize {
+        Self::query_multi_raw_sourced::<true, PZ, F>(prz, sources, sources, effect)
+    }
+
+    /// Descend `search_sources` while unifying and keying the bindings against `unify_sources`.
+    ///
+    /// The two differ when a caller descends the factors in an order other than the one the
+    /// pattern was written in: the descent has to see the re-encoded factors, whose variables
+    /// were renumbered to that order, while the bindings must come out keyed in the pattern's
+    /// own namespace so the template instantiation downstream is unchanged.
+    #[cfg(not(feature="no_search"))]
+    #[inline(always)]
+    pub fn query_multi_raw_with_unification_sources<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(prz: &mut PZ, search_sources: &[ExprEnv], unify_sources: &[ExprEnv], effect: F) -> usize {
+        Self::query_multi_raw_sourced::<false, PZ, F>(prz, search_sources, unify_sources, effect)
+    }
+
+    /// `SAME_SOURCES` says the two lists are the one list, and it is a const parameter rather
+    /// than a runtime test because that is the only way to give the fact to the OPTIMISER.
+    /// Passing the same slice twice leaves two pointers the compiler cannot prove alias, so it
+    /// keeps both live across the descent's hot closure; `bench transitive`, which is nothing
+    /// but this loop, paid +0.033% instructions:u for that on a build where neither the planner
+    /// nor `leapfrog` is even compiled. In the `true` instantiation the branch below folds and
+    /// the second pointer stops existing, which is what puts the default build back to parity.
+    #[cfg(not(feature="no_search"))]
+    #[inline(always)]
+    fn query_multi_raw_sourced<const SAME_SOURCES: bool, PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, search_sources: &[ExprEnv], unify_sources: &[ExprEnv], mut effect: F) -> usize {
+        let unify_sources = if SAME_SOURCES { search_sources } else { unify_sources };
+        let mut stack = search_sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
         // One pair buffer for the whole walk: `unify` drains it, so a `clear` per candidate
@@ -1371,9 +1530,9 @@ impl Space {
                         // SAFETY: `span_stamp` returns the walked extent, or 0.
                         unsafe { root.stamp_ground(span_stamp(0, 0, fact_end(0))) };
                         pairs.clear();
-                        pairs.push((sources[0], root));
+                        pairs.push((unify_sources[0], root));
 
-                        for (&pa, &other_i) in sources[1..].iter().zip(loc.path_indices()) {
+                        for (&pa, &other_i) in unify_sources[1..].iter().zip(loc.path_indices()) {
                             let mut fe = ExprEnv::new((pairs.len() + 1) as u8,
                                                   Expr { ptr: unsafe { opath.as_ptr().cast_mut().add(other_i) } });
                             // SAFETY: as above -- the extent comes from the scan of these bytes.

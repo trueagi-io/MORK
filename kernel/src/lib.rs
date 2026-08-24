@@ -9,6 +9,9 @@ pub mod space;
 /// also what routes conjunctive bodies to it; without the feature the engine is unchanged.
 #[cfg(feature = "leapfrog")]
 pub mod leapfrog;
+/// Generalized hypertree decomposition, and factorized aggregation over one.
+#[cfg(feature = "factorized_aggregate")]
+pub mod ghd;
 mod sources;
 mod sinks;
 mod pure;

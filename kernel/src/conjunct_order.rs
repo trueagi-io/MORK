@@ -23,11 +23,11 @@
 //! decision in the engine. Over `bench clique`'s three bodies, written order is
 //! [measured: 384,237,856,849 instructions:u, min of 3; command=`mork bench clique`;
 //! fixture=200 nodes / 3600 edges;
-//! commit=WORKTREE] and the order this module picks is
+//! commit=5775c55e782ca3f8b9690e361300ed52563db4c0] and the order this module picks is
 //! [measured: 2,865,023,996 instructions:u, min of 3; command=`mork bench clique --features
 //! conjunct_order`, built in the same source directory as the baseline since the manifest path
 //! is baked in and its length moves layout; fixture=200 nodes / 3600 edges;
-//! commit=WORKTREE], the same 7,824 / 2,320 / 102 cliques either way.
+//! commit=5775c55e782ca3f8b9690e361300ed52563db4c0], the same 7,824 / 2,320 / 102 cliques either way.
 //!
 //! The gain is not a constant, and `mork bench clique_scaling` is there to show it: it holds a
 //! random graph's average degree at 10, grows it, and prints `transitions` per size, so run it
@@ -39,7 +39,7 @@
 //! against |E|^0.74, least squares over the five sizes; command=`mork bench clique_scaling`,
 //! run once without the feature and once with it; fixture=degree-10 random graphs, |E| = 300,
 //! 800, 1300, 2100, 3400;
-//! commit=WORKTREE]. The answer counts agree at every point.
+//! commit=5775c55e782ca3f8b9690e361300ed52563db4c0]. The answer counts agree at every point.
 //!
 //! The cost model is System R's (Selinger et al., SIGMOD 1979), and it needs BOTH halves of
 //! that paper's model, not just the famous one.

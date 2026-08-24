@@ -1,0 +1,9 @@
+; Weighted selection as a grounded sink (build with --features weighted_select).
+; Each (w <item> <weight>) fact contributes an item and a signed weight; the
+; (wselect <offset> <item> <weight>) sink accumulates them and writes the item at
+; cumulative-weight <offset> (deterministic inverse-CDF) back as (wselected <item>).
+; Here a:3 b:5 c:2 give blocks a[0,3) b[3,8) c[8,10); offset 6 selects b.
+(w a 3)
+(w b 5)
+(w c 2)
+(exec 0 (, (w $item $weight)) (O (wselect 6 $item $weight)))

@@ -217,7 +217,7 @@ pub enum ExtractFailure {
 }
 use ExtractFailure::*;
 
-use crate::Tag::{Arity, NewVar};
+use crate::Tag::{Arity, Fuzzy, NewVar};
 
 #[macro_export]
 macro_rules! traverse {
@@ -1866,15 +1866,15 @@ impl ExprEnv {
         String::from_utf8(v).unwrap()
     }
 
+    pub fn tag(&self)       -> Tag     { byte_item(unsafe {*(&self).subsexpr().ptr}) }    
+
     pub fn var_opt(&self) -> Option<ExprVar> {
-        unsafe {
-            match byte_item(*self.base.ptr.add(self.offset as usize)) {
-                Tag::NewVar => { Some((self.n, self.v)) }
-                Tag::VarRef(i) => { Some((self.n, i)) }
-                Tag::SymbolSize(_) => { None }
-                Tag::Arity(_) => { None }
-                Tag::Fuzzy(_) => {None}
-            }
+        match self.tag() {
+            Tag::NewVar => { Some((self.n, self.v)) }
+            Tag::VarRef(i) => { Some((self.n, i)) }
+            Tag::SymbolSize(_) => { None }
+            Tag::Arity(_) => { None }
+            Tag::Fuzzy(_) => {None}
         }
     }
 
@@ -3513,3 +3513,229 @@ fn match2_fuzzy<
         _ => { Err((i1, i2)) }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+#[cfg(test)] 
+#[test]
+fn fuzzy_anti_unify() {
+    let f = |f_| item_byte(Tag::Fuzzy(f_));
+    let a = |a_| item_byte(Arity(a_));
+    let r = |r_| item_byte(Tag::VarRef(r_));
+    let s = |s_| item_byte(Tag::SymbolSize(s_));
+    let n = item_byte(Tag::NewVar);
+
+    fn print_line(){
+        for _ in 0..80 {
+            print!("=");
+        }
+        println!();
+    }
+
+    if true {
+        print_line();
+
+        let mut left  = [a(2), f(0b_0011), f(0b_0000)];
+        let mut right = [a(2), f(0b_1100), f(0b_1000)];
+
+        let mut out = [0_u8;200];
+        let mut ez = ExprZipper::new(Expr{ptr : out.as_mut_ptr()});
+
+        Expr{ptr : left.as_mut_ptr()}.anti_unify_fuzzy(Expr{ptr : right.as_mut_ptr()}, &mut ez);
+
+        let len = ez.loc;
+        println!("left  : {:?}", Expr{ptr:left.as_mut_ptr()});
+        println!("right : {:?}", Expr{ptr:right.as_mut_ptr()});
+        println!("out   : {:?}", ez.root);
+
+        println!();
+    }
+    if true {
+        print_line();
+
+        let mut left  = [a(10), f(0b_0000), f(0b_0001), f(0b_0010), f(0b_0011)         , f(0b_0100), f(0b_0101), f(0b_0110), f(0b_0111), f(0b_1000), f(0b_1001)     ];
+        let mut right = [a(10), n         , f(0b_1000), r(0)      , s(3),b'a',b'b',b'c', f(0b_1000), n         , f(0b_1000), r(0)      , r(1)      , s(2),b'h',b'i' ];
+
+        let mut out = [0_u8;200];
+        let mut ez = ExprZipper::new(Expr{ptr : out.as_mut_ptr()});
+
+        Expr{ptr : left.as_mut_ptr()}.anti_unify_fuzzy(Expr{ptr : right.as_mut_ptr()}, &mut ez);
+
+        let len = ez.loc;
+        println!("left  : {:?}", Expr{ptr:left.as_mut_ptr()});
+        println!("right : {:?}", Expr{ptr:right.as_mut_ptr()});
+        println!("out   : {:?}", ez.root);
+
+        println!();
+    }
+    if true {
+        print_line();
+
+        let mut left  = [a(10), n, f(0b_0001), r(0), f(0b_0011)         , f(0b_0100), n, f(0b_0110), r(0), f(0b_1000), s(2),b'h',b'i' ];
+        let mut right = [a(10), n, f(0b_1000), r(0), s(3),b'a',b'b',b'c', f(0b_1000), n, f(0b_1000), r(0), r(1)      , s(2),b'h',b'i' ];
+
+        let mut out = [0_u8;200];
+        let mut ez = ExprZipper::new(Expr{ptr : out.as_mut_ptr()});
+
+        Expr{ptr : left.as_mut_ptr()}.anti_unify_fuzzy(Expr{ptr : right.as_mut_ptr()}, &mut ez);
+
+        let len = ez.loc;
+        println!("left  : {:?}", Expr{ptr:left.as_mut_ptr()});
+        println!("right : {:?}", Expr{ptr:right.as_mut_ptr()});
+        println!("out   : {:?}", ez.root);
+
+        println!();
+    }
+}
+
+
+struct AuStateFuzzy {
+    next_var: u8,
+    // key: (left_subterm, right_subterm)  value: output var id
+    memo: HashMap<(RelExprEnv, RelExprEnv), AuVar>,
+}
+
+
+impl Expr {
+    /// First-order syntactic anti-unification (least general generalization).
+    ///
+    /// Writes the generalization into `o`.
+    /// Returns substitutions mapping each introduced generalization var to the original subterms.
+    pub fn anti_unify_fuzzy(self, other: Expr, o: &mut ExprZipper) -> Result<(), AntiUnificationFailure> {
+        let mut st = AuStateFuzzy {
+            next_var : 0,
+            memo     : HashMap::new(),
+        };
+        anti_unify_apply_fuzzy(ExprEnv::new(0, self), ExprEnv::new(1, other), o, &mut st)?;
+
+        Ok(())
+    }
+}
+
+#[inline(always)]
+fn decomposable_fuzzy(lhs: &ExprEnv, rhs: &ExprEnv) -> bool {
+    // // Variables are treated as atoms (disagreement => generalized var),
+    // // and repetition is handled by memoizing disagreement pairs.
+
+    unsafe {
+        match [lhs, rhs].map(ExprEnv::tag) {
+            [Tag::NewVar | Tag::VarRef(_), _] |
+            [_, Tag::NewVar | Tag::VarRef(_)]                 => false,
+            [Tag::SymbolSize(len_1), Tag::SymbolSize(len_2)]  => len_1 == len_2 
+                                                              && (|[left, right] : [&[u8];2]| left == right)([lhs,rhs].map(|e| core::ptr::slice_from_raw_parts(e.base.ptr, len_1 as usize).as_ref_unchecked() )),
+            [Tag::Arity(a1), Tag::Arity(a2)]                  => a1 == a2,
+            [Tag::Fuzzy(_), Tag::Fuzzy(_)]                    => true,
+            _                                                 => false,
+        }
+    }
+}
+
+
+#[inline(never)]
+fn anti_unify_apply_fuzzy(
+    lhs0             : ExprEnv,
+    rhs0             : ExprEnv,
+    oz               : &mut ExprZipper,
+    st               : &mut AuStateFuzzy,
+) -> Result<(), AntiUnificationFailure> {
+    let mut stack: Vec<(ExprEnv, ExprEnv)> = vec![(lhs0, rhs0)];
+
+    // Scratch buffers to avoid repeated allocations while decomposing arity nodes.
+    let mut largs: Vec<ExprEnv> = Vec::new();
+    let mut rargs: Vec<ExprEnv> = Vec::new();
+
+    while let Some((lhs, rhs)) = stack.pop() {
+        if PRINT_DEBUG { println!("{} AU {}", lhs.show(), rhs.show()); }
+        if stack.len() > AU_MAX_DEPTH {
+            return Err(AntiUnificationFailure::MaxDepth(stack.len()));
+        }
+
+        if decomposable_fuzzy(&lhs, &rhs) {
+            if PRINT_DEBUG { println!("decompose/agree"); }
+            unsafe {
+                match lhs.tag() {
+                    Tag::Arity(k) => {
+                        oz.write_arity(k);
+                        oz.loc += 1;
+
+                        largs.clear();
+                        rargs.clear();
+                        lhs.args(&mut largs);
+                        rhs.args(&mut rargs);
+                        debug_assert_eq!(largs.len(), rargs.len());
+
+                        // Preorder: push children reversed so they pop in-order.
+                        for i in (0..largs.len()).rev() {
+                            stack.push((largs[i], rargs[i]));
+                        }
+                    }
+
+                    Tag::SymbolSize(_) => {
+                        // ExprZipper::item() returns Err(&[u8]) for symbol bytes in your codepath.
+                        let mut ez = ExprZipper::new(lhs.subsexpr());
+                        match ez.item() {
+                            Err(sym) => {
+                                oz.write_symbol(sym);
+                                oz.loc += 1 + sym.len();
+                            }
+                            Ok(_) => unreachable!("expected symbol bytes at a SymbolSize root"),
+                        }
+                    }
+
+                    Tag::NewVar | Tag::VarRef(_) => unreachable!("decomposable() excludes vars"),
+                    Tag::Fuzzy(lb) => {
+                        let l = lhs.subsexpr().ptr;
+                        let r = rhs.subsexpr().ptr;
+                        let Tag::Fuzzy(rb) = rhs.tag() else {unreachable!()};
+
+                        oz.write_fuzz(lb | rb);
+                        oz.loc += 1;
+                    },
+                }
+            }
+        } else {
+            if PRINT_DEBUG { println!("var/disagree"); }
+            // Disagreement case: introduce/reuse a generalization variable.
+            let key = (RelExprEnv::from(lhs), RelExprEnv::from(rhs));
+
+            if let Some(&v) = st.memo.get(&key) {
+                if PRINT_DEBUG { println!("did find re-use ({}, {}) = {}", lhs.show(), rhs.show(), v); }
+                oz.write_var_ref(v);
+                oz.loc += 1;
+            } else {
+                if st.next_var >= 64 {
+                    return Err(AntiUnificationFailure::TooManyVars);
+                }
+                let v: AuVar = st.next_var as AuVar;
+                st.next_var += 1;
+
+                if PRINT_DEBUG {
+                    println!("did not find re-use, inserting ({}, {}) = {}", lhs.show(), rhs.show(), v);
+                    // println!("did not find re-use {:?} {:?}", lhs, rhs);
+                    // println!("did not find re-use in {:?}", st.memo);
+                }
+
+                st.memo.insert(key, v);
+
+                oz.write_new_var();
+                oz.loc += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+

@@ -1,3 +1,7 @@
+;; @desc family/ancestor derivation with a self-respawning generation loop
+;; @expect-steps 6
+;; @expect
+
 ;  Tom x Pam            Moh
 ;   |   \               / \
 ;  Liz  Bob     Xey x Yip Zac x Whu

@@ -1,0 +1,15 @@
+;; @desc relational cross join over tuples (main.rs: cross_join_tuple)
+;; @expect
+
+(concat (, $x $y $z) (, $a $b) (, $x $y $z $a $b))
+
+(WIKI (, Name EmpId DeptName) (, Harry 3415 Finance))
+(WIKI (, Name EmpId DeptName) (, Cheat 3489 Marketing))
+
+(OTHER (, X Y) (, 1 2))
+(OTHER (, X Y) (, 10 20))
+
+(exec 0
+    (, (WIKI $h0 $v0) (OTHER $h1 $v1) (concat $h0 $h1 $h) (concat $v0 $v1 $v) )
+    (, (CROSSJOIN $h $v) )
+)

@@ -1,0 +1,29 @@
+;; @desc destructure an arbitrary expression and put it back together
+;; @desc (main.rs: pattern_mining)
+;; @expect
+
+(destruct () 0 A0)
+
+(destruct ($x) 0 A1)
+(destruct ($x) 1 $x)
+
+(destruct ($x $y) 0 A2)
+(destruct ($x $y) 1 $x)
+(destruct ($x $y) 2 $y)
+
+(destruct ($x $y $z) 0 A3)
+(destruct ($x $y $z) 1 $x)
+(destruct ($x $y $z) 2 $y)
+(destruct ($x $y $z) 3 $z)
+
+(arg
+   (test (foo 1))
+)
+
+(exec 0 (, (arg $a) (destruct $a $i $c))
+        (, (peel $c $i) ))
+
+(exec 1 (, (peel A0 0)) (, (res ()) ))
+(exec 1 (, (peel A1 0) (peel $a1 1)) (, (res ($a1)) ))
+(exec 1 (, (peel A2 0) (peel $a1 1) (peel $a2 2)) (, (res ($a1 $a2)) ))
+(exec 1 (, (peel A3 0) (peel $a1 1) (peel $a2 2) (peel $a3 3)) (, (res ($a1 $a2 $a3)) ))

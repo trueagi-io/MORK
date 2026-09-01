@@ -1,0 +1,8 @@
+;; @desc two conjuncts sharing both variables (main.rs: two_positive_equal_crossed)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something $x $y) (Else $x $y)) (, MATCHED))
+
+(Something (foo bar) (bar baz))
+(Else (foo bar) (bar baz))

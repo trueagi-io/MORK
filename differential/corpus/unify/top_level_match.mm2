@@ -1,0 +1,7 @@
+;; @desc a bare top-level VARIABLE conjunct (main.rs: top_level_match)
+;; @expect-steps 1
+;; @expect
+
+($f)
+f
+(exec 0 (, ($f) $f) (, OK))

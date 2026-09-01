@@ -1,0 +1,13 @@
+(tree-example (branch (branch (branch (leaf 111) (leaf 112)) (leaf 12)) (branch (leaf 21) (leaf 22))))
+(space-example (value (cons (cons (cons nil L) L) L) 111))
+(space-example (value (cons (cons (cons nil L) L) R) 112))
+(space-example (value (cons (cons nil L) R) 12))
+(space-example (value (cons (cons nil R) L) 21))
+(space-example (value (cons (cons nil R) R) 22))
+(tree-to-space (ctx (branch $a $b) $c) (ctx $a (cons $c L)))
+(tree-to-space (ctx (branch $a $b) $c) (ctx $b (cons $c R)))
+(lookup (ctx (leaf $a) $b) (, T) (, (space-example (value $b $a))))
+(lookup (ctx (branch $a $b) $c) (, (lookup (ctx $a (cons $c L)) $d $e)) (, (exec (0 (ctx $a (cons $c L))) $d $e)))
+(lookup (ctx (branch $a $b) $c) (, (lookup (ctx $b (cons $c R)) $d $e)) (, (exec (0 (ctx $b (cons $c R))) $d $e)))
+(ana (tree-example $a) (ctx $a nil) $b (tree-to-space $b $c) $c (ctx (leaf $d) $e) (space-example (value $e $d)))
+T

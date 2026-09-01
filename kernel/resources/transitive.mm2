@@ -1,3 +1,7 @@
+;; @desc transitive closure of a two-triangle graph, run to fixpoint
+;; @expect-steps 3
+;; @expect
+
 (triangle brussels paris london)
 (triangle brussels st-petersburg istanbul)
 

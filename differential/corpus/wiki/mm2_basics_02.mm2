@@ -1,0 +1,7 @@
+;; @desc   MORK.wiki "Minimal-MeTTa-2-(MM2)", code block 2
+
+(exec (4 app1)
+  (, (ev (: $name (-> $a $b)))
+     (ev $a))
+  (, (ev $b)
+     (applied ($name $a) to get $b)))

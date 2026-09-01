@@ -1,0 +1,10 @@
+;; @desc a query compound ($f) meets a data variable, and $f is also joined
+;; @desc against a second conjunct (main.rs: func_type_unification)
+;; @expect-steps 1
+;; @expect
+
+(a (: $a A))
+(b (: f (-> A)))
+(exec 0 (, (a (: ($f) A))
+           (b (: $f (-> A))))
+        (, (c OK)))

@@ -1,0 +1,6 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P1", code block 7
+
+(exec (1 Z) (, (exec (1 $l) $ps $ts)
+               (generation $l $c $p) (child $p $gp) )
+            (, (exec (1 (S $l)) $ps $ts)
+               (generation (S $l) $c $gp) ))

@@ -1,0 +1,9 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 9
+
+(exec 0 (, (startpoint $p))
+        (, (path $p $p 0)))
+
+(exec 1 (, (path $p $q $d) (street $q $r $e) 
+           (arith ($d + $e = $f))   ; <--- add arith label
+           (maxlength $max) (arith ($f <= $max)))   ; <--- add arith label
+        (, (path $q $r $f)))

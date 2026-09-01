@@ -1,0 +1,10 @@
+;; @desc shared query variables joined against wildcard-carrying data
+;; @desc (main.rs: two_bipolar_equal_crossed) -- the join must keep the
+;; @desc variable branches in both factors or (MATCHED (foo bar) (foo bar)) is lost.
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something $x $y) (Else $x $y)) (, (MATCHED $x $y)))
+
+(Something (foo $x) (foo $x))
+(Else ($x bar) ($x bar))

@@ -1,0 +1,21 @@
+;; @desc relational cross join over a column store (main.rs: cross_join_dict)
+;; @expect
+
+(WIKI header (Name EmpId DeptName))
+(WIKI data 0 Name Harry)
+(WIKI data 0 EmpId 3415)
+(WIKI data 0 DeptName Finance)
+(WIKI data 1 Name Chear)
+(WIKI data 1 EmpId 3489)
+(WIKI data 1 DeptName Marketing)
+
+(OTHER header (X Y))
+(OTHER data 0 X 1)
+(OTHER data 0 Y 2)
+(OTHER data 1 X 10)
+(OTHER data 1 Y 20)
+
+(exec 0
+    (, (WIKI data $i0 $f0 $v0) (OTHER data $i1 $f1 $v1) )
+    (, (CROSSJOIN data ($i0 $i1) $f0 $v0) (CROSSJOIN data ($i0 $i1) $f1 $v1) )
+)

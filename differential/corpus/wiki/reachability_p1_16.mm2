@@ -1,0 +1,17 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P1", code block 16
+
+(poi "@I1534@")
+
+(exec (0 0) (, (parent $p $c))
+            (, (child $c $p)))
+
+(exec (0 1) (, (poi $c) (child $c $p))
+            (, (generation Z $c $p)))
+            
+(exec (1 Z) (, (exec (1 $l) $ps $ts)
+               (generation $l $c $p) (child $p $gp) )
+            (, (exec (1 (S $l)) $ps $ts)
+               (generation (S $l) $c $gp) ))
+
+(exec (2 0) (, (generation $_ $p $a))
+            (, (ancestor $p $a)))

@@ -1,0 +1,8 @@
+;; @desc two conjuncts, each with its own repeated variable (main.rs: two_positive_equal)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something $x $x) (Else $y $y)) (, MATCHED))
+
+(Something (foo bar) (foo bar))
+(Else (bar baz) (bar baz))

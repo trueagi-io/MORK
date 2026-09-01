@@ -1,0 +1,6 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Hexlife", code block 4
+
+(exec 0 (, (alive $co) (neighbors $co $nco) (alive $nco))
+        (O (count (anbs $co $k) $k $nco)))
+(exec 0 (, (alive $co) (neighbors $co $nco) (neighbors $nco $nnco) (alive $nnco))
+        (O (count (anbs $nco $k) $k $nnco)))

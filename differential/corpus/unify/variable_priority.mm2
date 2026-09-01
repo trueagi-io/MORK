@@ -1,0 +1,7 @@
+;; @desc the exec priority is itself a variable (main.rs: variable_priority)
+;; @expect
+
+(A Z)
+(exec $p
+      (, (A $x))
+      (, (B $x)))

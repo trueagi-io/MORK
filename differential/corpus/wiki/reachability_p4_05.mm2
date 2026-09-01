@@ -1,0 +1,14 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P4", code block 5
+
+(exec (1 Z) (, (exec (1 $l) $ps $ts)              ; match on itself
+               (reachable $l $s $t) (t $t $u $a)
+               (step $i (path $s $t $pa) $a2) 
+               (visited $v))
+            (O (+ (exec (1 (S $l)) $ps $ts))      ; adds itself back to the space
+               (+ (reachable (S $l) $s $u))
+               (- (reachable (S $l) $s $v))
+               (+ (step $i (path $s $u ($a $pa)) $a2))
+               (- (step $i (path $s $v ($a $pa)) $a2))
+               (+ (step (S $l) (path $s $u ($a $pa)) $a))
+               (- (step (S $l) (path $s $v ($a $pa)) $a))
+               (+ (visited $u))))

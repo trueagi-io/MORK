@@ -51,6 +51,9 @@ pub mod tensor;
 #[cfg(feature = "dense")]
 pub mod dense;
 
+#[cfg(feature = "dense")]
+pub mod ewise;
+
 #[cfg(feature = "csr")]
 pub mod csr;
 

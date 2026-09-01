@@ -1,0 +1,29 @@
+;; @desc a nine-conjunct lens query over a family graph (main.rs: lens_aunt)
+;; @steps 1
+;; @expect-steps 1
+;; @expect
+
+(exec QA (, (aunt $xc $x $y $yt) (data $xc) (exec QA $P $T)
+            (parent $p $x) (parent $gp $p) (parent $gp $y)
+            (female $y) ($p != $y))
+         (, (data $yt) (exec QA $P $T)))
+
+(data (poi Jim)) (data (poi Ann))
+(aunt (poi $x) $x $y (result ($y aunt of $x)))
+
+(parent Tom Bob)
+(parent Pam Bob)
+(parent Tom Liz)
+(parent Bob Ann)
+(parent Bob Pat)
+(parent Pat Jim)
+(female Pam) (female Liz) (female Pat) (female Ann)
+(male Tom) (male Bob) (male Jim)
+
+(Pam == Pam) (Pam != Liz) (Pam != Pat) (Pam != Ann) (Pam != Tom) (Pam != Bob) (Pam != Jim)
+(Liz != Pam) (Liz == Liz) (Liz != Pat) (Liz != Ann) (Liz != Tom) (Liz != Bob) (Liz != Jim)
+(Pat != Pam) (Pat != Liz) (Pat == Pat) (Pat != Ann) (Pat != Tom) (Pat != Bob) (Pat != Jim)
+(Ann != Pam) (Ann != Liz) (Ann != Pat) (Ann == Ann) (Ann != Tom) (Ann != Bob) (Ann != Jim)
+(Tom != Pam) (Tom != Liz) (Tom != Pat) (Tom != Ann) (Tom == Tom) (Tom != Bob) (Tom != Jim)
+(Bob != Pam) (Bob != Liz) (Bob != Pat) (Bob != Ann) (Bob != Tom) (Bob == Bob) (Bob != Jim)
+(Jim != Pam) (Jim != Liz) (Jim != Pat) (Jim != Ann) (Jim != Tom) (Jim != Bob) (Jim == Jim)

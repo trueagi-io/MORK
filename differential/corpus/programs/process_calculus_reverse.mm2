@@ -1,0 +1,24 @@
+;; @desc a pi-calculus-ish reduction driven by an MM2 inference-control statement
+;; @desc (main.rs: process_calculus_reverse).  The Rust test only checks
+;; @desc (petri (! result $)) == (S (S (S (S Z)))); here the whole space is pinned.
+;; @expect
+
+(exec (IC 0 1  (S (S (S (S (S (S (S (S (S (S Z)))))))))) )
+               (, (exec (IC $x $y (S $c)) $sp $st)
+                  ((exec $x) $p $t))
+               (, (exec (IC $y $x $c) $sp $st)
+                  (exec (R $x) $p $t)))
+
+((exec 0)
+      (, (petri (! $channel $payload))
+         (petri (? $channel $payload $body)) )
+      (, (petri $body)))
+((exec 1)
+      (, (petri (| $lprocess $rprocess)))
+      (, (petri $lprocess)
+         (petri $rprocess)))
+
+(petri (? (add $ret) ((S $x) $y) (| (! (add (PN $x $y)) ($x $y))
+                                    (? (PN $x $y) $z (! $ret (S $z)))  )  ))
+(petri (? (add $ret) (Z $y) (! $ret $y)))
+(petri (! (add result) ( (S (S Z)) (S (S Z)) )))

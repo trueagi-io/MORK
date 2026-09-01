@@ -1,0 +1,24 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Hexlife", code block 7
+
+(alive ((S (S Z)) (S Z) (S Z)))
+(alive ((S Z) (S (S Z)) (S Z)))
+(alive ((S Z) (S (S (S Z))) Z))
+
+(neighbors ($q $r (S $s)) ($q (S $r) $s))
+(neighbors ($q $r (S $s)) ((S $q) $r $s))
+(neighbors ($q (S $r) $s) ((S $q) $r $s))
+(neighbors ($q (S $r) $s) ($q $r (S $s)))
+(neighbors ((S $q) $r $s) ($q (S $r) $s))
+(neighbors ((S $q) $r $s) ($q $r (S $s)))
+
+(cell lives 2)
+
+(exec 0 (, (alive $co) (neighbors $co $nco) (alive $nco))
+        (O (count (anbs $co $k) $k $nco)))
+(exec 0 (, (alive $co) (neighbors $co $nco) (neighbors $nco $nnco) (alive $nnco))
+        (O (count (anbs $nco $k) $k $nnco)))
+
+(exec 1 (, (alive $co)) (O (- (alive $co))))
+(exec 2 (, (anbs $co $c) (cell lives $c)) (O (+ (alive $co))))
+
+(exec 3 (, (anbs $co $c)) (O (- (anbs $co $c))))

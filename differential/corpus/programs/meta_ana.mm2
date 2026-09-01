@@ -1,0 +1,28 @@
+;; @desc an anamorphism hosted in a fixed-point rewriting system (main.rs: meta_ana).
+;; @desc The Rust test wraps the seed with add_sexpr(.., "[2] tree-example _1");
+;; @desc that wrapping is written out literally below.
+;; @expect
+
+(tree-example (branch (branch (leaf 11) (leaf 12)) (leaf 2)))
+
+; (coalg $pattern $templates)
+; initial step: lift seed into folding context
+(tree-to-space lift-tree (coalg (tree $tree) (, (ctx $tree nil) )))
+; bulk steps: explode expression in context into two expressions in context (location in the trie)
+(tree-to-space explode-tree (coalg (ctx (branch $left $right) $path) (, (ctx $left  (cons $path L))
+                                                                        (ctx $right (cons $path R)) )))
+; final steps: drop the resulting expressions in context into output results
+(tree-to-space drop-tree (coalg (ctx (leaf $value) $path) (, (value $path $value) )))
+
+; prepare the seed in the space
+(exec (0 0) (, (tree-example $e)) (, (tmp (tree $e))))
+
+; host the coalgebra in a fixed point rewriting system
+(has changed)
+(rulify $name (, $p0) (, $t0 ) (, (tmp $p0)) (O (- (tmp $p0)) (+ (tmp $t0)) (+ (has changed)) ))
+(rulify $name (, $p0) (, $t0 $t1 ) (, (tmp $p0)) (O (- (tmp $p0)) (+ (tmp $t0)) (+ (tmp $t1)) (+ (has changed)) ))
+(exec (1 system) (, (tree-to-space $name (coalg $p $ts)) (rulify $name (, $p) $ts $ruleps $rulets) (has changed) (exec (1 system) $sps $sts) )
+                 (O (+ (exec (0 $name) $ruleps $rulets)) (- (has changed)) (+ (exec (1 system) $sps $sts)) ))
+
+; extract the result from the space
+(exec (2 0) (, (tmp $value)) (O (+ (space-example $value)) (- (tmp $value)) ))

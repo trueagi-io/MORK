@@ -1,0 +1,5 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 12
+
+(exec (3 0)
+ (, (path $n H $q $d))
+ (, (reachable H $q)))

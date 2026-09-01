@@ -1,0 +1,6 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P4", code block 3
+
+(exec (0 1) (, (init $s) (t $s $t $a))
+            (, (reachable Z $s $t)
+                (step Z (path $s $t $a) $a)   ; <--- use action as path id
+                (visited $s) (visited $t)))

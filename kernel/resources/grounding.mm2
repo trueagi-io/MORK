@@ -1,3 +1,7 @@
+;; @desc grounded arithmetic and string conversion through pure sinks
+;; @expect-steps 7
+;; @expect
+
 (inputfile 0 (arg 1390) (arg 0.9257))
 (inputfile 1 (arg 3490) (arg 1.2329))
 

@@ -1,0 +1,77 @@
+;; @desc   MORK.wiki "MM2-Example:-Testing-Your-Code", code block 0
+;; @expect
+
+; =============================================
+;                 Family tree data
+; =============================================
+(parent Fred Tom)
+(parent Tom Bob) (parent Xey Uru)
+(parent Pam Bob) (parent Yip Uru)
+(parent Tom Liz) (parent Zac Vic)
+(parent Bob Ann) (parent Whu Vic)
+(parent Bob Pat) (parent Uru Ohm)
+(parent Pat Jim) (parent Vic Ohm)
+
+
+; =============================================
+;                 Ancestor program
+; =============================================
+(exec (0 0) (, (parent $p $c))
+            (, (child $c $p)))
+
+(exec (0 1) (, (poi $c) (child $c $p))
+            (, (generation Z $c $p)))
+
+(exec (1 Z) (, (exec (1 $l) $ps $ts)
+               (generation $l $c $p) (child $p $gp) )
+            (, (exec (1 (S $l)) $ps $ts)
+               (generation (S $l) $c $gp) ))
+
+(exec (2 0) (, (generation $_ $p $a))
+            (, (ancestor $p $a)))
+
+; =============================================
+;                 Test cases
+; =============================================
+(poi Ann)               ; test input
+(solution Ann Bob)      ; desired outputs
+(solution Ann Pam)
+(solution Ann Tom)
+(solution Ann Fred)
+
+(poi Vic)
+(solution Vic Whu)
+(solution Vic Pam)      ; this is a mistake to showcase the example
+; (solution Vic Zac)    ; this is a mistake to showcase the example
+
+; =============================================
+;                 Test code
+; =============================================
+
+; take the symmetric difference beween results and desired solutions
+; MISTAKE = (ancestor U solution) \ (ancestor /\ solution)
+(exec (3 0)
+	(, (poi $p1) (ancestor $p1 $s1))
+	(O (+ (MISTAKE $p1 $s1)))
+)
+
+(exec (3 0)
+	(, (poi $p1) (solution $p1 $s1))
+	(O (+ (MISTAKE $p1 $s1)))
+)
+
+(exec (3 1)
+	(, (poi $p) (ancestor $p $s) (solution $p $s))
+	(O (- (MISTAKE $p $s)))
+)
+
+; Optionally, we can also label when we got the correct answer
+(exec (3 2)
+    (, (poi $p))
+    (, (CORRECT $p))
+)
+
+(exec (3 3)
+     (, (MISTAKE $p $s))
+     (O (- (CORRECT $p)))
+)

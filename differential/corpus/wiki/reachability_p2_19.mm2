@@ -1,0 +1,52 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P2", code block 19
+
+(wanted "minecraft:torch")
+(maxiter (S (S (Z))))           ;<--- reduced by one
+
+(inventory "minecraft:stick")
+(inventory "minecraft:oak_log")
+(inventory "minecraft:charcoal")
+(inventory "minecraft:oak_planks")
+
+(tags "#minecraft:planks" "minecraft:oak_planks")
+(tags "#minecraft:planks" "minecraft:birch_planks")
+(tags "#minecraft:planks" "minecraft:jungle_planks")
+(tags "#minecraft:planks" "minecraft:spruce_planks")
+(tags "#minecraft:oak_logs" "minecraft:oak_log")
+(tags "#minecraft:oak_logs" "minecraft:oak_wood")
+(tags "#minecraft:oak_logs" "minecraft:stripped_oak_log")
+(tags "#minecraft:oak_logs" "minecraft:stripped_oak_wood")
+
+(recipe stick (key ("#" "#minecraft:planks")))
+(recipe stick (key ("#" "minecraft:oak_planks")))
+(recipe stick (key ("#" "minecraft:birch_planks")))
+(recipe stick (key ("#" "minecraft:jungle_planks")))
+(recipe stick (key ("#" "minecraft:spruce_planks")))
+(recipe stick (result (id "minecraft:stick")))
+(recipe stick (numIngredients 2))
+(recipe stick (pattern 0 "#"))
+(recipe stick (pattern 1 "#"))
+
+(recipe torch (key ("#" "minecraft:stick")))
+(recipe torch (key ("X" "minecraft:coal")))
+(recipe torch (key ("X" "minecraft:charcoal")))
+(recipe torch (result (id "minecraft:torch")))
+(recipe torch (numIngredients 2))
+(recipe torch (pattern 0 "X"))
+(recipe torch (pattern 1 "#"))
+
+(recipe oak_planks (result (id "minecraft:oak_planks")))
+(recipe oak_planks (numIngredients 1))
+(recipe oak_planks (ingredients 0 "minecraft:oak_log"))
+(recipe oak_planks (ingredients 0 "minecraft:oak_wood"))
+(recipe oak_planks (ingredients 0 "#minecraft:oak_logs"))
+(recipe oak_planks (ingredients 0 "minecraft:stripped_oak_log"))
+(recipe oak_planks (ingredients 0 "minecraft:stripped_oak_wood"))
+
+; all the exec statements are added to the space again
+(exec (1 0) (, (recipe $a (numIngredients 1)) (recipe $a (ingredients 0 $b)) (inventory $b) (recipe $a (result (id $c)))) (, (inventory $c)))
+(exec (1 1) (, (recipe $a (numIngredients 2)) (recipe $a (ingredients 0 $b)) (recipe $a (ingredients 1 $c)) (inventory $b) (inventory $c) (recipe $a (result (id $d)))) (, (inventory $d)))
+(exec (1 2) (, (recipe $a (numIngredients 1)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (inventory $d)) (, (inventory $b)))
+(exec (1 3) (, (recipe $a (numIngredients 2)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (recipe $a (pattern 1 $e)) (recipe $a (key ($e $f))) (inventory $d) (inventory $f)) (, (inventory $b)))
+(exec (2 1) (, (wanted $a) (inventory $a)) (O (- (wanted $a))))
+(exec (2 2) (, (exec (2 2) $a $b) (wanted $c) (maxiter (S $d))) (O (+ (exec (1 0) (, (recipe $e (numIngredients 1)) (recipe $e (ingredients 0 $f)) (inventory $f) (recipe $e (result (id $g)))) (, (inventory $g)))) (+ (exec (1 1) (, (recipe $e (numIngredients 2)) (recipe $e (ingredients 0 $f)) (recipe $e (ingredients 1 $h)) (inventory $f) (inventory $h) (recipe $e (result (id $g)))) (, (inventory $g)))) (+ (exec (1 2) (, (recipe $e (numIngredients 1)) (recipe $e (result (id $g))) (recipe $e (pattern 0 $i)) (recipe $e (key ($i $f))) (inventory $f)) (, (inventory $g)))) (+ (exec (1 3) (, (recipe $j (numIngredients 2)) (recipe $j (result (id $x10))) (recipe $j (pattern 0 $x11)) (recipe $j (key ($x11 $x12))) (recipe $j (pattern 1 $x13)) (recipe $j (key ($x13 $x14))) (inventory $x12) (inventory $x14)) (, (inventory $x10)))) (+ (exec (2 1) (, (wanted $x15) (inventory $x15)) (O (- (wanted $x15))))) (+ (exec (2 2) $a $b)) (+ (maxiter $d)) (- (maxiter (S $d)))))

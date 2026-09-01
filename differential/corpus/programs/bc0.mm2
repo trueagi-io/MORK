@@ -1,0 +1,33 @@
+;; @desc backward chaining with a zealous scheduler (main.rs: bc0)
+;; @steps 50
+;; @expect-steps 50
+;; @expect
+
+((step base)
+  (, (goal (: $proof $conclusion)) (kb (: $proof $conclusion)))
+  (, (ev (: $proof $conclusion) ) ))
+
+((step abs)
+  (, (goal (: $proof $conclusion)))
+  (, (goal (: $lhs (-> $synth $conclusion)) ) ))
+
+((step rev)
+  (, (ev (: $lhs (-> $a $r)))  (goal (: $k $r)) )
+  (, (goal (: $rhs $a) ) ))
+
+((step app)
+  (, (ev (: $lhs (-> $a $r)))  (ev (: $rhs $a))  )
+  (, (ev (: (@ $lhs $rhs) $r) ) ))
+
+(exec zealous
+        (, ((step $x) $p0 $t0)
+           (exec zealous $p1 $t1) )
+        (, (exec $x $p0 $t0)
+           (exec zealous $p1 $t1) ))
+
+(kb (: a A))
+(kb (: ab (R A B)))
+(kb (: bc (R B C)))
+(kb (: MP (-> (R $p $q) (-> $p $q))))
+
+(goal (: $proof C))

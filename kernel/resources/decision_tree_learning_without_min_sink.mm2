@@ -1,3 +1,7 @@
+;; @desc decision tree learning, min computed in MM2 instead of by a sink
+;; @expect-steps 71
+;; @expect
+
 ; Remy Clarke, Decision Tree Learning experiment.
 
 ;  make gini_impurity constructor

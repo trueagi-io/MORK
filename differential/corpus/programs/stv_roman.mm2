@@ -1,0 +1,15 @@
+;; @desc simple-truth-value modus ponens over a tiny arithmetic table
+;; @desc (main.rs: stv_roman)
+;; @steps 1
+;; @expect-steps 1
+;; @expect
+
+(exec (step (0 cpu))
+  (, (goal (CPU $f $arg $res)) (fun ($f $arg ($b1 $b2) $res)) (fun $b1) (fun $b2))
+  (, (ev $res)))
+
+(fun (mp-formula ((STV $sa $ca) (STV $sb $cb)) ((mul ($sa $sb) $so) (mul ($ca $cb) $co)) (STV $so $co)))
+
+(goal (CPU mp-formula ((STV 0.5 0.5) (STV 0.5 0.5)) $res))
+
+(fun (mul (0.5 0.5) 0.2))

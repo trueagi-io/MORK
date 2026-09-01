@@ -1,0 +1,11 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 10
+
+(exec 0 (, (startpoint $p))
+        (, (path $p $p 0)))
+
+(exec 1 (, (exec 1 $ps $ts)     ; <--- matches on itself
+           (path $p $q $d) (street $q $r $e) 
+           (arith ($d + $e = $f)) 
+           (maxlength $max) (arith ($f <= $max)))
+        (, (path $q $r $f))
+           (exec 1 $ps $ts))    ; <--- adds itself back to the space

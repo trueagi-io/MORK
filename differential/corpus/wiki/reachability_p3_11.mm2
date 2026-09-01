@@ -1,0 +1,11 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 11
+
+(exec (0 0) (, (startpoint $p))
+            (, (path 0 $p $p 0)))
+
+(exec (1 0) (, (exec (1 $n) $ps $ts) (arith ($n + 1 = $m))  ; <--- add iteration index $n
+               (path $n $p $q $d) (street $q $r $e)         ; <--- add iteration index $n
+               (arith ($d + $e = $f)) 
+               (maxlength $max) (arith ($f <= $max)))
+            (, (path $m $q $r $f))                          ; <--- add next iteration index $m
+               (exec (1 $m) $ps $ts))                       ; <--- add next iteration index $m

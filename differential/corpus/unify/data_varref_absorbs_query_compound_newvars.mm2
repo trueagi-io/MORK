@@ -1,0 +1,12 @@
+;; @desc a data variable reference swallows a query compound that introduces a
+;; @desc fresh variable used by another conjunct
+;; @desc (main.rs: data_varref_absorbs_query_compound_newvars)
+;; @expect-steps 1
+;; @expect
+
+(→ $a $a)
+(h y)
+(exec 0
+      (, (→ $w (g $x))
+         (h $x))
+      (, OK))

@@ -1,0 +1,7 @@
+;; @desc query variable against ground data (main.rs: positive)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something $unspecific)) (, MATCHED))
+
+(Something (very specific))

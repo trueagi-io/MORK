@@ -1,0 +1,23 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P4", code block 6
+
+(init 1)
+
+(exec (0 1) (, (init $s) (t $s $t $a))
+            (, (reachable Z $s $t)
+         (step Z (path $s $t ($a)) $a)
+         (visited $s) (visited $t)))
+
+
+
+(exec (1 Z) (, (exec (1 $l) $ps $ts)
+               (reachable $l $s $t) (t $t $u $a)
+               (step $i (path $s $t $pa) $a2) 
+               (visited $v))
+            (O (+ (exec (1 (S $l)) $ps $ts))
+               (+ (reachable (S $l) $s $u))
+               (- (reachable (S $l) $s $v))
+               (+ (step $i (path $s $u ($a $pa)) $a2))
+               (- (step $i (path $s $v ($a $pa)) $a2))
+               (+ (step (S $l) (path $s $u ($a $pa)) $a))
+               (- (step (S $l) (path $s $v ($a $pa)) $a))
+               (+ (visited $u))))

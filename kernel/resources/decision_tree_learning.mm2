@@ -1,3 +1,5 @@
+;; @skip needs the `min` sink, which the default build does not provide
+
 ; Remy Clarke, Decision Tree Learning experiment.
 
 ;  make gini_impurity constructor

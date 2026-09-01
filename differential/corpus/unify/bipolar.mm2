@@ -1,0 +1,7 @@
+;; @desc variables on both sides, interleaved (main.rs: bipolar)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something (very $unspecific))) (, MATCHED))
+
+(Something ($unspecific specific))

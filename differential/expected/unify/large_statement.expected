@@ -1,0 +1,3 @@
+(exec (1 0) (, (recipe $a (numIngredients 1)) (recipe $a (ingredients 0 $b)) (inventory $b) (recipe $a (result (id $c)))) (, (inventory $c)))
+(exec (1 1) (, (recipe $a (numIngredients 1)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (inventory $d)) (, (inventory $b)))
+(exec (1 2) (, (recipe $a (numIngredients 2)) (recipe $a (result (id $b))) (recipe $a (pattern 0 $c)) (recipe $a (key ($c $d))) (recipe $a (pattern 1 $e)) (recipe $a (key ($e $f))) (inventory $d) (inventory $f)) (, (inventory $b)))

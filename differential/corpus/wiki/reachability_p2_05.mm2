@@ -1,0 +1,7 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P2", code block 5
+
+(exec (0 1) (, (recipe $product (ingredients $i $x)))
+	    (O (count (recipe $product (numIngredients $k)) $k $i)))
+
+(exec (0 1) (, (recipe $product (pattern $i $p)))
+	    (O (count (recipe $product (numIngredients $k)) $k $i)))

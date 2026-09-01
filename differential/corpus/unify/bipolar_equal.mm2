@@ -1,0 +1,7 @@
+;; @desc repeated variables on both sides (main.rs: bipolar_equal)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something ($x Y $x Y))) (, MATCHED))
+
+(Something (X $y X $y))

@@ -1,0 +1,5 @@
+;; @desc   A comment ending an expression's content, with the bracket on the next line
+;; @desc   MORK.wiki "MM2 tutorial: Reachability P2" block 12 is written this way and cannot load
+;; @skip   parser bug: this shape gives UnexpectedRightBracket ("; c" then ")" on its own line)
+(foo (bar baz)  ; a comment here, and the closing bracket on the next line
+)

@@ -1,0 +1,6 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P2", code block 4
+
+(exec (0 0) (, (recipe $r (pattern $i $p)) 
+               (recipe $r (key ($p $_ $ingr))))
+	    (O (+ (recipe $r (key ($p $ingr)))) 
+	       (- (recipe $r (key ($p $_ $ingr))))))

@@ -1,0 +1,9 @@
+;; @desc a data co-reference must NOT be over-eagerly matched (main.rs: issue_43);
+;; @desc the correct answer is that `T` is never derived.
+;; @expect-steps 1
+;; @expect
+
+(data (0 1))
+(l $a $a)
+(((. $a) $a) lp 0 1)
+(exec 2 (, (((. (lp $a)) $a) lp 0 1)) (, T))

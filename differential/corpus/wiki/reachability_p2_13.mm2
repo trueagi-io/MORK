@@ -1,0 +1,102 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P2", code block 13
+
+(wanted "minecraft:torch")
+(maxiter (S(S(S(S(Z))))))
+
+(inventory "minecraft:oak_log")
+(inventory "minecraft:charcoal")
+
+(tags "#minecraft:planks" "minecraft:oak_planks")
+(tags "#minecraft:planks" "minecraft:spruce_planks")
+(tags "#minecraft:planks" "minecraft:birch_planks")
+(tags "#minecraft:planks" "minecraft:jungle_planks")
+
+(tags "#minecraft:oak_logs" "minecraft:oak_log")
+(tags "#minecraft:oak_logs" "minecraft:oak_wood")
+(tags "#minecraft:oak_logs" "minecraft:stripped_oak_log")
+(tags "#minecraft:oak_logs" "minecraft:stripped_oak_wood")
+
+(recipe oak_planks (ingredients 0 "#minecraft:oak_logs"))
+(recipe oak_planks (result (id "minecraft:oak_planks")))
+
+(recipe torch (key ("#" "minecraft:stick")))
+(recipe torch (key ("X" 0 "minecraft:coal")))
+(recipe torch (key ("X" 1 "minecraft:charcoal")))
+(recipe torch (pattern 0 "X"))
+(recipe torch (pattern 1 "#"))
+(recipe torch (result (id "minecraft:torch")))
+
+(recipe stick (key ("#" "#minecraft:planks")))
+(recipe stick (pattern 0 "#"))
+(recipe stick (pattern 1 "#"))
+(recipe stick (result (id "minecraft:stick")))
+
+(exec (0 0) (, (recipe $r (pattern $i $p)) (recipe $r (key ($p $_ $ingr)))) ;<--- the first execution step that will be ran
+    (O (+ (recipe $r (key ($p $ingr)))) (- (recipe $r (key ($p $_ $ingr))))))
+
+(exec (0 1) (, (recipe $product (ingredients $i $x)))
+    (O (count (recipe $product (numIngredients $k)) $k $i)))
+
+(exec (0 1) (, (recipe $product (pattern $i $p)))
+    (O (count (recipe $product (numIngredients $k)) $k $i)))
+
+(exec (0 3) (, (recipe $product (key ($p $group))) (tags $group $ingr))
+        (, (recipe $product (key ($p $ingr)))))
+
+(exec (0 3) (, (recipe $p (ingredients $i $group)) (tags $group $ingr))
+        (, (recipe $p (ingredients $i $ingr))))
+
+(exec (2 2) (, (exec (2 2) $ps $ts) (wanted $goal) (maxiter (S $i)))
+	(O 
+		
+		(+
+		(exec (1 0)
+		  (, (recipe $product (numIngredients 1))
+		     (recipe $product (ingredients 0 $xitem))
+		     (inventory $xitem)
+		     (recipe $product (result (id $productname))))
+		  (, (inventory $productname))
+		)
+		)
+		
+		(+ (exec (1 1)
+		  (, (recipe $product (numIngredients 2))
+		     (recipe $product (ingredients 0 $xitem))
+		     (recipe $product (ingredients 1 $yitem))
+		     (inventory $xitem)
+		     (inventory $yitem)
+		     (recipe $product (result (id $productname))))
+		  (, (inventory $productname))
+		)
+		)
+		(+ (exec (1 2)
+		   (, (recipe $product (numIngredients 1))
+		      (recipe $product (result (id $productname)))
+		      (recipe $product (pattern 0 $x))
+		      (recipe $product (key ($x $xitem)))
+		      (inventory $xitem))
+		   (, (inventory $productname))
+		   )
+		)
+		(+
+		(exec (1 3)
+		  (, (recipe $product3 (numIngredients 2))
+		     (recipe $product3 (result (id $productname3)))
+		     (recipe $product3 (pattern 0 $x3)) (recipe $product3 (key ($x3 $xitem3)))
+		     (recipe $product3 (pattern 1 $y3)) (recipe $product3 (key ($y3 $yitem3)))
+		     (inventory $xitem3)
+		     (inventory $yitem3))
+		  (, (inventory $productname3))
+		))
+		
+		(+
+		(exec (2 1) (, (wanted $subgoal) (inventory $subgoal))
+			    (O (- (wanted $subgoal))))
+		)
+		(+ (exec (2 2) $ps $ts))
+		(+ (maxiter $i))
+		
+		(- (maxiter (S $i)))
+		
+	)
+)

@@ -1,0 +1,12 @@
+;; @desc a bare top-level SYMBOL conjunct, i.e. an existence check on an atom
+;; @desc (main.rs: top_level_symbol).  The leapfrog join declines this shape --
+;; @desc a symbol has no columns to seek -- so the body stays on the
+;; @desc ProductZipper; the two engines must still agree.
+;; @expect-steps 2
+;; @expect
+
+(e a b)
+(e b c)
+present
+(exec 0 (, (e $x $y) present) (, (yes $x $y)))
+(exec 1 (, (e $x $y) absent) (, (no $x $y)))

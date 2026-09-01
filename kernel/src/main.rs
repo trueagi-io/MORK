@@ -264,7 +264,7 @@ fn process_calculus_bench(steps: usize, x: usize, y: usize) {
 
     println!("{x}+{y} ({} steps) in {} µs result: {res}", steps, elapsed.as_micros());
     assert_eq!(res, format!("{}\n", peano(x+y)));
-    println!("unifications {}, instructions {}", unsafe { unifications }, unsafe { transitions });
+    println!("unifications {}, instructions {}, max unify {}", unsafe { unifications }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
     // (badbad)
     // 200+200 (1000 steps) in 42716559 µs
 }
@@ -311,7 +311,7 @@ fn process_calculus_source_sink_bench(steps: usize, x: usize, y: usize) {
 
     println!("{x}+{y} ({} steps) in {} µs result: {res}", steps, elapsed.as_micros());
     assert_eq!(res, format!("{}\n", peano(x+y)));
-    println!("unifications {}, instructions {}", unsafe { unifications }, unsafe { transitions });
+    println!("unifications {}, instructions {}, max unify {}", unsafe { unifications }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
     // (badbad)
     // 200+200 (1000 steps) in 42716559 µs
 }
@@ -849,6 +849,38 @@ f
     assert!(res.contains("OK\n"));
 }
 
+/// A bare top-level SYMBOL conjunct is an existence check on that atom: the body fires when the
+/// symbol is present and never when it is absent. It is also a shape the leapfrog join declines
+/// (no arity, so no columns to seek), so this covers the fallback under either feature setting.
+fn top_level_symbol() {
+    let mut s = Space::new();
+
+    const SPACE_EXPRS: &str = r#"
+(e a b)
+(e b c)
+present
+(exec 0 (, (e $x $y) present) (, (yes $x $y)))
+(exec 1 (, (e $x $y) absent) (, (no $x $y)))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_all_sexpr(&mut v).unwrap();
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    // `present` is in the space, so the conjunct holds and every edge fires.
+    assert!(res.contains("(yes a b)\n"), "present symbol must let the body fire");
+    assert!(res.contains("(yes b c)\n"), "present symbol must let the body fire");
+    // `absent` is not, so that body never fires despite its other conjunct matching.
+    assert!(!res.contains("(no "), "absent symbol must block the body");
+}
+
 fn bench_lr() {
     let mut s = Space::new();
 
@@ -1094,6 +1126,43 @@ fn sink_pure_dynamic_subformula() {
     assert_eq!(res, "(result 0 128.7723)\n(result 1 430.3821000000001)\n");
 }
 
+fn sink_pure_quoted_variable_identity() {
+    let mut s = Space::new();
+
+    // #135. Quotation is not the culprit: `item_source` yields `VarRef(r)` verbatim and
+    // `ExprSink::write` writes the byte back verbatim. What went wrong is that eval
+    // preserves the numbering of the expression it was handed, so a variable introduced
+    // inside the call comes back carrying its index in the sink expression's namespace
+    // rather than one relative to the result. Splicing that as if it were standalone
+    // left the repeated reference pointing past the end, and a dangling reference prints
+    // as a fresh variable -- `($a $a)` came out as `($a $b)`.
+    //
+    // exec 0 is the issue's own program. exec 1 puts two more binders ahead of the call,
+    // so a base wrong by any amount other than exactly two reads differently from exec 0.
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,) (O (pure $r $r (tuple R (' ($a $a))))))
+(exec 1 (,) (O (pure (K $x $y $r) $r (tuple T (' ($a $a))))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // The execs are consumed, so the whole space is the emitted set. Sorted, because the
+    // space is a set and dump order is not what this pins down.
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
+    let dumped = String::from_utf8_lossy_owned(v);
+    let mut lines: Vec<&str> = dumped.lines().filter(|l| !l.is_empty()).collect();
+    lines.sort();
+    let res = lines.join("\n");
+
+    println!("result: {res}");
+    assert_eq!(res, "(K $a $b (T ($c $c)))\n(R ($a $a))");
+}
+
 fn sink_pure_quote_collapse_symbol() {
     let mut s = Space::new();
 
@@ -1144,6 +1213,39 @@ fn sink_pure_explode_collapse_ident() {
 
     println!("result: {res}");
     assert_eq!(res, "(result foo)\n");
+}
+
+fn sink_pure_ignored_guard_addressing() {
+    let mut s = Space::new();
+
+    // The NewVar ("ignored") arm moved to the absolute template path without cutting it
+    // down to the write root, so it emitted root ++ template. That is only visible when
+    // the root is shorter than the template, i.e. when the template holds a variable:
+    // exec 0 came out as `(tag (tag $a))`. With a constant template the surplus bytes
+    // trail a complete expression and dump reads the leading part, so exec 1 looked
+    // right either way and is here to keep that case pinned once the root moves.
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,) (O (pure (tag $q) $ (reverse_symbol 123))))
+(exec 1 (,) (O (pure ignored $ (reverse_symbol 123))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    // The execs are consumed, so the whole space is the emitted set. Sorted, because the
+    // space is a set and dump order is not what this pins down.
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
+    let dumped = String::from_utf8_lossy_owned(v);
+    let mut lines: Vec<&str> = dumped.lines().filter(|l| !l.is_empty()).collect();
+    lines.sort();
+    let res = lines.join("\n");
+
+    println!("result: {res}");
+    assert_eq!(res, "(tag $a)\nignored");
 }
 
 fn sink_bass64url_ident() {
@@ -5507,7 +5609,7 @@ fn mm1_forward() {
         ticks += 1;
         let t1 = Instant::now();
         let n = s.metta_calculus(1);
-        println!("executing step {} took {} ms (unifications {}, writes {}, transitions {})", ticks, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+        println!("executing step {} took {} ms (unifications {}, writes {}, transitions {}, max unify {})", ticks, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
 
         if n == 1 { continue } // comment out if you want the analysis at every step
 
@@ -5673,7 +5775,7 @@ fn mm2_bc() {
         ticks += 1;
         let t1 = Instant::now();
         let n = s.metta_calculus(1);
-        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {})", ticks, n, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {}, max unify {})", ticks, n, t1.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
 
         // if n == 1 { continue } // comment out if you want the analysis at every step
 
@@ -5839,9 +5941,9 @@ fn mm2_bc_v3() {
         ticks += multiplier;
         let t1 = Instant::now();
         let n = s.metta_calculus(multiplier);
-        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {})",
+        println!("executing step {} ({}) took {} ms (unifications {}, writes {}, transitions {}, max unify {})",
                  ticks, n, t1.elapsed().as_millis(),
-                 unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+                 unsafe { unifications }, unsafe { writes }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
 
         println!("space size {}", s.btm.val_count());
 
@@ -5858,6 +5960,84 @@ fn mm2_bc_v3() {
         //     break;
         // }
     }
+}
+
+fn bfc(size: usize) {
+    let mut s = Space::new();
+
+    let mut map = std::collections::HashMap::new();
+    // id
+    map.insert(5, ("(target 5 (C (> p p) $x))", "(C (> p p) (1 (1 (2 (M (M I))))))\n"));
+    // pm2.43
+    map.insert(7, ("(target 7 (C (> (> p (> p s)) (> p s)) $x))", "(C (> (> p (> p s)) (> p s)) (1 (2 (M (2 (2 (M (M I))))))))\n"));
+    // jarr
+    map.insert(13, ("(target 13 (C (> (> (> p s) x) (> s x)) $x))", "(C (> (> (> p s) x) (> s x)) (1 (1 (1 (M (2 (2 (M (M (1 (M (2 (M (M I))))))))))))))\n(C (> (> (> p s) x) (> s x)) (1 (1 (M (1 (2 (1 (M (2 (M (M (2 (M (M I))))))))))))))\n"));
+    // imim1
+    map.insert(15, ("(target 15 (C (> (> p s) (> (> s x) (> p x))) $x))", "(C (> (> p s) (> (> s x) (> p x))) (1 (1 (2 (1 (M (2 (M (M (2 (M (1 (M (2 (M (M I))))))))))))))))\n"));
+    // loowoz
+    map.insert(19, ("(target 19 (C (> (> (> p s) (> p x)) (> (> s p) (> s x))) $x))", "(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (1 (M (2 (2 (M (M (1 (M (2 (M (M (2 (1 (M (2 (M (M I))))))))))))))))))))\n(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (1 (M (2 (2 (M (M (2 (1 (M (2 (M (M (1 (M (2 (M (M I))))))))))))))))))))\n(C (> (> (> p s) (> p x)) (> (> s p) (> s x))) (1 (1 (M (1 (2 (1 (M (2 (M (M (2 (M (M (2 (1 (M (2 (M (M I))))))))))))))))))))\n"));
+    // pm2.83
+    map.insert(25, ("(target 25 (C (> (> p (> s x)) (> (> p (> x o)) (> p (> s o)))) $x))", ""));
+    // loolin
+    map.insert(26, ("(target 26 (C (> (> (> p s) (> s p)) (> s p)) $x))", ""));
+
+    const SPACE_EXPRS: &str = r#"
+(axiom 1 (> $p (> $s $p)))
+(axiom 2 (> (> $p (> $s $x)) (> (> $p $s) (> $p $x))))
+(axiom 3 (> (> (! $p) (! $s)) (> $s $p)))
+
+(exec (2)
+    (, (target $mps (C $ta $tx)))
+    (, ;; Initialize source
+       (sol $mps 1 (C (/ $ta $ta) I))
+       ;; Expand one step forward
+       (exec (2 $mps)
+            (, ;; Capture inner self
+               (exec (2 $ski) $ptrn $tplt)
+               (dec $ski $ki)
+               (gte $ki $hi)
+               (inc $hi $shi)
+               ;; for each axiom
+               (axiom $r $constraint))
+            (, ;; Apply current proof to axiom-$r
+               (exec (3 $r)
+                    (, (sol $ski $shi (C (/ $constraint $b) $f)))
+                    (, (sol $ki $hi (C $b ($r $f)))))
+               ;; Apply mp^i to current proof
+               (exec (4 0)
+                    (, (sol $ski $hi (C (/ $b $c) $f)))
+                    (, (sol $ki $shi (C (/ (> $a $b) (/ $a $c)) (M $f)))))
+               ;; Respawn inner self
+               (exec (7 0)
+                    (, (lte 0 0))
+                    (, (exec (2 $ki) $ptrn $tplt)))))))
+
+;; Unify solution with target when maximum depth and hypotheses count
+;; falls to Z.
+(exec (3 0 0)
+      (, (target $mps (C $ta $tx))
+         (sol 0 0 (C $ta $tx)))
+      (, (final 0 0 (C $ta $tx))))
+"#;
+
+    s.add_all_sexpr(map[&size].0.as_bytes()).unwrap();
+    let mut OFF1: String = (1..=26).map(|x| format!("(dec {} {})\n(inc {} {})\n", x, x-1, x-1, x)).collect();
+    s.add_all_sexpr(OFF1.as_bytes()).unwrap();
+    let mut CMP: String = (0..=26).flat_map(|x| (0..=x).map(move |y| format!("(lte {y} {x})\n(gte {x} {y})\n"))).collect();
+    s.add_all_sexpr(CMP.as_bytes()).unwrap();
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    // s.dump_all_sexpr(&mut v);
+    s.dump_sexpr(expr!(s, "[4] final 0 0 $"), expr!(s, "_1"), &mut v);
+    let res = String::from_utf8_lossy_owned(v);
+
+    println!("result: {res}");
+    assert_eq!(res, map[&size].1);
 }
 
 fn parse_csv() {
@@ -6053,8 +6233,8 @@ fn main() {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut selected: BTreeSet<&str> = only.split(",").collect();
-            if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states"]) }
-            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states"]) }
+            if selected.remove("default") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "tile_puzzle_states", "bfc"]) }
+            if selected.remove("all") { selected.extend(&["taxi_lts", "counter_machine", "transitive", "clique", "finite_domain", "process_calculus", "exponential", "exponential_fringe", "odd_even_sort", "logic_query", "tile_puzzle_states", "bfc"]) }
             if selected.remove("sinks") { selected.extend(&["taxi_lts", "odd_even_sort"]) }
 
             for b in selected {
@@ -6073,6 +6253,7 @@ fn main() {
                     "flybase" => { bench_flybase() }
                     "tile_puzzle_states" => { bench_tile_puzzle_states() }
                     "taxi_lts" => { bench_taxi_lts() }
+                    "bfc" => { bfc(19) }
                     s => { println!("bench not known: {s}") }
                 }
             }
@@ -6097,6 +6278,7 @@ fn main() {
             coref_absorbed_by_data_varref();
             data_varref_absorbs_query_compound_newvars();
             top_level_match();
+            top_level_symbol();
             large_statement();
 
             process_calculus_reverse();
@@ -6109,6 +6291,7 @@ fn main() {
 
             ctl();
             bc0();
+            bfc(7);
 
             source_space_two_bipolar_equal_crossed();
             source_act_two_bipolar_equal_crossed();
@@ -6142,8 +6325,10 @@ fn main() {
             sink_pure_basic_nested();
             sink_pure_roman_validation();
             sink_pure_dynamic_subformula();
+            sink_pure_quoted_variable_identity();
             sink_pure_quote_collapse_symbol();
             sink_pure_explode_collapse_ident();
+            sink_pure_ignored_guard_addressing();
             sink_bass64url_ident();
             sink_hex_ident();
             sink_hash_expr();
@@ -6172,17 +6357,25 @@ fn main() {
             s.timing = timing;
             let f = std::fs::File::open(&input_path).unwrap();
             let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-            s.add_all_sexpr(&*mmapf);
+            // Surface a load failure instead of running on a silently truncated space: the loader
+            // stops at the offending atom, so ignoring this reported success over a partial space.
+            if let Err(e) = s.add_all_sexpr(&*mmapf) {
+                eprintln!("{input_path}: {e}");
+                std::process::exit(1);
+            }
             for repeated_aux_path in &aux_path {
                 let f = std::fs::File::open(&repeated_aux_path).unwrap();
                 let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                s.add_all_sexpr(&*mmapf);
+                if let Err(e) = s.add_all_sexpr(&*mmapf) {
+                    eprintln!("{repeated_aux_path}: {e}");
+                    std::process::exit(1);
+                }
             }
             if instrumentation > 0 { println!("loaded {} expressions", s.btm.val_count()) }
             println!("loaded {:?} ; running and outputing to {:?}", &input_path, output_path.as_ref().or(Some(&"stdout".to_string())));
             let t0 = Instant::now();
             let mut performed = s.metta_calculus(steps);
-            println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions });
+            println!("executing {performed} steps took {} ms (unifications {}, writes {}, transitions {}, max unify {})", t0.elapsed().as_millis(), unsafe { unifications }, unsafe { writes }, unsafe { transitions }, unsafe { mork_expr::max_unify_iterations });
             if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
             if output_path.is_none() {
                 let mut v = vec![];

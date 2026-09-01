@@ -1,0 +1,7 @@
+;; @desc a data-side co-reference absorbs a query compound
+;; @desc (main.rs: coref_absorbed_by_data_varref)
+;; @expect-steps 1
+;; @expect
+
+(f $a $a y)
+(exec 0 (, (f $w (g $x) $x)) (, (RESULT $w $x)))

@@ -1,0 +1,35 @@
+;; @desc the same anamorphism expressed with exec-generating exec (main.rs: meta_ana_exec)
+;; @expect
+
+(tree-example (branch (branch (branch (leaf 111) (leaf 112)) (leaf 12)) (branch (leaf 21) (leaf 22))))
+
+T
+
+(tree-to-space (ctx (branch $left $right) $path) (ctx $left  (cons $path L)))
+(tree-to-space (ctx (branch $left $right) $path) (ctx $right (cons $path R)))
+
+(ana (tree-example $tree) (ctx $tree nil) $p (tree-to-space $p $t) $t (ctx (leaf $value) $path) (space-example (value $path $value)))
+
+(exec 0
+  (,
+    (ana $cx $x $p $cpt $t $y $cy)
+    $cx
+    $cpt
+  )
+  (,
+    (exec 0
+      (, (lookup $x $px $tx) )
+      (, (exec (0 $x) $px $tx) )
+    )
+
+    (lookup $p
+      (, (lookup $t $px $tx) )
+      (, (exec (0 $t) $px $tx ) )
+    )
+
+    (lookup $y
+      (, T)
+      (, $cy )
+    )
+  )
+)

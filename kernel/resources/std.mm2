@@ -1,3 +1,7 @@
+;; @desc the std library: pure data, no exec, so this is a load/dump round trip
+;; @expect-steps 0
+;; @expect
+
 (std (get ($x0) 0 $x0))
 (std (get ($x0 $x1) 0 $x0))
 (std (get ($x0 $x1) 1 $x1))

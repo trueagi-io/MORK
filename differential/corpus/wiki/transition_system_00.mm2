@@ -1,0 +1,92 @@
+;; @desc   MORK.wiki "MM2-Example:-Transition-System", code block 0
+;; @steps  200
+;; @expect
+
+; -- translation of the PDDL BlocksWorld domain into MM2 --
+
+(pre (pick-up $x) $s (, (state $s (clear $x)) (state $s (ontable $x)) (state $s (handempty))))
+(pos-eff (pick-up $x) (holding $x))
+(neg-eff (pick-up $x) (ontable $x))
+(neg-eff (pick-up $x) (clear $x))
+(neg-eff (pick-up $x) (handempty))
+
+(pre (put-down $x) $s (, (state $s (holding $x))))
+(pos-eff (put-down $x) (clear $x))
+(pos-eff (put-down $x) (handempty)) 
+(pos-eff (put-down $x) (ontable $x))
+(neg-eff (put-down $x) (holding $x))
+
+(pre (stack $x $y) $s (, (state $s (holding $x)) (state $s (clear $y))))
+(pos-eff (stack $x $y) (clear $x))
+(pos-eff (stack $x $y) (handempty))
+(pos-eff (stack $x $y) ($x on $y))
+(neg-eff (stack $x $y) (holding $x))
+(neg-eff (stack $x $y) (clear $y))
+
+(pre (unstack $x $y) $s (, (state $s ($x on $y)) (state $s (clear $x)) (state $s (handempty))))
+(pos-eff (unstack $x $y) (holding $x))
+(pos-eff (unstack $x $y) (clear $y))
+(neg-eff (unstack $x $y) (clear $x))
+(neg-eff (unstack $x $y) (handempty))
+(neg-eff (unstack $x $y) ($x on $y))
+
+; -- define the initial state to start building the transition system --
+
+(state init (handempty))
+(state init (clear A))
+(state init (clear B))
+(state init (ontable A))
+(state init (ontable B))
+
+
+; -- hash the initial state and mark it as a new state --
+; We hash each state so that if we reach a previously visited state by applying an action,
+; the transition points to the existing state.
+; Building a transition system is an iterative process. 
+; We mark states as "new", so we can detect when the construction has stabilized, and no additional states are being added.
+(exec 0 (, (state init $prop)) (O (hash (hash init $h) $h $prop)))
+(exec 1 (, (hash init $h) (state init $prop)) (, (state $h $prop) (new $h)))
+
+
+; -- the iterative process --
+; Each iteration consists of the following steps: 
+
+; step 0
+; our state space contains: (state $s $prop1) (state $s $prop2)
+; and match precondition (pre $a $s0 (, (state $s0 $prop1) (state $s0 $prop2)))
+; step 1
+; (action $a applies to $s)
+; define a new (temporary) state (temp ($s act $a) $prop)  with the same properties
+; step 2
+; add all positive effects, and remove all negative effects
+; step 3
+; calculate the hash of our new states' properties (hash ($s act $a) $h)
+; step 4
+; add an edge from the old state to the new labeled by the action
+; step 5
+; mark the new hashes as new states
+; step 6
+; remove the "new" marker if the state already existed 
+; step 7
+; create the canonical state identified by the hash, using the properties of the temporary state
+; step 8
+; clean up temporary facts
+; step 9
+; add the next iteration
+
+(exec 9 (, (pre $a $s $q) (exec 9 $ps $ts) (new $s))
+        (, 
+           (exec 0 $q (, (action $a applies to $s)))
+           (exec 1 (, (action $a applies to $s) (state $s $prop)) (, (temp ($s act $a) $prop)))
+           (exec 2 (, (temp ($s act $a) $_) (pos-eff $a $pe)) (, (temp ($s act $a) $pe)))
+           (exec 2 (, (temp ($s act $a) $_) (neg-eff $a $ne)) (O (- (temp ($s act $a) $ne))))
+           (exec 3 (, (temp ($s act $a) $prop)) (O (hash (hash ($s act $a) $h) $h $prop)))
+           (exec 4 (, (hash ($s act $a) $h)) (, (t $s $a $h)))
+           (exec 5 (, (hash ($s act $a) $h)) (, (new $h)))
+           (exec 6 (, (state $t $_)) (O (- (new $t))))
+           (exec 7 (, (hash ($s act $a) $h) (temp ($s act $a) $prop)) (, (state $h $prop)))
+           (exec 8 (, (temp ($s act $a) $prop)) (O (- (temp ($s act $a) $prop))))
+           (exec 8 (, (hash ($s act $a) $h)) (O (- (hash ($s act $a) $h))))
+           (exec 8 (, (action $a applies to $s)) (O (- (action $a applies to $s))))
+           (exec 9 $ps $ts)
+    ))

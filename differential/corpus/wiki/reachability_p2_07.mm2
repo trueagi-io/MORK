@@ -1,0 +1,18 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P2", code block 7
+
+(exec (1 0)
+		  (, (recipe $product (numIngredients 1))
+		     (recipe $product (ingredients 0 $xitem))
+		     (inventory $xitem)
+		     (recipe $product (result (id $productname))))
+		  (, (inventory $productname))
+		)
+(exec (1 1)
+		  (, (recipe $product (numIngredients 2))
+		     (recipe $product (ingredients 0 $xitem))
+		     (recipe $product (ingredients 1 $yitem))
+		     (inventory $xitem)
+		     (inventory $yitem)
+		     (recipe $product (result (id $productname))))
+		  (, (inventory $productname))
+		)

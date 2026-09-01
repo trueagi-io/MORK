@@ -1,0 +1,37 @@
+;; @desc fringe-parallel doubling rewrite (main.rs: exponential_fringe(15)).
+;; @desc The succ table is a 15-line loop in Rust, written out literally here.
+;; @tags slow
+
+((step meet $k)
+ (, (num $k $1) (succ $k $sk) )
+ (, (num $sk (M $1))
+    (num $sk (W $1)) ))
+
+((step join $k)
+ (, (num $k (M $1)) (succ $k $sk)
+    (num $k (W $1)) )
+ (, (num $sk (C $1)) ))
+
+(num 0 Z)
+
+(exec (metta 0)
+      (, (exec (metta $k) $p1 $t1) (succ $k $sk)
+         ((step $x $k) $p0 $t0) )
+      (, (exec (0 $x) $p0 $t0)
+         (exec (metta $sk) $p1 $t1) ))
+
+(succ 0 1)
+(succ 1 2)
+(succ 2 3)
+(succ 3 4)
+(succ 4 5)
+(succ 5 6)
+(succ 6 7)
+(succ 7 8)
+(succ 8 9)
+(succ 9 10)
+(succ 10 11)
+(succ 11 12)
+(succ 12 13)
+(succ 13 14)
+(succ 14 15)

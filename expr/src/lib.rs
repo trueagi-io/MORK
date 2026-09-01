@@ -23,7 +23,7 @@ use smallvec::SmallVec;
 
 pub mod macros;
 
-#[cfg(gxhash)]
+#[cfg(feature = "gxhash")]
 use gxhash;
 
 #[cfg(feature="nightly")]
@@ -32,7 +32,7 @@ mod lib_nightly;
 #[cfg(feature="nightly")]
 pub use lib_nightly::*;
 
-#[cfg(not(gxhash))]
+#[cfg(not(feature = "gxhash"))]
 mod gxhash {
     // fallback
     // pub use xxhash_rust::xxh64::{Xxh64 as GxHasher};
@@ -114,6 +114,11 @@ pub enum Tag {
 // High compression -speed +memory
 // - stay shared as long as possible
 // - bring shared information to the front (bulk)
+
+/// The one-byte encoding of a lone new variable, `$`: the expression every fresh, unconstrained
+/// variable position denotes. Callers that need "an expression that is just a variable" (variable
+///-to-variable binding links, placeholder envs) point at this instead of re-deriving the byte.
+pub const NEW_VAR_EXPR_BYTES: [u8; 1] = [item_byte(Tag::NewVar)];
 
 #[inline(always)]
 pub const fn item_byte(b: Tag) -> u8 {
@@ -305,6 +310,12 @@ impl Expr {
             if let Tag::Arity(n) = byte_item(*self.ptr) { Some(n) }
             else { None }
         }
+    }
+
+    /// View encoded bytes as an expression. The pointer is stored mutably for historical reasons,
+    /// but every read-side consumer treats it as immutable; the caller keeps the bytes alive.
+    pub fn from_slice(bytes: &[u8]) -> Expr {
+        Expr { ptr: bytes.as_ptr().cast_mut() }
     }
 
     pub fn span(self) -> *const [u8] {
@@ -570,12 +581,10 @@ impl Expr {
         }
     }
 
+    /// [`Expr::substitute_one_de_bruijn_at`] for a standalone `substitution`, i.e. one
+    /// whose own variables start at 0.
     pub fn substitute_one_de_bruijn(self, idx: u8, substitution: Expr, oz: &mut ExprZipper) -> *const [u8] {
-        let mut var: u8 = item_byte(Tag::NewVar);
-        let nvs = self.newvars();
-        let mut vars = vec![Expr{ ptr: &mut var }; nvs];
-        vars[idx as usize] = substitution;
-        self.substitute_de_bruijn(&vars[..], oz)
+        self.substitute_one_de_bruijn_at(idx, 0, substitution, oz)
     }
 
     pub fn substitute_de_bruijn_ivc(self, substitutions: &[Expr], oz: &mut ExprZipper, var_count: &mut usize, additions: &mut [u8]) -> *const [u8] {
@@ -603,6 +612,49 @@ impl Expr {
         }
     }
     
+    /// `substitute_one_de_bruijn` for a substitution that is a *subexpression* of some
+    /// larger expression rather than a standalone one, and whose var-refs are therefore
+    /// numbered in that larger expression's namespace.
+    ///
+    /// `base` is the number of variables introduced ahead of the substitution there, so
+    /// its own introductions start at `base`. Refs at or above `base` point at those and
+    /// get rebased onto wherever the substitution lands; refs below `base` point at
+    /// binders of the expression being substituted into and keep their index.
+    ///
+    /// Passing `base == 0` is exactly `substitute_one_de_bruijn`.
+    ///
+    /// Replacing a single variable needs no substitution table: every slot other than
+    /// `idx` is the identity, so the output offsets are closed-form. Introductions before
+    /// `idx` keep their index, `idx` itself becomes the substitution's `m` introductions,
+    /// and everything after shifts by `m - 1`. A ref can only occur below its own
+    /// introduction, so by the time one at or above `idx` is reached `m` is known.
+    pub fn substitute_one_de_bruijn_at(self, idx: u8, base: u8, substitution: Expr, oz: &mut ExprZipper) -> *const [u8] {
+        let mut ez = ExprZipper::new(self);
+        let mut var_count = 0u8;
+        let mut m = 0u8;
+        loop {
+            match ez.tag() {
+                Tag::NewVar => {
+                    if var_count == idx { m = substitution.shift_from(base, idx, oz); }
+                    else { oz.write_new_var(); oz.loc += 1; }
+                    var_count += 1;
+                }
+                Tag::VarRef(r) => {
+                    if r == idx { substitution.bind_from(base, idx, oz); }
+                    else if r < idx { oz.write_var_ref(r); oz.loc += 1; }
+                    else { oz.write_var_ref(r - 1 + m); oz.loc += 1; }
+                }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) | Tag::Fuzzy(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
+            }
+
+            if !ez.next() {
+                debug_assert!(idx < var_count, "substituting variable {} of an expression that introduces {}", idx, var_count);
+                return ez.finish_span()
+            }
+        }
+    }
+
     pub fn substitute_de_bruijn(self, substitutions: &[Expr], oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut additions = vec![0u8; substitutions.len()];
@@ -631,8 +683,17 @@ impl Expr {
     }
 
 
+    /// [`Expr::bind_from`] for an expression whose own variables start at 0.
+    // this.foldMap(i => Var(if i == 0 then {index += 1; -index - n} else if i > 0 then i else i - n), App(_, _))
     fn bind(self, n: u8, oz: &mut ExprZipper) -> *const [u8] {
-        // this.foldMap(i => Var(if i == 0 then {index += 1; -index - n} else if i > 0 then i else i - n), App(_, _))
+        self.bind_from(0, n, oz)
+    }
+
+    /// `bind` for an expression numbered against an enclosing namespace: its own
+    /// introductions start at `base`, so refs at or above `base` are its own and get
+    /// rebased onto `n`, while refs below `base` belong to the enclosing expression and
+    /// keep their index. See [`Expr::substitute_one_de_bruijn_at`].
+    fn bind_from(self, base: u8, n: u8, oz: &mut ExprZipper) -> *const [u8] {
         let mut ez = ExprZipper::new(self);
         let mut var_count = 0;
         loop {
@@ -641,7 +702,7 @@ impl Expr {
                     oz.write_var_ref(n + var_count); oz.loc += 1; var_count += 1;
                 }
                 Tag::VarRef(i) => {
-                    oz.write_var_ref(n + i); oz.loc += 1; // good
+                    oz.write_var_ref(if i >= base { n + (i - base) } else { i }); oz.loc += 1;
                 }
                 sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
                 Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
@@ -654,29 +715,32 @@ impl Expr {
         }
     }
 
-    pub fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
-        // this.foldMap(i => Var(if i >= 0 then i else i - n), App(_, _))
+    /// `shift` for an expression numbered against an enclosing namespace: its own
+    /// introductions start at `base`, so refs at or above `base` are its own and get
+    /// rebased onto `n`, while refs below `base` belong to the enclosing expression and
+    /// keep their index. See [`Expr::substitute_one_de_bruijn_at`].
+    pub fn shift_from(self, base: u8, n: u8, oz: &mut ExprZipper) -> u8 {
         let mut ez = ExprZipper::new(self);
         let mut new_var = 0u8;
         loop {
             match ez.tag() {
                 Tag::NewVar => { oz.write_new_var(); oz.loc += 1; new_var += 1; }
-                Tag::VarRef(i) => { oz.write_var_ref(i + n); oz.loc += 1; }
-                sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
-                Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
+                Tag::VarRef(i) => { oz.write_var_ref(if i >= base { i - base + n } else { i }); oz.loc += 1; }
+                Tag::SymbolSize(s) => { oz.write_move(unsafe { slice_from_raw_parts(ez.root.ptr.byte_add(ez.loc), s as usize + 1).as_ref().unwrap() }); }
+                Tag::Arity(_) => { unsafe { *oz.root.ptr.byte_add(oz.loc) = *ez.root.ptr.byte_add(ez.loc); oz.loc += 1; }; }
                 Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; }
             }
 
             if !ez.next() {
-                // return self.loc + match self.tag() {
-                //     Tag::NewVar => { 1 }
-                //     Tag::VarRef(r) => { 1 }
-                //     Tag::SymbolSize(s) => { 1 + (s as usize) }
-                //     Tag::Arity(a) => { unreachable!() /* expression can't end in arity */ }
-                // }
                 return new_var;
             }
         }
+    }
+
+    /// [`Expr::shift_from`] for an expression whose own variables start at 0.
+    // this.foldMap(i => Var(if i >= 0 then i else i - n), App(_, _))
+    pub fn shift(self, n: u8, oz: &mut ExprZipper) -> u8 {
+        self.shift_from(0, n, oz)
     }
 
     pub fn unbind(self, oz: &mut ExprZipper) -> *const [u8] {
@@ -963,6 +1027,10 @@ pub trait Traversal<A, R> {
     fn finalize(&mut self, offset: usize, acc: A) -> R;
 
     fn fuzzy(&mut self, offset: usize, fuzz: u8) -> R;
+    /// How many variables this traversal has passed so far, if it counts them. `None` (the
+    /// default) means "not tracked", which callers must read as "possibly some": it disables
+    /// ground stamping, never enables it.
+    fn vars_seen(&self) -> Option<u32> { None }
 }
 
 pub struct PairTraversal<A1, A2, R1, R2, T1, T2> { t1: T1, t2: T2, pd: std::marker::PhantomData<(A1, A2, R1, R2)> }
@@ -1060,24 +1128,48 @@ pub fn execute_loop<A, R, T : Traversal<A, R>>(t: &mut T, e: Expr, i: usize) -> 
     }
 }
 
+/// What [`match2`] just walked past on the non-variable side of a variable pairing: the
+/// subterm's byte extent, and how many variables the traversal met inside it (`None` when the
+/// traversal does not count). Reported to `stamp` right after the corresponding `hole` call, so
+/// the caller can grade the pair it pushed -- extent and groundness fall out of the skip walk
+/// that `match2` performs anyway.
+pub struct SkippedSubterm {
+    pub extent: usize,
+    pub vars: Option<u32>,
+    /// True when the skipped subterm is the right (`e2`) side.
+    pub right: bool,
+}
+
 // functor same -> functor arguments -> call recursively
 // unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
 // unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
-fn match2<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize),
+fn match2<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<SkippedSubterm>),
     A1, R1, T1 : Traversal<A1, R1>,
     A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
                                     t2: &mut T2, e2: Expr, i2: usize, hole: &mut F) -> Result<(usize, R1, usize, R2), (usize, usize)> {
     match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
         (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
-            hole(t1, e1, i1, t2, e2, i2);
+            hole(t1, e1, i1, t2, e2, i2, None);
             let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
+            let vars0 = t2.vars_seen();
             let (d2, r2) = execute_loop(t2, e2, i2);
+            hole(t1, e1, i1, t2, e2, i2, Some(SkippedSubterm {
+                extent: d2 - i2,
+                vars: t2.vars_seen().zip(vars0).map(|(after, before)| after - before),
+                right: true,
+            }));
             Ok((1, r1, d2 - i2, r2))
         }
         (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
-            hole(t1, e1, i1, t2, e2, i2);
+            hole(t1, e1, i1, t2, e2, i2, None);
             let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
+            let vars0 = t1.vars_seen();
             let (d1, r1) = execute_loop(t1, e1, i1);
+            hole(t1, e1, i1, t2, e2, i2, Some(SkippedSubterm {
+                extent: d1 - i1,
+                vars: t1.vars_seen().zip(vars0).map(|(after, before)| after - before),
+                right: false,
+            }));
             Ok((d1 - i1, r1, 1, r2))
         }
         (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
@@ -1793,15 +1885,102 @@ pub fn serialize(bytes: &[u8]) -> String {
 unsafe impl Sync for Expr {}
 unsafe impl Send for Expr {}
 
-type ExprVar = (u8, u8);
+/// A variable's identity in a multi-expression unification: `(namespace, introduction index)`.
+/// Public so consumers of [`unify`]'s bindings (the kernel's joins) name the key type instead of
+/// re-declaring the tuple.
+pub type ExprVar = (u8, u8);
+/// What [`unify`] solves to: each variable's binding, an [`ExprEnv`] view into one of the unified
+/// expressions.
+/// The solved substitution: variable key to value env, as a DIRECT-INDEXED slab. The key domain is
+/// tiny and bounded -- a body has at most 64 conjuncts (an arity byte), each namespace at most 64
+/// variables (the parser's cap) -- so `(n, v)` IS an index: `n << 6 | v`. A probe is one load with
+/// no comparisons, no ordering, no hashing; insert is one store plus a touched-list push; and the
+/// join never clones it at all (the trail unwinds it), so the slab's size costs one allocation per
+/// join, not per candidate. `touched` carries the occupied indices for iteration and O(touched)
+/// clearing; iteration order is insertion order, which no consumer depends on (bindings are only
+/// ever observed by key lookup or order-free scans).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Bindings {
+    slots: Vec<Option<ExprEnv>>,
+    touched: Vec<u16>,
+}
+
+impl Bindings {
+    pub fn new() -> Self { Bindings { slots: Vec::new(), touched: Vec::new() } }
+    #[inline(always)]
+    fn idx(k: &ExprVar) -> usize {
+        debug_assert!(k.1 < 64, "the parser caps variables at 63");
+        ((k.0 as usize) << 6) | (k.1 as usize & 63)
+    }
+    #[inline(always)]
+    pub fn get(&self, k: &ExprVar) -> Option<&ExprEnv> {
+        self.slots.get(Self::idx(k)).and_then(|s| s.as_ref())
+    }
+    #[inline(always)]
+    pub fn contains_key(&self, k: &ExprVar) -> bool { self.get(k).is_some() }
+    pub fn insert(&mut self, k: ExprVar, v: ExprEnv) -> Option<ExprEnv> {
+        let i = Self::idx(&k);
+        if i >= self.slots.len() {
+            self.slots.resize(i + 64, None);
+        }
+        let prev = self.slots[i].replace(v);
+        if prev.is_none() {
+            self.touched.push(i as u16);
+        }
+        prev
+    }
+    pub fn remove(&mut self, k: &ExprVar) -> Option<ExprEnv> {
+        let i = Self::idx(k);
+        let prev = self.slots.get_mut(i).and_then(|s| s.take());
+        if prev.is_some() {
+            // The join removes by trail unwinding, newest first, so the scan from the back is
+            // usually one step.
+            if let Some(pos) = self.touched.iter().rposition(|&t| t as usize == i) {
+                self.touched.swap_remove(pos);
+            }
+        }
+        prev
+    }
+    pub fn len(&self) -> usize { self.touched.len() }
+    pub fn is_empty(&self) -> bool { self.touched.is_empty() }
+    pub fn iter(&self) -> impl Iterator<Item = (ExprVar, &ExprEnv)> {
+        self.touched.iter().map(|&i| {
+            (((i >> 6) as u8, (i & 63) as u8), self.slots[i as usize].as_ref().unwrap())
+        })
+    }
+    pub fn keys(&self) -> impl Iterator<Item = ExprVar> + '_ {
+        self.touched.iter().map(|&i| ((i >> 6) as u8, (i & 63) as u8))
+    }
+    pub fn values(&self) -> impl Iterator<Item = &ExprEnv> {
+        self.touched.iter().map(|&i| self.slots[i as usize].as_ref().unwrap())
+    }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ExprEnv> {
+        let slots = self.slots.as_mut_ptr();
+        self.touched.iter().map(move |&i| unsafe { (*slots.add(i as usize)).as_mut().unwrap() })
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExprEnv {
     pub n: u8,
     pub v: u8,
     pub offset: u32,
+    /// Byte length of this subterm when it is known to be ground.
+    ///
+    /// Zero means unknown, including ground spans larger than `u16::MAX`. A nonzero value permits
+    /// callers to compare or copy the span without walking it, and to skip variable hunts (occurs
+    /// checks, cycle cuts) over it. Any operation that changes `offset` must clear the stamp.
+    ///
+    /// SAFETY: a false stamp -- nonzero for a span shorter than it says, or one containing a
+    /// variable -- makes consumers read `ground_skip` bytes from `subsexpr()`, so it can cause an
+    /// out-of-bounds read. Private for that reason: the only way to set one from outside this crate
+    /// is [`ExprEnv::stamp_ground`], which is `unsafe` and states the obligation. Tests: `mod
+    /// ground_stamp`.
+    ground_skip: u16,
     pub base: Expr
 }
+
+const _: () = assert!(size_of::<ExprEnv>() == 16, "ExprEnv must not grow: it is copied per binding per answer");
 
 impl PartialEq<Self> for ExprEnv {
     fn eq(&self, other: &Self) -> bool {
@@ -1824,15 +2003,37 @@ impl std::hash::Hash for ExprEnv {
     }
 }
 
-pub struct TraverseSide { ee: ExprEnv }
+// `subterm_parse_step` supports resumable byte-wise trie walks: one byte at a time, so a cursor can
+// interleave the parse with trie navigation. Consumers needing variable identities or rewritten
+// output layer that accounting on the same encoding rules.
+
+/// One byte of the resumable parse: `subterms` complete terms and `payload` raw bytes are still
+/// owed; a key spells exactly one complete subterm iff both are zero (starting from `(1, 0)`).
+/// An expression is at most `u32::MAX - 1` bytes, which bounds both.
+#[inline]
+pub fn subterm_parse_step(b: u8, subterms: &mut u32, payload: &mut u32) {
+    if *payload > 0 {
+        *payload -= 1;
+    } else {
+        *subterms -= 1;
+        match byte_item(b) {
+            Tag::Arity(arity) => *subterms += arity as u32,
+            Tag::SymbolSize(size) => *payload += size as u32,
+            Tag::VarRef(_) | Tag::NewVar | Fuzzy(_) => {}
+        }
+    }
+}
+
+pub struct TraverseSide { ee: ExprEnv, vars: u32 }
 impl Traversal<(), ()> for TraverseSide {
-    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; }
-    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () {}
+    #[inline(always)] fn new_var(&mut self, offset: usize) -> () { self.ee.v += 1; self.vars += 1; }
+    #[inline(always)] fn var_ref(&mut self, offset: usize, i: u8) -> () { self.vars += 1; }
     #[inline(always)] fn symbol(&mut self, offset: usize, s: &[u8]) -> () {}
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () {}
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () {}
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () {}
     #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () {}
+    #[inline(always)] fn vars_seen(&self) -> Option<u32> { Some(self.vars) }
 }
 
 impl ExprEnv {
@@ -1841,16 +2042,39 @@ impl ExprEnv {
             n: i,
             v: 0,
             offset: 0,
+            ground_skip: 0,
             base: e,
         }
     }
 
+    /// An env at `base`'s root in namespace `n`, whose variables are numbered from `v`.
+    pub fn with_intro(n: u8, v: u8, e: Expr) -> Self {
+        Self { n, v, offset: 0, ground_skip: 0, base: e }
+    }
+
+    /// This subterm's ground stamp, or 0 when unknown. See [`ExprEnv::ground_skip`].
+    #[inline]
+    pub fn ground_stamp(&self) -> u16 {
+        self.ground_skip
+    }
+
+    /// Record that the subterm at `subsexpr()` is ground and exactly `len` bytes long.
+    ///
+    /// SAFETY: `len` must be that subterm's exact byte length, and the subterm must contain no
+    /// variable. Consumers read `len` bytes from `subsexpr()` and skip variable hunts over them, so
+    /// a wrong value is an out-of-bounds read or a wrong unification. A `len` of 0 always means
+    /// "unknown" and is safe.
+    #[inline]
+    pub unsafe fn stamp_ground(&mut self, len: u16) {
+        self.ground_skip = len;
+    }
+
     pub fn v_incr_traversal(&self) -> TraverseSide {
-        TraverseSide{ ee: self.clone() }
+        TraverseSide{ ee: self.clone(), vars: 0 }
     }
 
     pub fn offset(&self, offset: u32) -> ExprEnv {
-        ExprEnv{ n: self.n, v: self.v, offset: self.offset + offset, base: self.base }
+        ExprEnv{ n: self.n, v: self.v, offset: self.offset + offset, ground_skip: 0, base: self.base }
     }
 
     pub fn subsexpr(&self) -> Expr {
@@ -1907,12 +2131,36 @@ impl ExprEnv {
                     n: self.n,
                     v: self.v,
                     offset: self.offset + 1,
+                    ground_skip: 0,
                     base: self.base,
                 };
                 for sk in 0..k {
-                    let (se_c, _, se_offset) = traverseh!((), (), u8, env.subsexpr(), 0,
-                        |c: &mut u8, o| { *c += 1; },
-                        |_, o, r| {},
+                    let ne = env.clone();
+                    dest.push(ne);
+                    // The traversal below exists only to advance `env` past this child to reach
+                    // the NEXT one, so after the last child it is pure waste -- and it costs
+                    // O(child span). On a right-nested pattern, where each level's last child is
+                    // the whole remaining term, paying it at every level made a descent that
+                    // calls `args` per node (`Space::coreferential_transition`) quadratic in the
+                    // pattern's size. Skipping it makes such a descent linear.
+                    if sk + 1 == k {
+                        // The one child the advancement walk never measures. A stamped parent
+                        // measures it anyway: the parent's end IS the last child's end, and a
+                        // ground parent has ground children.
+                        if self.ground_skip != 0 {
+                            let end = self.offset + self.ground_skip as u32;
+                            dest.last_mut().unwrap().ground_skip = (end - env.offset) as u16;
+                        }
+                        break;
+                    }
+                    // The advancement walk visits every item of the child regardless, so let it
+                    // count the variables it passes: a child it saw none in earns a skip stamp
+                    // for free -- independently of whether the PARENT is ground, which is what
+                    // lets a constant conjunct inside a variable-carrying conjunction reach
+                    // `unify` stamped and settle against a stamped fact by byte comparison.
+                    let (se, _, se_offset) = traverseh!((), (), (u8, bool), env.subsexpr(), (0u8, false),
+                        |c: &mut (u8, bool), o| { c.0 += 1; c.1 = true; },
+                        |c: &mut (u8, bool), o, r| { c.1 = true; },
                         |_, o, _| {},
                         |_, o, _| {},
                         |_, o, x, y| {},
@@ -1920,10 +2168,11 @@ impl ExprEnv {
                         |_,_,_|{}
                     );
 
-                    let ne = env.clone();
-                    dest.push(ne);
+                    if !se.1 && se_offset > 0 && se_offset <= u16::MAX as usize {
+                        dest.last_mut().unwrap().ground_skip = se_offset as u16;
+                    }
                     env.offset += se_offset as u32;
-                    env.v += se_c;
+                    env.v += se.0;
                 }
             }
         }
@@ -1935,15 +2184,24 @@ impl ExprEnv {
 pub enum UnificationFailure {
     Occurs(ExprVar, ExprEnv),
     Difference(ExprEnv, ExprEnv),
+    /// No longer produced: the iteration budget that raised this is now the
+    /// [`max_unify_iterations`] statistic. Kept so existing matches stay exhaustive.
     MaxIter(u32)
 }
 
 const APPLY_DEPTH: u32 = 64;
-const MAX_UNIFY_ITER: u32 = 1000;
+
+/// The deepest per-call iteration count [`unify`] has reached in this process, in the style of the
+/// kernel's `transitions`/`unifications` counters. This replaces the former `MAX_UNIFY_ITER = 1000`
+/// abort, which was a debugging guard that had become an answer-dropping cutoff: a conjunctive body
+/// whose total structure exceeded it (roughly one iteration per pattern node -- reachable at ~55
+/// conjuncts of depth 16, or one conjunct nested ~1200 deep) lost real matches with no diagnostic.
+/// Reported by the CLI so the figure that used to be a silent limit is now visible.
+pub static mut max_unify_iterations: u32 = 0;
 const PRINT_DEBUG: bool = false;
 #[deprecated]
 #[inline(never)]
-pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &BTreeMap<ExprVar, ExprEnv>, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
+pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZipper, bindings: &Bindings, oz: &mut ExprZipper, cycled: &mut BTreeMap<ExprVar, u8>, stack: &mut Vec<ExprVar>, assignments: &mut Vec<ExprVar>) -> (u8, u8) {
     let depth = stack.len();
     if stack.len() > APPLY_DEPTH as usize { panic!("apply depth > {APPLY_DEPTH}: {n} {original_intros} {new_intros}"); }
     if PRINT_DEBUG { println!("{}@ n={} original={} new={} ez={:?}", "  ".repeat(depth), n, original_intros, new_intros, ez.subexpr()); }
@@ -2055,10 +2313,40 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
 
 
 #[inline(never)]
-pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
-    let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
-    let mut iterations = 0;
-    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
+pub fn unify(stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<Bindings, UnificationFailure> {
+    let mut bindings: Bindings = Bindings::new();
+    let mut trail = Vec::new();
+    unify_into(&mut bindings, stack, &mut trail)?;
+    Ok(bindings)
+}
+
+/// [`unify`] against a LIVE map: solve the equations on `stack` with `bindings` already holding a
+/// solved form, recording every key inserted on `trail` so the caller can unwind to a mark. This is
+/// what lets the join bind one candidate INCREMENTALLY instead of cloning the map and re-solving
+/// every prior equation per candidate: the derefs consult the live map, so an earlier binding
+/// constrains exactly as if its equation were re-asserted, and unwinding is `remove` per trail
+/// entry (an insert target is always a previously-unbound key, so removal restores the map).
+/// The solved form's SHAPE may differ from a from-scratch solve (path compression, var-var
+/// direction); downstream only ever observes bindings by dereference, which is unchanged.
+pub fn unify_into(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, ExprEnv)>, trail: &mut Vec<ExprVar>) -> Result<(), UnificationFailure> {
+    let bindings = &mut *bindings;
+    // Counts this call's iterations locally and folds the result into
+    // [`max_unify_iterations`] exactly once, on the way out. A `Drop` guard rather than an
+    // update at each `return`, so every exit path (Occurs, Difference, Ok) is covered and
+    // the loop itself stays a plain increment.
+    struct IterationHighWater(u32);
+    impl Drop for IterationHighWater {
+        fn drop(&mut self) {
+            unsafe {
+                if self.0 > max_unify_iterations {
+                    max_unify_iterations = self.0;
+                }
+            }
+        }
+    }
+    let mut iter_stat = IterationHighWater(0);
+    let iterations = &mut iter_stat.0;
+    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = Default::default();
 
     macro_rules! step {
         (occurs $x:expr, $e:expr) => {{
@@ -2113,12 +2401,14 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
             match (_x.var_opt(), _y.var_opt()) {
                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
                     stack.push((_x, _y));
+                    true
                 }
                 _ if !encountered.contains(&(_x, _y)) => {
                     encountered.insert((_x, _y));
                     stack.push((_x, _y));
+                    true
                 }
-                _ => {}
+                _ => { false }
             }
         }};
     }
@@ -2133,17 +2423,20 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
                 // let ov = vec![0u8; 512];
                 // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
                 // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                println!("  binding {:?} +{} {}", *k, v.v, v.show());
+                println!("  binding {:?} +{} {}", k, v.v, v.show());
                 // println!("output {:?}", o);
 
             });
             println!();
         }
 
-        if iterations > MAX_UNIFY_ITER { 
-            return Err(UnificationFailure::MaxIter(iterations))
-        }
-        iterations += 1;
+        // No budget check here any more: the former `MAX_UNIFY_ITER` abort silently dropped
+        // genuine matches, since unification is only reached on a candidate the search has
+        // already accepted, so a pattern whose total structure exceeded it lost real answers
+        // size-dependently and without any diagnostic. Termination never rested on it -- the
+        // occurs check and the `encountered` set bound the search -- so the budget only hid
+        // how far unification had to go. The guard above records that instead.
+        *iterations += 1;
         if PRINT_DEBUG {
             println!("popping");
             // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
@@ -2154,12 +2447,61 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
 
         match (dt1.var_opt(), dt2.var_opt()) {
             (None, None) => {
+                // Skip-stamp fast paths. The encoding is prefix-free, so byte equality of
+                // complete terms IS term equality, and byte positions of equal prefixes are
+                // structurally synchronized (the structure is determined by the prefix). Three
+                // consequences, graded by what we know:
+                //  - both stamped: two ground terms; equal iff same length and same bytes, and
+                //    any mismatch is a genuine Difference (no variable can be waiting to bind).
+                //  - one stamped: if every byte of the stamped span matches, the other term
+                //    decodes to exactly that span (a complete term is never a proper prefix of
+                //    another), so the pair is settled without walking. On the first mismatch we
+                //    know nothing -- the differing byte may be a variable on the unstamped side
+                //    that must bind -- so fall through to the structural walk. The byte loop is
+                //    in-bounds: a difference must occur before either term ends, because a full
+                //    match through the shorter would make it a proper prefix of the longer.
+                let (s1, s2) = (dt1.ground_skip as usize, dt2.ground_skip as usize);
+                if s1 != 0 && s2 != 0 {
+                    if s1 != s2 { return Err(UnificationFailure::Difference(dt1, dt2)); }
+                    let b1 = unsafe { &*slice_from_raw_parts(dt1.subsexpr().ptr, s1) };
+                    let b2 = unsafe { &*slice_from_raw_parts(dt2.subsexpr().ptr, s2) };
+                    if b1 == b2 { continue 'popping; }
+                    return Err(UnificationFailure::Difference(dt1, dt2));
+                } else if s1 != 0 || s2 != 0 {
+                    let (skip, ground, other) = if s1 != 0 { (s1, dt1.subsexpr().ptr, dt2.subsexpr().ptr) }
+                                                else { (s2, dt2.subsexpr().ptr, dt1.subsexpr().ptr) };
+                    let mut i = 0usize;
+                    while i < skip && unsafe { *ground.add(i) == *other.add(i) } { i += 1; }
+                    if i == skip { continue 'popping; }
+                    // Mismatch: possibly a variable on the unstamped side; do the full walk.
+                }
+
                 let mut ts1 = dt1.clone().v_incr_traversal();
                 let mut ts2 = dt2.clone().v_incr_traversal();
 
+                // `hole` pushes the (variable, subterm) pair; right after, match2 walks past the
+                // subterm and reports its extent and variable count, which grades the very pair
+                // just pushed: variable-free and small enough -> stamp it. The stamp then rides
+                // the env into `bindings` (making apply_e's bulk copy and the occurs skip fire),
+                // and into later coreference pops (settled above by byte compare). `pushed_at`
+                // guards against grading a pair the push macro deduplicated away.
+                let mut pushed_at: Option<usize> = None;
                 if let Err((o1, o2)) = match2(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
-                                              &mut |_ts1, e1, i1, _ts2, e2, i2| {
-                                                  step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32))
+                                              &mut |_ts1, e1, i1, _ts2, e2, i2, skipped: Option<SkippedSubterm>| {
+                                                  match skipped {
+                                                      None => {
+                                                          let did = step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32));
+                                                          pushed_at = if did { Some(stack.len() - 1) } else { None };
+                                                      }
+                                                      Some(skipped) => {
+                                                          if let (Some(at), Some(0), 1..=0xFFFF) = (pushed_at, skipped.vars, skipped.extent) {
+                                                              let pair = &mut stack[at];
+                                                              let side = if skipped.right { &mut pair.1 } else { &mut pair.0 };
+                                                              side.ground_skip = skipped.extent as u16;
+                                                          }
+                                                          pushed_at = None;
+                                                      }
+                                                  }
                                               }) {
                     if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
@@ -2182,19 +2524,22 @@ pub fn unify(mut stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<BTreeMap<ExprVar
             }
             (Some(vx), ov) => {
                 if let Some(sv) = ov { if vx == sv { continue 'popping } }
-                if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                // A stamped subterm contains no variable, so the occurs walk is a guaranteed miss.
+                if dt2.ground_skip == 0 && step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                trail.push(vx);
                 bindings.insert(vx, dt2.clone());
             }
             (ov, Some(vy)) => {
                 if let Some(sv) = ov { if vy == sv { continue 'popping } }
-                if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                if dt1.ground_skip == 0 && step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                trail.push(vy);
                 bindings.insert(vy, dt1.clone());
             }
         }
     }
 
     if stack.is_empty() {
-        Ok(bindings)
+        Ok(())
     } else {
         unreachable!()
     }
@@ -2223,48 +2568,61 @@ pub struct AntiUnifyResult {
 pub struct RelExprEnv(ExprEnv);
 
 impl PartialEq for RelExprEnv {
+    /// Relational structural equality: NewVars match by their running introduction number, so
+    /// `($x $x)` at v=1 equals `(_2 _2)`-shaped occurrences elsewhere, exactly as the memo in
+    /// [`anti_unify_apply`] needs.
+    ///
+    /// The walk is lockstep over BOTH encodings, each side read only at its own item boundaries,
+    /// with an early exit on the first mismatch. Its predecessor walked `self`'s structure and
+    /// interpreted `other`'s bytes at `self`'s item offsets; the moment the two structures
+    /// diverged the offsets desynchronized into symbol payload, where `byte_item` panics on
+    /// reserved-range bytes. A hash map only calls `eq` on same-bucket keys, so whether a
+    /// structurally different pair ever met depended on the process's random hash seed -- the
+    /// source of a long-standing nondeterministic `mork test` failure ("reserved 97/69" panics
+    /// under the anti-unify sink, roughly one run in thirty).
     fn eq(&self, other: &Self) -> bool {
         let mut vs = self.0.v;
         let mut vo = other.0.v;
+        let (mut i, mut j) = (self.0.offset as usize, other.0.offset as usize);
+        // One slot owed initially; every item settles one, an Arity(k) opens k more. Matching
+        // arities keep both counters equal, so both walks finish together or fail early.
+        let mut owed = 1usize;
         unsafe {
-        traverseh!((), (), bool, self.0.subsexpr(), true,
-                        |b: &mut bool, o| {
-                            *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
-                                Tag::NewVar => { let eq = vs == vo; vo += 1; eq }
-                                Tag::VarRef(j) => { vs == j }
-                                _ => { false }
-                            };
-                            // println!("$ {:?}", b);
-                            vs += 1;
-                        },
-                        |b: &mut bool, o, r| {
-                            *b &= match byte_item(*other.0.base.ptr.add(other.0.offset as usize + o)) {
-                                Tag::NewVar => { let eq = r == vo; vo += 1; eq }
-                                Tag::VarRef(j) => { r == j }
-                                _ => { false }
-                            };
-                            // println!("_{} {:?}", r as usize + 1, b);
-                        },
-                        |b: &mut bool, o, s: &[u8]| {
-                            let oss = byte_item(*other.0.base.ptr.add(other.0.offset as usize + o));
-                            *b &= oss == Tag::SymbolSize(s.len() as _);
-                            if !*b { return };
-                            let Tag::SymbolSize(ss) = oss else { unreachable!() };
-                            *b &= slice_from_raw_parts(other.0.base.ptr.add(other.0.offset as usize + o + 1), ss as usize).as_ref().unwrap() == s;
-                            // println!("'{}' {:?}", std::str::from_utf8(s).unwrap(), b);
-                        },
-                        |b: &mut bool, o, a| {
-                            *b &= *other.0.base.ptr.add(other.0.offset as usize + o) == item_byte(Tag::Arity(a));
-                            // println!("[{}] {}", a as usize, b);
-                        },
-                        |_, o, x, y| {},
-                        |_, _, _| {},
-                        |b : &mut bool, o, f| {
-                            let oss = byte_item(*other.0.base.ptr.add(other.0.offset as usize + o));
-                            *b &= oss == Tag::Fuzzy(f as _); // [Remy] : I assume that Fuzzy equality is not the same as fuzzy unification matching.
-                        }
-                    ).0
+            while owed > 0 {
+                let bs = byte_item(*self.0.base.ptr.add(i));
+                let bo = byte_item(*other.0.base.ptr.add(j));
+                i += 1;
+                j += 1;
+                owed -= 1;
+                let item_eq = match (bs, bo) {
+                    (Tag::NewVar, Tag::NewVar) => { let e = vs == vo; vs += 1; vo += 1; e }
+                    (Tag::NewVar, Tag::VarRef(k)) => { let e = vs == k; vs += 1; e }
+                    (Tag::VarRef(r), Tag::NewVar) => { let e = r == vo; vo += 1; e }
+                    (Tag::VarRef(r), Tag::VarRef(k)) => r == k,
+                    (Tag::SymbolSize(a), Tag::SymbolSize(b)) => {
+                        let e = a == b
+                            && slice_from_raw_parts(self.0.base.ptr.add(i), a as usize).as_ref()
+                                == slice_from_raw_parts(other.0.base.ptr.add(j), b as usize).as_ref();
+                        i += a as usize;
+                        j += b as usize;
+                        e
+                    }
+                    (Tag::Arity(a), Tag::Arity(b)) => {
+                        owed += a as usize;
+                        a == b
+                    }
+                    (Tag::Fuzzy(l), Tag::Fuzzy(r)) => {
+                        // [Remy] : I assume that Fuzzy equality is not the same as fuzzy unification matching.
+                        l == r
+                    }
+                    _ => false,
+                };
+                if !item_eq {
+                    return false;
+                }
+            }
         }
+        true
     }
 }
 
@@ -2408,9 +2766,308 @@ fn anti_unify_apply(
     Ok(())
 }
 
+/// Tests for the ground stamp ([`ExprEnv::ground_skip`]) and the shortcuts it licenses: settling a
+/// pair by byte comparison, skipping the occurs walk, copying a binding without walking it, and the
+/// `u16` bound on what may be stamped.
+///
+/// The differential corpus and the Prolog-oracle cross-check in
+/// `experiments/unification_test_laws` do NOT cover most of this. Mutating the both-stamped byte
+/// comparison to accept unconditionally, or disabling the occurs check outright, leaves 2*10^7
+/// oracle-checked axiom pairs still in agreement; only a false stamp is caught there. These cases
+/// have to be written by hand.
+#[cfg(test)]
+mod ground_stamp {
+    use super::*;
+
+    fn unify_exprs(l: &[u8], r: &[u8]) -> Result<Bindings, UnificationFailure> {
+        let le = Expr { ptr: l.as_ptr().cast_mut() };
+        let re = Expr { ptr: r.as_ptr().cast_mut() };
+        let mut stack = vec![(ExprEnv::new(0, le), ExprEnv::new(1, re))];
+        unify(&mut stack)
+    }
+
+    fn applied(l: &[u8], r: &[u8]) -> Option<Vec<u8>> {
+        let le = Expr { ptr: l.as_ptr().cast_mut() };
+        let re = Expr { ptr: r.as_ptr().cast_mut() };
+        let out = vec![0u8; 1 << 20];
+        let to = Expr { ptr: out.leak().as_mut_ptr() };
+        let mut ez = ExprZipper::new(to);
+        #[allow(deprecated)]
+        le._unify(re, &mut ez).ok()?;
+        Some(unsafe { to.span().as_ref().unwrap() }.to_vec())
+    }
+
+    /// A ground BALANCED tree of exactly `total` bytes: `L - 1` binary nodes over `L` one-byte
+    /// symbols, with one leaf widened to land on the exact size. Balanced on purpose -- a
+    /// right-nested chain of the same size is ~21k levels deep and overflows the walk's stack,
+    /// which is a fact about nesting depth and not about the stamp boundary under test here.
+    fn ground_tree(total: usize) -> Vec<u8> {
+        // size = 3L - 2 + m, for L leaves and a final leaf of m payload bytes.
+        let mut l = 2usize;
+        let mut m;
+        loop {
+            let base = 3 * l - 2;
+            if base < total && total - base <= 63 {
+                m = total - base;
+                break;
+            }
+            l += 1;
+            assert!(l < total, "no leaf count reaches {total}");
+        }
+        fn emit(leaves: usize, out: &mut Vec<u8>, last: &mut Option<usize>) {
+            if leaves == 1 {
+                let m = last.take().unwrap_or(1);
+                out.push(item_byte(Tag::SymbolSize(m as u8)));
+                out.extend(std::iter::repeat(b'z').take(m));
+                return;
+            }
+            out.push(item_byte(Tag::Arity(2)));
+            let right = leaves / 2;
+            emit(leaves - right, out, last);
+            emit(right, out, last);
+        }
+        let mut v = Vec::with_capacity(total);
+        let mut last = Some(m);
+        emit(l, &mut v, &mut last);
+        assert_eq!(v.len(), total, "wanted {total} bytes with {l} leaves");
+        v
+    }
+
+    /// Both sides of a coreference pop ground and stamped: equal bytes unify, different bytes are a
+    /// genuine difference. Kills a both-stamped path that accepts without comparing.
+    #[test]
+    fn both_stamped_equality_and_difference() {
+        let pattern = parse!(r"[3] f $ _1"); // (f $x $x)
+        let same = parse!(r"[3] f [2] g a [2] g a");
+        let diff = parse!(r"[3] f [2] g a [2] g b");
+        assert!(unify_exprs(&pattern, &same).is_ok(), "identical ground values must unify");
+        assert!(
+            matches!(unify_exprs(&pattern, &diff), Err(UnificationFailure::Difference(_, _))),
+            "different ground values must be a Difference, not an acceptance"
+        );
+        // Same length, differing only in the last byte: the length test cannot stand in for the
+        // byte comparison.
+        let diff_tail = parse!(r"[3] f [2] g aa [2] g ab");
+        assert!(matches!(
+            unify_exprs(&pattern, &diff_tail),
+            Err(UnificationFailure::Difference(_, _))
+        ));
+    }
+
+    /// One side stamped, the other holding a variable at the first differing byte: the pair must
+    /// fall through to the structural walk and bind it, not be settled by the byte comparison.
+    #[test]
+    fn one_stamped_mismatch_binds_the_variable() {
+        let pattern = parse!(r"[3] f $ _1"); // (f $x $x)
+        let data = parse!(r"[3] f [2] g a [2] g $"); // (f (g a) (g $y))
+        let bindings = unify_exprs(&pattern, &data).expect("must unify by binding $y = a");
+        assert!(
+            bindings.keys().any(|(n, _)| n == 1),
+            "the unstamped side's variable must be bound, got {:?}",
+            bindings.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            applied(&pattern, &data).as_deref(),
+            Some(&parse!(r"[3] f [2] g a [2] g a")[..]),
+            "the instantiated result must carry the bound value"
+        );
+    }
+
+    /// The occurs walk may be skipped only because a stamped subterm holds no variable. A cyclic
+    /// binding must still be rejected; a ground one must still be accepted.
+    #[test]
+    fn occurs_rejects_cycles_and_ground_bypasses_it() {
+        // ($x $x) against ($y (f $y)): $x binds to $y, then $y to a term containing itself.
+        let cyclic_l = parse!(r"[2] $ _1");
+        let cyclic_r = parse!(r"[2] $ [2] f _1");
+        let le = Expr { ptr: cyclic_l.as_ptr().cast_mut() };
+        let re = Expr { ptr: cyclic_r.as_ptr().cast_mut() };
+        let out = vec![0u8; 4096];
+        let to = Expr { ptr: out.leak().as_mut_ptr() };
+        #[allow(deprecated)]
+        let res = le._unify(re, &mut ExprZipper::new(to));
+        assert!(
+            matches!(res, Err(UnificationFailure::Occurs(_, _))),
+            "a variable bound into a term containing itself must be rejected, got {res:?}"
+        );
+
+        // The same shape with a ground right-hand side is not a cycle and must be accepted.
+        assert!(
+            unify_exprs(&parse!(r"[2] $ _1"), &parse!(r"[2] $ [2] f a")).is_ok(),
+            "a ground binding must not be rejected by the occurs check"
+        );
+    }
+
+    /// The occurs walk inside `unify` itself. `Expr::unify` layers a post-apply cycle check on top,
+    /// which is what the existing `Occurs` assertions actually exercise -- disabling BOTH occurs
+    /// branches in `unify` leaves every other test in this crate and the kernel passing. The stamp
+    /// shortcut lives on this path, so it needs a test that reaches it directly.
+    #[test]
+    fn unify_itself_rejects_self_reference() {
+        // (F $x (f $x)): pair the env at $x with the env at (f $x), both in namespace 0, so the
+        // VarRef inside the right side denotes the very variable being bound.
+        let mut ev = parse!(r"[3] F $ [2] f _1");
+        let e = Expr { ptr: ev.as_mut_ptr() };
+        let var = ExprEnv { n: 0, v: 0, offset: 3, ground_skip: 0, base: e };
+        let containing = ExprEnv { n: 0, v: 1, offset: 4, ground_skip: 0, base: e };
+        assert_eq!(var.var_opt(), Some((0, 0)), "left side must be the variable itself");
+        let mut stack = vec![(var, containing)];
+        let res = unify(&mut stack);
+        assert!(
+            matches!(res, Err(UnificationFailure::Occurs((0, 0), _))),
+            "binding $x to (f $x) must fail the occurs check in unify, got {res:?}"
+        );
+
+        // The mirrored orientation goes through the other arm, which needs its own case: the
+        // variable on the right, the containing term on the left.
+        let mut stack = vec![(containing, var)];
+        let res = unify(&mut stack);
+        assert!(
+            matches!(res, Err(UnificationFailure::Occurs((0, 0), _))),
+            "the same cycle must be rejected with the sides swapped, got {res:?}"
+        );
+
+        // The same shape with a GROUND right-hand side is what the stamp lets us skip the walk for,
+        // and it must still be accepted.
+        let mut gv = parse!(r"[3] F $ [2] f a");
+        let ge = Expr { ptr: gv.as_mut_ptr() };
+        let gvar = ExprEnv { n: 0, v: 0, offset: 3, ground_skip: 0, base: ge };
+        let ground = ExprEnv { n: 0, v: 1, offset: 4, ground_skip: 3, base: ge };
+        let mut stack = vec![(gvar, ground)];
+        assert!(
+            unify(&mut stack).is_ok(),
+            "a stamped ground term carries no variable, so the skip must not change the outcome"
+        );
+    }
+
+    /// A stamped binding is copied whole instead of walked, including when the value is a bare
+    /// `NewVar` or a `VarRef`. That must be byte-for-byte what the walk produces, so clearing every
+    /// stamp cannot change the emitted bytes.
+    #[test]
+    fn stamped_and_unstamped_application_agree() {
+        let cases: [(&[u8], &[u8]); 4] = [
+            (&parse!(r"[3] f $ _1"), &parse!(r"[3] f [2] g a [2] g a")),
+            (&parse!(r"[3] f $ $"), &parse!(r"[3] f [2] g [2] h a b")),
+            (&parse!(r"[3] f $ _1"), &parse!(r"[3] f $ _1")),
+            (&parse!(r"[2] f $"), &parse!(r"[2] f $")),
+        ];
+        for (pattern, data) in cases {
+            let le = Expr { ptr: pattern.as_ptr().cast_mut() };
+            let re = Expr { ptr: data.as_ptr().cast_mut() };
+            let mut stack = vec![(ExprEnv::new(0, le), ExprEnv::new(1, re))];
+            let stamped = unify(&mut stack).expect("unifies");
+
+            let mut cleared = stamped.clone();
+            for env in cleared.values_mut() {
+                env.ground_skip = 0;
+            }
+
+            let emit = |bindings: &Bindings| -> Vec<u8> {
+                let mut buf = Vec::new();
+                let mut cycled = BTreeMap::new();
+                let mut st: Vec<ExprVar> = vec![];
+                let mut asg: Vec<ExprVar> = vec![];
+                let mut sink = crate::VecSink(&mut buf);
+                crate::apply_e(0, 0, 0, le, bindings, &mut sink, &mut cycled, &mut st, &mut asg);
+                buf
+            };
+            assert_eq!(
+                emit(&stamped),
+                emit(&cleared),
+                "the bulk copy must emit exactly what the item walk emits"
+            );
+        }
+    }
+
+    /// The stamp is a `u16`, so a ground span of `u16::MAX` bytes may carry one and `u16::MAX + 1`
+    /// must not. Both have to unify correctly either way, and a one-byte difference at that size
+    /// must still be seen.
+    #[test]
+    fn spans_at_the_u16_boundary() {
+        let pattern = parse!(r"[3] g $ _1"); // (g $x $x), so the second pop is stamp-eligible
+        for total in [u16::MAX as usize, u16::MAX as usize + 1] {
+            let big = ground_tree(total);
+            let mut data = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'g'];
+            data.extend_from_slice(&big);
+            data.extend_from_slice(&big);
+            let bindings = unify_exprs(&pattern, &data)
+                .unwrap_or_else(|e| panic!("{total}-byte ground term must unify: {e:?}"));
+            let stamps: Vec<u16> = bindings.values().map(|e| e.ground_skip).collect();
+            if total > u16::MAX as usize {
+                assert!(
+                    stamps.iter().all(|&s| s == 0),
+                    "a span longer than u16::MAX must stay unstamped, got {stamps:?}"
+                );
+            }
+
+            let mut other = big.clone();
+            *other.last_mut().unwrap() = b'y';
+            let mut data2 = vec![item_byte(Tag::Arity(3)), item_byte(Tag::SymbolSize(1)), b'g'];
+            data2.extend_from_slice(&big);
+            data2.extend_from_slice(&other);
+            assert!(
+                matches!(unify_exprs(&pattern, &data2), Err(UnificationFailure::Difference(_, _))),
+                "a one-byte difference at {total} bytes must still be a Difference"
+            );
+        }
+    }
+}
+
 mod tests {
     use crate::gxhash::GxHasher;
     use super::*;
+
+    /// `substitute_one_de_bruijn_at` drops the substitution table that the general
+    /// `substitute_de_bruijn` needs, so at `base == 0` the two have to agree byte for byte
+    /// over every shape: substituting the first, middle and last introduction, with ground
+    /// and non-ground substitutions, and with refs on both sides of the substituted index
+    /// as well as at it. The table-driven side is spelled out here because
+    /// `substitute_one_de_bruijn` now delegates to the function under test.
+    #[cfg(test)]
+    #[test]
+    fn test_substitute_one_de_bruijn_at_base_zero_matches() {
+        let templates: [(Vec<u8>, u8); 8] = [
+            (parse!(r"$").to_vec(), 0),                        // $x
+            (parse!(r"[3] K $ $").to_vec(), 0),                // (K $x $y), first
+            (parse!(r"[3] K $ $").to_vec(), 1),                // (K $x $y), last
+            (parse!(r"[4] K $ $ $").to_vec(), 1),              // (K $x $y $z), middle
+            (parse!(r"[3] K $ _1").to_vec(), 0),               // (K $x $x), ref at the index
+            (parse!(r"[4] K $ $ _1").to_vec(), 1),             // ref below the index
+            (parse!(r"[4] K $ $ _2").to_vec(), 0),             // ref above the index
+            (parse!(r"[5] K $ $ _2 _1").to_vec(), 0),          // refs on both sides
+        ];
+        let subs: [Vec<u8>; 3] = [
+            parse!(r"[2] T 9").to_vec(),                       // ground, introduces nothing
+            parse!(r"[2] T $").to_vec(),                       // introduces one
+            parse!(r"[3] T $ _1").to_vec(),                    // introduces one, refers to it
+        ];
+
+        for (tv, idx) in templates.iter() {
+            for sv in subs.iter() {
+                let mut tb = tv.clone(); let mut sb = sv.clone();
+                let t = Expr { ptr: tb.as_mut_ptr() };
+                let sub = Expr { ptr: sb.as_mut_ptr() };
+
+                let mut nv: u8 = item_byte(Tag::NewVar);
+                let mut table = vec![Expr { ptr: &mut nv }; t.newvars()];
+                table[*idx as usize] = sub;
+
+                let mut oldv = vec![0u8; 512];
+                let mut oldz = ExprZipper::new(Expr { ptr: oldv.as_mut_ptr() });
+                t.substitute_de_bruijn(&table[..], &mut oldz);
+
+                let mut newv = vec![0u8; 512];
+                let mut newz = ExprZipper::new(Expr { ptr: newv.as_mut_ptr() });
+                t.substitute_one_de_bruijn_at(*idx, 0, sub, &mut newz);
+
+                assert_eq!(oldz.loc, newz.loc, "length for idx {} tpl {} sub {}",
+                           idx, serialize(&tv[..]), serialize(&sv[..]));
+                assert_eq!(&oldv[..oldz.loc], &newv[..newz.loc], "bytes for idx {} tpl {} sub {}",
+                           idx, serialize(&tv[..]), serialize(&sv[..]));
+            }
+        }
+    }
+
     #[cfg(test)]
     #[test]
     fn test_unify() {
@@ -2812,14 +3469,46 @@ mod tests {
     }
 
     #[test]
+    fn rel_eq_structurally_different_keys() {
+        // eq between STRUCTURALLY DIFFERENT subterms must return false -- never read the other
+        // side at self's item offsets. The old implementation walked self's structure and
+        // interpreted other's bytes at the same offsets; on the first structural divergence the
+        // offsets desynchronize, land in symbol payload, and byte_item panics on reserved bytes
+        // (the nondeterministic "reserved 97/69" mork-test failures: whether a hash-bucket probe
+        // ever compares a different-key pair depends on the process's random hash seed).
+        {
+            // self = (x y): [2] '1 x '1 y     other = 'x' followed by payload-range garbage
+            let mut sv = parse!(r"[2] x y");
+            let se = Expr { ptr: sv.as_mut_ptr() };
+            // A 1-byte symbol whose base buffer continues with a reserved-range byte, exactly
+            // like a longer symbol's payload ("Ex...") following a short subterm in a fact.
+            let mut ov: Vec<u8> = vec![item_byte(Tag::SymbolSize(1)), b'x', b'E', b'x', b'p', b'r'];
+            let oe = Expr { ptr: ov.as_mut_ptr() };
+            let lhs = RelExprEnv(ExprEnv::new(0, se));
+            let rhs = RelExprEnv(ExprEnv::new(0, oe));
+            assert!(lhs != rhs, "structurally different subterms must compare unequal");
+            assert!(rhs != lhs, "in both directions");
+        }
+        {
+            // Same shapes but the longer side is `other`: self's walk must not run past its own
+            // subterm either.
+            let mut sv: Vec<u8> = vec![item_byte(Tag::SymbolSize(1)), b'x', b'E', b'x', b'p', b'r'];
+            let se = Expr { ptr: sv.as_mut_ptr() };
+            let mut ov = parse!(r"[2] x y");
+            let oe = Expr { ptr: ov.as_mut_ptr() };
+            assert!(RelExprEnv(ExprEnv::new(0, se)) != RelExprEnv(ExprEnv::new(0, oe)));
+        }
+    }
+
+    #[test]
     fn rel_eq() {
         {
             //       lhs---- rhs----
             // (F $_ ($x $x) ($x $x))
             let mut ev = parse!(r"[4] F $ [2] $ _2 [2] _2 _2");
             let e = Expr { ptr: ev.as_mut_ptr() };
-            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, base: e});
-            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, base: e});
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, ground_skip: 0, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, ground_skip: 0, base: e});
             println!("lhs {}", lhs.0.show());
             println!("rhs {}", rhs.0.show());
             assert_eq!(lhs, rhs);
@@ -2831,8 +3520,8 @@ mod tests {
             // (F $_ ($x $x) ($y $x))
             let mut ev = parse!(r"[4] F $ [2] $ _2 [2] $ _2");
             let e = Expr { ptr: ev.as_mut_ptr() };
-            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, base: e});
-            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, base: e});
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset:  1 + 2 + 1, ground_skip: 0, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 2, offset:  1 + 2 + 1 + 1 + 1 + 1, ground_skip: 0, base: e});
             println!("lhs {}", lhs.0.show());
             println!("rhs {}", rhs.0.show());
             assert_ne!(lhs, rhs);
@@ -2844,8 +3533,8 @@ mod tests {
             // ($x $x)
             let mut ev = parse!(r"[2] $ _1");
             let e = Expr { ptr: ev.as_mut_ptr() };
-            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 0, offset: 1, base: e});
-            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset: 2, base: e});
+            let lhs = RelExprEnv(ExprEnv{ n: 0, v: 0, offset: 1, ground_skip: 0, base: e});
+            let rhs = RelExprEnv(ExprEnv{ n: 0, v: 1, offset: 2, ground_skip: 0, base: e});
             println!("lhs {}", lhs.0.show());
             println!("rhs {}", rhs.0.show());
             assert_eq!(lhs, rhs);
@@ -2869,7 +3558,7 @@ fn  unify_fuzzy_test(){
     let s = |s_| item_byte(Tag::SymbolSize(s_));
     let n = item_byte(Tag::NewVar);
     
-    if false {
+    if true {
         println!("\n==========================================================================================\n");
         // ({0b1110} {0b0111})
         let mut expr_l = [a(2), f(0b1110), f(0b0111)];
@@ -2887,20 +3576,22 @@ fn  unify_fuzzy_test(){
         let mut stack = Vec::new();
         stack.push((l,r));
 
-        let bindings = unify_fuzzy(&mut stack, &mut undo);
+        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
 
         // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}", undo, stack, bindings);
 
 
 
-        let mut out_l = Vec::with_capacity(300);
-        let mut out_r = Vec::with_capacity(300);
-        let mut stk = Vec::with_capacity(300);
-        let mut asn = Vec::with_capacity(300);
+        let mut out_l  = Vec::with_capacity(300);
+        let mut out_l_ = VecSink(&mut out_l);
+        let mut out_r  = Vec::with_capacity(300);
+        let mut out_r_ = VecSink(&mut out_r);
+        let mut stk    = Vec::with_capacity(300);
+        let mut asn    = Vec::with_capacity(300);
 
-        let b = bindings.as_ref().unwrap();
-        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
-        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
+        let b = &bindings;
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l_, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r_, stk , asn );
 
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
         println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
@@ -2912,7 +3603,7 @@ fn  unify_fuzzy_test(){
         // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
     }
 
-    if false {
+    if true {
         println!("\n==========================================================================================\n");
         // ((f0  $z) ($z f1) $y      (f2 f3) $y) 
         // ($x       $x      (f4 f5) $x      $x)
@@ -2933,10 +3624,12 @@ fn  unify_fuzzy_test(){
         stack.push((l,r));
 
 
-        let bindings = unify_fuzzy(&mut stack, &mut undo);
+        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
+
+
 
         // println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
-        for each in  bindings.as_ref().unwrap() {
+        for each in bindings.iter() {
             let view = Expr { ptr : unsafe { each.1.base.ptr.add(each.1.offset as usize) } };
             println!("\t {:?}", each);
             println!("\t\t\t| {:?}", view);
@@ -2949,14 +3642,16 @@ fn  unify_fuzzy_test(){
         println!("r {:?}", r);
         println!();
 
-        let mut out_l = Vec::with_capacity(300);
-        let mut out_r = Vec::with_capacity(300);
-        let mut stk = Vec::with_capacity(300);
-        let mut asn = Vec::with_capacity(300);
+        let mut out_l  = Vec::with_capacity(300);
+        let mut out_l_ = VecSink(&mut out_l);
+        let mut out_r  = Vec::with_capacity(300);
+        let mut out_r_ = VecSink(&mut out_r);
+        let mut stk    = Vec::with_capacity(300);
+        let mut asn    = Vec::with_capacity(300);
 
-        let b = bindings.as_ref().unwrap();
-        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
-        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
+        let b = &bindings;
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l_, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r_, stk , asn );
         
         // the mutations don't give equal value when substitutions happen for the patterns, but this might not matter. 
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
@@ -2971,7 +3666,7 @@ fn  unify_fuzzy_test(){
 
     }
 
-    if false {
+    if true {
         println!("\n==========================================================================================\n");
         // ( ( f0 $z )  $y          ( f2 f3 )  $y  ( $z f1 )  ) 
         // ( $x         ( f4 f5 )   $x         $x  $x         )                                  
@@ -2987,15 +3682,15 @@ fn  unify_fuzzy_test(){
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
         let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr() });
 
-        let mut undo = Vec::new();
+        let mut undo  = Vec::new();
         let mut stack = Vec::new();
         stack.push((l,r));
 
 
-        let bindings = unify_fuzzy(&mut stack, &mut undo);
+        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
 
         // println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
-        for each in  bindings.as_ref().unwrap() {
+        for each in  bindings.iter() {
             let view = Expr { ptr : unsafe { each.1.base.ptr.add(each.1.offset as usize) } };
             println!("\t {:?}", each);
             println!("\t\t\t| {:?}", view);
@@ -3008,14 +3703,16 @@ fn  unify_fuzzy_test(){
         println!("r {:?}", r);
         println!();
 
-        let mut out_l = Vec::with_capacity(300);
-        let mut out_r = Vec::with_capacity(300);
-        let mut stk = Vec::with_capacity(300);
-        let mut asn = Vec::with_capacity(300);
+        let mut out_l  = Vec::with_capacity(300);
+        let mut out_l_ = VecSink(&mut out_l);
+        let mut out_r  = Vec::with_capacity(300);
+        let mut out_r_ = VecSink(&mut out_r);
+        let mut stk    = Vec::with_capacity(300);
+        let mut asn    = Vec::with_capacity(300);
 
-        let b = bindings.as_ref().unwrap();
-        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l, stk , asn );
-        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r, stk , asn );
+        let b = &bindings;
+        apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l_, stk , asn );
+        apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r_, stk , asn );
         
         // the mutations don't give equal value when substitutions happen for the patterns, but this might not matter. 
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
@@ -3032,7 +3729,7 @@ fn  unify_fuzzy_test(){
 
 
     // exec Demo
-    if false {
+    if true {
         println!("\n==========================================================================================\n");
         // (? {1110} {0111} a)
         let mut expr_a = [a(4), s(1), b'?', f(0b1110), f(0b0111), s(1), b'a'];
@@ -3087,7 +3784,7 @@ fn  unify_fuzzy_test(){
             let mut stack = Vec::new();
             stack.push((l0,r0));
 
-            let bindings = unify_fuzzy(&mut stack, &mut undo);
+            let bindings = unify_fuzzy_(&mut stack, &mut undo);
 
             // println!("bindings {:?}", bindings);
 
@@ -3099,7 +3796,9 @@ fn  unify_fuzzy_test(){
                 }
                 continue;
             };
-            apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: unsafe { template_list.as_mut_ptr().add(3) }} , b, out, stk , asn );
+            let b_       = &b;
+            let mut out_ = VecSink(&mut out);
+            apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: unsafe { template_list.as_mut_ptr().add(3) }} , b_, out_, stk , asn );
 
             all_outs.push(out);
 
@@ -3139,7 +3838,7 @@ fn  unify_fuzzy_test(){
 
 
         let mut expr_y = [a(4),s(1), b'#', f(0b0011), f(0b1110) , s(1), b'y'];
-        let mut expr_z = [a(4),s(1), b'#', n        , r(1)      , s(1), b'z'];
+        let mut expr_z = [a(4),s(1), b'#', n        , r(0)      , s(1), b'z'];
 
         println!("expr_y {:?}", Expr{ ptr: expr_b.as_mut_ptr()} );
         println!("expr_z {:?}", Expr{ ptr: expr_a.as_mut_ptr()} );
@@ -3190,16 +3889,17 @@ fn  unify_fuzzy_test(){
                 stack.push((l1,r1));
                 // println!("\tstack {:?}", stack);
 
-                let bindings = unify_fuzzy(&mut stack, &mut undo);
+                let bindings = unify_fuzzy_(&mut stack, &mut undo);
                 // println!("bindings {:?}", bindings);
 
 
-                let Ok(b) = bindings.as_ref() else { 
+                let Ok(b) = bindings else { 
                     while let Some((ptr,mask)) = undo.pop() {
                         unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
                     }
                     continue;
                 };
+                let b_ = &b;
 
                 let mut vars     = Expr{ ptr : pattern_list.as_mut_ptr() }.variables() as u8;
                 let mut new_vars = Expr{ ptr : pattern_list.as_mut_ptr() }.newvars() as u8;
@@ -3207,9 +3907,10 @@ fn  unify_fuzzy_test(){
 
                 // println!();
                 for _ in 0..3 {
-                    let mut out = Vec::new();
-                    let o       = unsafe { Expr { ptr : template_list.as_mut_ptr().add(offset) } };
-                    apply_e_clears_stacks_and_cycles_check!(0,vars,new_vars, o, b, out, stk , asn );
+                    let mut out  = Vec::new();
+                    let mut out_ = VecSink(&mut out);
+                    let o        = unsafe { Expr { ptr : template_list.as_mut_ptr().add(offset) } };
+                    apply_e_clears_stacks_and_cycles_check!(0,vars,new_vars, o, b_, out_, stk , asn );
                     
                     // println!("{:?}", Expr{ptr : out.as_mut_ptr()});
 
@@ -3247,17 +3948,144 @@ fn  unify_fuzzy_test(){
 
 
 
-#[inline(never)]
-pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
-    assert!(undo_stack.is_empty());
+/// What [`match2`] just walked past on the non-variable side of a variable pairing: the
+/// subterm's byte extent, and how many variables the traversal met inside it (`None` when the
+/// traversal does not count). Reported to `stamp` right after the corresponding `hole` call, so
+/// the caller can grade the pair it pushed -- extent and groundness fall out of the skip walk
+/// that `match2` performs anyway.
+pub struct SkippedSubtermFuzzy {
+    pub extent: usize,
+    pub vars: Option<u32>,
+    /// True when the skipped subterm is the right (`e2`) side.
+    pub right: bool,
+}
 
-    let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
-    let mut iterations = 0;
-    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
+// functor same -> functor arguments -> call recursively
+// unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
+// unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
+fn match2_fuzzy_<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<SkippedSubtermFuzzy>),
+    A1, R1, T1 : Traversal<A1, R1>,
+    A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
+                                    t2: &mut T2, e2: Expr, i2: usize, hole: &mut F, fuzzy : &mut impl FnMut([(*mut u8, u8); 2])) -> Result<(usize, R1, usize, R2), (usize, usize)> {
+    match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
+        (b1 @ (Tag::NewVar | Tag::VarRef(_)), right) => {
+
+            hole(t1, e1, i1, t2, e2, i2, None);
+            let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
+            let vars0 = t2.vars_seen();
+            let (d2, r2) = execute_loop(t2, e2, i2);
+            hole(t1, e1, i1, t2, e2, i2, Some(SkippedSubtermFuzzy {
+                extent: d2 - i2,
+                vars:  if let Tag::Fuzzy(_) = right {None} else { t2.vars_seen().zip(vars0).map(|(after, before)| after - before)},
+                right: true,
+            }));
+            Ok((1, r1, d2 - i2, r2))
+        }
+        (left, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
+            // panic!();
+
+            hole(t1, e1, i1, t2, e2, i2, None);
+            let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
+            let vars0 = t1.vars_seen();
+            let (d1, r1) = execute_loop(t1, e1, i1);
+            hole(t1, e1, i1, t2, e2, i2, Some(SkippedSubtermFuzzy {
+                extent: d1 - i1,
+                // vars: t1.vars_seen().zip(vars0).map(|(after, before)| after - before),
+                vars:  if let Tag::Fuzzy(_) = left {None} else { t1.vars_seen().zip(vars0).map(|(after, before)| after - before)},
+                right: false,
+            }));
+            Ok((d1 - i1, r1, 1, r2))
+        }
+        (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
+            let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
+            let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
+            if slice1 != slice2 { Err((i1, i2)) }
+            else {
+                let d = s1 as usize + 1;
+                let r1 = t1.symbol(i1, slice1);
+                let r2 = t2.symbol(i2, slice2);
+                Ok((d, r1, d, r2))
+            }
+        }
+        (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
+            let mut offset1 = 1;
+            let mut offset2 = 1;
+            let mut acc1 = t1.zero(i1, a1);
+            let mut acc2 = t2.zero(i2, a2);
+            for k in 0..a1 {
+                let (d1, r1, d2, r2) = match2_fuzzy_(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole, fuzzy)?;
+                acc1 = t1.add(i1 + offset1, acc1, r1);
+                acc2 = t2.add(i2 + offset2, acc2, r2);
+                offset1 += d1;
+                offset2 += d2;
+            }
+            let r1 = t1.finalize(i1 + offset1, acc1);
+            let r2 = t2.finalize(i2 + offset2, acc2);
+            Ok((offset1, r1, offset2, r2))
+        }
+        (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
+            // the two bit tag should be the same if well formed.
+            if f1 == f2 {
+                // NOOP
+            } else if f1 & f2 & 0b_0000_1111 == 0 {
+                return Err((i1, i2));
+            } else {
+                unsafe {
+                    fuzzy([(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]) 
+                }
+            }
+
+            // [Remy] :
+            //   should the intersection be passed, or the original values?
+            let r1 = t1.fuzzy(i1, f1);
+            let r2 = t2.fuzzy(i2, f2);
+            Ok((1,r1,1,r2))
+        }
+        _ => { Err((i1, i2)) }
+    }
+}
+
+#[inline(never)]
+pub fn unify_fuzzy_(stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<Bindings, UnificationFailure> {
+    let mut bindings: Bindings = Bindings::new();
+    let mut trail = Vec::new();
+    unify_into_fuzzy_(&mut bindings, stack, &mut trail, undo_stack)?;
+    Ok(bindings)
+}
+
+
+/// [`unify`] against a LIVE map: solve the equations on `stack` with `bindings` already holding a
+/// solved form, recording every key inserted on `trail` so the caller can unwind to a mark. This is
+/// what lets the join bind one candidate INCREMENTALLY instead of cloning the map and re-solving
+/// every prior equation per candidate: the derefs consult the live map, so an earlier binding
+/// constrains exactly as if its equation were re-asserted, and unwinding is `remove` per trail
+/// entry (an insert target is always a previously-unbound key, so removal restores the map).
+/// The solved form's SHAPE may differ from a from-scratch solve (path compression, var-var
+/// direction); downstream only ever observes bindings by dereference, which is unchanged.
+pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, ExprEnv)>, trail: &mut Vec<ExprVar>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<(), UnificationFailure> {
+    let bindings = &mut *bindings;
+    // Counts this call's iterations locally and folds the result into
+    // [`max_unify_iterations`] exactly once, on the way out. A `Drop` guard rather than an
+    // update at each `return`, so every exit path (Occurs, Difference, Ok) is covered and
+    // the loop itself stays a plain increment.
+    struct IterationHighWater(u32);
+    impl Drop for IterationHighWater {
+        fn drop(&mut self) {
+            unsafe {
+                if self.0 > max_unify_iterations {
+                    max_unify_iterations = self.0;
+                }
+            }
+        }
+    }
+    let mut iter_stat = IterationHighWater(0);
+    let iterations = &mut iter_stat.0;
+    let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = Default::default();
 
     // [Remy] :
     // Macros are used here primarily for inlining.
     macro_rules! step {
+
         (derefBound $t:expr) => {{
             let mut t: ExprEnv = $t;
             'bound: loop {
@@ -3277,14 +4105,26 @@ pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Ve
         (push $x:expr, $y:expr) => {{
             let _x: ExprEnv = $x;
             let _y: ExprEnv = $y;
+            if PRINT_DEBUG { println!("pushing {} {}", _x.show(), _y.show()); }
             match (_x.var_opt(), _y.var_opt()) {
-                (None,None)                                                => unreachable!("Expected at leat one variable or reference."),
-                (Some(xvs), Some(yvs)) if step!(isUnbound xvs) 
-                                       && step!(isUnbound yvs)             => stack.push((_x, _y)),
-                _                      if !encountered.contains(&(_x, _y)) => { encountered.insert((_x, _y)); stack.push((_x, _y)); }
-                _                                                          => {}
+
+                (None,None) => unreachable!("Expected at leat one variable or reference."),
+                
+                (Some(xvs), Some(yvs)) if step!(isUnbound xvs) && step!(isUnbound yvs) => {
+                    stack.push((_x, _y));
+                    true
+                }
+
+                _ if !encountered.contains(&(_x, _y)) => {
+                    encountered.insert((_x, _y));
+                    stack.push((_x, _y));
+                    true
+                }
+
+                _ => { false }
             }
         }};
+
         // [Remy] :
         // This block only gets used in the `push` branch of the this macro.
         (isUnbound $v:expr) => {{
@@ -3312,8 +4152,8 @@ pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Ve
                 let t : u8 = x.1;
                 traverseh!(bool, bool, u8, e.subsexpr(), e.v,
                     |c: &mut u8, _| { let eq = *c == t; *c += 1; eq },
-                    |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
-                    // |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+                    |c: &mut u8, _, r| r == t,
+                    |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
             }
         }};
     }
@@ -3321,10 +4161,6 @@ pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Ve
     // let mut largs = vec![];
     // let mut rargs = vec![];
 
-
-    // [Remy] :
-    // Note that although values on the stack are being poped, they are all pointers to data that must live longer than the unification operation,
-    //   so although we are constructing bindings from values derived from stack values (Expr pointers), the bindings will be usable after they are popped. 
     'popping: while let Some((xpop, ypop)) = stack.pop() {
         if PRINT_DEBUG {
             println!("step {iterations}");
@@ -3332,49 +4168,125 @@ pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Ve
                 // let ov = vec![0u8; 512];
                 // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
                 // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-                println!("  binding {:?} +{} {}", *k, v.v, v.show());
+                println!("  binding {:?} +{} {}", k, v.v, v.show());
                 // println!("output {:?}", o);
 
             });
             println!();
         }
 
-
-        if iterations > MAX_UNIFY_ITER { 
-            return Err(UnificationFailure::MaxIter(iterations))
-        }
-        iterations += 1;
+        // No budget check here any more: the former `MAX_UNIFY_ITER` abort silently dropped
+        // genuine matches, since unification is only reached on a candidate the search has
+        // already accepted, so a pattern whose total structure exceeded it lost real answers
+        // size-dependently and without any diagnostic. Termination never rested on it -- the
+        // occurs check and the `encountered` set bound the search -- so the budget only hid
+        // how far unification had to go. The guard above records that instead.
+        *iterations += 1;
         if PRINT_DEBUG {
             println!("popping");
             // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
             // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
         }
-        // [Remy] :
-        // First, if there is a variable on either side, we dereference each in a loop as far as possible 
-        //  so that the following match can ask simply, "Are we making bindings, or comparing bindings?".
         let dt1: ExprEnv = step!(derefBound xpop);
         let dt2: ExprEnv = step!(derefBound ypop);
 
         match (dt1.var_opt(), dt2.var_opt()) {
             (None, None) => {
+                // Skip-stamp fast paths. The encoding is prefix-free, so byte equality of
+                // complete terms IS term equality, and byte positions of equal prefixes are
+                // structurally synchronized (the structure is determined by the prefix). Three
+                // consequences, graded by what we know:
+                //  - both stamped: two ground terms; equal iff same length and same bytes, and
+                //    any mismatch is a genuine Difference (no variable can be waiting to bind).
+                //  - one stamped: if every byte of the stamped span matches, the other term
+                //    decodes to exactly that span (a complete term is never a proper prefix of
+                //    another), so the pair is settled without walking. On the first mismatch we
+                //    know nothing -- the differing byte may be a variable on the unstamped side
+                //    that must bind -- so fall through to the structural walk. The byte loop is
+                //    in-bounds: a difference must occur before either term ends, because a full
+                //    match through the shorter would make it a proper prefix of the longer.
+                let (s1, s2) = (dt1.ground_skip as usize, dt2.ground_skip as usize);
+                if s1 != 0 && s2 != 0 {
+                    if s1 != s2 { return Err(UnificationFailure::Difference(dt1, dt2)); }
+
+                    let dt1_e = dt1.subsexpr().ptr;
+                    let dt2_e = dt2.subsexpr().ptr;
+
+
+                    // here we check that the pointers don't overlap befor getting mutable slices
+                    if dt1_e == dt2_e { continue 'popping; }
+
+                    let mut okay = true;
+                    for each in 0..s1 {
+                        unsafe {
+                            let left  = dt1_e.add(each);
+                            let right = dt2_e.add(each);
+                            if *left != *right {
+                                match [*left, *right].map(byte_item) {
+                                    [Tag::Fuzzy(l_f), Tag::Fuzzy(r_f)] => {
+                                        let i = l_f & r_f;
+                                        if i == 0b_0000 {
+                                            // fail early? this semantic might change
+                                            okay = false; break
+                                        } else {
+                                            undo_stack.push((left, l_f));
+                                            undo_stack.push((right, r_f));
+                                            *left  = item_byte(Tag::Fuzzy(i));
+                                            *right = item_byte(Tag::Fuzzy(i));
+                                        }
+                                    }
+                                    _ => {okay = false ; break}
+                                }
+                            }
+                        }
+                    }
+                    if okay { continue 'popping }
+
+                    return Err(UnificationFailure::Difference(dt1, dt2));
+                } else if s1 != 0 || s2 != 0 {
+                    let (skip, ground, other) = if s1 != 0 { (s1, dt1.subsexpr().ptr, dt2.subsexpr().ptr) }
+                                                else { (s2, dt2.subsexpr().ptr, dt1.subsexpr().ptr) };
+                    let mut i = 0usize;
+                    while i < skip && unsafe { *ground.add(i) == *other.add(i) } { i += 1; }
+                    if i == skip { continue 'popping; }
+                    // Mismatch: possibly a variable on the unstamped side; do the full walk.
+                }
+
                 let mut ts1 = dt1.clone().v_incr_traversal();
                 let mut ts2 = dt2.clone().v_incr_traversal();
-                // [Remy] :
-                // `match2` will find cases that don't match (failure to unify), 
-                //   values that are definately equal,
-                //   and values that __may__ unify. the callback is responsible for sheduling more specific cases.
-                if let Err((o1, o2)) = match2_fuzzy(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
-                                              &mut |tag, _ts1, e1, i1, _ts2, e2, i2| {
-                                                  match tag {
-                                                      Match2FuzzyTag::Hole  => step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32)),
-                                                      Match2FuzzyTag::FuzzyNonEq([(lp,l), (rp,r)]) => unsafe {
-                                                        *lp = item_byte(Tag::Fuzzy(l & r));
-                                                        *rp = item_byte(Tag::Fuzzy(l & r));
-                                                        undo_stack.push((lp, l));
-                                                        undo_stack.push((rp, r));
-                                                      },
-                                                  }
-                                              }) {
+
+                // `hole` pushes the (variable, subterm) pair; right after, match2 walks past the
+                // subterm and reports its extent and variable count, which grades the very pair
+                // just pushed: variable-free and small enough -> stamp it. The stamp then rides
+                // the env into `bindings` (making apply_e's bulk copy and the occurs skip fire),
+                // and into later coreference pops (settled above by byte compare). `pushed_at`
+                // guards against grading a pair the push macro deduplicated away.
+                let mut pushed_at: Option<usize> = None;
+                if let Err((o1, o2)) = match2_fuzzy_(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
+                                                &mut |_ts1, e1, i1, _ts2, e2, i2, skipped: Option<SkippedSubtermFuzzy>| {
+                                                    match skipped {
+                                                        None => {
+                                                            let did = step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32));
+                                                            pushed_at = if did { Some(stack.len() - 1) } else { None };
+                                                        }
+                                                        Some(skipped) => {
+                                                            if let (Some(at), Some(0), 1..=0xFFFF) = (pushed_at, skipped.vars, skipped.extent) {
+                                                                let pair = &mut stack[at];
+                                                                let side = if skipped.right { &mut pair.1 } else { &mut pair.0 };
+                                                                side.ground_skip = skipped.extent as u16;
+                                                            }
+                                                            pushed_at = None;
+                                                        }
+                                                    }
+                                                },
+                                                &mut |[(lp,l),(rp,r)] : [(*mut u8, u8);2]| unsafe {
+                                                    *lp = item_byte(Tag::Fuzzy(l & r));
+                                                    *rp = item_byte(Tag::Fuzzy(l & r));
+                                                    undo_stack.push((lp, l));
+                                                    undo_stack.push((rp, r));
+                                                } 
+                                            ) {
+                    if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
                     return Err(UnificationFailure::Difference(dt1, dt2));
                 }
 
@@ -3393,42 +4305,220 @@ pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Ve
                 //     return Err(UnificationFailure::Difference(dt1, dt2));
                 // }
             }
-
             (Some(vx), ov) => {
                 // [Remy] :
                 // The order of the `match` blocks matters here.
                 //   Only this block will check variables with other variables.
                 //   since variable comparisons are always done in this block, all variable = variable bindings are ordered
                 if let Some(sv) = ov { if vx == sv { continue 'popping } } // this guarantees that a variable won't add a binding to itself
-                
-                // If the right hand side is a structure, we technically need to do occurs checking of the left had side variable.
-                if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
-                
-                // [Remy] :
-                // Symbols are trivial, no extra operation needed.
-                // The final bindings made are of this form:
-                //   
-                // left_var -> right_symbol
-                // left_var -> right_var
-                // left_var -> right_structure
+
+                // A stamped subterm contains no variable, so the occurs walk is a guaranteed miss.
+                if dt2.ground_skip == 0 && step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                trail.push(vx);
                 bindings.insert(vx, dt2.clone());
             }
-            (None, Some(vy)) => {
-                // [Remy] :
-                // This block is like the block above, but it can work under the assumption that the left hand side isn't a variable.
-                if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
-                
-                // [Remy] :
-                // right_var -> left_structure
-                // right_var -> left_symbol
+            (ov, Some(vy)) => {
+                if let Some(sv) = ov { if vy == sv { continue 'popping } }
+                if dt1.ground_skip == 0 && step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                trail.push(vy);
                 bindings.insert(vy, dt1.clone());
             }
         }
     }
 
-    core::debug_assert!(stack.is_empty());
-    Ok(bindings)
+    if stack.is_empty() {
+        Ok(())
+    } else {
+        unreachable!()
+    }
 }
+
+
+
+
+
+// #[inline(never)]
+// pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
+//     assert!(undo_stack.is_empty());
+
+//     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
+//     let mut iterations = 0;
+//     let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
+
+//     // [Remy] :
+//     // Macros are used here primarily for inlining.
+//     macro_rules! step {
+//         (derefBound $t:expr) => {{
+//             let mut t: ExprEnv = $t;
+//             'bound: loop {
+//                 match t.var_opt() {
+//                     None     => break 'bound t,
+//                     Some(vs) => match bindings.get(&vs) {
+//                                     None          => {               break    'bound t; }
+//                                     Some(binding) => { t = *binding; continue 'bound    }
+//                                 }
+//                 }
+//             }
+//         }};
+
+//         // [Remy] :
+//         // Note that this block only ever gets reached, if the `match2` callback gets called.
+//         //   The `match2` callback only gets called when it hits a variable or reference on a left or right hand side.
+//         (push $x:expr, $y:expr) => {{
+//             let _x: ExprEnv = $x;
+//             let _y: ExprEnv = $y;
+//             match (_x.var_opt(), _y.var_opt()) {
+//                 (None,None)                                                => unreachable!("Expected at leat one variable or reference."),
+//                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) 
+//                                        && step!(isUnbound yvs)             => stack.push((_x, _y)),
+//                 _                      if !encountered.contains(&(_x, _y)) => { encountered.insert((_x, _y)); stack.push((_x, _y)); }
+//                 _                                                          => {}
+//             }
+//         }};
+//         // [Remy] :
+//         // This block only gets used in the `push` branch of the this macro.
+//         (isUnbound $v:expr) => {{
+//             let mut v: ExprVar = $v;
+//             'unbound: loop {
+//                 match bindings.get(&v) {
+//                     None          => break 'unbound true,
+//                     Some(binding) => match binding.var_opt() {
+//                                          None     => {         break    'unbound false }
+//                                          Some(vs) => { v = vs; continue 'unbound       }
+//                                      }
+//                 }
+//             }
+//         }};
+
+//         // [Remy] :
+//         // The occurs check here is actually incomplete,
+//         //   but it does not remove any valid results, so it's doing filtering.
+//         //   it's completeness is addressed in `apply_e`'s cycles checking map.
+//         (occurs $x:expr, $e:expr) => {{
+//             let x = $x;
+//             let e = $e;
+//             if x.0 != e.n { false }
+//             else {
+//                 let t : u8 = x.1;
+//                 traverseh!(bool, bool, u8, e.subsexpr(), e.v,
+//                     |c: &mut u8, _| { let eq = *c == t; *c += 1; eq },
+//                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
+//                     // |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
+//             }
+//         }};
+//     }
+
+//     // let mut largs = vec![];
+//     // let mut rargs = vec![];
+
+
+//     // [Remy] :
+//     // Note that although values on the stack are being poped, they are all pointers to data that must live longer than the unification operation,
+//     //   so although we are constructing bindings from values derived from stack values (Expr pointers), the bindings will be usable after they are popped. 
+//     'popping: while let Some((xpop, ypop)) = stack.pop() {
+//         if PRINT_DEBUG {
+//             println!("step {iterations}");
+//             bindings.iter().for_each(|(k, v)| {
+//                 // let ov = vec![0u8; 512];
+//                 // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
+//                 // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
+//                 println!("  binding {:?} +{} {}", *k, v.v, v.show());
+//                 // println!("output {:?}", o);
+
+//             });
+//             println!();
+//         }
+
+
+//         // if iterations > MAX_UNIFY_ITER { 
+//         //     return Err(UnificationFailure::MaxIter(iterations))
+//         // }
+//         iterations += 1;
+//         if PRINT_DEBUG {
+//             println!("popping");
+//             // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
+//             // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
+//         }
+//         // [Remy] :
+//         // First, if there is a variable on either side, we dereference each in a loop as far as possible 
+//         //  so that the following match can ask simply, "Are we making bindings, or comparing bindings?".
+//         let dt1: ExprEnv = step!(derefBound xpop);
+//         let dt2: ExprEnv = step!(derefBound ypop);
+
+//         match (dt1.var_opt(), dt2.var_opt()) {
+//             (None, None) => {
+//                 let mut ts1 = dt1.clone().v_incr_traversal();
+//                 let mut ts2 = dt2.clone().v_incr_traversal();
+//                 // [Remy] :
+//                 // `match2` will find cases that don't match (failure to unify), 
+//                 //   values that are definately equal,
+//                 //   and values that __may__ unify. the callback is responsible for sheduling more specific cases.
+//                 if let Err((o1, o2)) = match2_fuzzy(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
+//                                               &mut |tag, _ts1, e1, i1, _ts2, e2, i2| {
+//                                                   match tag {
+//                                                       Match2FuzzyTag::Hole  => step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32)),
+//                                                       Match2FuzzyTag::FuzzyNonEq([(lp,l), (rp,r)]) => unsafe {
+//                                                         *lp = item_byte(Tag::Fuzzy(l & r));
+//                                                         *rp = item_byte(Tag::Fuzzy(l & r));
+//                                                         undo_stack.push((lp, l));
+//                                                         undo_stack.push((rp, r));
+//                                                       },
+//                                                   }
+//                                               }) {
+//                     return Err(UnificationFailure::Difference(dt1, dt2));
+//                 }
+
+//                 // if dt1.same_functor(&dt2) {
+//                 //     largs.clear();
+//                 //     rargs.clear();
+//                 //     dt1.args(&mut largs);
+//                 //     dt2.args(&mut rargs);
+//                 //     debug_assert_eq!(largs.len(), rargs.len());
+//                 //
+//                 //     // Preorder: push children reversed so they pop in-order.
+//                 //     for i in (0..largs.len()).rev() {
+//                 //         step!(push largs[i], rargs[i]);
+//                 //     }
+//                 // } else {
+//                 //     return Err(UnificationFailure::Difference(dt1, dt2));
+//                 // }
+//             }
+
+//             (Some(vx), ov) => {
+//                 // [Remy] :
+//                 // The order of the `match` blocks matters here.
+//                 //   Only this block will check variables with other variables.
+//                 //   since variable comparisons are always done in this block, all variable = variable bindings are ordered
+//                 if let Some(sv) = ov { if vx == sv { continue 'popping } } // this guarantees that a variable won't add a binding to itself
+                
+//                 // If the right hand side is a structure, we technically need to do occurs checking of the left had side variable.
+//                 if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
+                
+//                 // [Remy] :
+//                 // Symbols are trivial, no extra operation needed.
+//                 // The final bindings made are of this form:
+//                 //   
+//                 // left_var -> right_symbol
+//                 // left_var -> right_var
+//                 // left_var -> right_structure
+//                 bindings.insert(vx, dt2.clone());
+//             }
+//             (None, Some(vy)) => {
+//                 // [Remy] :
+//                 // This block is like the block above, but it can work under the assumption that the left hand side isn't a variable.
+//                 if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
+                
+//                 // [Remy] :
+//                 // right_var -> left_structure
+//                 // right_var -> left_symbol
+//                 bindings.insert(vy, dt1.clone());
+//             }
+//         }
+//     }
+
+//     core::debug_assert!(stack.is_empty());
+//     Ok(bindings)
+// }
 
 
 
@@ -3439,80 +4529,80 @@ enum Match2FuzzyTag {
     FuzzyNonEq([(*mut u8, u8); 2]),
 }
 
-// functor same -> functor arguments -> call recursively
-// unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
-// unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
-fn match2_fuzzy<
-    F : FnMut(Match2FuzzyTag, &mut T1, Expr, usize, &mut T2, Expr, usize),
-    A1, R1, T1 : Traversal<A1, R1>,
-    A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
-                                    t2: &mut T2, e2: Expr, i2: usize, 
-                                    hole: &mut F
-                                   ) -> Result<(usize, R1, usize, R2), (usize, usize)> {
-    match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
-        (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
-            hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
-            let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
-            let (d2, r2) = execute_loop(t2, e2, i2);
-            Ok((1, r1, d2 - i2, r2))
-        }
-        (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
-            hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
-            let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
-            let (d1, r1) = execute_loop(t1, e1, i1);
-            Ok((d1 - i1, r1, 1, r2))
-        }
-        (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
-            let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
-            let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
-            if slice1 != slice2 { Err((i1, i2)) }
-            else {
-                let d = s1 as usize + 1;
-                let r1 = t1.symbol(i1, slice1);
-                let r2 = t2.symbol(i2, slice2);
-                Ok((d, r1, d, r2))
-            }
-        }
-        (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
-            let mut offset1 = 1;
-            let mut offset2 = 1;
-            let mut acc1 = t1.zero(i1, a1);
-            let mut acc2 = t2.zero(i2, a2);
-            for k in 0..a1 {
-                let (d1, r1, d2, r2) = match2_fuzzy(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole)?;
-                acc1 = t1.add(i1 + offset1, acc1, r1);
-                acc2 = t2.add(i2 + offset2, acc2, r2);
-                offset1 += d1;
-                offset2 += d2;
-            }
-            let r1 = t1.finalize(i1 + offset1, acc1);
-            let r2 = t2.finalize(i2 + offset2, acc2);
-            Ok((offset1, r1, offset2, r2))
-        }
-        (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
-            // the two bit tag should be the same if well formed.
-            if f1 == f2 {
-                // NOOP
-            } else if f1 & f2 & 0b_0000_1111 == 0 {
-                return Err((i1, i2));
-            } else {
-                hole( unsafe {
-                        Match2FuzzyTag::FuzzyNonEq(
-                            [(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]
-                    ) },
-                    t1, e1, i1, t2, e2, i2
-                );
-            }
+// // functor same -> functor arguments -> call recursively
+// // unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
+// // unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
+// fn match2_fuzzy<
+//     F : FnMut(Match2FuzzyTag, &mut T1, Expr, usize, &mut T2, Expr, usize),
+//     A1, R1, T1 : Traversal<A1, R1>,
+//     A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
+//                                     t2: &mut T2, e2: Expr, i2: usize, 
+//                                     hole: &mut F
+//                                    ) -> Result<(usize, R1, usize, R2), (usize, usize)> {
+//     match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
+//         (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
+//             hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
+//             let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
+//             let (d2, r2) = execute_loop(t2, e2, i2);
+//             Ok((1, r1, d2 - i2, r2))
+//         }
+//         (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
+//             hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
+//             let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
+//             let (d1, r1) = execute_loop(t1, e1, i1);
+//             Ok((d1 - i1, r1, 1, r2))
+//         }
+//         (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
+//             let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
+//             let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
+//             if slice1 != slice2 { Err((i1, i2)) }
+//             else {
+//                 let d = s1 as usize + 1;
+//                 let r1 = t1.symbol(i1, slice1);
+//                 let r2 = t2.symbol(i2, slice2);
+//                 Ok((d, r1, d, r2))
+//             }
+//         }
+//         (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
+//             let mut offset1 = 1;
+//             let mut offset2 = 1;
+//             let mut acc1 = t1.zero(i1, a1);
+//             let mut acc2 = t2.zero(i2, a2);
+//             for k in 0..a1 {
+//                 let (d1, r1, d2, r2) = match2_fuzzy(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole)?;
+//                 acc1 = t1.add(i1 + offset1, acc1, r1);
+//                 acc2 = t2.add(i2 + offset2, acc2, r2);
+//                 offset1 += d1;
+//                 offset2 += d2;
+//             }
+//             let r1 = t1.finalize(i1 + offset1, acc1);
+//             let r2 = t2.finalize(i2 + offset2, acc2);
+//             Ok((offset1, r1, offset2, r2))
+//         }
+//         (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
+//             // the two bit tag should be the same if well formed.
+//             if f1 == f2 {
+//                 // NOOP
+//             } else if f1 & f2 & 0b_0000_1111 == 0 {
+//                 return Err((i1, i2));
+//             } else {
+//                 hole( unsafe {
+//                         Match2FuzzyTag::FuzzyNonEq(
+//                             [(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]
+//                     ) },
+//                     t1, e1, i1, t2, e2, i2
+//                 );
+//             }
 
-            // [Remy] :
-            //   should the intersection be passed, or the original values?
-            let r1 = t1.fuzzy(i1, f1);
-            let r2 = t2.fuzzy(i2, f2);
-            Ok((1,r1,1,r2))
-        }
-        _ => { Err((i1, i2)) }
-    }
-}
+//             // [Remy] :
+//             //   should the intersection be passed, or the original values?
+//             let r1 = t1.fuzzy(i1, f1);
+//             let r2 = t2.fuzzy(i2, f2);
+//             Ok((1,r1,1,r2))
+//         }
+//         _ => { Err((i1, i2)) }
+//     }
+// }
 
 
 

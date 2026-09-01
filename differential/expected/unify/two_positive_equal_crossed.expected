@@ -1,0 +1,3 @@
+(Else (foo bar) (bar baz))
+(Something (foo bar) (bar baz))
+MATCHED

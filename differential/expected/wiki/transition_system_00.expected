@@ -1,0 +1,93 @@
+(hash (?d¦)‚×/š÷ÇJÍö act (unstack B A)) öŠû8;ÙWà-W~‹ÿ)
+(hash (»hù6DTØ–jÇa“^I act (unstack A B)) gÛràÏ¬Æ)P´qMKT¸)
+(hash init ŞZ”É–-`K;Äd>„)
+(temp (?d¦)‚×/š÷ÇJÍö act (unstack B A)) (clear A))
+(temp (?d¦)‚×/š÷ÇJÍö act (unstack B A)) (holding B))
+(temp (?d¦)‚×/š÷ÇJÍö act (unstack B A)) (ontable A))
+(temp (»hù6DTØ–jÇa“^I act (unstack A B)) (clear B))
+(temp (»hù6DTØ–jÇa“^I act (unstack A B)) (holding A))
+(temp (»hù6DTØ–jÇa“^I act (unstack A B)) (ontable B))
+(state init (handempty))
+(state init (clear A))
+(state init (clear B))
+(state init (ontable A))
+(state init (ontable B))
+(state ?d¦)‚×/š÷ÇJÍö (handempty))
+(state ?d¦)‚×/š÷ÇJÍö (clear B))
+(state ?d¦)‚×/š÷ÇJÍö (ontable A))
+(state ?d¦)‚×/š÷ÇJÍö (B on A))
+(state gÛràÏ¬Æ)P´qMKT¸ (clear B))
+(state gÛràÏ¬Æ)P´qMKT¸ (holding A))
+(state gÛràÏ¬Æ)P´qMKT¸ (ontable B))
+(state »hù6DTØ–jÇa“^I (handempty))
+(state »hù6DTØ–jÇa“^I (clear A))
+(state »hù6DTØ–jÇa“^I (ontable B))
+(state »hù6DTØ–jÇa“^I (A on B))
+(state ŞZ”É–-`K;Äd>„ (handempty))
+(state ŞZ”É–-`K;Äd>„ (clear A))
+(state ŞZ”É–-`K;Äd>„ (clear B))
+(state ŞZ”É–-`K;Äd>„ (ontable A))
+(state ŞZ”É–-`K;Äd>„ (ontable B))
+(state öŠû8;ÙWà-W~‹ÿ (clear A))
+(state öŠû8;ÙWà-W~‹ÿ (holding B))
+(state öŠû8;ÙWà-W~‹ÿ (ontable A))
+(neg-eff (pick-up $a) (handempty))
+(neg-eff (pick-up $a) (clear $a))
+(neg-eff (pick-up $a) (ontable $a))
+(neg-eff (put-down $a) (holding $a))
+(neg-eff (stack $a $b) (clear $b))
+(neg-eff (stack $a $b) (holding $a))
+(neg-eff (unstack $a $b) (handempty))
+(neg-eff (unstack $a $b) (clear $a))
+(neg-eff (unstack $a $b) ($a on $b))
+(pos-eff (pick-up $a) (holding $a))
+(pos-eff (put-down $a) (handempty))
+(pos-eff (put-down $a) (clear $a))
+(pos-eff (put-down $a) (ontable $a))
+(pos-eff (stack $a $b) (handempty))
+(pos-eff (stack $a $b) (clear $a))
+(pos-eff (stack $a $b) ($a on $b))
+(pos-eff (unstack $a $b) (clear $b))
+(pos-eff (unstack $a $b) (holding $a))
+(t ?d¦)‚×/š÷ÇJÍö (unstack B A) öŠû8;ÙWà-W~‹ÿ)
+(t gÛràÏ¬Æ)P´qMKT¸ (put-down A) ŞZ”É–-`K;Äd>„)
+(t gÛràÏ¬Æ)P´qMKT¸ (stack A B) »hù6DTØ–jÇa“^I)
+(t »hù6DTØ–jÇa“^I (unstack A B) gÛràÏ¬Æ)P´qMKT¸)
+(t ŞZ”É–-`K;Äd>„ (pick-up A) gÛràÏ¬Æ)P´qMKT¸)
+(t ŞZ”É–-`K;Äd>„ (pick-up B) öŠû8;ÙWà-W~‹ÿ)
+(t öŠû8;ÙWà-W~‹ÿ (put-down B) ŞZ”É–-`K;Äd>„)
+(t öŠû8;ÙWà-W~‹ÿ (stack B A) ?d¦)‚×/š÷ÇJÍö)
+(pre (pick-up $a) $b (, (state $b (clear $a)) (state $b (ontable $a)) (state $b (handempty))))
+(pre (put-down $a) $b (, (state $b (holding $a))))
+(pre (stack $a $b) $c (, (state $c (holding $a)) (state $c (clear $b))))
+(pre (unstack $a $b) $c (, (state $c ($a on $b)) (state $c (clear $a)) (state $c (handempty))))
+(exec 7 (, (hash (»hù6DTØ–jÇa“^I act (put-down $a)) $b) (temp (»hù6DTØ–jÇa“^I act (put-down $a)) $c)) (, (state $b $c)))
+(exec 7 (, (hash (»hù6DTØ–jÇa“^I act (stack $a $b)) $c) (temp (»hù6DTØ–jÇa“^I act (stack $a $b)) $d)) (, (state $c $d)))
+(exec 7 (, (hash (»hù6DTØ–jÇa“^I act (unstack $a $b)) $c) (temp (»hù6DTØ–jÇa“^I act (unstack $a $b)) $d)) (, (state $c $d)))
+(exec 8 (, (hash (?d¦)‚×/š÷ÇJÍö act (pick-up $a)) $b)) (O (- (hash (?d¦)‚×/š÷ÇJÍö act (pick-up $a)) $b))))
+(exec 8 (, (hash (?d¦)‚×/š÷ÇJÍö act (put-down $a)) $b)) (O (- (hash (?d¦)‚×/š÷ÇJÍö act (put-down $a)) $b))))
+(exec 8 (, (hash (?d¦)‚×/š÷ÇJÍö act (stack $a $b)) $c)) (O (- (hash (?d¦)‚×/š÷ÇJÍö act (stack $a $b)) $c))))
+(exec 8 (, (hash (?d¦)‚×/š÷ÇJÍö act (unstack $a $b)) $c)) (O (- (hash (?d¦)‚×/š÷ÇJÍö act (unstack $a $b)) $c))))
+(exec 8 (, (hash (»hù6DTØ–jÇa“^I act (pick-up $a)) $b)) (O (- (hash (»hù6DTØ–jÇa“^I act (pick-up $a)) $b))))
+(exec 8 (, (hash (»hù6DTØ–jÇa“^I act (put-down $a)) $b)) (O (- (hash (»hù6DTØ–jÇa“^I act (put-down $a)) $b))))
+(exec 8 (, (hash (»hù6DTØ–jÇa“^I act (stack $a $b)) $c)) (O (- (hash (»hù6DTØ–jÇa“^I act (stack $a $b)) $c))))
+(exec 8 (, (hash (»hù6DTØ–jÇa“^I act (unstack $a $b)) $c)) (O (- (hash (»hù6DTØ–jÇa“^I act (unstack $a $b)) $c))))
+(exec 8 (, (temp (?d¦)‚×/š÷ÇJÍö act (pick-up $a)) $b)) (O (- (temp (?d¦)‚×/š÷ÇJÍö act (pick-up $a)) $b))))
+(exec 8 (, (temp (?d¦)‚×/š÷ÇJÍö act (put-down $a)) $b)) (O (- (temp (?d¦)‚×/š÷ÇJÍö act (put-down $a)) $b))))
+(exec 8 (, (temp (?d¦)‚×/š÷ÇJÍö act (stack $a $b)) $c)) (O (- (temp (?d¦)‚×/š÷ÇJÍö act (stack $a $b)) $c))))
+(exec 8 (, (temp (?d¦)‚×/š÷ÇJÍö act (unstack $a $b)) $c)) (O (- (temp (?d¦)‚×/š÷ÇJÍö act (unstack $a $b)) $c))))
+(exec 8 (, (temp (»hù6DTØ–jÇa“^I act (pick-up $a)) $b)) (O (- (temp (»hù6DTØ–jÇa“^I act (pick-up $a)) $b))))
+(exec 8 (, (temp (»hù6DTØ–jÇa“^I act (put-down $a)) $b)) (O (- (temp (»hù6DTØ–jÇa“^I act (put-down $a)) $b))))
+(exec 8 (, (temp (»hù6DTØ–jÇa“^I act (stack $a $b)) $c)) (O (- (temp (»hù6DTØ–jÇa“^I act (stack $a $b)) $c))))
+(exec 8 (, (temp (»hù6DTØ–jÇa“^I act (unstack $a $b)) $c)) (O (- (temp (»hù6DTØ–jÇa“^I act (unstack $a $b)) $c))))
+(exec 8 (, (action (pick-up $a) applies to ?d¦)‚×/š÷ÇJÍö)) (O (- (action (pick-up $a) applies to ?d¦)‚×/š÷ÇJÍö))))
+(exec 8 (, (action (pick-up $a) applies to »hù6DTØ–jÇa“^I)) (O (- (action (pick-up $a) applies to »hù6DTØ–jÇa“^I))))
+(exec 8 (, (action (put-down $a) applies to ?d¦)‚×/š÷ÇJÍö)) (O (- (action (put-down $a) applies to ?d¦)‚×/š÷ÇJÍö))))
+(exec 8 (, (action (put-down $a) applies to »hù6DTØ–jÇa“^I)) (O (- (action (put-down $a) applies to »hù6DTØ–jÇa“^I))))
+(exec 8 (, (action (stack $a $b) applies to ?d¦)‚×/š÷ÇJÍö)) (O (- (action (stack $a $b) applies to ?d¦)‚×/š÷ÇJÍö))))
+(exec 8 (, (action (stack $a $b) applies to »hù6DTØ–jÇa“^I)) (O (- (action (stack $a $b) applies to »hù6DTØ–jÇa“^I))))
+(exec 8 (, (action (unstack $a $b) applies to ?d¦)‚×/š÷ÇJÍö)) (O (- (action (unstack $a $b) applies to ?d¦)‚×/š÷ÇJÍö))))
+(exec 8 (, (action (unstack $a $b) applies to »hù6DTØ–jÇa“^I)) (O (- (action (unstack $a $b) applies to »hù6DTØ–jÇa“^I))))
+(exec 9 (, (pre $a $b $c) (exec 9 $d $e) (new $b)) (, (exec 0 $c (, (action $a applies to $b))) (exec 1 (, (action $a applies to $b) (state $b $f)) (, (temp ($b act $a) $f))) (exec 2 (, (temp ($b act $a) $g) (pos-eff $a $h)) (, (temp ($b act $a) $h))) (exec 2 (, (temp ($b act $a) $g) (neg-eff $a $i)) (O (- (temp ($b act $a) $i)))) (exec 3 (, (temp ($b act $a) $f)) (O (hash (hash ($b act $a) $j) $j $f))) (exec 4 (, (hash ($b act $a) $j)) (, (t $b $a $j))) (exec 5 (, (hash ($b act $a) $j)) (, (new $j))) (exec 6 (, (state $x10 $g)) (O (- (new $x10)))) (exec 7 (, (hash ($b act $a) $j) (temp ($b act $a) $f)) (, (state $j $f))) (exec 8 (, (temp ($b act $a) $f)) (O (- (temp ($b act $a) $f)))) (exec 8 (, (hash ($b act $a) $j)) (O (- (hash ($b act $a) $j)))) (exec 8 (, (action $a applies to $b)) (O (- (action $a applies to $b)))) (exec 9 $d $e)))
+(action (unstack A B) applies to »hù6DTØ–jÇa“^I)
+(action (unstack B A) applies to ?d¦)‚×/š÷ÇJÍö)

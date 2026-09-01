@@ -1,3 +1,7 @@
+;; @desc sudoku as integer-programming-style constraint propagation
+;; @expect-steps 34
+;; @expect
+
 ;     0  1  2  3
 ;   +-----+-----+
 ; 0 |  |  | 3|  |

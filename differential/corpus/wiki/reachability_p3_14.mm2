@@ -1,0 +1,30 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 14
+
+; insert all arith statements
+
+(maxlength 4)
+(startpoint H)
+
+(exec (1 0) (, (exec (1 $a) $b $c) (arith ($a + 1 = $d)) (path $a $e $f $g) (street $f $h $i) (arith ($g + $i = $j)) (maxlength $x10) (arith ($j <= $x10))) (, (path $d $e $h $j) (exec (1 $d) $b $c)))
+(exec (2 0) (, (path $a H $b $c)) (, (reachable H $b)))
+
+(street A B 1)
+(street A D 1)
+(street B A 1)
+(street B C 1)
+(street C B 1)
+(street C H 2)
+(street D A 1)
+(street D E 1)
+(street D F 1)
+(street E B 1)
+(street E G 1)
+(street F G 1)
+(street F I 1)
+(street G F 1)
+(street H C 2)
+(street H G 1)
+(street I J 2)
+(street J H 1)
+
+(path 0 H H 0)  ; <--- added by exec (0 0)

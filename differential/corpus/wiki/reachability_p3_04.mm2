@@ -1,0 +1,7 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 4
+
+(exec 0 (, (startpoint $p))
+        (, (path $p $p 0)))
+
+(exec 1 (, (path $p $q $d) (street $q $r $e))
+        (, (path $q $r ($d + $e))))

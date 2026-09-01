@@ -9,7 +9,7 @@ use std::ops::{Coroutine, CoroutineState, ControlFlow};
 use std::convert::Infallible;
 use std::collections::HashMap;
 
-use eval_ffi::{EvalError, ExprSink, SinkItem, ExprSource, SourceItem, FuncPtr, Tag};
+use eval_ffi::{EvalError, ExprSink, ExprSource, SourceItem, FuncPtr, Tag};
 
 mod alloc;
 

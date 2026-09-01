@@ -1,0 +1,44 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P3", code block 13
+
+(maxlength 4)
+(startpoint H)
+
+(street A B 1)
+(street B A 1)
+(street B C 1)
+(street C B 1)
+(street D F 1)
+(street F I 1)
+(street D A 1)
+(street A D 1)
+(street E B 1) 
+(street E G 1)
+(street C H 2)
+(street H C 2)
+(street J H 1)   
+(street H G 1)
+(street D E 1)
+(street F G 1)
+(street G F 1)
+(street I J 2)
+
+(exec (0 0) (, (startpoint $p) (street $p $q $d))
+     (, (path 1 $p $q $d)))
+
+
+(exec (1 1) 
+ (, 
+  (exec (1 $n) $ps $ts) (arith ($n + 1 = $m)) 
+  (path $n $p $q $d) (street $q $r $e) 
+  (arith ($d + $e = $f)) 
+  (maxlength $max) (arith ($f <= $max))
+ )
+ (, 
+  (path $m $p $r $f)
+  (exec (1 $m) $ps $ts)
+ )
+)
+
+(exec (2 0)
+ (, (path $n H $q $d))
+ (, (reachable H $q)))

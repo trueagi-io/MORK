@@ -1,0 +1,17 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Reachability-P4", code block 7
+
+(init 1)
+(visited 1)
+(visited 2)
+(visited 9)
+(visited 16)
+
+(reachable Z 1 2)
+(reachable Z 1 9)
+(reachable Z 1 16)
+
+(step Z (path 1 2 (pickup (A))) (pickup (A)))
+(step Z (path 1 9 (pickup (B))) (pickup (B)))
+(step Z (path 1 16 (pickup (C))) (pickup (C)))
+
+(exec (1 Z) (, (exec (1 $a) $b $c) (reachable $a $d $e) (t $e $f $g) (step $h (path $d $e $i) $j) (visited $x10)) (O (+ (exec (1 (S $a)) $b $c)) (+ (reachable (S $a) $d $f)) (- (reachable (S $a) $d $x10)) (+ (step $h (path $d $f ($g $i)) $j)) (- (step $h (path $d $x10 ($g $i)) $j)) (+ (step (S $a) (path $d $f ($g $i)) $g)) (- (step (S $a) (path $d $x10 ($g $i)) $g)) (+ (visited $f))))

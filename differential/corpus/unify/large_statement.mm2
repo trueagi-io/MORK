@@ -1,0 +1,36 @@
+;; @desc a statement that only expands, never runs: pins variable renaming and
+;; @desc conjunct order in the dump (main.rs: large_statement)
+;; @steps 0
+;; @expect-steps 0
+;; @expect
+
+(exec (2 2) (, $x)
+    (,
+        (exec (1 0)
+          (, (recipe $product1 (numIngredients 1))
+             (recipe $product1 (ingredients 0 $xitem1))
+             (inventory $xitem1)
+             (recipe $product1 (result (id $productname1))))
+          (, (inventory $productname1))
+        )
+
+        (exec (1 1)
+          (, (recipe $product2 (numIngredients 1))
+             (recipe $product2 (result (id $productname2)))
+             (recipe $product2 (pattern 0 $x2))
+             (recipe $product2 (key ($x2 $xitem2)))
+             (inventory $xitem2))
+          (, (inventory $productname2))
+        )
+
+        (exec (1 2)
+          (, (recipe $product3 (numIngredients 2))
+             (recipe $product3 (result (id $productname3)))
+             (recipe $product3 (pattern 0 $x3)) (recipe $product3 (key ($x3 $xitem3)))
+             (recipe $product3 (pattern 1 $y3)) (recipe $product3 (key ($y3 $yitem3)))
+             (inventory $xitem3)
+             (inventory $yitem3))
+          (, (inventory $productname3))
+        )
+    )
+)

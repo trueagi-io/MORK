@@ -1,3 +1,7 @@
+;; @desc a five-register counter machine run to halt
+;; @expect-steps 241
+;; @expect
+
 ; Monotonic rewriting system version of https://en.wikipedia.org/wiki/Counter_machine#Program
 ; The following program is encoded in S-expressions or the metagraph
 ; Function: it copies the contents of register 2 to register 3

@@ -14,3 +14,9 @@ By rearchitecting certain Hyperon bottlenecks, MORK has the potential to acceler
 If you're looking for the MORK server, use the [server branch](https://github.com/trueagi-io/MORK/tree/server).
 
 If you're looking for the MORK command line utility, run `cargo build --release` in `/kernel`; you'll need a nightly compiler `rustup toolchain install nightly`.
+
+## Tests
+`mork test` runs the CLI test suite. `differential/run.py --build` runs the data-driven
+`.mm2` corpus: every program goes through both query engines and the resulting spaces are
+compared byte for byte, and programs that pin an expected space act as a regression suite.
+See [differential/README.md](differential/README.md).

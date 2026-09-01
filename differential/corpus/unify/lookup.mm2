@@ -1,0 +1,7 @@
+;; @desc ground conjunct against a ground fact (main.rs: lookup)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something (very specific))) (, MATCHED))
+
+(Something (very specific))

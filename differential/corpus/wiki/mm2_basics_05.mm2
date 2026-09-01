@@ -1,0 +1,8 @@
+;; @desc   MORK.wiki "Minimal-MeTTa-2-(MM2)", code block 5
+;; @expect
+
+; bad:
+(exec <sys> (, (Bar ($i $x)) (Baz ($j $y))) (, (Foo ($i $x)) (Foo ($j $y))))
+; good:
+(exec <sys_1> (, (Bar ($i $x))) (, (Foo ($i $x))))
+(exec <sys_1> (, (Baz ($j $y))) (, (Foo ($j $y))))

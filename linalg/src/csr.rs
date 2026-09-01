@@ -57,30 +57,35 @@ impl Index for u64 {
 pub trait Value: Copy + Default + PartialEq {
     fn one() -> Self;
     fn sat_add(a: Self, b: Self) -> Self;
+    fn sat_sub(a: Self, b: Self) -> Self;
     fn sat_mul(a: Self, b: Self) -> Self;
 }
 
 impl Value for u32 {
     #[inline] fn one() -> Self { 1 }
     #[inline] fn sat_add(a: Self, b: Self) -> Self { (Saturating(a) + Saturating(b)).0 }
+    #[inline] fn sat_sub(a: Self, b: Self) -> Self { (Saturating(a) - Saturating(b)).0 }
     #[inline] fn sat_mul(a: Self, b: Self) -> Self { (Saturating(a) * Saturating(b)).0 }
 }
 
 impl Value for u64 {
     #[inline] fn one() -> Self { 1 }
     #[inline] fn sat_add(a: Self, b: Self) -> Self { (Saturating(a) + Saturating(b)).0 }
+    #[inline] fn sat_sub(a: Self, b: Self) -> Self { (Saturating(a) - Saturating(b)).0 }
     #[inline] fn sat_mul(a: Self, b: Self) -> Self { (Saturating(a) * Saturating(b)).0 }
 }
 
 impl Value for f32 {
     #[inline] fn one() -> Self { 1.0 }
     #[inline] fn sat_add(a: Self, b: Self) -> Self { a + b }
+    #[inline] fn sat_sub(a: Self, b: Self) -> Self { a - b }
     #[inline] fn sat_mul(a: Self, b: Self) -> Self { a * b }
 }
 
 impl Value for f64 {
     #[inline] fn one() -> Self { 1.0 }
     #[inline] fn sat_add(a: Self, b: Self) -> Self { a + b }
+    #[inline] fn sat_sub(a: Self, b: Self) -> Self { a - b }
     #[inline] fn sat_mul(a: Self, b: Self) -> Self { a * b }
 }
 
@@ -466,59 +471,136 @@ impl<I: Index, V: Value> Csr<I, V> {
     }
 
     /// Element-wise addition via sorted merge per (compound) row. Works for
-    /// any shape; both operands must have the same shape.
+    /// any shape; both operands must have the same shape. Out-of-place; see
+    /// [`add_assign_tensor`](Self::add_assign_tensor) for the in-place form.
     pub fn add(&self, other: &Self) -> Self {
-        assert_eq!(self.shape, other.shape, "add shape mismatch");
+        let mut out = self.clone();
+        out.add_assign_tensor(other);
+        out
+    }
+
+    /// Generic element-wise in-place merge over two same-shaped sparse
+    /// tensors: each output entry is `combine(a, b)`, where a structurally
+    /// absent operand is passed as `V::default()` (zero). Entries that
+    /// combine to zero are dropped, keeping the result sparse.
+    ///
+    /// The sparsity pattern generally changes, so this is not a true
+    /// mutate-in-storage: it rebuilds `row_ptr`/`col_idx`/`values` and swaps
+    /// them into `self` (shape is unchanged). Panics on a shape mismatch.
+    ///
+    /// This is the primitive behind [`add_assign_tensor`](Self::add_assign_tensor),
+    /// [`sub_assign_tensor`](Self::sub_assign_tensor), and
+    /// [`mul_assign_tensor`](Self::mul_assign_tensor). It is sound only for
+    /// operators with `combine(0, 0) == 0` (so structural zeros stay zero);
+    /// that is why element-wise `/` and `pow` are dense-only — `0/0` and
+    /// `0.pow(0)` are non-zero and would densify the matrix.
+    pub fn zip_assign_with<F: Fn(V, V) -> V>(&mut self, other: &Self, combine: F) {
+        assert_eq!(
+            self.shape, other.shape,
+            "element-wise op shape mismatch {:?} vs {:?}",
+            self.shape, other.shape
+        );
         let nu = self.n_rows();
+        let zero = V::default();
 
         let mut row_ptr = Vec::with_capacity(nu + 1);
         let mut col_idx = Vec::new();
         let mut values = Vec::new();
         row_ptr.push(0);
 
-        for r in 0..nu {
-            let a_start = self.row_ptr[r];
-            let a_end = self.row_ptr[r + 1];
-            let b_start = other.row_ptr[r];
-            let b_end = other.row_ptr[r + 1];
+        // Push `v` at column `c`, unless it combined to zero.
+        macro_rules! emit {
+            ($c:expr, $v:expr) => {{
+                let v = $v;
+                if v != zero {
+                    col_idx.push($c);
+                    values.push(v);
+                }
+            }};
+        }
 
-            let mut ai = a_start;
-            let mut bi = b_start;
+        for r in 0..nu {
+            let a_end = self.row_ptr[r + 1];
+            let b_end = other.row_ptr[r + 1];
+            let mut ai = self.row_ptr[r];
+            let mut bi = other.row_ptr[r];
+
             while ai < a_end && bi < b_end {
                 let ac = self.col_idx[ai];
                 let bc = other.col_idx[bi];
                 if ac < bc {
-                    col_idx.push(ac);
-                    values.push(self.values[ai]);
+                    emit!(ac, combine(self.values[ai], zero));
                     ai += 1;
                 } else if ac > bc {
-                    col_idx.push(bc);
-                    values.push(other.values[bi]);
+                    emit!(bc, combine(zero, other.values[bi]));
                     bi += 1;
                 } else {
-                    let v = V::sat_add(self.values[ai], other.values[bi]);
-                    if v != V::default() {
-                        col_idx.push(ac);
-                        values.push(v);
-                    }
+                    emit!(ac, combine(self.values[ai], other.values[bi]));
                     ai += 1;
                     bi += 1;
                 }
             }
             while ai < a_end {
-                col_idx.push(self.col_idx[ai]);
-                values.push(self.values[ai]);
+                emit!(self.col_idx[ai], combine(self.values[ai], zero));
                 ai += 1;
             }
             while bi < b_end {
-                col_idx.push(other.col_idx[bi]);
-                values.push(other.values[bi]);
+                emit!(other.col_idx[bi], combine(zero, other.values[bi]));
                 bi += 1;
             }
             row_ptr.push(col_idx.len());
         }
 
-        Self { shape: self.shape.clone(), row_ptr, col_idx, values }
+        self.row_ptr = row_ptr;
+        self.col_idx = col_idx;
+        self.values = values;
+    }
+
+    /// Element-wise `self += other`, in place (union of sparsity patterns).
+    /// Both operands must have the same shape.
+    pub fn add_assign_tensor(&mut self, other: &Self) {
+        self.zip_assign_with(other, V::sat_add);
+    }
+
+    /// Element-wise `self -= other`, in place (union of sparsity patterns).
+    /// Uses saturating subtraction for integer value types. Both operands
+    /// must have the same shape.
+    pub fn sub_assign_tensor(&mut self, other: &Self) {
+        self.zip_assign_with(other, V::sat_sub);
+    }
+
+    /// Element-wise (Hadamard) `self *= other`, in place — **not** matrix
+    /// multiplication (see [`matmul`](Self::matmul) for that). The result is
+    /// the intersection of the two sparsity patterns, since a factor of zero
+    /// annihilates. Both operands must have the same shape.
+    pub fn mul_assign_tensor(&mut self, other: &Self) {
+        self.zip_assign_with(other, V::sat_mul);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// std::ops compound-assignment operators for the in-place element-wise ops
+// ─────────────────────────────────────────────────────────────────────────
+
+impl<I: Index, V: Value> std::ops::AddAssign<&Csr<I, V>> for Csr<I, V> {
+    #[inline]
+    fn add_assign(&mut self, other: &Csr<I, V>) {
+        self.add_assign_tensor(other);
+    }
+}
+
+impl<I: Index, V: Value> std::ops::SubAssign<&Csr<I, V>> for Csr<I, V> {
+    #[inline]
+    fn sub_assign(&mut self, other: &Csr<I, V>) {
+        self.sub_assign_tensor(other);
+    }
+}
+
+impl<I: Index, V: Value> std::ops::MulAssign<&Csr<I, V>> for Csr<I, V> {
+    /// Element-wise (Hadamard) multiply — not matmul.
+    #[inline]
+    fn mul_assign(&mut self, other: &Csr<I, V>) {
+        self.mul_assign_tensor(other);
     }
 }
 
@@ -833,6 +915,70 @@ mod tests {
         assert_eq!(c.get(1, 2), 1);
         assert_eq!(c.get(2, 0), 1);
         assert_eq!(c.nnz(), 3);
+    }
+
+    #[test]
+    fn add_assign_in_place() {
+        let mut a: Csr<u32, u32> = Csr::from_edges(3, &[(0, 1), (1, 2)]);
+        let b: Csr<u32, u32> = Csr::from_edges(3, &[(0, 1), (2, 0)]);
+        a += &b;
+        assert_eq!(a.get(0, 1), 2);
+        assert_eq!(a.get(1, 2), 1);
+        assert_eq!(a.get(2, 0), 1);
+        assert_eq!(a.nnz(), 3);
+        // Matches the out-of-place `add`.
+        let c = Csr::<u32, u32>::from_edges(3, &[(0, 1), (1, 2)]).add(&b);
+        assert_eq!(a.col_idx, c.col_idx);
+        assert_eq!(a.values, c.values);
+        assert_eq!(a.row_ptr, c.row_ptr);
+    }
+
+    #[test]
+    fn sub_assign_drops_to_zero() {
+        // a - a should be structurally empty (every entry cancels).
+        let mut a = Csr::<u32, u32>::from_parts(
+            vec![2, 3],
+            vec![0, 2, 3],
+            vec![0, 2, 1],
+            vec![5, 7, 4],
+        );
+        let b = a.clone();
+        a -= &b;
+        assert_eq!(a.nnz(), 0);
+        assert_eq!(a.row_ptr, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn sub_assign_partial() {
+        let mut a = Csr::<u32, f32>::from_parts(vec![1, 3], vec![0, 2], vec![0, 2], vec![9.0, 5.0]);
+        let b = Csr::<u32, f32>::from_parts(vec![1, 3], vec![0, 2], vec![0, 1], vec![4.0, 2.0]);
+        a -= &b;
+        // col 0: 9-4=5 ; col 1: 0-2=-2 (new entry) ; col 2: 5-0=5
+        assert_eq!(NDIndex::get_opt(&a, &[0, 0]), Some(5.0));
+        assert_eq!(NDIndex::get_opt(&a, &[0, 1]), Some(-2.0));
+        assert_eq!(NDIndex::get_opt(&a, &[0, 2]), Some(5.0));
+        assert_eq!(a.nnz(), 3);
+    }
+
+    #[test]
+    fn mul_assign_is_hadamard_intersection() {
+        // Overlap only at col 1 of row 0.
+        let mut a: Csr<u32, u32> = Csr::from_parts(vec![2, 3], vec![0, 2, 3], vec![0, 1, 2], vec![2, 3, 4]);
+        let b: Csr<u32, u32> = Csr::from_parts(vec![2, 3], vec![0, 1, 1], vec![1], vec![10]);
+        a *= &b;
+        // Only (0,1) survives: 3 * 10 = 30. Everything else * 0 = 0 → dropped.
+        assert_eq!(a.nnz(), 1);
+        assert_eq!(a.get(0, 1), 30);
+        assert_eq!(a.get(0, 0), 0);
+        assert_eq!(a.get(1, 2), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "shape mismatch")]
+    fn elementwise_shape_mismatch_panics() {
+        let mut a: Csr<u32, u32> = Csr::from_edges(3, &[(0, 1)]);
+        let b: Csr<u32, u32> = Csr::from_edges(4, &[(0, 1)]);
+        a += &b;
     }
 
     #[test]

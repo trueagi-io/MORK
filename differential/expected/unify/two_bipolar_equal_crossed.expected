@@ -1,0 +1,3 @@
+(Else ($a bar) ($a bar))
+(MATCHED (foo bar) (foo bar))
+(Something (foo $a) (foo $a))

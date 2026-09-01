@@ -1,0 +1,7 @@
+;; @desc a variable inside a compound exec priority (main.rs: variables_in_priority)
+;; @expect
+
+(A Z)
+(exec (0 $p)
+      (, (A $x))
+      (, (B $x)))

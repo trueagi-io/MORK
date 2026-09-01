@@ -1,3 +1,7 @@
+;; @desc odd-even transposition sort driven by an in-place O-statement
+;; @expect-steps 11
+;; @expect
+
 (lt A B) (lt A C) (lt A D) (lt A E) (lt B C) (lt B D) (lt B E) (lt C D) (lt C E) (lt D E)
 (succ 0 1) (succ 1 2) (succ 2 3) (succ 3 4) (succ 4 5)
 (parity 0 even) (parity 1 odd) (parity 2 even) (parity 3 odd) (parity 4 even)

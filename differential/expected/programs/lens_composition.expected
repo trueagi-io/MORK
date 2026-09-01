@@ -1,0 +1,4 @@
+(lens ((ns o aunt) (users (adam (experiments (poi $a)))) $a $b (users (adam (experiments (result ($b aunt of $a)))))))
+(lens (ns (users (adam (experiments $a))) $a $b (users (adam (experiments $b)))))
+(lens (aunt (poi $a) $a $b (result ($b aunt of $a))))
+(compose ns aunt)

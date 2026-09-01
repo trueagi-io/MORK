@@ -1,0 +1,7 @@
+;; @desc ground query against a WILDCARD in the stored fact (main.rs: negative)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something (very specific))) (, MATCHED))
+
+(Something $unspecific)

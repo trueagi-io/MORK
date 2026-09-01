@@ -1,0 +1,29 @@
+;; @desc   MORK.wiki "MM2-tutorial:-Hexlife", code block 9
+;; @expect
+
+(alive ((S Z) (S (S Z)) (S Z))) ; (1, 2, 1)
+(alive ((S Z) (S Z) (S (S Z)))) ; (1, 1, 2)
+(alive (Z (S (S (S Z))) (S Z))) ; (0, 3, 1)
+
+(anbs ((S (S (S Z))) (S Z) Z) 1)
+(anbs ((S (S (S Z))) Z (S Z)) 1)
+(anbs ((S (S Z)) (S (S Z)) Z) 3)
+(anbs ((S (S Z)) (S Z) (S Z)) 1)
+(anbs ((S (S Z)) Z (S (S Z))) 1)
+(anbs ((S Z) (S (S (S Z))) Z) 1)
+(anbs ((S Z) (S (S Z)) (S Z)) 2)
+(anbs ((S Z) (S Z) (S (S Z))) 2)
+(anbs (Z (S (S (S (S Z)))) Z) 1)
+(anbs (Z (S (S (S Z))) (S Z)) 2)
+(anbs (Z (S (S Z)) (S (S Z))) 1)
+
+(cell lives 2)
+
+(neighbors ((S $a) $b $c) ($a (S $b) $c))
+(neighbors ((S $a) $b $c) ($a $b (S $c)))
+(neighbors ($a (S $b) $c) ((S $a) $b $c))
+(neighbors ($a (S $b) $c) ($a $b (S $c)))
+(neighbors ($a $b (S $c)) ((S $a) $b $c))
+(neighbors ($a $b (S $c)) ($a (S $b) $c))
+
+(exec 3 (, (anbs $co $c)) (O (- (anbs $co $c))))

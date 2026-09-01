@@ -1,0 +1,7 @@
+;; @desc repeated query variable against ground data (main.rs: positive_equal)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something $repeated $repeated)) (, MATCHED))
+
+(Something (very specific) (very specific))

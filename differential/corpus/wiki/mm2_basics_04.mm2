@@ -1,0 +1,13 @@
+;; @desc   MORK.wiki "Minimal-MeTTa-2-(MM2)", code block 4
+
+; bad: 
+(exec <sys> (, (mul $x $y) (input $x)) (, (output $y)))
+; good
+(exec <sys> (, (input $x) (mul $x $y)) (, (output $y)))
+
+; bad (runtime |A $|^2 * |A _ $|^2 * |parity <i> $| ):
+((phase $p)  (, (A $i $e) (A $si $se) (parity $i $p) (succ $i $si) (lt $se $e))
+             (O (- (A $i $e)) (- (A $si $se)) (+ (A $i $se)) (+ (A $si $e))))
+; good (runtime |parity $| * |parity <i> $| * |succ <i> $| * |A <i> $| * |A <si> $| ):
+((phase $p)  (, (parity $i $p) (succ $i $si) (A $i $e) (A $si $se) (lt $se $e))
+             (O (- (A $i $e)) (- (A $si $se)) (+ (A $i $se)) (+ (A $si $e))))

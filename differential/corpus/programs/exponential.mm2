@@ -1,0 +1,24 @@
+;; @desc doubling rewrite driven by a metta inference-control statement
+;; @desc (main.rs: exponential(32)); a pure throughput shape with no assertion
+;; @desc in Rust, kept here as a two-engine equivalence case.
+;; @steps 32
+;; @expect-steps 32
+;; @tags slow
+
+((step app)
+ (, (num $1) )
+ (, (num (M $1))
+    (num (W $1)) ))
+
+((step app)
+ (, (num (M $1))
+    (num (W $1)) )
+ (, (num (C $1)) ))
+
+(num Z)
+
+(exec metta
+      (, ((step $x) $p0 $t0)
+         (exec metta $p1 $t1) )
+      (, (exec $x $p0 $t0)
+         (exec metta $p1 $t1) ))

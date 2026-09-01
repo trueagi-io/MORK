@@ -1,0 +1,7 @@
+;; @desc ground query against a repeated wildcard in the data (main.rs: negative_equal)
+;; @expect-steps 1
+;; @expect
+
+(exec 0 (, (Something (very specific) (very specific))) (, MATCHED))
+
+(Something $repeated $repeated)

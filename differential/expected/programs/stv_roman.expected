@@ -1,0 +1,4 @@
+(ev (STV 0.2 0.2))
+(fun (mul (0.5 0.5) 0.2))
+(fun (mp-formula ((STV $a $b) (STV $c $d)) ((mul ($a $c) $e) (mul ($b $d) $f)) (STV $e $f)))
+(goal (CPU mp-formula ((STV 0.5 0.5) (STV 0.5 0.5)) $a))

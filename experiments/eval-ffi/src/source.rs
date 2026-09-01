@@ -62,6 +62,9 @@ impl ExprSource {
                 Tag::VarRef(n) => {
                     write!(&mut rv, "${}", n).unwrap();
                 }
+                Tag::Fuzzy(f) => {
+                    write!(&mut rv, "{{{:0>4b}}}", f).unwrap();
+                }
             }
             if !is_last {
                 rv.push(' ');

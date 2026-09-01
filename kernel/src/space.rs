@@ -14,7 +14,7 @@ use std::task::Poll;
 use std::time::Instant;
 use futures::StreamExt;
 use pathmap::ring::{AlgebraicStatus, Lattice};
-use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct, OwnedSourceItem};
+use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct, OwnedSourceItem, Bindings};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
 use pathmap::utils::{BitMask, ByteMask};
@@ -34,6 +34,26 @@ pub static mut writes: usize = 0;
 
 pub static ACT_PATH: &'static str = "/dev/shm/";
 // pub static ACT_PATH: &'static str = "/mnt/data/";
+
+/// The pattern's distinct variables as a synthetic expression of `n` `NewVar`s. Only the debug
+/// cross-check of [`mork_expr::pattern_cycles_and_intros`] applies it now; the live path needs no
+/// expression at all, so it has no arity byte to overflow.
+#[cfg(debug_assertions)]
+///
+/// Applying this in place of the pattern visits exactly the variables `(0,0)..(0,n-1)` -- which is
+/// what the pattern's own variables are, by construction -- with the same arms, stack and `cycled`
+/// bookkeeping, and without walking the pattern's structure. Returns `None` when the pattern has
+/// more variables than an arity byte can count, in which case the caller must apply the pattern
+/// itself: `NewVar` is not arity-limited, so a pattern CAN carry more than 63 distinct variables.
+fn pattern_variables_expr(pat_expr: Expr, buf: &mut [u8; 64]) -> Option<Expr> {
+    let n = pat_expr.newvars();
+    if n > 63 {
+        return None;
+    }
+    buf[0] = item_byte(Tag::Arity(n as u8));
+    buf[1..1 + n].fill(item_byte(Tag::NewVar));
+    Some(Expr { ptr: buf.as_ptr().cast_mut() })
+}
 
 pub struct Space {
     pub btm: PathMap<()>,
@@ -89,8 +109,8 @@ pub(crate) const VARS: [u64; 4] = {
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
-fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + ZipperIteration, F: FnMut(&mut Z) -> ()>(
-    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, f: &mut F) {
+fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
+    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, f: &mut F) {
     macro_rules! vs {
         ($e:expr, $nv:expr) => {{
             let m = loc.child_mask().and(&ByteMask(VARS));
@@ -103,9 +123,17 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                 //         references.push(u32::MAX);
                 //     }
                 // }
+                // Every variable tag byte on the data path descends exactly here (the mask is
+                // taken at an item boundary, so symbol payload bytes never enter), which makes
+                // this the one place the walk learns a candidate is non-ground. The knowledge
+                // rides the recursion itself: one bit per factor, passed BY VALUE, so unwinding
+                // restores it for free and the leaf reads each fact's groundness off its bit --
+                // no side vector, no rescan. A conjunction has at most 63 conjuncts, so u64
+                // suffices (`.min(63)` is a defensive clamp, not a reachable case).
                 loc.descend_to_byte(b);
                 debug_assert!(loc.path_exists());
-                coreferential_transition(loc, stack, references, f);
+                let vf = var_facts | (1u64 << loc.focus_factor().min(63));
+                coreferential_transition(loc, stack, references, vf, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
             }
         }};
@@ -116,7 +144,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
     trace!(target: "coref trans", "top {}", stack.last().map(|x| x.show()).unwrap_or_else(|| "empty".into()));
     unsafe { transitions += 1 };
     match stack.pop() {
-        None => { f(loc) }
+        None => { f(loc, var_facts) }
         Some(e) => {
             let e_byte = *e.base.ptr.add(e.offset as usize);
 
@@ -140,7 +168,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         debug_assert!(loc.path_exists());
                         if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
                         loop {
-                            coreferential_transition(loc, stack, references, f);   
+                            coreferential_transition(loc, stack, references, var_facts, f);   
                             if !loc.to_next_k_path(size as _) { break }
                         }
                         if !loc.ascend_byte() { unreachable_unchecked() }
@@ -155,7 +183,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
                         for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
-                        coreferential_transition(loc, stack, references, f);
+                        coreferential_transition(loc, stack, references, var_facts, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
                     }
@@ -173,22 +201,22 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
                         // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv{ n: 254, v: 0, offset: 0, base: Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) } }
+                        ExprEnv::new(254, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
                         static nv: u8 = item_byte(Tag::NewVar);
-                        ExprEnv{ n: 255, v: 0, offset: 0, base: Expr{ ptr: ((&nv) as *const u8).cast_mut() } }
+                        ExprEnv::new(255, Expr{ ptr: ((&nv) as *const u8).cast_mut() })
                     };
                     stack.push(addition);
                     vs!(e, false);
-                    coreferential_transition(loc, stack, references, f);
+                    coreferential_transition(loc, stack, references, var_facts, f);
                     stack.pop();
                 }
                 Tag::SymbolSize(size) => {
                     vs!(e, false);
                     if loc.descend_to_existing_byte(e_byte) {
                         if loc.descend_to_check(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
-                            coreferential_transition(loc, stack, references, f);
+                            coreferential_transition(loc, stack, references, var_facts, f);
                         }
                         loc.ascend((size as usize) + 1); // The expression length + the e_byte
                     }
@@ -199,7 +227,7 @@ fn coreferential_transition<Z : ZipperMoving + Zipper + ZipperAbsolutePath + Zip
                         let stackl = stack.len();
                         e.args(&mut stack);
                         stack[stackl..].reverse();
-                        coreferential_transition(loc, stack, references, f);
+                        coreferential_transition(loc, stack, references, var_facts, f);
                         stack.truncate(stack.len() - arity as usize);
                         loc.ascend_byte();
                     }
@@ -846,6 +874,17 @@ impl Space {
             match parser.sexpr(&mut it, &mut ez) {
                 Ok(()) => {
                     let data = &stack[..ez.loc];
+                    // A fact that is nothing but a variable is a top-level wildcard: the engines
+                    // disagree on it (see `warn_top_level_variable`).
+                    if data.len() == 1 && matches!(byte_item(data[0]), Tag::NewVar | Tag::VarRef(_)) {
+                        eprintln!(
+                            "warning: atom {}: top level variable detected. It unifies with every \
+                             conjunct of every query, and the leapfrog join cannot see it, so the \
+                             two engines will not agree on this space. Consider wrapping it, e.g. \
+                             `(any $x)`.",
+                            i + 1
+                        );
+                    }
                     if add { self.btm.insert(data, ()); }
                     else { self.btm.remove(data); }
                 }
@@ -895,7 +934,25 @@ impl Space {
         Ok(i)
     }
 
+    /// Warn if the space holds a fact that is nothing but a variable: it unifies with every
+    /// conjunct of every query, and the leapfrog join cannot see it (such a fact sits at the trie
+    /// root under no arity prefix), so the two engines disagree on the space. One O(1) root probe
+    /// per serialization -- wildcard tags are the contiguous range `VarRef(0)..=NewVar`.
+    pub fn warn_top_level_variable(&self) {
+        let lo = item_byte(Tag::VarRef(0));
+        let mask = self.btm.read_zipper().child_mask();
+        let found = if mask.test_bit(lo) { Some(lo) } else { mask.next_bit(lo) };
+        if found.is_some_and(|b| matches!(byte_item(b), Tag::NewVar | Tag::VarRef(_))) {
+            eprintln!(
+                "warning: top level variable detected in the space. It unifies with every conjunct \
+                 of every query, and the leapfrog join cannot see it, so the two engines will not \
+                 agree on this space."
+            );
+        }
+    }
+
     pub fn dump_all_sexpr<W : Write>(&self, w: &mut W) -> Result<usize, String> {
+        self.warn_top_level_variable();
         let mut rz = self.btm.read_zipper();
         let mut i = 0usize;
         while rz.to_next_val() {
@@ -928,6 +985,14 @@ impl Space {
 
         let mut stack       = Vec::new();
         let mut assignments = Vec::new();
+        // Same replacement as in the transform variants: the pattern's instantiation was built
+        // only to be cleared, so apply the synthetic all-variables expression instead (see the
+        // comment there for why this is exact).
+        let pat_var_count = pattern.newvars();
+        #[cfg(debug_assertions)]
+        let mut pat_vars_buf = [0u8; 64];
+        #[cfg(debug_assertions)]
+        let pat_vars_expr = pattern_variables_expr(pattern, &mut pat_vars_buf).unwrap_or(pattern);
         Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| 'query : {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
@@ -935,15 +1000,26 @@ impl Space {
                 Ok(refs) => {
                     assert!(false)
                 }
-                Err(ref bindings) => {
+                Err(bindings) => {
+                    let counts = mork_expr::pattern_cycles_and_intros(
+                        pat_var_count as u8, bindings, &mut stack, &mut assignments);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut dstack = Vec::new();
+                        let mut dass = Vec::new();
+                        let w = mork_expr::apply_e_cycles_only!(0,0,0, pat_vars_expr, bindings, dstack, dass);
+                        debug_assert_eq!(counts.map(|(o, n)| (o, n, true)),
+                            Some((w.0, w.1, w.2)).filter(|w| w.2),
+                            "the specialized pattern pass disagreed with the general one");
+                    }
+                    let Some((oi, ni)) = counts else { break 'query true };
+
                     buffer.clear();
 
-                    let (oi, ni, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0, pattern, bindings, buffer, stack, assignments)
-                    else { break 'query true};
-
-                    buffer.clear();
-
-                    let (_,_,true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni, template, bindings, buffer, stack, assignments)
+                    let (_,_,true) = ({
+                        let mut bs = mork_expr::VecSink(&mut buffer);
+                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni, template, bindings, bs, stack, assignments)
+                    })
                     else { break 'query true;};
                 }
             }
@@ -1010,13 +1086,40 @@ impl Space {
         pathmap::paths_serialization::deserialize_paths(self.btm.write_zipper(), &mut file, ())
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    /// [`Space::query_multi`] behind the leapfrog dispatch: with the `leapfrog` feature a
+    /// conjunction body routes to the worst-case-optimal join in [`crate::leapfrog`], which
+    /// streams the same matches through `effect`; every build without the feature takes the
+    /// ProductZipper path below. Only the space-to-space transform dispatches: interpreted sources
+    /// and sinks and the pattern-directed dumps keep the stock path and its enumeration order.
+    ///
+    /// The join owns every CONJUNCT shape -- compounds, bare symbols, bare variables -- and the
+    /// bare `(,)` with no conjunct, so there is no shape test here. The remaining fallback is for
+    /// a body that is not a conjunction at all: a non-compound body or the arity-0 body `()`,
+    /// which `query_multi` handles (or fails on) exactly as it always has, plus the encoding
+    /// pathologies `parse_body_factors` rejects (a `VarRef` naming a variable the body never
+    /// introduced, or more than `u8::MAX` variables).
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+        // Which engine answers the space-to-space transform is a compile-time choice and nothing
+        // more: with the `leapfrog` feature the join owns every body, and without it the module
+        // does not exist. `query_multi` stays reachable for the paths that are not dispatched --
+        // the pattern-directed dumps and the interpreted source/sink transforms.
+        #[cfg(feature = "leapfrog")]
+        {
+            crate::leapfrog::query_multi_leapfrog(btm, pat_expr, effect)
+        }
+        #[cfg(not(feature = "leapfrog"))]
+        {
+            Self::query_multi(btm, pat_expr, effect)
+        }
+    }
+
+    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
         debug_assert!(n_factors > 0);
         if n_factors == 1 {
-            effect(Err(BTreeMap::new()), pat_expr);
+            effect(Err(&Bindings::new()), pat_expr);
             return 1;
         }
         let mut pat_args = Vec::with_capacity(n_factors);
@@ -1113,7 +1216,7 @@ impl Space {
         }
     }
 
-    pub fn query_multi_i<F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(no_source: bool,
+    pub fn query_multi_i<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(no_source: bool,
             mmaps: &mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
             z3s: &mut HashMap<OwnedSourceItem, Box<Popen>>,
             btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
@@ -1124,7 +1227,7 @@ impl Space {
         let n_factors = pat_expr.arity().unwrap() as usize;
         debug_assert!(n_factors > 0);
         if n_factors == 1 {
-            effect(Err(BTreeMap::new()), pat_expr);
+            effect(Err(&Bindings::new()), pat_expr);
             return 1;
         }
         let mut pat_args = Vec::with_capacity(n_factors);
@@ -1156,8 +1259,11 @@ impl Space {
 
     #[cfg(feature="no_search")]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut candidate = 0;
+        // One pair buffer for the whole enumeration: `unify` drains it, so a `clear` per
+        // candidate makes it allocation-free after warmup.
+        let mut pairs: Vec<(ExprEnv, ExprEnv)> = Vec::new();
 
         while prz.to_next_val() {
             if prz.focus_factor() != prz.factor_count() - 1 { continue };
@@ -1171,7 +1277,12 @@ impl Space {
             unsafe { unifications += 1; }
             // if e.variables() != 0 {
 
-            let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+            // This variant enumerates by opaque trie iteration (`to_next_val`), which offers no
+            // per-byte hook the way the coreferential descent does, so there is no walk to learn
+            // groundness from and the root envs stay unstamped -- a rescan here would be exactly
+            // the traversal the stamps exist to avoid.
+            pairs.clear();
+            pairs.push((sources[0], ExprEnv::new(1, e)));
 
             for (&pa, &other_i) in sources[1..].iter().zip(prz.path_indices()) {
                 let fe = ExprEnv::new((pairs.len() + 1) as u8,
@@ -1181,13 +1292,13 @@ impl Space {
 
             // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-            let bindings = unify(pairs);
+            let bindings = unify(&mut pairs);
 
             match bindings {
                 Ok(bs) => {
 
                     unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                    if !effect(Err(bs), e) {
+                    if !effect(Err(&bs), e) {
                         break
                     }
                 }
@@ -1213,10 +1324,13 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], BTreeMap<(u8, u8), ExprEnv>>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
+        // One pair buffer for the whole walk: `unify` drains it, so a `clear` per candidate
+        // makes it allocation-free after warmup.
+        let mut pairs: Vec<(ExprEnv, ExprEnv)> = Vec::new();
         let mut candidate = 0;
         thread_local! {
             static BREAK: std::cell::RefCell<[u64; 64]> = const { std::cell::RefCell::new([0; 64]) };
@@ -1224,7 +1338,7 @@ impl Space {
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                coreferential_transition(&mut prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() },&mut |loc| {
+                coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, &mut |loc, var_facts| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1235,11 +1349,35 @@ impl Space {
                     unsafe { unifications += 1; }
                     // if e.variables() != 0 {
                     if true {
-                        let mut pairs = vec![(sources[0], ExprEnv::new(1, e))];
+                        // Each candidate fact's boundaries come free from the product path: fact k runs
+                        // from path_indices()[k-1] to path_indices()[k] (the first from 0, the last to the
+                        // path's end). Groundness comes from the descent itself: the vs! arm recorded the
+                        // path position of every variable byte it took, so a fact is ground exactly when no
+                        // mark lies in its span -- exact, and free of any rescan. A stamped conjunct meeting
+                        // a stamped fact settles by one memcmp before match2 starts; a bare-variable
+                        // conjunct binds a stamped whole fact, which apply_e emits as a bulk copy.
+                        let opath = loc.origin_path();
+                        let pidx = loc.path_indices();
+                        let fact_end = |j: usize| pidx.get(j).copied().unwrap_or(opath.len());
+                        // The descent delivered each fact's groundness as a bit; the boundary
+                        // arithmetic is all that is left to do here.
+                        let span_stamp = |k: usize, start: usize, end: usize| -> u16 {
+                            let len = end - start;
+                            let ground = var_facts & (1u64 << k.min(63)) == 0;
+                            if ground && len <= u16::MAX as usize { len as u16 } else { 0 }
+                        };
+
+                        let mut root = ExprEnv::new(1, e);
+                        // SAFETY: `span_stamp` returns the walked extent, or 0.
+                        unsafe { root.stamp_ground(span_stamp(0, 0, fact_end(0))) };
+                        pairs.clear();
+                        pairs.push((sources[0], root));
 
                         for (&pa, &other_i) in sources[1..].iter().zip(loc.path_indices()) {
-                            let fe = ExprEnv::new((pairs.len() + 1) as u8,
-                                                  Expr { ptr: unsafe { loc.origin_path().as_ptr().cast_mut().add(other_i) } });
+                            let mut fe = ExprEnv::new((pairs.len() + 1) as u8,
+                                                  Expr { ptr: unsafe { opath.as_ptr().cast_mut().add(other_i) } });
+                            // SAFETY: as above -- the extent comes from the scan of these bytes.
+                            unsafe { fe.stamp_ground(span_stamp(pairs.len(), other_i, fact_end(pairs.len()))) };
                             pairs.push((pa, fe))
                         }
 
@@ -1250,7 +1388,7 @@ impl Space {
                         match bindings {
                             Ok(bs) => {
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
-                                if !effect(Err(bs), e) {
+                                if !effect(Err(&bs), e) {
                                     unsafe { longjmp(a, 1) }
                                 }
                             }
@@ -1363,22 +1501,48 @@ impl Space {
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
+        // The pattern pass used to re-apply the whole pattern under the bindings just to read back
+        // `(oi, ni, no_cycles)` -- but none of that needs the pattern's structure. `oi` is the
+        // pattern's own NewVar count, a constant of this call. The occurs check is a property of
+        // the bindings graph alone: a cycle is a variable reachable from itself through bindings,
+        // and the pattern's symbols and arity tags can never extend such a path. And the pattern's
+        // distinct variables are by construction the consecutive keys (0,0)..(0,oi-1), so applying
+        // this synthetic expression of oi NewVars visits every one of them with exactly the arms,
+        // stack and `cycled` bookkeeping the full pass used: same returns, same rejects, minus the
+        // walk over the pattern's structure. (`ni` seeds only cycle back-reference numbering, and
+        // an answer is only accepted when no cycle was cut, so its value cannot reach an accepted
+        // output.)
+        let pat_var_count = pat_expr.newvars();
+        #[cfg(debug_assertions)]
+        let mut pat_vars_buf = [0u8; 64];
+        #[cfg(debug_assertions)]
+        let pat_vars_expr = pattern_variables_expr(pat_expr, &mut pat_vars_buf).unwrap_or(pat_expr);
+
+
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
                 Ok(refs) => {
                     unreachable!()
                 }
-                Err((ref bindings)) => {
+                Err(bindings) => {
                     #[cfg(debug_assertions)]
-                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", v, ee.show()));
 
-                    let (mut oi, ni, true) = ({
-                        let mut void = std::io::sink();
-                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query true;};
+                    let counts = mork_expr::pattern_cycles_and_intros(
+                        pat_var_count as u8, bindings, &mut trace, &mut assignments);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut dtrace = Vec::new();
+                        let mut dass = Vec::new();
+                        let w = mork_expr::apply_e_cycles_only!(0,0,0,pat_vars_expr,bindings,dtrace,dass);
+                        debug_assert_eq!(counts.map(|(o, n)| (o, n, true)),
+                            Some((w.0, w.1, w.2)).filter(|w| w.2),
+                            "the specialized pattern pass disagreed with the general one");
+                    }
+                    let Some((mut oi, ni)) = counts else { break 'query true; };
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
@@ -1387,7 +1551,8 @@ impl Space {
 
 
                         buffer.clear();
-                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
+                        let mut bs = mork_expr::VecSink(&mut buffer);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
                         oi = toi;
 
 
@@ -1438,6 +1603,24 @@ impl Space {
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
+        // The pattern pass used to re-apply the whole pattern under the bindings just to read back
+        // `(oi, ni, no_cycles)` -- but none of that needs the pattern's structure. `oi` is the
+        // pattern's own NewVar count, a constant of this call. The occurs check is a property of
+        // the bindings graph alone: a cycle is a variable reachable from itself through bindings,
+        // and the pattern's symbols and arity tags can never extend such a path. And the pattern's
+        // distinct variables are by construction the consecutive keys (0,0)..(0,oi-1), so applying
+        // this synthetic expression of oi NewVars visits every one of them with exactly the arms,
+        // stack and `cycled` bookkeeping the full pass used: same returns, same rejects, minus the
+        // walk over the pattern's structure. (`ni` seeds only cycle back-reference numbering, and
+        // an answer is only accepted when no cycle was cut, so its value cannot reach an accepted
+        // output.)
+        let pat_var_count = pat_expr.newvars();
+        #[cfg(debug_assertions)]
+        let mut pat_vars_buf = [0u8; 64];
+        #[cfg(debug_assertions)]
+        let pat_vars_expr = pattern_variables_expr(pat_expr, &mut pat_vars_buf).unwrap_or(pat_expr);
+
+
         let mut any_new = false;
         let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
             // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
@@ -1446,14 +1629,22 @@ impl Space {
                 Ok(refs) => {
                     unreachable!()
                 }
-                Err((ref bindings)) => {
+                Err(bindings) => {
                     #[cfg(debug_assertions)]
-                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", v, ee.show()));
 
-                    let (mut oi, ni, true) = ({
-                        let mut void = std::io::sink();
-                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query true;};
+                    let counts = mork_expr::pattern_cycles_and_intros(
+                        pat_var_count as u8, bindings, &mut trace, &mut assignments);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut dtrace = Vec::new();
+                        let mut dass = Vec::new();
+                        let w = mork_expr::apply_e_cycles_only!(0,0,0,pat_vars_expr,bindings,dtrace,dass);
+                        debug_assert_eq!(counts.map(|(o, n)| (o, n, true)),
+                            Some((w.0, w.1, w.2)).filter(|w| w.2),
+                            "the specialized pattern pass disagreed with the general one");
+                    }
+                    let Some((mut oi, ni)) = counts else { break 'query true; };
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = &mut template_wzs[subsumption[i]];
@@ -1461,7 +1652,8 @@ impl Space {
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
+                        let mut bs = mork_expr::VecSink(&mut buffer);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
                         oi = toi;
 
 
@@ -1521,6 +1713,24 @@ impl Space {
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
+        // The pattern pass used to re-apply the whole pattern under the bindings just to read back
+        // `(oi, ni, no_cycles)` -- but none of that needs the pattern's structure. `oi` is the
+        // pattern's own NewVar count, a constant of this call. The occurs check is a property of
+        // the bindings graph alone: a cycle is a variable reachable from itself through bindings,
+        // and the pattern's symbols and arity tags can never extend such a path. And the pattern's
+        // distinct variables are by construction the consecutive keys (0,0)..(0,oi-1), so applying
+        // this synthetic expression of oi NewVars visits every one of them with exactly the arms,
+        // stack and `cycled` bookkeeping the full pass used: same returns, same rejects, minus the
+        // walk over the pattern's structure. (`ni` seeds only cycle back-reference numbering, and
+        // an answer is only accepted when no cycle was cut, so its value cannot reach an accepted
+        // output.)
+        let pat_var_count = pat_expr.newvars();
+        #[cfg(debug_assertions)]
+        let mut pat_vars_buf = [0u8; 64];
+        #[cfg(debug_assertions)]
+        let pat_vars_expr = pattern_variables_expr(pat_expr, &mut pat_vars_buf).unwrap_or(pat_expr);
+
+
         let mut any_new = false;
         let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
@@ -1529,14 +1739,22 @@ impl Space {
                 Ok(refs) => {
                     unreachable!()
                 }
-                Err(ref bindings) => {
+                Err(bindings) => {
                     #[cfg(debug_assertions)]
-                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", v, ee.show()));
 
-                    let (mut oi, ni, true) = ({
-                        let mut void = std::io::sink();
-                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query true;};
+                    let counts = mork_expr::pattern_cycles_and_intros(
+                        pat_var_count as u8, bindings, &mut trace, &mut assignments);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut dtrace = Vec::new();
+                        let mut dass = Vec::new();
+                        let w = mork_expr::apply_e_cycles_only!(0,0,0,pat_vars_expr,bindings,dtrace,dass);
+                        debug_assert_eq!(counts.map(|(o, n)| (o, n, true)),
+                            Some((w.0, w.1, w.2)).filter(|w| w.2),
+                            "the specialized pattern pass disagreed with the general one");
+                    }
+                    let Some((mut oi, ni)) = counts else { break 'query true; };
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
@@ -1544,7 +1762,8 @@ impl Space {
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
+                        let mut bs = mork_expr::VecSink(&mut buffer);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
                         oi = toi;
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
@@ -1607,6 +1826,24 @@ impl Space {
         let mut ass = Vec::with_capacity(64);
         let mut astack = Vec::with_capacity(64);
 
+        // The pattern pass used to re-apply the whole pattern under the bindings just to read back
+        // `(oi, ni, no_cycles)` -- but none of that needs the pattern's structure. `oi` is the
+        // pattern's own NewVar count, a constant of this call. The occurs check is a property of
+        // the bindings graph alone: a cycle is a variable reachable from itself through bindings,
+        // and the pattern's symbols and arity tags can never extend such a path. And the pattern's
+        // distinct variables are by construction the consecutive keys (0,0)..(0,oi-1), so applying
+        // this synthetic expression of oi NewVars visits every one of them with exactly the arms,
+        // stack and `cycled` bookkeeping the full pass used: same returns, same rejects, minus the
+        // walk over the pattern's structure. (`ni` seeds only cycle back-reference numbering, and
+        // an answer is only accepted when no cycle was cut, so its value cannot reach an accepted
+        // output.)
+        let pat_var_count = pat_expr.newvars();
+        #[cfg(debug_assertions)]
+        let mut pat_vars_buf = [0u8; 64];
+        #[cfg(debug_assertions)]
+        let pat_vars_expr = pattern_variables_expr(pat_expr, &mut pat_vars_buf).unwrap_or(pat_expr);
+
+
         let mut any_new = false;
         let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
@@ -1615,14 +1852,22 @@ impl Space {
                 Ok(refs) => {
                     unreachable!()
                 }
-                Err(ref bindings) => {
+                Err(bindings) => {
                     #[cfg(debug_assertions)]
-                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", *v, ee.show()));
+                    bindings.iter().for_each(|(v, ee)| trace!(target: "transform", "binding {:?} {}", v, ee.show()));
 
-                    let (mut oi, ni, true) = ({
-                        let mut void = std::io::sink();
-                        mork_expr::apply_e_clears_stacks_and_cycles_check!(0,0,0,pat_expr,bindings,void,trace,assignments)
-                    }) else {break 'query true;};
+                    let counts = mork_expr::pattern_cycles_and_intros(
+                        pat_var_count as u8, bindings, &mut trace, &mut assignments);
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut dtrace = Vec::new();
+                        let mut dass = Vec::new();
+                        let w = mork_expr::apply_e_cycles_only!(0,0,0,pat_vars_expr,bindings,dtrace,dass);
+                        debug_assert_eq!(counts.map(|(o, n)| (o, n, true)),
+                            Some((w.0, w.1, w.2)).filter(|w| w.2),
+                            "the specialized pattern pass disagreed with the general one");
+                    }
+                    let Some((mut oi, ni)) = counts else { break 'query true; };
 
                     'writes : for (i, template) in templates.iter().enumerate() {
                         let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
@@ -1630,7 +1875,8 @@ impl Space {
                         trace!(target: "transform", "{i} template {} @ ({oi} {ni})", serialize(unsafe { template.span().as_ref().unwrap()}));
 
                         buffer.clear();
-                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,buffer,astack,ass) else { continue 'writes; };
+                        let mut bs = mork_expr::VecSink(&mut buffer);
+                        let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);

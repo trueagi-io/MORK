@@ -1137,7 +1137,7 @@ impl Space {
     unsafe fn read_handler<'trie, 'path>(btm: *const PathMap<()>,
                     mmaps: *mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
                     z3s: *mut HashMap<OwnedSourceItem, Box<Popen>>,
-                    request: ResourceRequest) -> Resource<'trie, 'path> {
+                    request: ResourceRequest<'_>) -> Resource<'trie, 'path> {
         match request {
             ResourceRequest::BTM(prefix) => {
                 Resource::BTM(btm.as_ref().unwrap().read_zipper_at_path(prefix))
@@ -1236,8 +1236,10 @@ impl Space {
         trace!(target: "query_multi_i", "z3s {:?}", z3s.keys().collect::<Vec<_>>());
         let mut srcs: Vec<_> = Vec::with_capacity(n_factors);
         let mut factors: Vec<_> = Vec::with_capacity(n_factors);
+        let mut source_patterns: Vec<_> = Vec::with_capacity(n_factors);
         for e in pat_args[1..].iter() {
-            let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::new(e.subsexpr()) };
+            let mut src = if no_source { ASource::compat(e.subsexpr()) } else { ASource::from_env(*e) };
+            source_patterns.push(src.pattern(*e));
             factors.push(src.source(src.request().map(|request| unsafe { Self::read_handler(btm, mmaps, z3s, request) })));
             srcs.push(src);
         }
@@ -1246,13 +1248,13 @@ impl Space {
             AFactor::CompatSource(primary) => {
                 let mut prz = ProductZipper::new(primary, &mut factors[..]);
                 prz.reserve_buffers(1 << 32, 32);
-                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+                Self::query_multi_raw(&mut prz, &source_patterns, effect)
             }
             primary => {
                 trace!(target: "query_multi_i", "PZG of {:?}", factors.len() + 1);
                 let mut prz = ProductZipperG::new(primary, &mut factors[..]);
                 prz.reserve_buffers(1 << 32, 32);
-                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+                Self::query_multi_raw(&mut prz, &source_patterns, effect)
             }
         }
     }

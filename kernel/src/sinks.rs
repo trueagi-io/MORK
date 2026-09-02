@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::{mem, process, ptr};
 use std::any::Any;
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::fs::File;
 use std::hint::unreachable_unchecked;
@@ -1081,6 +1081,117 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
     }
 }
 
+fn owned_expr_args(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let expr = Expr { ptr: bytes.as_ptr().cast_mut() };
+    let mut args = Vec::new();
+    ExprEnv::new(0, expr).args(&mut args);
+    args.into_iter()
+        .map(|arg| unsafe { arg.subsexpr().span().as_ref().unwrap().to_vec() })
+        .collect()
+}
+
+fn symbol_text(bytes: &[u8]) -> &str {
+    let Tag::SymbolSize(size) = byte_item(bytes[0]) else {
+        panic!("expected a symbol, got {}", serialize(bytes));
+    };
+    str::from_utf8(&bytes[1..1 + size as usize]).expect("expected a UTF-8 symbol")
+}
+
+fn symbol_expr(text: &str) -> Vec<u8> {
+    assert!(text.len() < 64, "symbol is too long");
+    let mut encoded = vec![item_byte(Tag::SymbolSize(text.len() as u8))];
+    encoded.extend_from_slice(text.as_bytes());
+    encoded
+}
+
+/// Deterministic `(fsum OUTPUT RESULT VALUE ORDER)` aggregation.
+///
+/// Rows are grouped by `(OUTPUT, RESULT)`, deduplicated, and summed in encoded
+/// `ORDER` order. The existing three-argument `fsum` form remains unchanged.
+pub struct OrderedFloatSumSink {
+    groups: BTreeMap<(Vec<u8>, Vec<u8>), BTreeSet<(Vec<u8>, Vec<u8>)>>,
+}
+
+impl Sink for OrderedFloatSumSink {
+    fn new(_e: Expr) -> Self {
+        Self { groups: BTreeMap::new() }
+    }
+
+    fn request(&self) -> impl Iterator<Item = WriteResourceRequest> {
+        std::iter::once(WriteResourceRequest::BTM([].as_slice()))
+    }
+
+    fn sink<'w, 'a, 'k, It: Iterator<Item = WriteResource<'w, 'a, 'k>>>(
+        &mut self,
+        mut resources: It,
+        path: &[u8],
+    ) where
+        'a: 'w,
+        'k: 'w,
+    {
+        let WriteResource::BTM(output) = resources.next().unwrap() else { unreachable!() };
+        let args = owned_expr_args(&path[output.root_prefix_path().len()..]);
+        assert_eq!(args.len(), 5, "ordered fsum expects four arguments");
+        assert_eq!(symbol_text(&args[0]), "fsum");
+
+        self.groups
+            .entry((args[1].clone(), args[2].clone()))
+            .or_default()
+            .insert((args[4].clone(), args[3].clone()));
+    }
+
+    fn finalize<'w, 'a, 'k, It: Iterator<Item = WriteResource<'w, 'a, 'k>>>(
+        &mut self,
+        mut resources: It,
+    ) -> bool
+    where
+        'a: 'w,
+        'k: 'w,
+    {
+        let WriteResource::BTM(output) = resources.next().unwrap() else { unreachable!() };
+        output.reset();
+        let mut changed = false;
+
+        for ((template, result), rows) in mem::take(&mut self.groups) {
+            let total: f64 = rows
+                .into_iter()
+                .map(|(_order, value)| {
+                    symbol_text(&value)
+                        .parse::<f64>()
+                        .expect("ordered fsum value must be a float")
+                })
+                .sum();
+            let mut total = symbol_expr(&total.to_string());
+
+            match byte_item(result[0]) {
+                Tag::VarRef(index) => {
+                    let expression = Expr { ptr: template.as_ptr().cast_mut() };
+                    let mut substituted = vec![item_byte(Tag::NewVar); template.len() + total.len()];
+                    let mut zipper = ExprZipper::new(Expr { ptr: substituted.as_mut_ptr() });
+                    expression.substitute_one_de_bruijn(
+                        index,
+                        Expr { ptr: total.as_mut_ptr() },
+                        &mut zipper,
+                    );
+                    substituted.truncate(zipper.loc);
+                    output.move_to_path(&substituted[output.root_prefix_path().len()..]);
+                    changed |= output.set_val(()).is_none();
+                }
+                Tag::NewVar => {
+                    output.move_to_path(&template[output.root_prefix_path().len()..]);
+                    changed |= output.set_val(()).is_none();
+                }
+                _ if result == total => {
+                    output.move_to_path(&template[output.root_prefix_path().len()..]);
+                    changed |= output.set_val(()).is_none();
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+}
+
 
 // (pure (result $x) $x (f32_from_string 0.2))
 #[cfg(feature = "grounding")]
@@ -1253,6 +1364,7 @@ pub enum ASink { AddSink(AddSink), RemoveSink(RemoveSink), HeadSink(HeadTailSink
     AUSink(AUSink),
     USink(USink),
     CompatSink(CompatSink),
+    OrderedFSumSink(OrderedFloatSumSink),
     FSumSink(FloatReductionSink<Sum>),
     FMinSink(FloatReductionSink<Min>),
     FMaxSink(FloatReductionSink<Max>),
@@ -1290,6 +1402,9 @@ impl Sink for ASink {
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(3)) &&
             *e.ptr.offset(2) == b's' && *e.ptr.offset(3) == b'u' && *e.ptr.offset(4) == b'm' } {
             return ASink::SumSink(SumSink::new(e));
+        } else if unsafe { *e.ptr == item_byte(Tag::Arity(5)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
+            *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b's'&& *e.ptr.offset(4) == b'u'&& *e.ptr.offset(5) == b'm' } {
+            return ASink::OrderedFSumSink(OrderedFloatSumSink::new(e));
         } else if unsafe { *e.ptr == item_byte(Tag::Arity(4)) && *e.ptr.offset(1) == item_byte(Tag::SymbolSize(4)) &&
             *e.ptr.offset(2) == b'f' && *e.ptr.offset(3) == b's'&& *e.ptr.offset(4) == b'u'&& *e.ptr.offset(5) == b'm' } {
             return ASink::FSumSink(FloatReductionSink::new(e));
@@ -1352,6 +1467,7 @@ impl Sink for ASink {
                 #[cfg(feature = "z3")]
                 ASink::Z3Sink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::CompatSink(s) => { for i in s.request().into_iter() { yield i } }
+                ASink::OrderedFSumSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FSumSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMinSink(s) => { for i in s.request().into_iter() { yield i } }
                 ASink::FMaxSink(s) => { for i in s.request().into_iter() { yield i } }
@@ -1379,6 +1495,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.sink(it, path) }
             ASink::CompatSink(s) => { s.sink(it, path) }
+            ASink::OrderedFSumSink(s) => { s.sink(it, path) }
             ASink::FSumSink(s) => { s.sink(it, path) }
             ASink::FMinSink(s) => { s.sink(it, path) }
             ASink::FMaxSink(s) => { s.sink(it, path) }
@@ -1406,6 +1523,7 @@ impl Sink for ASink {
             #[cfg(feature = "z3")]
             ASink::Z3Sink(s) => { s.finalize(it) }
             ASink::CompatSink(s) => { s.finalize(it) }
+            ASink::OrderedFSumSink(s) => { s.finalize(it) }
             ASink::FSumSink(s) => { s.finalize(it) }
             ASink::FMinSink(s) => { s.finalize(it) }
             ASink::FMaxSink(s) => { s.finalize(it) }

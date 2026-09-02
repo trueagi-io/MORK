@@ -600,8 +600,8 @@ impl Sink for CountSink {
                 changed |= true;
                 prz.ascend_byte();
             } 
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
                     cntv.extend_from_slice(cnt_str.as_bytes());
                     let varref = &prz.path()[..prz.path().len()-1];
@@ -693,8 +693,8 @@ impl Sink for HashSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let hash = prz.fork_read_zipper().hash();
                     let cnt_str = hash.to_be_bytes();
 
@@ -796,8 +796,8 @@ impl Sink for AndSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = !0u8;
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
@@ -905,8 +905,8 @@ impl Sink for SumSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = 0u32;
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
@@ -1047,8 +1047,8 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = Reduction::ACC;
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
@@ -1170,8 +1170,8 @@ impl Sink for PureSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
-                if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
+            if let Some(first_byte) = prz.descend_first_byte() {
+                if let Tag::VarRef(k) = byte_item(first_byte) {
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();
                     'vals: while rz.to_next_val() {

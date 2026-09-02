@@ -16,7 +16,8 @@
 use mork_expr::{byte_item, item_byte, unify, unify_into, Expr, ExprEnv, ExprZipper, Tag};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::{
-    ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperValues,
+    ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperPath,
+    ZipperValues,
 };
 use pathmap::PathMap;
 use std::collections::{BTreeMap, BTreeSet};
@@ -164,10 +165,10 @@ impl Column {
     }
 }
 
-impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
+impl<Z: Zipper + ZipperMoving + ZipperPath + ZipperIteration> SubtermCursor<Z> {
     /// Build a cursor at the zipper's current focus. Not positioned until `first`/`seek` is called.
     pub fn new(z: Z) -> Self {
-        let floor = z.path().len();
+        let floor = z.depth();
         SubtermCursor {
             z,
             col: Column::new(floor),
@@ -178,7 +179,7 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
 
     #[inline]
     fn key_len(&self) -> usize {
-        self.z.path().len() - self.col.floor
+        self.z.depth() - self.col.floor
     }
 
     /// `(NewVar count, total variable count)` of the current key, exact.
@@ -266,8 +267,8 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
     fn reset_to_floor(&mut self) {
         let n = self.key_len();
         if n > 0 {
-            let ok = self.z.ascend(n);
-            debug_assert!(ok, "the floor is above the zipper's root by construction");
+            let ascended = self.z.ascend(n);
+            debug_assert_eq!(ascended, n, "the floor is above the zipper's root by construction");
         }
         self.col.reset_with_floor(self.col.floor);
         self.at_end = false;
@@ -277,7 +278,7 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
     /// so subsequent enumeration is of the NEXT column. The zipper stays put (it is already
     /// descended into the key); only the floor bookkeeping moves. Pairs with `ascend_floor`.
     pub fn descend_floor(&mut self) {
-        let next = Column::new(self.z.path().len());
+        let next = Column::new(self.z.depth());
         self.floor_stack.push(std::mem::replace(&mut self.col, next));
         self.at_end = false;
     }
@@ -358,12 +359,12 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
             // produced, and payload bytes are not tags, so no variable count moves.
             let owed = self.col.owed_payload as usize;
             if owed > 1 {
-                let before = self.z.path().len();
+                let before = self.z.depth();
                 if !self.z.descend_first_k_path(owed) {
                     self.at_end = true;
                     return false;
                 }
-                debug_assert_eq!(self.z.path().len(), before + owed);
+                debug_assert_eq!(self.z.depth(), before + owed);
                 for i in 0..owed {
                     self.col
                         .parse_stack
@@ -377,9 +378,9 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
             // produced, ascending back if it ran past the subterm boundary. `descend_until` would
             // be wrong to use here -- its ReadZipper override is a per-byte loop, while
             // `descend_until_max_bytes` extends by whole node keys.
-            let before = self.z.path().len();
+            let before = self.z.depth();
             if self.z.descend_until_max_bytes(64) {
-                let end = self.z.path().len();
+                let end = self.z.depth();
                 let mut i = before;
                 while i < end {
                     let b = self.z.path()[i];
@@ -390,19 +391,19 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
                     }
                 }
                 if i < end {
-                    let ok = self.z.ascend(end - i);
-                    debug_assert!(ok, "ascending back inside a span we just descended");
+                    let ascended = self.z.ascend(end - i);
+                    debug_assert_eq!(ascended, end - i, "ascending back inside a span we just descended");
                 }
                 continue;
             }
-            // The leftmost child, straight off the node's iterator: materializing a full
-            // 256-bit child mask and scanning it for the least bit, then re-finding that byte
-            // with descend_to_byte, re-derived per byte what the zipper answers in one step.
-            if !self.z.descend_first_byte() {
+            // The leftmost child, straight off the node's iterator, which hands the byte back:
+            // materializing a full 256-bit child mask and scanning it for the least bit, then
+            // re-finding that byte with descend_to_byte, re-derived per byte what the zipper
+            // answers in one step.
+            let Some(b) = self.z.descend_first_byte() else {
                 self.at_end = true;
                 return false;
-            }
-            let b = *self.z.path().last().expect("descend_first_byte grew the path");
+            };
             self.advance_parse(b);
         }
         true
@@ -424,7 +425,7 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
                 self.at_end = true;
                 return false;
             }
-            let cur = self.z.path().len();
+            let cur = self.z.depth();
             let target = self.col.floor + n;
             debug_assert!(target <= cur, "the record stack ran below the focus");
             if cur > target {
@@ -432,20 +433,19 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
                     let b = self.z.path()[i];
                     self.retreat_parse(b);
                 }
-                let ok = self.z.ascend(cur - target);
-                debug_assert!(ok, "ascending inside the column");
+                let ascended = self.z.ascend(cur - target);
+                debug_assert_eq!(ascended, cur - target, "ascending inside the column");
             }
-            // The byte about to leave must be read BEFORE the zipper moves: with the path as the
-            // only representation, it lives nowhere else.
-            let old = *self.z.path().last().expect("above the floor");
+            // The byte about to leave must be read BEFORE the zipper moves: the sibling switch
+            // overwrites it in place, and the parse retreat still owes it.
+            let old = self.z.focus_byte().expect("above the floor");
             // In-place sibling switch on the node's iterator, replacing the ascend + full child
             // mask + next-bit scan + descend round trip. The parse mirrors it: undo the byte the
             // switch replaced, consume the byte it produced. (A nondeterministic mork-test
             // failure was at first attributed to this switch; bisection showed the failure is a
             // pre-existing upstream flake in the anti-unify sink on the ProductZipper path, and a
             // 4000-seed property harness against PathMap vindicated to_next_sibling_byte.)
-            if self.z.to_next_sibling_byte() {
-                let b = *self.z.path().last().expect("sibling switch kept the depth");
+            if let Some(b) = self.z.to_next_sibling_byte() {
                 self.retreat_parse(old);
                 self.advance_parse(b);
                 return self.complete_leftmost();

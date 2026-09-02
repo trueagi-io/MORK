@@ -1,0 +1,66 @@
+;; @expect
+;; @steps  60
+;; @desc   The process calculus lowered three ways over the same soup, so the expected space pins
+;; @desc   all three to the same final message: monotone naive, delta on the message side, and
+;; @desc   consuming (the reagents are retired). The naive rule never removes, so it re-derives
+;; @desc   every past communication on every round -- quadratic in the cascade length.
+
+;; a cascade: each receiver forwards to the next channel
+(pN (? c0 p0 (! c1 p1)))
+(pN (? c1 p1 (! c2 p2)))
+(pN (? c2 p2 (! c3 p3)))
+(pN (? c3 p3 (! r0 q0)))
+(pN (? r0 q0 (? r1 q1 (! deep ok))))
+(pN (? r1 q1 (! early seen)))
+(pN (! r1 q1))
+(pN (! c0 p0))
+(pD (? c0 p0 (! c1 p1)))
+(pD (? c1 p1 (! c2 p2)))
+(pD (? c2 p2 (! c3 p3)))
+(pD (? c3 p3 (! r0 q0)))
+(pD (? r0 q0 (? r1 q1 (! deep ok))))
+(pD (? r1 q1 (! early seen)))
+(pD (! r1 q1))
+(pD (! c0 p0))
+(dD (? c0 p0 (! c1 p1)))
+(dD (? c1 p1 (! c2 p2)))
+(dD (? c2 p2 (! c3 p3)))
+(dD (? c3 p3 (! r0 q0)))
+(dD (? r0 q0 (? r1 q1 (! deep ok))))
+(dD (? r1 q1 (! early seen)))
+(dD (! r1 q1))
+(dD (! c0 p0))
+(pC (? c0 p0 (! c1 p1)))
+(pC (? c1 p1 (! c2 p2)))
+(pC (? c2 p2 (! c3 p3)))
+(pC (? c3 p3 (! r0 q0)))
+(pC (? r0 q0 (? r1 q1 (! deep ok))))
+(pC (? r1 q1 (! early seen)))
+(pC (! r1 q1))
+(pC (! c0 p0))
+(fN (S (S (S (S (S (S Z)))))))
+(fD (S (S (S (S (S (S Z)))))))
+(fC (S (S (S (S (S (S Z)))))))
+
+;; (a) monotone: nothing retired, so round k re-derives all k-1 earlier communications
+(exec (1 Z) (, (exec (1 $l) $p $t) (fN (S $k)) (pN (? $c $pl $b)) (pN (! $c $pl)))
+            (O (+ (exec (1 (S $l)) $p $t)) (+ (pN $b)) (+ (fN $k)) (- (fN (S $k)))))
+
+;; (b) SYMMETRIC delta. A self-join over one relation needs both arms: new receivers against
+;; every message, and every receiver against new messages. With only the second, a communication
+;; that derives a RECEIVER never reacts with a message already in the soup -- which is what the
+;; (? r0 ..) pair above is here to catch.
+((armD 0) (, (dD (? $c $pl $b)) (pD (! $c $pl)))
+          (O (+ (pD $b)) (+ (dD $b)) (- (dD (? $c $pl $b)))))
+((armD 1) (, (pD (? $c $pl $b)) (dD (! $c $pl)))
+          (O (+ (pD $b)) (+ (dD $b)) (- (dD (! $c $pl)))))
+(exec (2 (IC 0 1 (S (S (S (S (S (S (S (S (S (S Z))))))))))))
+      (, (exec (2 (IC $x $y (S $c))) $sp $st) ((armD $x) $p $t))
+      (, (exec (2 (IC $y $x $c)) $sp $st) (exec (2 (R $x)) $p $t)))
+
+;; (c) consuming: the reagents are retired, so no intermediate is ever kept and the
+;; re-derivation is removed at its source rather than filtered afterwards
+(exec (3 Z) (, (exec (3 $l) $p $t) (fC (S $k)) (pC (? $c $pl $b)) (pC (! $c $pl)))
+            (O (+ (exec (3 (S $l)) $p $t)) (+ (pC $b))
+               (- (pC (? $c $pl $b))) (- (pC (! $c $pl)))
+               (+ (fC $k)) (- (fC (S $k)))))

@@ -1,0 +1,52 @@
+;; @expect
+;; @steps  20
+;; @desc   Variables no template reads: the engines may answer them with one witness instead of
+;; @desc   enumerating their domain, but only where that cannot change the answer set. Each block
+;; @desc   below is a shape the projection cut must get right; the expected space pins all of them.
+
+;; --- 1. A trailing don't-care with fan-out. `$_` is mentioned once and no template reads it, so
+;; every value past the first re-derives `(out1 a)`. One row per `r`, whatever the fan-out.
+(r a)
+(r b)
+(s a p)
+(s a q)
+(s a t)
+(s b t)
+(exec 0 (, (r $x) (s $x $_)) (, (out1 $x)))
+
+;; --- 2. Schematic data. A don't-care may witness a term that itself contains variables; the
+;; answer must not depend on which witness the engine happened to reach first.
+(sv k plain)
+(sv k (f $z))
+(sv k (g $w $v))
+(exec 1 (, (sv $y $_) ) (, (out2 $y)))
+
+;; --- 3. A don't-care that is NOT trailing. `$m` decides which `(gg $m $n)` subtrie `$n` is drawn
+;; from, so pinning it would drop answers rather than duplicates: every `$n` must survive.
+(gg p 1)
+(gg p 2)
+(gg q 3)
+(exec 2 (, (gg $m $n)) (, (out3 $n)))
+
+;; --- 4. The same, one level down: the don't-care sits inside a compound, still not trailing.
+(hh (kk p 1))
+(hh (kk p 2))
+(hh (kk q 3))
+(exec 3 (, (hh (kk $mm $nn))) (, (out4 $nn)))
+
+;; --- 5. A repeated variable no template reads is a JOIN variable, not a don't-care: it still has
+;; to intersect, so `(out5 ...)` holds only the values `jl` and `jr` agree on.
+(jl 1)
+(jl 2)
+(jl 3)
+(jr 2)
+(jr 3)
+(jr 4)
+(je 2)
+(exec 4 (, (jl $p) (jr $p) (je $q)) (, (out5 $q)))
+
+;; --- 6. An O-form whose pattern carries a don't-care guard. The guard must keep gating: the
+;; counter decrements once per step while `(wanted t)` exists, and stops when it no longer does.
+(wanted t)
+(counter (S (S (Z))))
+(exec 5 (, (exec 5 $a $b) (wanted $c) (counter (S $d))) (O (+ (exec 5 $a $b)) (+ (counter $d)) (- (counter (S $d)))))

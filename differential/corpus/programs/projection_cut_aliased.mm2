@@ -1,0 +1,53 @@
+;; @expect
+;; @steps  30
+;; @desc   Data-side aliasing: facts whose own variable ties the don't-care column to a column a
+;; @desc   template reads. The query-side rule (mentioned once, unread, trailing) says nothing
+;; @desc   about the DATA sharing a variable across those columns, so each shape is pinned here.
+;; @desc
+;; @desc   Why it is sound: a bare fresh singleton is an unconstrained position, so whichever
+;; @desc   stored subterm it meets, the binding is read by nothing and constrains nothing else.
+;; @desc   What could still discriminate is a LATER query position drawing from the subtrie the
+;; @desc   choice selected -- and the trailing condition is exactly what excludes that. The
+;; @desc   discriminating information in these shapes lives in the repeated column, which is a
+;; @desc   trie PREFIX of the don't-care column, so it is enumerated before the cut applies.
+
+;; 1. the tail aliases the first column; the facts differ at the REPEATED column, so `$a` must
+;;    still iterate over both A and B
+(f1 $x A $x)
+(f1 $x B $x)
+(exec (0 1) (, (f1 $a $a $_)) (, (o1 $a)))
+
+;; 2. the facts differ at the DON'T-CARE column instead, and `$a` stays free
+(f2 $x $x A)
+(f2 $x $x B)
+(exec (0 2) (, (f2 $a $a $_)) (, (o2 $a)))
+
+;; 3. the don't-care column mixes a back-reference with a ground term
+(f3 $x $x $x)
+(f3 $x $x A)
+(exec (0 3) (, (f3 $a $a $_)) (, (o3 $a)))
+
+;; 4. the read variable is pinned by the FIRST column, with an alias in the tail
+(f4 A $x $x)
+(f4 B $x $x)
+(exec (0 4) (, (f4 $a $a $_)) (, (o4 $a)))
+
+;; 5. two trailing don't-cares, both aliased to the read variable
+(f5 $x A $x $x)
+(f5 $x B $x $x)
+(exec (0 5) (, (f5 $a $a $_ $_2)) (, (o5 $a)))
+
+;; 6. the don't-care sits in the MIDDLE, so it is not cuttable at all
+(f6 $x A $x)
+(f6 $x B $x)
+(exec (0 6) (, (f6 $c $_ $c)) (, (o6 $c)))
+
+;; 7. the don't-care's subterm carries structure over the shared variable
+(f7 $x $x (g $x))
+(f7 $x $x (h $x))
+(exec (0 7) (, (f7 $a $a $_)) (, (o7 $a)))
+
+;; 8. a read variable pinned only via the repeated column, with the tail aliasing it
+(f8 $x $x A $x)
+(f8 $x $x B $x)
+(exec (0 8) (, (f8 $a $a $b $_)) (, (o8 $a $b)))

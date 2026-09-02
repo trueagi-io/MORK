@@ -30,7 +30,7 @@ use eval::EvalScope;
 use eval_ffi::{ExprSink, ExprSource};
 use mork_expr::macros::SerializableExpr;
 use crate::{expr, pure};
-use crate::space::ACT_PATH;
+use crate::space::act_path;
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum WriteResourceRequest {
@@ -329,7 +329,7 @@ impl Sink for ACTSink {
         trace!(target: "sink", "ACT finalizing");
         let _ = it.next().unwrap() else { unreachable!() };
         pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
-            self.tmp.read_zipper(), |_v| 0, format!("{}{}.act", ACT_PATH, self.file)).map(|_tree| ());
+            self.tmp.read_zipper(), |_v| 0, format!("{}{}.act", act_path(), self.file)).map(|_tree| ());
         true
     }
 }

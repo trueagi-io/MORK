@@ -32,8 +32,44 @@ pub static mut transitions: usize = 0;
 pub static mut unifications: usize = 0;
 pub static mut writes: usize = 0;
 
-pub static ACT_PATH: &'static str = "/dev/shm/";
-// pub static ACT_PATH: &'static str = "/mnt/data/";
+/// Where `ArenaCompactTree` files are written and mmapped from, always ending in a separator.
+///
+/// Set the `ACT_PATH` environment variable to choose the directory. Otherwise the default is the
+/// best temporary location the platform offers: on Linux `/dev/shm`, a tmpfs, so an ACT never
+/// reaches a disk; elsewhere the OS temp directory, which is `TMPDIR` on macOS (launchd always
+/// sets it, per-user) and `TEMP`/`TMP` on Windows -- neither has a `/dev/shm` to fall back to,
+/// which is why the old hardcoded one made every ACT test fail off Linux.
+///
+/// The directory is created if it does not exist, so a caller pointing `ACT_PATH` at a fresh
+/// path does not have to make it first.
+pub fn act_path() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let mut p = std::env::var("ACT_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(default_act_dir);
+        if !p.ends_with('/') && !p.ends_with(std::path::MAIN_SEPARATOR) {
+            p.push(std::path::MAIN_SEPARATOR);
+        }
+        if let Err(e) = std::fs::create_dir_all(&p) {
+            warn!(target: "act", "ACT_PATH {p} is not usable: {e}");
+        }
+        p
+    })
+}
+
+fn default_act_dir() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        // A tmpfs when it is mounted, which is the point: an ACT stays in memory.
+        if std::path::Path::new("/dev/shm").is_dir() {
+            return "/dev/shm".to_string();
+        }
+    }
+    // `temp_dir` reads TMPDIR on macOS and TEMP/TMP on Windows, and falls back to /tmp on unix.
+    std::env::temp_dir().to_string_lossy().into_owned()
+}
 
 /// The pattern's distinct variables as a synthetic expression of `n` `NewVar`s. Only the debug
 /// cross-check of [`mork_expr::pattern_cycles_and_intros`] applies it now; the live path needs no
@@ -109,8 +145,35 @@ pub(crate) const VARS: [u64; 4] = {
 // - `references` can be elided by not putting the virtual $ Expr's on the `stack` such that _k maps directly to the indices
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
+/// Descend the FIRST complete subterm below the focus, reporting how many bytes that took (0 if
+/// the focus is a dead end) and OR-ing into `var_facts` the bit of every factor whose bytes the
+/// descent found a variable in.
+///
+/// That second job is not optional. `vs!` is the only other place the walk learns a candidate is
+/// non-ground, and this descent goes around it: a leftmost subterm may well carry a variable --
+/// an arity byte sorts below a symbol byte, so a compound like `(f $z)` is exactly what gets
+/// picked -- and reporting the fact as ground would let a consumer stamp it so.
+fn descend_first_subterm<Z : ZipperMoving + Zipper + ZipperProduct>(loc: &mut Z, var_facts: &mut u64) -> usize {
+    let (mut owed, mut payload) = (1u32, 0u32);
+    let mut n = 0usize;
+    while owed > 0 || payload > 0 {
+        if !loc.descend_first_byte() {
+            loc.ascend(n);
+            return 0;
+        }
+        n += 1;
+        let b = *loc.path().last().unwrap();
+        let head = payload == 0;
+        mork_expr::subterm_parse_step(b, &mut owed, &mut payload);
+        if head && matches!(byte_item(b), Tag::NewVar | Tag::VarRef(_)) {
+            *var_facts |= 1u64 << loc.focus_factor().min(63);
+        }
+    }
+    n
+}
+
 fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
-    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, f: &mut F) {
+    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, cut_mask: u64, f: &mut F) {
     macro_rules! vs {
         ($e:expr, $nv:expr) => {{
             let m = loc.child_mask().and(&ByteMask(VARS));
@@ -133,7 +196,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                 loc.descend_to_byte(b);
                 debug_assert!(loc.path_exists());
                 let vf = var_facts | (1u64 << loc.focus_factor().min(63));
-                coreferential_transition(loc, stack, references, vf, f);
+                coreferential_transition(loc, stack, references, vf, cut_mask, f);
                 if !loc.ascend_byte() { unreachable_unchecked() };
             }
         }};
@@ -158,6 +221,20 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         Some((idx, prev))
                     } else { None };
 
+                    // One witnessing subterm stands for the whole subtrie, so take the leftmost
+                    // instead of enumerating every variable, size class and arity below here.
+                    if e.n == 0 && e.v < 64 && (cut_mask >> e.v) & 1 == 1 {
+                        let mut vf = var_facts;
+                        let n = descend_first_subterm(loc, &mut vf);
+                        if n > 0 {
+                            coreferential_transition(loc, stack, references, vf, cut_mask, f);
+                            loc.ascend(n);
+                        }
+                        if let Some((idx, prev)) = restore { references[idx] = prev; }
+                        stack.push(e);
+                        return;
+                    }
+
                     vs!(e, true);
 
                     let m = loc.child_mask().and(&ByteMask(SIZES));
@@ -168,7 +245,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         debug_assert!(loc.path_exists());
                         if !loc.descend_first_k_path(size as _) { unreachable_unchecked() }
                         loop {
-                            coreferential_transition(loc, stack, references, var_facts, f);   
+                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);   
                             if !loc.to_next_k_path(size as _) { break }
                         }
                         if !loc.ascend_byte() { unreachable_unchecked() }
@@ -183,7 +260,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
                         for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
-                        coreferential_transition(loc, stack, references, var_facts, f);
+                        coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
                     }
@@ -209,14 +286,14 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                     };
                     stack.push(addition);
                     vs!(e, false);
-                    coreferential_transition(loc, stack, references, var_facts, f);
+                    coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                     stack.pop();
                 }
                 Tag::SymbolSize(size) => {
                     vs!(e, false);
                     if loc.descend_to_existing_byte(e_byte) {
                         if loc.descend_to_check(&*slice_from_raw_parts(e.base.ptr.byte_add(e.offset as usize + 1), size as usize)) {
-                            coreferential_transition(loc, stack, references, var_facts, f);
+                            coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         }
                         loc.ascend((size as usize) + 1); // The expression length + the e_byte
                     }
@@ -227,7 +304,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         let stackl = stack.len();
                         e.args(&mut stack);
                         stack[stackl..].reverse();
-                        coreferential_transition(loc, stack, references, var_facts, f);
+                        coreferential_transition(loc, stack, references, var_facts, cut_mask, f);
                         stack.truncate(stack.len() - arity as usize);
                         loc.ascend_byte();
                     }
@@ -1098,22 +1175,128 @@ impl Space {
     /// which `query_multi` handles (or fails on) exactly as it always has, plus the encoding
     /// pathologies `parse_body_factors` rejects (a `VarRef` naming a variable the body never
     /// introduced, or more than `u8::MAX` variables).
-    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    /// The body variables no template reads, that the body mentions once, and that sit in their
+    /// conjunct's trailing run. A bitmask over the body's variable numbering (`NewVar`s in
+    /// first-occurrence order), which is what both engines index by.
+    ///
+    /// The trailing-run condition is the soundness one: anything earlier in a conjunct decides
+    /// which subtrie the later columns come from, so `(s (f $_) $y)` must keep enumerating `$_`
+    /// while `(s $y (f $_))` need not.
+    pub fn projection_cut_mask(pat_expr: Expr, templates: &[ExprEnv]) -> u64 {
+        let head = unsafe { *pat_expr.ptr };
+        let Tag::Arity(nargs) = byte_item(head) else { return 0 };
+        debug_assert!((nargs as usize) < 64, "byte_item masks an arity to six bits");
+
+        // One pass over the body, from the pointer: count every variable's mentions, and record
+        // per conjunct how long its trailing run of `NewVar`s is and how many variables its end
+        // had numbered.
+        let mut occ = [0u32; 64];
+        let mut nv = 0usize;
+        let mut runs = [(0u8, 0u8); 64];
+        let mut any_run = false;
+        let mut i = 1usize;
+        for c in 0..nargs as usize {
+            let (mut owed, mut payload) = (1u32, 0u32);
+            let mut run = 0u8;
+            while owed > 0 {
+                let b = unsafe { *pat_expr.ptr.add(i) };
+                let tag = byte_item(b);
+                i += 1;
+                owed -= 1;
+                match tag {
+                    // A symbol's payload is stepped over in one go, so this walk is per ITEM.
+                    Tag::SymbolSize(size) => { i += size as usize; run = 0; }
+                    Tag::Arity(a) => { owed += a as u32; run = 0; }
+                    Tag::NewVar => {
+                        // The encoding caps a routable body at 63 variables, and a mask cannot
+                        // name what it cannot index: a body past the cap simply opts out.
+                        if nv >= 64 { return 0 }
+                        occ[nv] += 1;
+                        nv += 1;
+                        run = run.saturating_add(1);
+                    }
+                    Tag::VarRef(r) => {
+                        debug_assert!((r as usize) < 64, "byte_item masks a VarRef to six bits");
+                        occ[r as usize] += 1;
+                        run = 0;
+                    }
+                }
+                let _ = payload;
+            }
+            debug_assert!(nv <= 64);
+            runs[c] = (run, nv as u8);
+            any_run |= run > 0;
+        }
+        if !any_run { return 0 }
+
+        let trailing = |runs: &[(u8, u8); 64], read: u64| -> u64 {
+            let mut m = 0u64;
+            for c in 0..nargs as usize {
+                let (run, end) = runs[c];
+                for k in 0..run as usize {
+                    let Some(v) = (end as usize).checked_sub(1 + k) else { break };
+                    if occ[v] != 1 || (read >> v) & 1 == 1 { break }
+                    m |= 1u64 << v;
+                }
+            }
+            m
+        };
+        // Only a variable mentioned once can be cut; if none survives that, no template is read.
+        let candidates = trailing(&runs, 0);
+        if candidates == 0 { return 0 }
+
+        // Now earned: which of them does some template read? A ground-stamped template holds no
+        // variable by the stamp's own contract, so it is skipped without being walked.
+        let mut read = 0u64;
+        for t in templates.iter() {
+            if t.ground_stamp() != 0 { continue }
+            let e = t.subsexpr();
+            let (mut owed, mut j) = (1u32, 0usize);
+            while owed > 0 {
+                let b = unsafe { *e.ptr.add(j) };
+                j += 1;
+                owed -= 1;
+                match byte_item(b) {
+                    Tag::SymbolSize(size) => j += size as usize,
+                    Tag::Arity(a) => owed += a as u32,
+                    Tag::NewVar => {}
+                    Tag::VarRef(r) => {
+                        debug_assert!((r as usize) < 64, "byte_item masks a VarRef to six bits");
+                        read |= 1u64 << r;
+                    }
+                }
+            }
+            // Every candidate is spoken for; nothing can be cut, so stop reading templates.
+            if read & candidates == candidates { return 0 }
+        }
+
+        // A read variable stops its conjunct's run at that point, not just for itself.
+        trailing(&runs, read)
+    }
+
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, cut_mask: u64, mut effect: F) -> usize {
         // Which engine answers the space-to-space transform is a compile-time choice and nothing
         // more: with the `leapfrog` feature the join owns every body, and without it the module
         // does not exist. `query_multi` stays reachable for the paths that are not dispatched --
         // the pattern-directed dumps and the interpreted source/sink transforms.
         #[cfg(feature = "leapfrog")]
         {
-            crate::leapfrog::query_multi_leapfrog(btm, pat_expr, effect)
+            crate::leapfrog::query_multi_leapfrog(btm, pat_expr, cut_mask, effect)
         }
         #[cfg(not(feature = "leapfrog"))]
         {
-            Self::query_multi(btm, pat_expr, effect)
+            Self::query_multi_proj(btm, pat_expr, cut_mask, effect)
         }
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, effect: F) -> usize {
+        Self::query_multi_proj(btm, pat_expr, 0, effect)
+    }
+
+    /// [`Self::query_multi`] under the projection cut: `cut_mask` names the body variables whose
+    /// value nothing downstream reads, which the descent answers with one subterm instead of
+    /// every one. A zero mask is the unchanged walk.
+    pub fn query_multi_proj<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, cut_mask: u64, mut effect: F) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
@@ -1130,7 +1313,7 @@ impl Space {
         }));
         prz.reserve_buffers(1 << 32, 32);
 
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        Self::query_multi_raw_proj(&mut prz, &pat_args[1..], cut_mask, effect)
     }
 
     #[inline]
@@ -1145,7 +1328,7 @@ impl Space {
             ResourceRequest::ACT(name) => {
                 let act = mmaps.as_mut().unwrap().entry(OwnedSourceItem::from(name)).or_insert_with(|| {
                     trace!(target: "query_multi_i", "open new ACT {}", name);
-                    ArenaCompactTree::open_mmap(format!("{ACT_PATH}{name}.act")).unwrap()
+                    ArenaCompactTree::open_mmap(format!("{}{name}.act", act_path())).unwrap()
                 });
                 trace!(target: "query_multi_i", "taking RZ of {}", name);
                 Resource::ACT(act.read_zipper())
@@ -1257,9 +1440,15 @@ impl Space {
         }
     }
 
-    #[cfg(feature="no_search")]
+    /// The zero-mask wrapper every other caller keeps using: sinks, dumps and the interpreted
+    /// source/sink transforms are byte-for-byte the unchanged walk.
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(prz: &mut PZ, sources: &[ExprEnv], effect: F) -> usize {
+        Self::query_multi_raw_proj(prz, sources, 0, effect)
+    }
+
+    #[cfg(feature="no_search")]
+    pub fn query_multi_raw_proj<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], cut_mask: u64, mut effect: F) -> usize {
         let mut candidate = 0;
         // One pair buffer for the whole enumeration: `unify` drains it, so a `clear` per
         // candidate makes it allocation-free after warmup.
@@ -1324,7 +1513,7 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw_proj<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], cut_mask: u64, mut effect: F) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
@@ -1338,7 +1527,7 @@ impl Space {
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
-                coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, &mut |loc, var_facts| {
+                coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, cut_mask, &mut |loc, var_facts| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1364,6 +1553,25 @@ impl Space {
                         let span_stamp = |k: usize, start: usize, end: usize| -> u16 {
                             let len = end - start;
                             let ground = var_facts & (1u64 << k.min(63)) == 0;
+                            // `stamp_ground` is unsafe for a reason: a stamp on a span that does
+                            // hold a variable makes consumers settle by memcmp and skip variable
+                            // hunts over it. Re-derive the answer here in debug builds so any
+                            // path that reaches the leaf with a wrong bit is caught at the source
+                            // rather than as a wrong answer somewhere downstream.
+                            #[cfg(debug_assertions)]
+                            if ground {
+                                let mut j = start;
+                                while j < end {
+                                    match byte_item(opath[j]) {
+                                        Tag::SymbolSize(size) => j += 1 + size as usize,
+                                        Tag::NewVar | Tag::VarRef(_) => {
+                                            panic!("fact {k} reported ground but holds a variable \
+                                                    at byte {j} of [{start},{end})");
+                                        }
+                                        Tag::Arity(_) => j += 1,
+                                    }
+                                }
+                            }
                             if ground && len <= u16::MAX as usize { len as u16 } else { 0 }
                         };
 
@@ -1475,6 +1683,10 @@ impl Space {
         let mut tpl_args = Vec::with_capacity(64);
         ExprEnv::new(0, tpl_expr).args(&mut tpl_args);
         let mut templates: Vec<_> = tpl_args[1..].iter().map(|ee| ee.subsexpr()).collect();
+        // The cut drops duplicate answers, so only a sink idempotent in them may use it: this
+        // plain `,` -> `,` form writes into the trie, while `O` and the source/sink transforms
+        // can aggregate over how many answers arrive.
+        let cut_mask = Self::projection_cut_mask(pat_expr, &tpl_args[1..]);
         let mut template_prefixes: Vec<_> = templates.iter().map(|e| unsafe { e.prefix().unwrap_or_else(|x| x).as_ref().unwrap() }).collect();
         let mut subsumption = Self::prefix_subsumption(&template_prefixes[..]);
         let mut placements = subsumption.clone();
@@ -1520,7 +1732,7 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, cut_mask, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -2030,5 +2242,142 @@ impl Drop for Space {
             // z3.terminate();
             drop(z3.stdin.take())
         }
+    }
+}
+
+#[cfg(test)]
+mod projection_cut_tests {
+    use super::*;
+
+    fn sym(t: &str) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::SymbolSize(t.len() as u8))];
+        v.extend_from_slice(t.as_bytes());
+        v
+    }
+    fn raw_sym(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::SymbolSize(payload.len() as u8))];
+        v.extend_from_slice(payload);
+        v
+    }
+    fn nest(parts: &[Vec<u8>]) -> Vec<u8> {
+        let mut v = vec![item_byte(Tag::Arity(parts.len() as u8))];
+        for p in parts { v.extend_from_slice(p) }
+        v
+    }
+    fn rel(name: &str, args: &[Vec<u8>]) -> Vec<u8> {
+        let mut parts = vec![sym(name)];
+        parts.extend_from_slice(args);
+        nest(&parts)
+    }
+    fn conj(factors: &[Vec<u8>]) -> Vec<u8> {
+        let mut parts = vec![sym(",")];
+        parts.extend_from_slice(factors);
+        nest(&parts)
+    }
+    fn nv() -> Vec<u8> { vec![item_byte(Tag::NewVar)] }
+    fn vr(i: u8) -> Vec<u8> { vec![item_byte(Tag::VarRef(i))] }
+
+    fn mask(body: &[u8], templates: &[Vec<u8>]) -> u64 {
+        let be = Expr::from_slice(body);
+        let ts: Vec<ExprEnv> = templates
+            .iter()
+            .map(|t| ExprEnv::new(0, Expr::from_slice(&t[..])))
+            .collect();
+        Space::projection_cut_mask(be, &ts[..])
+    }
+
+    #[test]
+    fn trailing_singleton_no_template_reads_is_cut() {
+        // (, (r $x $y) (s $y $_))  ->  (out $x $y):  only $_ (index 2) is cuttable.
+        let body = conj(&[rel("r", &[nv(), nv()]), rel("s", &[vr(1), nv()])]);
+        let tpl = rel("out", &[vr(0), vr(1)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 2);
+    }
+
+    #[test]
+    fn a_variable_a_template_reads_is_never_cut() {
+        // The same body, but the template now reads $_ as well: nothing is cuttable.
+        let body = conj(&[rel("r", &[nv(), nv()]), rel("s", &[vr(1), nv()])]);
+        let tpl = rel("out", &[vr(0), vr(2)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+    }
+
+    #[test]
+    fn a_repeated_variable_is_never_cut() {
+        // $y and $z are join variables: no template reads them, but pinning one to a single
+        // value would change which tuples the OTHER factors can still match.
+        let body = conj(&[
+            rel("r", &[nv(), nv()]),
+            rel("s", &[vr(1), nv()]),
+            rel("t", &[vr(2)]),
+        ]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+    }
+
+    #[test]
+    fn only_the_conjuncts_trailing_run_is_cut() {
+        // (, (s (f $_) $y)): $_ decides the subtrie $y is drawn from, so it must keep
+        // enumerating even though nothing reads it.
+        let body = conj(&[rel("s", &[rel("f", &[nv()]), nv()])]);
+        let tpl = rel("out", &[vr(1)]);
+        assert_eq!(mask(&body, &[tpl]), 0);
+        // Swapped, the same variable IS the trailing item -- nested inside `(f ...)` or not.
+        let body = conj(&[rel("s", &[nv(), rel("f", &[nv()])])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 1);
+    }
+
+    #[test]
+    fn a_run_of_trailing_dont_cares_is_cut_whole() {
+        let body = conj(&[rel("s", &[nv(), nv(), nv()])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), (1 << 1) | (1 << 2));
+    }
+
+    #[test]
+    fn every_template_is_consulted() {
+        // The second template is the only reader of $y: one template is not enough to conclude
+        // a variable is unread.
+        let body = conj(&[rel("r", &[nv(), nv()])]);
+        let first = rel("out", &[vr(0)]);
+        let second = rel("also", &[vr(1)]);
+        assert_eq!(mask(&body, &[first.clone()]), 1 << 1);
+        assert_eq!(mask(&body, &[first, second]), 0);
+    }
+
+    #[test]
+    fn a_symbol_payload_that_spells_a_variable_tag_is_not_read_as_one() {
+        // The payload carries the NewVar and VarRef tag bytes. Counting them as variables would
+        // shift the numbering and mark the wrong bit.
+        let poison = raw_sym(&[item_byte(Tag::NewVar), item_byte(Tag::VarRef(0))]);
+        let body = conj(&[rel("r", &[nv(), poison.clone()]), rel("s", &[vr(0), nv()])]);
+        let tpl = rel("out", &[vr(0)]);
+        assert_eq!(mask(&body, &[tpl]), 1 << 1);
+        // ... and in the template, where it would otherwise fake a read of variable 0.
+        let tpl_poison = rel("out", &[vr(1), poison]);
+        assert_eq!(mask(&body, &[tpl_poison]), 0);
+    }
+
+    #[test]
+    fn a_body_past_the_encodings_variable_cap_opts_out_entirely() {
+        // Rather than bounds-check every access, the walk stops at the cap and the body opts
+        // out. A zero mask is the unchanged enumeration, so that is the conservative direction.
+        // (Two conjuncts because an arity caps at 63 too.)
+        let low: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
+        let high: Vec<Vec<u8>> = (0..34).map(|_| nv()).collect();
+        let body = conj(&[rel("r", &low), rel("s", &high)]);
+        assert_eq!(mask(&body, &[rel("out", &[vr(0)])]), 0);
+        // ... while a body at the cap still marks normally.
+        let at_cap: Vec<Vec<u8>> = (0..40).map(|_| nv()).collect();
+        let body = conj(&[rel("r", &at_cap)]);
+        let m = mask(&body, &[rel("out", &[vr(0)])]);
+        assert_eq!(m, ((1u64 << 40) - 1) & !1, "bits 1..=39, stopping at the one the template reads");
+    }
+
+    #[test]
+    fn a_body_with_no_variables_cuts_nothing() {
+        let body = conj(&[rel("r", &[sym("a")])]);
+        assert_eq!(mask(&body, &[rel("out", &[sym("b")])]), 0);
     }
 }

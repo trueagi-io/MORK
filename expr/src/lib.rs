@@ -508,7 +508,7 @@ impl Expr {
                 }
                 sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
                 Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
-                Tag::Fuzzy(_) => todo!(),
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1 },
             }
 
             if !ez.next() {
@@ -538,7 +538,7 @@ impl Expr {
                 }
                 Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
-                Tag::Fuzzy(_) => todo!(),
+                Tag::Fuzzy(_) => {  },
             }
 
             if !ez.next() {
@@ -572,7 +572,7 @@ impl Expr {
                 }
                 Tag::SymbolSize(_s) => {  }
                 Tag::Arity(_) => {  }
-                Tag::Fuzzy(_) => todo!(),
+                Tag::Fuzzy(_) => { },
             }
 
             if !ez.next() {
@@ -603,7 +603,7 @@ impl Expr {
                 }
                 sym @ Tag::SymbolSize(s) => expr_zipper_transfer_sym!{oz,ez,sym},
                 Tag::Arity(_) => expr_zipper_transfer_arity_byte!{oz,ez},
-                Tag::Fuzzy(_) => todo!(),
+                Tag::Fuzzy(f) => { oz.write_fuzz(f); oz.loc += 1; },
             }
 
             if !ez.next() {
@@ -770,14 +770,16 @@ impl Expr {
     /// Writes the generalization into `o`.
     /// Returns substitutions mapping each introduced generalization var to the original subterms.
     pub fn anti_unify(self, other: Expr, o: &mut ExprZipper) -> Result<(), AntiUnificationFailure> {
-        let mut st = AuState {
+        // let mut st = AuState {
+        let mut st = AuStateFuzzy {
             next_var: 0,
             memo: HashMap::new(),
-            left: BTreeMap::new(),
-            right: BTreeMap::new(),
+            // left: BTreeMap::new(),
+            // right: BTreeMap::new(),
         };
 
-        anti_unify_apply(ExprEnv::new(0, self), ExprEnv::new(1, other), o, &mut st)?;
+        // anti_unify_apply(ExprEnv::new(0, self), ExprEnv::new(1, other), o, &mut st)?;
+        anti_unify_apply_fuzzy(ExprEnv::new(0, self), ExprEnv::new(1, other), o, &mut st)?;
 
         Ok(())
     }
@@ -2651,8 +2653,8 @@ struct AuState {
     next_var: u8,
     // key: (left_subterm, right_subterm)  value: output var id
     memo: HashMap<(RelExprEnv, RelExprEnv), AuVar>,
-    left:  BTreeMap<AuVar, ExprEnv>,
-    right: BTreeMap<AuVar, ExprEnv>,
+    // left:  BTreeMap<AuVar, ExprEnv>,
+    // right: BTreeMap<AuVar, ExprEnv>,
 }
 
 const AU_MAX_DEPTH: usize = 1000;
@@ -2695,7 +2697,7 @@ fn anti_unify_apply(
             return Err(AntiUnificationFailure::MaxDepth(stack.len()));
         }
 
-        if decomposable(&lhs, &rhs) {
+        if dbg!(decomposable(&lhs, &rhs)) {
             if PRINT_DEBUG { println!("decompose/agree"); }
             unsafe {
                 match byte_item(*lhs.base.ptr.add(lhs.offset as usize)) {
@@ -2754,8 +2756,8 @@ fn anti_unify_apply(
                 }
 
                 st.memo.insert(key, v);
-                st.left.insert(v, lhs);
-                st.right.insert(v, rhs);
+                // st.left.insert(v, lhs);
+                // st.right.insert(v, rhs);
 
                 oz.write_new_var();
                 oz.loc += 1;
@@ -4724,11 +4726,10 @@ fn decomposable_fuzzy(lhs: &ExprEnv, rhs: &ExprEnv) -> bool {
         match [lhs, rhs].map(ExprEnv::tag) {
             [Tag::NewVar | Tag::VarRef(_), _] |
             [_, Tag::NewVar | Tag::VarRef(_)]                 => false,
-            [Tag::SymbolSize(len_1), Tag::SymbolSize(len_2)]  => len_1 == len_2 
-                                                              && (|[left, right] : [&[u8];2]| left == right)([lhs,rhs].map(|e| core::ptr::slice_from_raw_parts(e.base.ptr, len_1 as usize).as_ref_unchecked() )),
+            [Tag::SymbolSize(len_1), Tag::SymbolSize(len_2)]  => len_1 == len_2  && (|[left, right] : [&[u8];2]| left == right)([lhs,rhs].map(|e| core::ptr::slice_from_raw_parts(e.base.ptr.add(1 + e.offset as usize), len_1 as usize).as_ref_unchecked() )),
             [Tag::Arity(a1), Tag::Arity(a2)]                  => a1 == a2,
             [Tag::Fuzzy(_), Tag::Fuzzy(_)]                    => true,
-            _                                                 => false,
+            _                                                 => false,            
         }
     }
 }
@@ -4753,7 +4754,7 @@ fn anti_unify_apply_fuzzy(
             return Err(AntiUnificationFailure::MaxDepth(stack.len()));
         }
 
-        if decomposable_fuzzy(&lhs, &rhs) {
+        if dbg!(decomposable_fuzzy(&lhs, &rhs)) {
             if PRINT_DEBUG { println!("decompose/agree"); }
             unsafe {
                 match lhs.tag() {

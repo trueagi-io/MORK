@@ -2318,7 +2318,10 @@ pub fn apply(n: u8, mut original_intros: u8, mut new_intros: u8, ez: &mut ExprZi
 pub fn unify(stack: &mut Vec<(ExprEnv, ExprEnv)>) -> Result<Bindings, UnificationFailure> {
     let mut bindings: Bindings = Bindings::new();
     let mut trail = Vec::new();
-    unify_into(&mut bindings, stack, &mut trail)?;
+    // unify_into(&mut bindings, stack, &mut trail)?;
+    let mut undo = FuzzyUndoStack{ stack : Vec::new() };
+    unify_into_fuzzy_(&mut bindings, stack, &mut trail, &mut undo)?;
+    while undo.undo() {}
     Ok(bindings)
 }
 
@@ -3574,11 +3577,11 @@ fn  unify_fuzzy_test(){
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr()});
         let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr()});
 
-        let mut undo = Vec::new();
+        let mut undo = FuzzyUndoStack { stack : Vec::new() };
         let mut stack = Vec::new();
         stack.push((l,r));
 
-        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
+        let bindings = unify_fuzzy(&mut stack, &mut undo).unwrap();
 
         // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}", undo, stack, bindings);
 
@@ -3595,6 +3598,7 @@ fn  unify_fuzzy_test(){
         apply_e_clears_stacks_and_cycles_check!(0,0,0, Expr { ptr: expr_l.as_mut_ptr()} , b, out_l_, stk , asn );
         apply_e_clears_stacks_and_cycles_check!(1,0,0, Expr { ptr: expr_r.as_mut_ptr()} , b, out_r_, stk , asn );
 
+        unsafe { core::assert_eq!(Expr{ ptr: out_l.as_mut_ptr()}.span().as_ref(), Expr{ ptr: out_r.as_mut_ptr()}.span().as_ref()) };
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
         println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
 
@@ -3621,12 +3625,12 @@ fn  unify_fuzzy_test(){
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
         let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr() });
 
-        let mut undo = Vec::new();
+        let mut undo = FuzzyUndoStack { stack : Vec::new() };
         let mut stack = Vec::new();
         stack.push((l,r));
 
 
-        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
+        let bindings = unify_fuzzy(&mut stack, &mut undo).unwrap();
 
 
 
@@ -3659,11 +3663,21 @@ fn  unify_fuzzy_test(){
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
         println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
 
+        let mut undo2 = FuzzyUndoStack::with_capacity(20);
+        let l_ = ExprEnv::new(0, Expr { ptr: out_l.as_mut_ptr() });
+        let r_ = ExprEnv::new(1, Expr { ptr: out_r.as_mut_ptr() });
+        let mut stack2 = Vec::from([(l_,r_)]);
 
-        // while let Some((ptr,mask)) = undo.pop() {
-        //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-        // }
-
+        let bindings2 = unify_fuzzy(&mut stack2, &mut undo2);
+        
+        println!("\nUnify the substitutions, leads to equivalent values after mutation");
+        unsafe { core::assert_eq!(Expr{ ptr: out_l.as_mut_ptr()}.span().as_ref(), Expr{ ptr: out_r.as_mut_ptr()}.span().as_ref()) };
+        println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
+        println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
+        
+        undo2.undo_all();
+        undo.undo_all();
+        
         // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
 
     }
@@ -3684,12 +3698,12 @@ fn  unify_fuzzy_test(){
         let l = ExprEnv::new(0, Expr { ptr: expr_l.as_mut_ptr() });
         let r = ExprEnv::new(1, Expr { ptr: expr_r.as_mut_ptr() });
 
-        let mut undo  = Vec::new();
+        let mut undo  = FuzzyUndoStack { stack : Vec::new() };
         let mut stack = Vec::new();
         stack.push((l,r));
 
 
-        let bindings = unify_fuzzy_(&mut stack, &mut undo).unwrap();
+        let bindings = unify_fuzzy(&mut stack, &mut undo).unwrap();
 
         // println!("undo : {:?}\nstack : {:#?}\nbindings :", undo, stack);
         for each in  bindings.iter() {
@@ -3720,10 +3734,20 @@ fn  unify_fuzzy_test(){
         println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
         println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
 
+        let mut undo2 = FuzzyUndoStack::with_capacity(20);
+        let l_ = ExprEnv::new(0, Expr { ptr: out_l.as_mut_ptr() });
+        let r_ = ExprEnv::new(1, Expr { ptr: out_r.as_mut_ptr() });
+        let mut stack2 = Vec::from([(l_,r_)]);
 
-        // while let Some((ptr,mask)) = undo.pop() {
-        //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-        // }
+        let bindings2 = unify_fuzzy(&mut stack2, &mut undo2);
+        
+        println!("\nUnify the substitutions, leads to equivalent values after mutation");
+        unsafe { core::assert_eq!(Expr{ ptr: out_l.as_mut_ptr()}.span().as_ref(), Expr{ ptr: out_r.as_mut_ptr()}.span().as_ref()) };
+        println!("out_l {:?}", Expr{ ptr: out_l.as_mut_ptr()} );
+        println!("out_r {:?}", Expr{ ptr: out_r.as_mut_ptr()} );
+        
+        undo2.undo_all();
+        undo.undo_all();
 
         // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
 
@@ -3782,20 +3806,18 @@ fn  unify_fuzzy_test(){
             let l0 = ExprEnv::new(0, Expr { ptr: unsafe { pattern_list.as_mut_ptr().add(3 /* move past the comma */) } });
             let r0 = ExprEnv::new(1, Expr { ptr: each });
             
-            let mut undo  = Vec::new();
+            let mut undo  = FuzzyUndoStack { stack : Vec::new() };
             let mut stack = Vec::new();
             stack.push((l0,r0));
 
-            let bindings = unify_fuzzy_(&mut stack, &mut undo);
+            let bindings = unify_fuzzy(&mut stack, &mut undo);
 
             // println!("bindings {:?}", bindings);
 
 
             let mut out = Vec::with_capacity(300);
-            let Ok(b) = bindings.as_ref() else { 
-                while let Some((ptr,mask)) = undo.pop() {
-                    unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-                }
+            let Ok(b) = bindings.as_ref() else {
+                undo.undo_all();
                 continue;
             };
             let b_       = &b;
@@ -3805,11 +3827,11 @@ fn  unify_fuzzy_test(){
             all_outs.push(out);
 
 
-            while let Some((ptr,mask)) = undo.pop() {
-                unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-            }
+            while undo.undo() {}
+            // while let Some((ptr,mask)) = undo.pop() {
+            //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+            // }
             // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
-
         }
 
         println!("{{");
@@ -3885,20 +3907,18 @@ fn  unify_fuzzy_test(){
                 l1.v += l0.subsexpr().newvars() as u8;
                 let r1 = ExprEnv::new(1, Expr { ptr: each_inner });
 
-                let mut undo  = Vec::new();
+                let mut undo  = FuzzyUndoStack { stack: Vec::new() };
                 let mut stack = Vec::new();
                 stack.push((l0,r0));
                 stack.push((l1,r1));
                 // println!("\tstack {:?}", stack);
 
-                let bindings = unify_fuzzy_(&mut stack, &mut undo);
+                let bindings = unify_fuzzy(&mut stack, &mut undo);
                 // println!("bindings {:?}", bindings);
 
 
                 let Ok(b) = bindings else { 
-                    while let Some((ptr,mask)) = undo.pop() {
-                        unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-                    }
+                    undo.undo_all();
                     continue;
                 };
                 let b_ = &b;
@@ -3923,9 +3943,10 @@ fn  unify_fuzzy_test(){
                     all_outs.push(out);
                 }
 
-                while let Some((ptr,mask)) = undo.pop() {
-                    unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
-                }
+                while undo.undo() {}
+                // while let Some((ptr,mask)) = undo.pop() {
+                //     unsafe {*ptr = item_byte(Tag::Fuzzy(mask)) };
+                // }
                 // println!("undo : {:?}\nstack : {:?}\nbindings : {:?}\n\n", undo, stack, bindings);
             }
         }
@@ -3965,7 +3986,7 @@ pub struct SkippedSubtermFuzzy {
 // functor same -> functor arguments -> call recursively
 // unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
 // unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
-fn match2_fuzzy_<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<SkippedSubtermFuzzy>),
+fn match2_fuzzy<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<SkippedSubtermFuzzy>),
     A1, R1, T1 : Traversal<A1, R1>,
     A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
                                     t2: &mut T2, e2: Expr, i2: usize, hole: &mut F, fuzzy : &mut impl FnMut([(*mut u8, u8); 2])) -> Result<(usize, R1, usize, R2), (usize, usize)> {
@@ -4015,7 +4036,7 @@ fn match2_fuzzy_<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<Sk
             let mut acc1 = t1.zero(i1, a1);
             let mut acc2 = t2.zero(i2, a2);
             for k in 0..a1 {
-                let (d1, r1, d2, r2) = match2_fuzzy_(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole, fuzzy)?;
+                let (d1, r1, d2, r2) = match2_fuzzy(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole, fuzzy)?;
                 acc1 = t1.add(i1 + offset1, acc1, r1);
                 acc2 = t2.add(i2 + offset2, acc2, r2);
                 offset1 += d1;
@@ -4029,8 +4050,10 @@ fn match2_fuzzy_<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<Sk
             // the two bit tag should be the same if well formed.
             if f1 == f2 {
                 // NOOP
-            } else if f1 & f2 & 0b_0000_1111 == 0 {
-                return Err((i1, i2));
+
+
+            // } else if f1 & f2 & 0b_0000_1111 == 0 {
+            //     return Err((i1, i2));
             } else {
                 unsafe {
                     fuzzy([(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]) 
@@ -4047,8 +4070,42 @@ fn match2_fuzzy_<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<Sk
     }
 }
 
+struct FuzzyUndoStack { stack : Vec<[(*mut u8, u8); 2]> }
+impl FuzzyUndoStack {
+    pub fn new() -> Self {
+        Self { stack : Vec::new() }
+    }
+    pub fn with_capacity(n : usize) -> Self {
+        Self { stack: Vec::with_capacity(n) }
+    }
+    pub fn push(&mut self, element : [(*mut u8, u8); 2]) {
+        self.stack.push(element)
+    }
+    // undoes the last fuzzy mutation, if there are no bindings left, returns false
+    pub fn undo(&mut self) -> bool {
+        match self.stack.pop() {
+            Some(mutation) => unsafe{ mutation.map(|(ptr,f)| *ptr = item_byte(Tag::Fuzzy(f))) ; true },
+            None          => false,
+        }
+    }
+    /// undoes all fuzzy mutations, returns how many values were undone
+    pub fn undo_all(&mut self) -> usize {
+        let out = self.stack.len();
+        
+        let mut n = self.stack.len();
+        while n != 0 {            
+            n -= 1;
+            let mutation = self.stack[n];
+            unsafe { mutation.map(|(ptr,f)| *ptr = item_byte(Tag::Fuzzy(f))) };
+        }
+        self.stack.clear();
+
+        out
+    }
+}
+
 #[inline(never)]
-pub fn unify_fuzzy_(stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<Bindings, UnificationFailure> {
+pub fn unify_fuzzy(stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut FuzzyUndoStack) -> Result<Bindings, UnificationFailure> {
     let mut bindings: Bindings = Bindings::new();
     let mut trail = Vec::new();
     unify_into_fuzzy_(&mut bindings, stack, &mut trail, undo_stack)?;
@@ -4064,7 +4121,7 @@ pub fn unify_fuzzy_(stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(
 /// entry (an insert target is always a previously-unbound key, so removal restores the map).
 /// The solved form's SHAPE may differ from a from-scratch solve (path compression, var-var
 /// direction); downstream only ever observes bindings by dereference, which is unchanged.
-pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, ExprEnv)>, trail: &mut Vec<ExprVar>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<(), UnificationFailure> {
+pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, ExprEnv)>, trail: &mut Vec<ExprVar>, undo_stack : &mut FuzzyUndoStack) -> Result<(), UnificationFailure> {
     let bindings = &mut *bindings;
     // Counts this call's iterations locally and folds the result into
     // [`max_unify_iterations`] exactly once, on the way out. A `Drop` guard rather than an
@@ -4227,15 +4284,14 @@ pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, 
                                 match [*left, *right].map(byte_item) {
                                     [Tag::Fuzzy(l_f), Tag::Fuzzy(r_f)] => {
                                         let i = l_f & r_f;
-                                        if i == 0b_0000 {
-                                            // fail early? this semantic might change
-                                            okay = false; break
-                                        } else {
-                                            undo_stack.push((left, l_f));
-                                            undo_stack.push((right, r_f));
+                                        // if i == 0b_0000 {
+                                        //     // fail early? this semantic might change
+                                        //     okay = false; break
+                                        // } else {
+                                            undo_stack.push([(left, l_f), (right, r_f)]);
                                             *left  = item_byte(Tag::Fuzzy(i));
                                             *right = item_byte(Tag::Fuzzy(i));
-                                        }
+                                        // }
                                     }
                                     _ => {okay = false ; break}
                                 }
@@ -4264,7 +4320,7 @@ pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, 
                 // and into later coreference pops (settled above by byte compare). `pushed_at`
                 // guards against grading a pair the push macro deduplicated away.
                 let mut pushed_at: Option<usize> = None;
-                if let Err((o1, o2)) = match2_fuzzy_(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
+                if let Err((o1, o2)) = match2_fuzzy(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
                                                 &mut |_ts1, e1, i1, _ts2, e2, i2, skipped: Option<SkippedSubtermFuzzy>| {
                                                     match skipped {
                                                         None => {
@@ -4284,8 +4340,7 @@ pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, 
                                                 &mut |[(lp,l),(rp,r)] : [(*mut u8, u8);2]| unsafe {
                                                     *lp = item_byte(Tag::Fuzzy(l & r));
                                                     *rp = item_byte(Tag::Fuzzy(l & r));
-                                                    undo_stack.push((lp, l));
-                                                    undo_stack.push((rp, r));
+                                                    undo_stack.push([(lp, l), (rp, r)]);
                                                 } 
                                             ) {
                     if PRINT_DEBUG { println!("diff {} @ {}  != {} @ {}", dt1.offset(o1 as u32).show(), o1, dt2.offset(o2 as u32).show(), o2); }
@@ -4334,291 +4389,6 @@ pub fn unify_into_fuzzy_(bindings: &mut Bindings, mut stack: &mut Vec<(ExprEnv, 
         unreachable!()
     }
 }
-
-
-
-
-
-// #[inline(never)]
-// pub fn unify_fuzzy(mut stack: &mut Vec<(ExprEnv, ExprEnv)>, undo_stack : &mut Vec<(*mut u8, u8)>) -> Result<BTreeMap<ExprVar, ExprEnv>, UnificationFailure> {
-//     assert!(undo_stack.is_empty());
-
-//     let mut bindings: BTreeMap<ExprVar, ExprEnv> = BTreeMap::new();
-//     let mut iterations = 0;
-//     let mut encountered: gxhash::HashSet<(ExprEnv, ExprEnv)> = gxhash::HashSet::new();
-
-//     // [Remy] :
-//     // Macros are used here primarily for inlining.
-//     macro_rules! step {
-//         (derefBound $t:expr) => {{
-//             let mut t: ExprEnv = $t;
-//             'bound: loop {
-//                 match t.var_opt() {
-//                     None     => break 'bound t,
-//                     Some(vs) => match bindings.get(&vs) {
-//                                     None          => {               break    'bound t; }
-//                                     Some(binding) => { t = *binding; continue 'bound    }
-//                                 }
-//                 }
-//             }
-//         }};
-
-//         // [Remy] :
-//         // Note that this block only ever gets reached, if the `match2` callback gets called.
-//         //   The `match2` callback only gets called when it hits a variable or reference on a left or right hand side.
-//         (push $x:expr, $y:expr) => {{
-//             let _x: ExprEnv = $x;
-//             let _y: ExprEnv = $y;
-//             match (_x.var_opt(), _y.var_opt()) {
-//                 (None,None)                                                => unreachable!("Expected at leat one variable or reference."),
-//                 (Some(xvs), Some(yvs)) if step!(isUnbound xvs) 
-//                                        && step!(isUnbound yvs)             => stack.push((_x, _y)),
-//                 _                      if !encountered.contains(&(_x, _y)) => { encountered.insert((_x, _y)); stack.push((_x, _y)); }
-//                 _                                                          => {}
-//             }
-//         }};
-//         // [Remy] :
-//         // This block only gets used in the `push` branch of the this macro.
-//         (isUnbound $v:expr) => {{
-//             let mut v: ExprVar = $v;
-//             'unbound: loop {
-//                 match bindings.get(&v) {
-//                     None          => break 'unbound true,
-//                     Some(binding) => match binding.var_opt() {
-//                                          None     => {         break    'unbound false }
-//                                          Some(vs) => { v = vs; continue 'unbound       }
-//                                      }
-//                 }
-//             }
-//         }};
-
-//         // [Remy] :
-//         // The occurs check here is actually incomplete,
-//         //   but it does not remove any valid results, so it's doing filtering.
-//         //   it's completeness is addressed in `apply_e`'s cycles checking map.
-//         (occurs $x:expr, $e:expr) => {{
-//             let x = $x;
-//             let e = $e;
-//             if x.0 != e.n { false }
-//             else {
-//                 let t : u8 = x.1;
-//                 traverseh!(bool, bool, u8, e.subsexpr(), e.v,
-//                     |c: &mut u8, _| { let eq = *c == t; *c += 1; eq },
-//                     |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x, |_,_,_| false).1
-//                     // |c: &mut u8, _, r| r == t, |_, _, _| false, |_, _, _| false, |_, _, x, y| x || y, |_, _, x| x).1
-//             }
-//         }};
-//     }
-
-//     // let mut largs = vec![];
-//     // let mut rargs = vec![];
-
-
-//     // [Remy] :
-//     // Note that although values on the stack are being poped, they are all pointers to data that must live longer than the unification operation,
-//     //   so although we are constructing bindings from values derived from stack values (Expr pointers), the bindings will be usable after they are popped. 
-//     'popping: while let Some((xpop, ypop)) = stack.pop() {
-//         if PRINT_DEBUG {
-//             println!("step {iterations}");
-//             bindings.iter().for_each(|(k, v)| {
-//                 // let ov = vec![0u8; 512];
-//                 // let o = Expr{ ptr: ov.leak().as_mut_ptr() };
-//                 // apply(v.n, v.v, 0, &mut ExprZipper::new(v.subsexpr()), &bindings, &mut ExprZipper::new(o), 0);
-//                 println!("  binding {:?} +{} {}", *k, v.v, v.show());
-//                 // println!("output {:?}", o);
-
-//             });
-//             println!();
-//         }
-
-
-//         // if iterations > MAX_UNIFY_ITER { 
-//         //     return Err(UnificationFailure::MaxIter(iterations))
-//         // }
-//         iterations += 1;
-//         if PRINT_DEBUG {
-//             println!("popping");
-//             // println!("x: {}, sx : {:?}", xpop.show(), sx.len());
-//             // println!("y: {}, sy : {:?}", ypop.show(), sy.len());
-//         }
-//         // [Remy] :
-//         // First, if there is a variable on either side, we dereference each in a loop as far as possible 
-//         //  so that the following match can ask simply, "Are we making bindings, or comparing bindings?".
-//         let dt1: ExprEnv = step!(derefBound xpop);
-//         let dt2: ExprEnv = step!(derefBound ypop);
-
-//         match (dt1.var_opt(), dt2.var_opt()) {
-//             (None, None) => {
-//                 let mut ts1 = dt1.clone().v_incr_traversal();
-//                 let mut ts2 = dt2.clone().v_incr_traversal();
-//                 // [Remy] :
-//                 // `match2` will find cases that don't match (failure to unify), 
-//                 //   values that are definately equal,
-//                 //   and values that __may__ unify. the callback is responsible for sheduling more specific cases.
-//                 if let Err((o1, o2)) = match2_fuzzy(&mut ts1, dt1.subsexpr(), 0, &mut ts2, dt2.subsexpr(), 0,
-//                                               &mut |tag, _ts1, e1, i1, _ts2, e2, i2| {
-//                                                   match tag {
-//                                                       Match2FuzzyTag::Hole  => step!(push _ts1.ee.offset(i1 as u32), _ts2.ee.offset(i2 as u32)),
-//                                                       Match2FuzzyTag::FuzzyNonEq([(lp,l), (rp,r)]) => unsafe {
-//                                                         *lp = item_byte(Tag::Fuzzy(l & r));
-//                                                         *rp = item_byte(Tag::Fuzzy(l & r));
-//                                                         undo_stack.push((lp, l));
-//                                                         undo_stack.push((rp, r));
-//                                                       },
-//                                                   }
-//                                               }) {
-//                     return Err(UnificationFailure::Difference(dt1, dt2));
-//                 }
-
-//                 // if dt1.same_functor(&dt2) {
-//                 //     largs.clear();
-//                 //     rargs.clear();
-//                 //     dt1.args(&mut largs);
-//                 //     dt2.args(&mut rargs);
-//                 //     debug_assert_eq!(largs.len(), rargs.len());
-//                 //
-//                 //     // Preorder: push children reversed so they pop in-order.
-//                 //     for i in (0..largs.len()).rev() {
-//                 //         step!(push largs[i], rargs[i]);
-//                 //     }
-//                 // } else {
-//                 //     return Err(UnificationFailure::Difference(dt1, dt2));
-//                 // }
-//             }
-
-//             (Some(vx), ov) => {
-//                 // [Remy] :
-//                 // The order of the `match` blocks matters here.
-//                 //   Only this block will check variables with other variables.
-//                 //   since variable comparisons are always done in this block, all variable = variable bindings are ordered
-//                 if let Some(sv) = ov { if vx == sv { continue 'popping } } // this guarantees that a variable won't add a binding to itself
-                
-//                 // If the right hand side is a structure, we technically need to do occurs checking of the left had side variable.
-//                 if step!(occurs vx, dt2)  { return Err(UnificationFailure::Occurs(vx, dt2)) }
-                
-//                 // [Remy] :
-//                 // Symbols are trivial, no extra operation needed.
-//                 // The final bindings made are of this form:
-//                 //   
-//                 // left_var -> right_symbol
-//                 // left_var -> right_var
-//                 // left_var -> right_structure
-//                 bindings.insert(vx, dt2.clone());
-//             }
-//             (None, Some(vy)) => {
-//                 // [Remy] :
-//                 // This block is like the block above, but it can work under the assumption that the left hand side isn't a variable.
-//                 if step!(occurs vy, dt1)  { return Err(UnificationFailure::Occurs(vy, dt1)) }
-                
-//                 // [Remy] :
-//                 // right_var -> left_structure
-//                 // right_var -> left_symbol
-//                 bindings.insert(vy, dt1.clone());
-//             }
-//         }
-//     }
-
-//     core::debug_assert!(stack.is_empty());
-//     Ok(bindings)
-// }
-
-
-
-
-
-enum Match2FuzzyTag {
-    Hole,
-    FuzzyNonEq([(*mut u8, u8); 2]),
-}
-
-// // functor same -> functor arguments -> call recursively
-// // unify(f(a b), f(p, q)) -> unify(a, p) /\ unify(b, q)
-// // unify(f(g(1, A), b), f(g(1, p), q)) -> unify(A, p) /\ unify(b, q)
-// fn match2_fuzzy<
-//     F : FnMut(Match2FuzzyTag, &mut T1, Expr, usize, &mut T2, Expr, usize),
-//     A1, R1, T1 : Traversal<A1, R1>,
-//     A2, R2, T2 : Traversal<A2, R2>>(t1: &mut T1, e1: Expr, i1: usize,
-//                                     t2: &mut T2, e2: Expr, i2: usize, 
-//                                     hole: &mut F
-//                                    ) -> Result<(usize, R1, usize, R2), (usize, usize)> {
-//     match unsafe { (byte_item(*e1.ptr.byte_add(i1)), byte_item(*e2.ptr.byte_add(i2))) } {
-//         (b1 @ (Tag::NewVar | Tag::VarRef(_)), _) => {
-//             hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
-//             let r1 = if let Tag::VarRef(k1) = b1 { t1.var_ref(i1, k1) } else { t1.new_var(i1) };
-//             let (d2, r2) = execute_loop(t2, e2, i2);
-//             Ok((1, r1, d2 - i2, r2))
-//         }
-//         (_, b2 @ (Tag::NewVar | Tag::VarRef(_))) => {
-//             hole(Match2FuzzyTag::Hole, t1, e1, i1, t2, e2, i2);
-//             let r2 = if let Tag::VarRef(k2) = b2 { t2.var_ref(i2, k2) } else { t2.new_var(i2) };
-//             let (d1, r1) = execute_loop(t1, e1, i1);
-//             Ok((d1 - i1, r1, 1, r2))
-//         }
-//         (Tag::SymbolSize(s1), Tag::SymbolSize(s2)) if s1 == s2 => {
-//             let slice1 = unsafe { &*slice_from_raw_parts(e1.ptr.byte_add(i1 + 1), s1 as usize) };
-//             let slice2 = unsafe { &*slice_from_raw_parts(e2.ptr.byte_add(i2 + 1), s2 as usize) };
-//             if slice1 != slice2 { Err((i1, i2)) }
-//             else {
-//                 let d = s1 as usize + 1;
-//                 let r1 = t1.symbol(i1, slice1);
-//                 let r2 = t2.symbol(i2, slice2);
-//                 Ok((d, r1, d, r2))
-//             }
-//         }
-//         (Tag::Arity(a1), Tag::Arity(a2)) if a1 == a2 => {
-//             let mut offset1 = 1;
-//             let mut offset2 = 1;
-//             let mut acc1 = t1.zero(i1, a1);
-//             let mut acc2 = t2.zero(i2, a2);
-//             for k in 0..a1 {
-//                 let (d1, r1, d2, r2) = match2_fuzzy(t1, e1, i1 + offset1, t2, e2, i2 + offset2, hole)?;
-//                 acc1 = t1.add(i1 + offset1, acc1, r1);
-//                 acc2 = t2.add(i2 + offset2, acc2, r2);
-//                 offset1 += d1;
-//                 offset2 += d2;
-//             }
-//             let r1 = t1.finalize(i1 + offset1, acc1);
-//             let r2 = t2.finalize(i2 + offset2, acc2);
-//             Ok((offset1, r1, offset2, r2))
-//         }
-//         (Tag::Fuzzy(f1), Tag::Fuzzy(f2)) => {
-//             // the two bit tag should be the same if well formed.
-//             if f1 == f2 {
-//                 // NOOP
-//             } else if f1 & f2 & 0b_0000_1111 == 0 {
-//                 return Err((i1, i2));
-//             } else {
-//                 hole( unsafe {
-//                         Match2FuzzyTag::FuzzyNonEq(
-//                             [(e1.ptr.byte_add(i1), f1), (e2.ptr.byte_add(i2), f2)]
-//                     ) },
-//                     t1, e1, i1, t2, e2, i2
-//                 );
-//             }
-
-//             // [Remy] :
-//             //   should the intersection be passed, or the original values?
-//             let r1 = t1.fuzzy(i1, f1);
-//             let r2 = t2.fuzzy(i2, f2);
-//             Ok((1,r1,1,r2))
-//         }
-//         _ => { Err((i1, i2)) }
-//     }
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     
 #[cfg(test)] 

@@ -2038,6 +2038,7 @@ impl ExprEnv {
         }
     }
 
+    #[inline(always)]
     pub fn args(&self, dest: &mut Vec<Self>) {
         unsafe {
         match byte_item(*self.subsexpr().ptr) {
@@ -2069,24 +2070,49 @@ impl ExprEnv {
                         }
                         break;
                     }
-                    // The advancement walk visits every item of the child regardless, so let it
-                    // count the variables it passes: a child it saw none in earns a skip stamp
-                    // for free -- independently of whether the PARENT is ground, which is what
-                    // lets a constant conjunct inside a variable-carrying conjunction reach
-                    // `unify` stamped and settle against a stamped fact by byte comparison.
-                    let (se, _, se_offset) = traverseh!((), (), (u8, bool), env.subsexpr(), (0u8, false),
-                        |c: &mut (u8, bool), o| { c.0 += 1; c.1 = true; },
-                        |c: &mut (u8, bool), o, r| { c.1 = true; },
-                        |_, o, _| {},
-                        |_, o, _| {},
-                        |_, o, x, y| {},
-                        |_, _, _| {});
+                    // One `pending` counter replaces the traversal stack. The encoding is prefix
+                    // order and every tag says how many subterms follow it, so `Arity(a)` owes
+                    // `a` more and every leaf settles one; the child ends when nothing is owed.
+                    //
+                    // The walk visits every item of the child regardless, so it counts what it
+                    // passes: `se_c` is the child's variable introductions, and `saw_var` earns a
+                    // ground stamp for a child that has none -- independently of whether the
+                    // PARENT is ground, which is what lets a constant conjunct inside a
+                    // variable-carrying conjunction reach `unify` stamped and settle against a
+                    // stamped fact by byte comparison.
+                    let mut pending = 1usize;
+                    let mut se_c = 0u8;
+                    let mut saw_var = false;
+                    let mut se_offset = 0u32;
+                    while pending != 0 {
+                        match byte_item(*env.base.ptr.add((env.offset + se_offset) as usize)) {
+                            Tag::NewVar => {
+                                se_c += 1;
+                                saw_var = true;
+                                pending -= 1;
+                                se_offset += 1;
+                            }
+                            Tag::VarRef(_) => {
+                                saw_var = true;
+                                pending -= 1;
+                                se_offset += 1;
+                            }
+                            Tag::SymbolSize(size) => {
+                                pending -= 1;
+                                se_offset += u32::from(size) + 1;
+                            }
+                            Tag::Arity(arity) => {
+                                pending = pending - 1 + usize::from(arity);
+                                se_offset += 1;
+                            }
+                        }
+                    }
 
-                    if !se.1 && se_offset > 0 && se_offset <= u16::MAX as usize {
+                    if !saw_var && se_offset > 0 && se_offset <= u16::MAX as u32 {
                         dest.last_mut().unwrap().ground_skip = se_offset as u16;
                     }
-                    env.offset += se_offset as u32;
-                    env.v += se.0;
+                    env.offset += se_offset;
+                    env.v += se_c;
                 }
             }
         }

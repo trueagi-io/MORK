@@ -5,6 +5,11 @@ the reference; the worst-case-optimal leapfrog join (`leapfrog::query_multi_leap
 is a compile-time alternative selected by the `leapfrog` cargo feature and only used
 for bodies it can handle, everything else falling back to the ProductZipper.
 
+The space-to-space transform additionally lets the ProductZipper choose which conjunct
+it descends first (`conjunct_order`), so the reference engine's own answer ORDER is not
+fixed by the body's written order either. That is a third thing this corpus pins down:
+the space a program ends with may not depend on it.
+
 The two must be indistinguishable. This directory is the harness that proves it:
 it runs a corpus of `.mm2` programs through both builds and compares the space each
 one dumps byte for byte, plus the number of steps each one reports executing.

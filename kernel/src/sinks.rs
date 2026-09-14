@@ -505,15 +505,15 @@ impl Sink for WASMSink {
 
         WASMSink { e, skip: 1 + 1+4 + program_e.span().len(), changed: false, module, store, instance }
     }
-    fn request(&self) -> impl Iterator<Item=&'static [u8]> {
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         // let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[self.skip..];
         // trace!(target: "sink", "wasm requesting {}", serialize(p));
         // std::iter::once(p)
         static empty: [u8; 0] = [];
-        std::iter::once(&empty[..])
+        std::iter::once(WriteResourceRequest::BTM(&empty[..]))
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        let mut wz = it.next().unwrap();
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         let mpath = &path[self.skip+wz.root_prefix_path().len()..];
         trace!(target: "sink", "wasm at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
         trace!(target: "sink", "wasm input '{}'", serialize(mpath));
@@ -534,7 +534,7 @@ impl Sink for WASMSink {
         }
 
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w  {
         trace!(target: "sink", "wasm finalizing");
         self.changed
     }

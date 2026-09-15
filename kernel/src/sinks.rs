@@ -600,7 +600,7 @@ impl Sink for CountSink {
                 changed |= true;
                 prz.ascend_byte();
             } 
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
                     cntv.extend_from_slice(cnt_str.as_bytes());
@@ -656,7 +656,7 @@ impl Sink for HashSink {
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+            for b in prz.child_mask().and(&crate::space::SIZES).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 // if size != 16 { trace!(target: "sink", "hash guard not 16 bytes {size}"); continue }
                 prz.descend_to_byte(b);
@@ -693,7 +693,7 @@ impl Sink for HashSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let hash = prz.fork_read_zipper().hash();
                     let cnt_str = hash.to_be_bytes();
@@ -754,7 +754,7 @@ impl Sink for AndSink {
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+            for b in prz.child_mask().and(&crate::space::SIZES).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 println!("and size {size}");
                 prz.descend_to_byte(b);
@@ -796,7 +796,7 @@ impl Sink for AndSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut total = !0u8;
                     let clen = prz.path().len();
@@ -864,7 +864,7 @@ impl Sink for SumSink {
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+            for b in prz.child_mask().and(&crate::space::SIZES).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 prz.descend_to_byte(b);
                 debug_assert!(prz.path_exists());
@@ -905,7 +905,7 @@ impl Sink for SumSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut total = 0u32;
                     let clen = prz.path().len();
@@ -1006,7 +1006,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+            for b in prz.child_mask().and(&crate::space::SIZES).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 prz.descend_to_byte(b);
                 debug_assert!(prz.path_exists());
@@ -1047,7 +1047,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let mut total = Reduction::ACC;
                     let clen = prz.path().len();
@@ -1134,7 +1134,7 @@ impl Sink for PureSink {
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
         crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
+            for b in prz.child_mask().and(&crate::space::SIZES).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 prz.descend_to_byte(b);
                 debug_assert!(prz.path_exists());
@@ -1154,7 +1154,7 @@ impl Sink for PureSink {
                 if !prz.ascend_byte() { unreachable!() }
             }
 
-            for b in prz.child_mask().and(&ByteMask(crate::space::ARITIES)).iter() {
+            for b in prz.child_mask().and(&crate::space::ARITIES).iter() {
                 todo!();
             }
 
@@ -1170,7 +1170,7 @@ impl Sink for PureSink {
                 changed |= true;
                 prz.ascend_byte();
             }
-            if prz.descend_first_byte() {
+            if prz.descend_first_byte().is_some() {
                 if let Tag::VarRef(k) = byte_item(prz.path()[prz.path().len()-1]) {
                     let clen = prz.path().len();
                     let mut rz = prz.fork_read_zipper();

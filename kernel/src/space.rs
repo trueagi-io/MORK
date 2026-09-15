@@ -64,37 +64,26 @@ pub struct Space {
     pub timing: bool
 }
 
-pub(crate) const SIZES: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let mut size = 1;
-    while size < 64 {
-        let k = item_byte(Tag::SymbolSize(size));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        size += 1;
-    }
-    ret
+pub(crate) const SIZES: ByteMask = {
+    let mut m = ByteMask::new();
+    m.set_inclusive_bit_range(item_byte(Tag::SymbolSize(0b_0000_0001))..=item_byte(Tag::SymbolSize(0b_0011_1111)));
+    m
 };
-pub(crate) const ARITIES: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let mut arity = 0;
-    while arity < 64 {
-        let k = item_byte(Tag::Arity(arity));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        arity += 1;
-    }
-    ret
+pub(crate) const ARITIES: ByteMask = {  
+    let mut m = ByteMask::new();
+    m.set_inclusive_bit_range(item_byte(Tag::Arity(0b_0000_0000))..=item_byte(Tag::Arity(0b_0011_1111)));
+    m
 };
-pub(crate) const VARS: [u64; 4] = {
-    let mut ret = [0u64; 4];
-    let nv_byte = item_byte(Tag::NewVar);
-    ret[((nv_byte & 0b11000000) >> 6) as usize] |= 1u64 << (nv_byte & 0b00111111);
-    let mut size = 0;
-    while size < 64 {
-        let k = item_byte(Tag::VarRef(size));
-        ret[((k & 0b11000000) >> 6) as usize] |= 1u64 << (k & 0b00111111);
-        size += 1;
-    }
-    ret
+pub(crate) const VARS: ByteMask = {
+    let mut m = ByteMask::new();
+    m.set_inclusive_bit_range(item_byte(Tag::NewVar)..=item_byte(Tag::NewVar));
+    m.set_inclusive_bit_range(item_byte(Tag::VarRef(0b_0000_0000))..=item_byte(Tag::VarRef(0b_0011_1111)));
+    m
+};
+pub(crate) const FUZZIES: ByteMask = { 
+    let mut m = ByteMask::new();
+    m.set_inclusive_bit_range(item_byte(Tag::Fuzzy(0b_0000_0000))..=item_byte(Tag::Fuzzy(0b_0000_1111)));
+    m
 };
 
 
@@ -110,10 +99,15 @@ pub(crate) const VARS: [u64; 4] = {
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
 fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
-    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, f: &mut F) {
+    loc        : &mut Z, 
+    mut stack  : &mut Vec<ExprEnv>,
+    references : &mut Vec<u32>,
+    var_facts  : u64,
+    f          : &mut F,
+) {
     macro_rules! vs {
         ($e:expr, $nv:expr) => {{
-            let m = loc.child_mask().and(&ByteMask(VARS));
+            let m = loc.child_mask().and(&VARS);
             let mut it = m.iter();
 
             while let Some(b) = it.next() {
@@ -160,7 +154,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
 
                     vs!(e, true);
 
-                    let m = loc.child_mask().and(&ByteMask(SIZES));
+                    let m = loc.child_mask().and(&SIZES);
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
                         let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
@@ -174,7 +168,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         if !loc.ascend_byte() { unreachable_unchecked() }
                     }
 
-                    let m = loc.child_mask().and(&ByteMask(ARITIES));
+                    let m = loc.child_mask().and(&ARITIES);
                     let mut it = m.iter();
                     while let Some(b) = it.next() {
                         let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
@@ -186,6 +180,13 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         coreferential_transition(loc, stack, references, var_facts, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
+                    }
+
+                    let m = loc.child_mask().and(&FUZZIES);
+                    for each in m.iter() {
+                        core::assert!(loc.descend_to_existing_byte(each));
+                        coreferential_transition(loc, stack, references, var_facts, f);
+                        core::assert!(loc.ascend_byte());
                     }
 
                     if let Some((idx, prev)) = restore { references[idx] = prev; }
@@ -230,6 +231,15 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         coreferential_transition(loc, stack, references, var_facts, f);
                         stack.truncate(stack.len() - arity as usize);
                         loc.ascend_byte();
+                    }
+                }
+                Tag::Fuzzy(f_) => {
+                    vs!(e, false);
+                    let m = loc.child_mask().and(&FUZZIES);
+                    for each in m.iter() {
+                        core::assert!(loc.descend_to_existing_byte(each));
+                        coreferential_transition(loc, stack, references, var_facts, f);
+                        core::assert!(loc.ascend_byte());
                     }
                 }
             }
@@ -1325,9 +1335,13 @@ impl Space {
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
     pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+        use mork_expr::FuzzyUndoStack;
+
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
+        let mut fuzzy_undo : FuzzyUndoStack = FuzzyUndoStack::new();
+
         // One pair buffer for the whole walk: `unify` drains it, so a `clear` per candidate
         // makes it allocation-free after warmup.
         let mut pairs: Vec<(ExprEnv, ExprEnv)> = Vec::new();
@@ -1339,6 +1353,7 @@ impl Space {
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
                 coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, &mut |loc, var_facts| {
+                // coreferential_transition(prz, &mut stack, unsafe { ((&references) as *const Vec<u32>).cast_mut().as_mut().unwrap() }, 0u64, &mut |loc, var_facts| {
                     let e = Expr { ptr: loc.origin_path().as_ptr().cast_mut() };
                     trace!(target: "query_multi", "pi {:?}", loc.path_indices());
                     trace!(target: "query_multi", "at {:?}", e);
@@ -1356,6 +1371,8 @@ impl Space {
                         // mark lies in its span -- exact, and free of any rescan. A stamped conjunct meeting
                         // a stamped fact settles by one memcmp before match2 starts; a bare-variable
                         // conjunct binds a stamped whole fact, which apply_e emits as a bulk copy.
+
+                        use mork_expr::unify_fuzzy;
                         let opath = loc.origin_path();
                         let pidx = loc.path_indices();
                         let fact_end = |j: usize| pidx.get(j).copied().unwrap_or(opath.len());
@@ -1383,16 +1400,18 @@ impl Space {
 
                         // pairs.iter().for_each(|(x, y)| println!("pair {} {}", x.show(), y.show()));
 
-                        let bindings = unify(&mut pairs);
+                        let bindings = unify_fuzzy(&mut pairs, &mut fuzzy_undo);
 
                         match bindings {
                             Ok(bs) => {
                                 unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
                                 if !effect(Err(&bs), e) {
+                                    fuzzy_undo.undo_all(); // need to run this before early exit
                                     unsafe { longjmp(a, 1) }
                                 }
                             }
                             Err(failed) => {
+                                fuzzy_undo.undo_all(); // the original buffers are mutated, we need to undo early to keep the trace readable
                                 match failed {
                                     UnificationFailure::Occurs(v, e) => {
                                         trace!(target: "query_multi", "U {:?} occurs in {}", v, e.show())
@@ -1410,9 +1429,11 @@ impl Space {
                         trace!(target: "query_multi", "#variables==0 {:?}", e);
                         unsafe { std::ptr::write_volatile(&mut candidate, std::ptr::read_volatile(&candidate) + 1); }
                         if !effect(Ok(unsafe { slice_from_raw_parts(references.as_ptr(), references.len()).as_ref().unwrap() }), e) {
+                            fuzzy_undo.undo_all(); // need to run this before early exit
                             unsafe { longjmp(a, 1) }
                         }
                     }
+                    fuzzy_undo.undo_all();
                 })
             }
         });
@@ -2031,4 +2052,35 @@ impl Drop for Space {
             drop(z3.stdin.take())
         }
     }
+}
+
+
+#[test]
+fn test_fuzzy_load() {
+    let mut s = Space::new();
+    s.add_all_sexpr(b"{1101} ({1111} {0010})");
+    let mut out = String::new();
+    s.dump_all_sexpr(unsafe { out.as_mut_vec() });
+    print!("{:?}", out);
+}
+
+#[test]
+fn test_fuzzy_exec() {
+    let mut s = Space::new();
+    s.add_all_sexpr(b"
+        (a {1110} {0111})
+        (a {1100} {0111})
+        (exec 0 (, (a $x $x) )
+                (, (b $x ($y $y)) )
+        )
+        (exec 1 (, (b $x ($x {0011})) )
+                (, (c $x) )
+        )
+    ");
+
+    s.metta_calculus(1000);
+
+    let mut out = String::new();
+    s.dump_all_sexpr(unsafe { out.as_mut_vec() });
+    print!("{}", out);
 }

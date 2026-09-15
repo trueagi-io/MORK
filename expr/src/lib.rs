@@ -128,7 +128,7 @@ pub const fn item_byte(b: Tag) -> u8 {
         Tag::VarRef(i) => { debug_assert!(i < 64); 0b1000_0000 | i }
         Tag::Arity(a) => { debug_assert!(a < 64); 0b0000_0000 | a }
 
-        Tag::Fuzzy(f) => { debug_assert!(f <= 0b0010_0000); 0b0100_0000 | f}
+        Tag::Fuzzy(f) => { debug_assert!(f < 0b0001_0000 /* we currently only use a 4 bit bitset */); 0b0100_0000 | f}
     }
 }
 
@@ -1303,7 +1303,17 @@ impl <Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, 
     #[inline(always)] fn zero(&mut self, offset: usize, a: u8) -> () { if self.transient { self.out.write_all(" ".as_bytes()); }; self.out.write_all("(".as_bytes()); self.transient = false; }
     #[inline(always)] fn add(&mut self, offset: usize, acc: (), sub: ()) -> () { self.transient = true; }
     #[inline(always)] fn finalize(&mut self, offset: usize, acc: ()) -> () { self.out.write_all(")".as_bytes()); }
-    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () { self.out.write_fmt(format_args!(" {{{:0>4b}}}", fuzz)); }
+    #[inline(always)] fn fuzzy(&mut self, offset: usize, fuzz: u8) -> () { 
+        if self.transient {self.out.write_all(b" ");} ; 
+        // the following should be a hard coded version of this :
+        // self.out.write_fmt(format_args!("{{{:0>4b}}}", fuzz)); 
+        let mut out = [b'{',0,0,0,0,b'}'];
+        let mut bit_to_byte = |i : usize| b'0' + (((1_u8 << 4-i) & fuzz) != 0) as u8;
+        for i in 1..=4 {
+            out[i] = bit_to_byte(i);        
+        }
+        self.out.write_all(&out);
+    }
 }
 
 struct SerializerTraversalHighlights<'a, 't, Target : std::io::Write, F : for <'b> Fn(&'b [u8]) -> &'b str, G : Fn(u8, bool) -> &'static str> { out: &'a mut Target, map_symbol: F, map_variable: G, transient: bool, n: u8, targets: &'t [(usize, &'static str, &'static str)] }
@@ -4070,7 +4080,7 @@ fn match2_fuzzy<F : FnMut(&mut T1, Expr, usize, &mut T2, Expr, usize, Option<Ski
     }
 }
 
-struct FuzzyUndoStack { stack : Vec<[(*mut u8, u8); 2]> }
+pub struct FuzzyUndoStack { stack : Vec<[(*mut u8, u8); 2]> }
 impl FuzzyUndoStack {
     pub fn new() -> Self {
         Self { stack : Vec::new() }

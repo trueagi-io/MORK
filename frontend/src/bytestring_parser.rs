@@ -149,6 +149,16 @@ pub trait Parser {
           }
 
           let e = self.tokenizer(unsafe { &it.src.get_unchecked(start..it.loc) });
+
+          if let [b'{', b'0'|b'1', b'0'|b'1', b'0'|b'1', b'0'|b'1', b'}'] = e 
+          {
+            let bit  = |n : usize| ((e[4-n] - b'0') as u8) << n;
+            let bits = bit(3) | bit(2) | bit(1) | bit(0);
+            target.write_fuzz(bits);
+            target.loc += 1;
+            return Ok(());
+          }
+
           target.write_symbol(e);
           target.loc += 1 + e.len();
           return Ok(());

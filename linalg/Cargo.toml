@@ -18,8 +18,8 @@ jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-native",
 ]
-# BLAS baseline for the crossover bench (links the system OpenBLAS).
-blas = ["dep:blas", "dep:blas-src", "dep:openblas-src"]
+# Optional dense backend that delegates BLAS-shaped f32 kernels to OpenBLAS.
+blas = ["dense", "dep:blas", "dep:blas-src", "dep:openblas-src"]
 
 [dependencies]
 rayon = { version = "1", optional = true }

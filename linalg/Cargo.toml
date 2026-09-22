@@ -52,3 +52,11 @@ required-features = ["blas"]
 [[example]]
 name = "jit_bench"
 required-features = ["jit"]
+
+[[example]]
+name = "gnn_million"
+required-features = ["jit"]
+
+[[example]]
+name = "gnn_stress"
+required-features = ["jit"]

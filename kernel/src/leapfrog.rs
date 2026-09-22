@@ -542,8 +542,13 @@ pub struct EncodedTerm<'a> {
 }
 
 impl<'a> EncodedTerm<'a> {
-    fn is_ground(&self) -> bool {
+    pub(crate) fn is_ground(&self) -> bool {
         self.vars == 0
+    }
+
+    /// The query variables this term mentions, as a bitmask, filled in by the parse scan.
+    pub(crate) fn vars(&self) -> u64 {
+        self.vars
     }
 
     fn min_var_pos(&self, var_pos: &[usize]) -> Option<usize> {
@@ -1101,7 +1106,7 @@ fn join_state<'a>(
         want_coordinated: false,
         #[cfg(test)]
         coordinated: BTreeSet::new(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "factorized_aggregate"))]
         on_tuple: None,
     }
 }
@@ -1147,8 +1152,10 @@ fn run_unify_join_stream_bindings(
 /// Only [`tests::streamed_tuples_reconstruct_reindexed_facts`] uses this: it pins
 /// [`UnifyJoin::original_fact_bytes`] on a re-indexed factor, which the dispatch itself only ever
 /// reconstructs for factor 0 (never re-indexed under the identity variable order).
-#[cfg(test)]
-fn run_unify_join_stream(
+/// Also reachable under `factorized_aggregate`, which materializes a decomposition's bags by
+/// streaming each bag's own facts out of the join.
+#[cfg(any(test, feature = "factorized_aggregate"))]
+pub(crate) fn run_unify_join_stream(
     map: &PathMap<()>,
     factors: &[Factor],
     var_order: &[usize],
@@ -1474,8 +1481,9 @@ struct UnifyJoin<'a> {
     /// answer positions survives. TEST-ONLY.
     #[cfg(test)]
     coordinated: BTreeSet<Vec<u8>>,
-    /// Test-only tuple stream (see [`run_unify_join_stream`]).
-    #[cfg(test)]
+    /// Tuple stream (see [`run_unify_join_stream`]): the tests use it, and so does
+    /// `factorized_aggregate`, which materializes a decomposition's bags out of it.
+    #[cfg(any(test, feature = "factorized_aggregate"))]
     on_tuple: Option<&'a mut dyn FnMut(&[Vec<u8>]) -> bool>,
 }
 
@@ -1492,7 +1500,7 @@ impl UnifyJoin<'_> {
             if !(0..self.factors.len()).all(|f| self.factor_has_value(f)) {
                 return;
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "factorized_aggregate"))]
             if self.on_tuple.is_some() {
                 // Test-only tuple stream: reconstruct every factor's stored fact (see
                 // `run_unify_join_stream`). Never set by the dispatch.
@@ -1687,7 +1695,7 @@ impl UnifyJoin<'_> {
     /// order and renumbering again (first reference NewVar, later ones VarRef of the new index) is
     /// exactly the stored encoding, because a stored fact is itself numbered canonically in column
     /// order.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "factorized_aggregate"))]
     fn original_fact_bytes(&self, f: usize) -> Vec<u8> {
         let mut out = Vec::new();
         self.original_fact_bytes_into(f, &mut out);

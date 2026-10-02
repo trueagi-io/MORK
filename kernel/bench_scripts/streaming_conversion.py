@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the three-stage mm2 -> ACT pipeline with native peak-RSS reporting.
+"""Measure mm2 -> ACT conversion with native peak-RSS reporting.
 
 Usage: python3 kernel/bench_scripts/streaming_conversion.py INPUT.mm2 [--memory-mib 1024]
 Results, artifacts, and native time logs are kept in --output-dir.
@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--mork", type=Path, default=root / "target/release/mork")
     parser.add_argument("--output-dir", type=Path, default=root / "target/conversion-benchmark")
     parser.add_argument("--memory-mib", type=int, default=1024)
+    parser.add_argument("--direct", action="store_true", help="measure one mm2-to-act invocation, with temporary intermediates")
     args = parser.parse_args()
     system = platform.system()
     if system not in ("Darwin", "Linux"):
@@ -33,6 +34,8 @@ def main():
         ("upaths", "paths", outputs[0], outputs[1]),
         ("paths", "act", outputs[1], outputs[2]),
     ]
+    if args.direct:
+        stages = [("mm2", "act", args.input, outputs[2])]
     report = {
         "input": str(args.input.resolve()),
         "input_bytes": args.input.stat().st_size,

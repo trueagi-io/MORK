@@ -5,7 +5,6 @@
 #![feature(more_float_constants)]
 
 pub mod space;
-pub mod convert;
 /// The worst-case-optimal leapfrog join. Compiled only under the `leapfrog` feature, which is
 /// also what routes conjunctive bodies to it; without the feature the engine is unchanged.
 #[cfg(feature = "leapfrog")]

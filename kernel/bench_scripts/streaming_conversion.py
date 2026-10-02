@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure mm2 -> ACT conversion with native peak-RSS reporting.
 
-Usage: python3 kernel/bench_scripts/streaming_conversion.py INPUT.mm2 [--memory-mib 1024]
+Usage: python3 kernel/bench_scripts/streaming_conversion.py INPUT.mm2 [--xmx 1]
 Results, artifacts, and native time logs are kept in --output-dir.
 """
 import argparse
@@ -19,14 +19,14 @@ def main():
     parser.add_argument("input", type=Path)
     parser.add_argument("--mork", type=Path, default=root / "target/release/mork")
     parser.add_argument("--output-dir", type=Path, default=root / "target/conversion-benchmark")
-    parser.add_argument("--memory-mib", type=int, default=1024)
+    parser.add_argument("--xmx", type=int, default=1, help="memory budget in whole GiB")
     parser.add_argument("--direct", action="store_true", help="measure one mm2-to-act invocation, with temporary intermediates")
     args = parser.parse_args()
     system = platform.system()
     if system not in ("Darwin", "Linux"):
         parser.error("peak RSS measurement requires macOS or Linux /usr/bin/time")
-    if args.memory_mib < 1:
-        parser.error("--memory-mib must be at least 1")
+    if args.xmx < 1:
+        parser.error("--xmx must be at least 1 GiB")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outputs = [args.output_dir / name for name in ("bean.upaths", "bean.paths", "bean.act")]
     stages = [
@@ -40,7 +40,7 @@ def main():
         "input": str(args.input.resolve()),
         "input_bytes": args.input.stat().st_size,
         "platform": platform.platform(),
-        "memory_mib": args.memory_mib,
+        "xmx_gib": args.xmx,
         "stages": [],
     }
     started = time.perf_counter()
@@ -48,7 +48,7 @@ def main():
         name = f"{source}-{target}"
         time_path = args.output_dir / f"{name}.time"
         command = [str(args.mork), "convert", source, target, "$", "_1", str(input_path), str(output_path),
-                   "--memory-mib", str(args.memory_mib), "--temp-dir", str(args.output_dir)]
+                   "--xmx", str(args.xmx), "--temp-dir", str(args.output_dir)]
         stage_start = time.perf_counter()
         with (args.output_dir / f"{name}.log").open("w") as log:
             subprocess.run(["/usr/bin/time", "-l" if system == "Darwin" else "-v", "-o", str(time_path), *command],

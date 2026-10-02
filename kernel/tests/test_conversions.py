@@ -61,11 +61,11 @@ class ConversionTests(unittest.TestCase):
         return result
 
     def convert(self, source, target, input_path, output_path=None, *, success=True,
-                memory=1, pattern="$", template="_1"):
+                xmx=1, pattern="$", template="_1"):
         args = ["convert", source, target, pattern, template, input_path]
         if output_path is not None:
             args.append(output_path)
-        args += ["--memory-mib", str(memory), "--temp-dir", self.scratch]
+        args += ["--xmx", str(xmx), "--temp-dir", self.scratch]
         return self.invoke(*args, success=success)
 
     def test_upaths_preserve_order_duplicates_and_destination_on_error(self):
@@ -106,10 +106,9 @@ class ConversionTests(unittest.TestCase):
                     self.convert("metta", "paths", source, expected)
                     self.assertEqual(actual, read_paths(expected))
 
-    def test_external_sort_multiple_runs_and_empty_paths(self):
+    def test_external_sort_and_empty_paths(self):
         source = self.root / "input.upaths"
         output = self.root / "output.paths"
-        # Exceeds the 1 MiB budget and forces multiple runs and merge levels.
         records = [i.to_bytes(4, "big") + b"x" * 96 for i in range(20_000, -1, -1)]
         records += records[::7] + [b"", b"", b"\0", b"\0\xff", b"\xff"]
         write_paths(source, records)
@@ -120,18 +119,15 @@ class ConversionTests(unittest.TestCase):
         self.convert("upaths", "paths", source, output)
         self.assertEqual(read_paths(output), [])
 
-    def test_sort_failure_preserves_output_and_cleans_runs(self):
+    def test_sort_read_failure_preserves_output_and_cleans_intermediates(self):
         source = self.root / "input.upaths"
         output = self.root / "output.paths"
-        write_paths(source, [i.to_bytes(4, "big") + b"x" * 96 for i in range(20_000)])
-        records = read_paths(source)
-        records.append(b"x" * ((1 << 16) + 1))
-        write_paths(source, records)
+        source.mkdir()
         output.write_bytes(b"existing destination")
         self.convert("upaths", "paths", source, output, success=False)
         self.assertEqual(output.read_bytes(), b"existing destination")
         self.assertEqual(list(self.scratch.iterdir()), [])
-        self.convert("upaths", "paths", source, output, memory=0, success=False)
+        self.convert("upaths", "paths", source, output, xmx=0, success=False)
         self.assertEqual(output.read_bytes(), b"existing destination")
         self.assertEqual(set(self.root.iterdir()), {source, output, self.scratch})
 
@@ -170,7 +166,7 @@ class ConversionTests(unittest.TestCase):
         self.convert("mm2", "act", source, direct, success=False)
         self.assertEqual(direct.read_bytes(), before)
         self.assertEqual(list(self.scratch.iterdir()), [])
-        self.convert("mm2", "act", source, direct, memory=0, success=False)
+        self.convert("mm2", "act", source, direct, xmx=0, success=False)
         self.assertEqual(direct.read_bytes(), before)
         self.assertEqual(list(self.scratch.iterdir()), [])
 
@@ -222,7 +218,7 @@ class ConversionTests(unittest.TestCase):
 
     def test_shortcut_failures_preserve_output_and_clean_intermediates(self):
         cases = [("mm2", "paths", b"(bad"),
-                 ("upaths", "act", zlib.compress(struct.pack("<I", (1 << 16) + 1) + b"x" * ((1 << 16) + 1)))]
+                 ("upaths", "act", None)]
         for target in ["upaths", "paths", "act"]:
             for bad in [b"", b'{"ok":1,"bad":', b'{"ok":1} trailing', b'{"bad":"\xff"}' ]:
                 cases.append(("json", target, bad))
@@ -230,7 +226,10 @@ class ConversionTests(unittest.TestCase):
             with self.subTest(source=source_format, target=target_format, content=content):
                 source = self.root / ("input." + source_format)
                 output = self.root / ("output." + target_format)
-                source.write_bytes(content)
+                if content is None:
+                    source.mkdir()
+                else:
+                    source.write_bytes(content)
                 output.write_bytes(b"existing destination")
                 before_files = set(self.root.iterdir())
                 result = self.convert(source_format, target_format, source, output, success=False)
@@ -244,10 +243,38 @@ class ConversionTests(unittest.TestCase):
                 source = self.root / ("input." + source_format)
                 output = self.root / ("output." + target_format)
                 output.write_bytes(b"existing destination")
-                self.convert(source_format, target_format, source, output, memory=0, success=False)
+                self.convert(source_format, target_format, source, output, xmx=0, success=False)
                 self.convert(source_format, target_format, source, output, pattern="(a)", success=False)
                 self.assertEqual(output.read_bytes(), b"existing destination")
                 self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_xmx_accepts_gib_and_rejects_invalid_budgets(self):
+        source = self.root / "input.mm2"
+        output = self.root / "output.paths"
+        source.write_text("(a)")
+        for budget in [1, 2]:
+            with self.subTest(xmx=budget):
+                self.convert("mm2", "paths", source, output, xmx=budget)
+                self.assertEqual(read_paths(output), [b"\1\xc1a"])
+        before = output.read_bytes()
+        for budget in [0, "0.5", "NaN", "inf", "1e100", str(1 << 60)]:
+            with self.subTest(xmx=budget):
+                result = self.convert("mm2", "paths", source, output, xmx=budget, success=False)
+                self.assertIn("--xmx", result.stderr)
+                self.assertEqual(output.read_bytes(), before)
+                self.assertEqual(list(self.scratch.iterdir()), [])
+        help_text = self.invoke("convert", "--help").stdout
+        self.assertIn("--xmx", help_text)
+        self.assertIn("GiB", help_text)
+        self.assertNotIn("--memory-mib", help_text)
+
+    def test_act_reuses_repeated_lines(self):
+        source = self.root / "input.paths"
+        output = self.root / "output.act"
+        suffix = b"x" * 140_000
+        write_paths(source, [bytes([index]) + suffix for index in range(8)])
+        self.convert("paths", "act", source, output)
+        self.assertLess(output.stat().st_size, len(suffix) * 2)
 
     def test_explicit_cli_fields_and_default_output(self):
         source = self.root / "input with spaces.mm2"

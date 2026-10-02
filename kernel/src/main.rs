@@ -4965,17 +4965,12 @@ fn json_upaths_smoke() {
 "#);
 }
 
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
 /// Read mm2 through the existing parser over an mmap, without constructing a Space.
 fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
     use mork_frontend::bytestring_parser::{Context, ParserError};
     if cfg!(feature = "interning") {
-        return Err(invalid(
-            "mm2 conversion requires inline symbols; rebuild without interning",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "mm2 conversion requires inline symbols; rebuild without interning"));
     }
     let file = File::open(input)?;
     let mmap = if file.metadata()?.len() == 0 {
@@ -4986,11 +4981,8 @@ fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
     let bytes = mmap.as_deref().unwrap_or(&[]);
     // Reserve address space for the parser's unchecked writes, but only commit
     // pages actually touched by an expression. Inline encoding is at most 2x.
-    let capacity = bytes
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| invalid("mm2 file is too large"))?
-        .max(1);
+    // A mapped slice is at most isize::MAX bytes, so doubling fits in usize.
+    let capacity = (bytes.len() * 2).max(1);
     let buffer = memmap2::MmapOptions::new().len(capacity).no_reserve_swap().map_anon()?;
     let symbols = mork_interning::SharedMapping::new();
     let mut parser = mork::space::ParDataParser::new(&symbols);
@@ -5028,13 +5020,13 @@ fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
                 match parsed {
                     Ok(()) => {
                         if zipper.loc > u32::MAX as usize {
-                            return Err(invalid("expression exceeds .paths length limit"));
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, "expression exceeds .paths length limit"));
                         }
                         *length = zipper.loc;
                         Ok(true)
                     }
                     Err(ParserError::InputFinished) if zipper.loc == 0 => Ok(false),
-                    Err(error) => Err(invalid(format!("mm2 byte {}: {error:?}", context.loc))),
+                    Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("mm2 byte {}: {error:?}", context.loc))),
                 }
             },
             |(_, buffer, length)| Some(&buffer[..*length]),
@@ -5068,15 +5060,13 @@ fn upaths_to_paths(
     Ok(stats.path_count)
 }
 
-/// Line reuse is disabled: on the 49.5M-path benchmark, an unbounded cache
-/// saved only 1.46% of output but used GiB of memory.
 fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize> {
-    if memory < 1024 * 1024 {
-        return Err(invalid("--memory-mib must be at least 1"));
-    }
     let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
-    let mut builder =
-        pathmap::arena_compact::ACTOutputStream::with_cache_limits(target.path(), 0, 0)?;
+    // Bound cached line data and entry count, leaving room for allocation capacity
+    // and hash-table metadata. Decoder and ACT writer buffers are additional.
+    let mut builder = pathmap::arena_compact::ACTOutputStream::with_cache_limits(
+        target.path(), memory / 8, memory / 256,
+    )?;
     let stats = pathmap::paths_serialization::for_each_deserialized_path(
         BufReader::new(File::open(input)?),
         |_, path| builder.push(path),
@@ -5086,57 +5076,16 @@ fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize>
     Ok(stats.path_count)
 }
 
-fn convert_on_disk(
-    input_format: &str,
-    output_format: &str,
-    input: &Path,
-    output: &Path,
-    memory: usize,
-    temp_dir: &Path,
-) -> io::Result<usize> {
-    let write_upaths = |target: &Path| match input_format {
-        "mm2" | "metta" => mm2_to_upaths(input, target),
-        "json" => json_upaths(input, target),
-        _ => unreachable!(),
-    };
-    if output_format == "upaths" {
-        return write_upaths(output);
-    }
-    if memory < 1024 * 1024 {
-        return Err(invalid("--memory-mib must be at least 1"));
-    }
-    if input_format == "paths" {
-        return paths_to_act(input, output, memory);
-    }
-    let scratch = tempfile::tempdir_in(temp_dir)?;
-    let unordered = scratch.path().join("intermediate.upaths");
-    let input_paths = if input_format == "upaths" {
-        input
-    } else {
-        write_upaths(&unordered)?;
-        &unordered
-    };
-    if output_format == "paths" {
-        return upaths_to_paths(input_paths, output, memory, scratch.path());
-    }
-    let sorted = scratch.path().join("intermediate.paths");
-    upaths_to_paths(input_paths, &sorted, memory, scratch.path())?;
-    if input_format != "upaths" {
-        fs::remove_file(unordered)?;
-    }
-    paths_to_act(&sorted, output, memory)
-}
-
 fn json_upaths(input: &Path, output: &Path) -> io::Result<usize> {
     if cfg!(feature = "interning") {
-        return Err(invalid("JSON paths conversion requires inline symbols; rebuild without interning"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "JSON paths conversion requires inline symbols; rebuild without interning"));
     }
     let file = File::open(input)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
     let count = {
         let mut writer = BufWriter::new(target.as_file());
-        let count = Space::new().json_to_paths(&mmap, &mut writer).map_err(invalid)?;
+        let count = Space::new().json_to_paths(&mmap, &mut writer).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         writer.flush()?;
         count
     };
@@ -6375,9 +6324,10 @@ enum Commands {
         template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
-        /// Memory budget in MiB for sort buffers (decoder paths and runtime overhead are additional).
-        #[arg(long, default_value_t = 1024)]
-        memory_mib: usize,
+        /// Memory budget in whole GiB for sorting and ACT line reuse.
+        /// Decoder paths and runtime overhead are additional.
+        #[arg(long, default_value_t = 1)]
+        xmx: usize,
         /// Directory for sort runs and conversion intermediates (defaults to the system temporary directory).
         #[arg(long)]
         temp_dir: Option<std::path::PathBuf>,
@@ -6552,7 +6502,7 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, pattern, template, instrumentation, memory_mib, temp_dir, input_path, output_path } => {
+        Commands::Convert { input_format, output_format, pattern, template, instrumentation, xmx, temp_dir, input_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
 
@@ -6564,19 +6514,47 @@ fn main() {
 
             match (input_format.as_str(), output_format.as_str()) {
                 ("mm2" | "json", "upaths" | "paths" | "act") | ("metta", "upaths") | ("upaths", "paths" | "act") | ("paths", "act") => {
-                    let result = if pattern != "$" || template != "_1" {
-                        Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
-                    } else {
-                        let input = std::path::Path::new(&input_path);
-                        let output = std::path::Path::new(&some_output_path);
-                        match memory_mib.checked_mul(1024 * 1024) {
-                            Some(memory) => convert_on_disk(
-                                &input_format, &output_format, input, output, memory,
-                                &temp_dir.unwrap_or_else(std::env::temp_dir),
-                            ),
-                            None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
+                    let result = (|| -> io::Result<usize> {
+                        if pattern != "$" || template != "_1" {
+                            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                                "streaming conversion requires pattern '$' and template '_1'"));
                         }
-                    };
+                        if xmx == 0 {
+                            return Err(io::Error::new(io::ErrorKind::InvalidInput, "--xmx must be at least 1 GiB"));
+                        }
+                        let memory = xmx.checked_mul(1024 * 1024 * 1024)
+                            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--xmx is too large"))?;
+                        let input = Path::new(&input_path);
+                        let output = Path::new(&some_output_path);
+                        let write_upaths = |target: &Path| match input_format.as_str() {
+                            "mm2" | "metta" => mm2_to_upaths(input, target),
+                            "json" => json_upaths(input, target),
+                            _ => unreachable!(),
+                        };
+                        if output_format == "upaths" {
+                            return write_upaths(output);
+                        }
+                        if input_format == "paths" {
+                            return paths_to_act(input, output, memory);
+                        }
+                        let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                        let unordered = scratch.path().join("intermediate.upaths");
+                        let input_paths = if input_format == "upaths" {
+                            input
+                        } else {
+                            write_upaths(&unordered)?;
+                            &unordered
+                        };
+                        if output_format == "paths" {
+                            return upaths_to_paths(input_paths, output, memory, scratch.path());
+                        }
+                        let sorted = scratch.path().join("intermediate.paths");
+                        upaths_to_paths(input_paths, &sorted, memory, scratch.path())?;
+                        if input_format != "upaths" {
+                            fs::remove_file(unordered)?;
+                        }
+                        paths_to_act(&sorted, output, memory)
+                    })();
                     match result {
                         Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },
                         Err(error) => { eprintln!("conversion failed: {error}"); std::process::exit(1); }

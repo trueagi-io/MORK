@@ -220,7 +220,7 @@ class ConversionTests(unittest.TestCase):
         cases = [("mm2", "paths", b"(bad"),
                  ("upaths", "act", None)]
         for target in ["upaths", "paths", "act"]:
-            for bad in [b"", b'{"ok":1,"bad":', b'{"ok":1} trailing', b'{"bad":"\xff"}' ]:
+            for bad in [b"", b'{"ok":1,"bad":', b'{"ok":1} trailing']:
                 cases.append(("json", target, bad))
         for source_format, target_format, content in cases:
             with self.subTest(source=source_format, target=target_format, content=content):

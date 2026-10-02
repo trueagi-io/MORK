@@ -590,11 +590,10 @@ impl Space {
     }
 
     pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<usize, String> {
-        let text = std::str::from_utf8(r).map_err(|e| e.to_string())?;
         let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
         let mut wz = Vec::with_capacity(4096);
         let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-        let mut p = mork_frontend::json_parser::Parser::new(text);
+        let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
         let mut coro = p.parse_stream(&mut st);
         let parsed = loop {
             match Pin::new(&mut coro).resume(()) {

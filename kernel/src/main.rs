@@ -5062,10 +5062,10 @@ fn upaths_to_paths(
 
 fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize> {
     let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
-    // Bound cached line data and entry count, leaving room for allocation capacity
-    // and hash-table metadata. Decoder and ACT writer buffers are additional.
-    let mut builder = pathmap::arena_compact::ACTOutputStream::with_cache_limits(
-        target.path(), memory / 8, memory / 256,
+    // Fingerprint/offset entries are 16 bytes; allow room for table capacity and metadata.
+    // Decoder and ACT writer buffers are additional.
+    let mut builder = pathmap::arena_compact::ACTOutputStream::with_cache_limit(
+        target.path(), memory / 64,
     )?;
     let stats = pathmap::paths_serialization::for_each_deserialized_path(
         BufReader::new(File::open(input)?),

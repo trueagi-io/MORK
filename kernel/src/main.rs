@@ -6213,6 +6213,12 @@ enum Commands {
         output_format: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
+        /// Sort workspace in MiB (record buffers; codec/runtime overhead is additional).
+        #[arg(long, default_value_t = 1024)]
+        memory_mib: usize,
+        /// Directory for external-sort runs (defaults to the system temporary directory).
+        #[arg(long)]
+        temp_dir: Option<std::path::PathBuf>,
         /// INPUT [OUTPUT], or the legacy PATTERN TEMPLATE INPUT [OUTPUT].
         #[arg(num_args = 1..=4, required = true, value_name = "PATHS")]
         paths: Vec<String>
@@ -6385,7 +6391,7 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, instrumentation, paths } => {
+        Commands::Convert { input_format, output_format, instrumentation, memory_mib, temp_dir, paths } => {
             let (pattern, template, input_path, output_path) = match paths.as_slice() {
                 [input] => ("$".to_owned(), "_1".to_owned(), input.clone(), None),
                 [input, output] => ("$".to_owned(), "_1".to_owned(), input.clone(), Some(output.clone())),
@@ -6402,11 +6408,19 @@ fn main() {
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
-            if matches!((input_format.as_str(), output_format.as_str()), ("mm2", "upaths") | ("metta", "upaths")) {
+            if matches!((input_format.as_str(), output_format.as_str()), ("mm2", "upaths") | ("metta", "upaths") | ("upaths", "paths")) {
                 let result = if pattern != "$" || template != "_1" {
                     Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
                 } else {
-                    mork::convert::mm2_to_upaths(std::path::Path::new(&input_path), std::path::Path::new(&some_output_path))
+                    let input = std::path::Path::new(&input_path);
+                    let output = std::path::Path::new(&some_output_path);
+                    match input_format.as_str() {
+                        "upaths" => match memory_mib.checked_mul(1024 * 1024) {
+                            Some(memory) => mork::convert::upaths_to_paths(input, output, memory, &temp_dir.unwrap_or_else(std::env::temp_dir)),
+                            None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
+                        },
+                        _ => mork::convert::mm2_to_upaths(input, output),
+                    }
                 };
                 match result {
                     Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },

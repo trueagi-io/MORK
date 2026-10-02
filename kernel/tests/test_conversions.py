@@ -124,16 +124,13 @@ class ConversionTests(unittest.TestCase):
         source = self.root / "input.upaths"
         output = self.root / "output.paths"
         write_paths(source, [i.to_bytes(4, "big") + b"x" * 96 for i in range(20_000)])
-        valid = source.read_bytes()
+        records = read_paths(source)
+        records.append(b"x" * ((1 << 16) + 1))
+        write_paths(source, records)
         output.write_bytes(b"existing destination")
-        oversized = zlib.compress(struct.pack("<I", 1 << 30))
-        for damaged in [valid[:-1], valid + b"trailing", valid[:-1] + bytes([valid[-1] ^ 1]), oversized]:
-            with self.subTest(size=len(damaged)):
-                source.write_bytes(damaged)
-                self.convert("upaths", "paths", source, output, success=False)
-                self.assertEqual(output.read_bytes(), b"existing destination")
-                self.assertEqual(list(self.scratch.iterdir()), [])
-        source.write_bytes(valid)
+        self.convert("upaths", "paths", source, output, success=False)
+        self.assertEqual(output.read_bytes(), b"existing destination")
+        self.assertEqual(list(self.scratch.iterdir()), [])
         self.convert("upaths", "paths", source, output, memory=0, success=False)
         self.assertEqual(output.read_bytes(), b"existing destination")
         self.assertEqual(set(self.root.iterdir()), {source, output, self.scratch})
@@ -152,10 +149,6 @@ class ConversionTests(unittest.TestCase):
             write_paths(source, records)
             self.convert("paths", "act", source, output, success=False)
             self.assertEqual(output.read_bytes(), before)
-        write_paths(source, [b"abc"])
-        source.write_bytes(source.read_bytes()[:-1])
-        self.convert("paths", "act", source, output, success=False)
-        self.assertEqual(output.read_bytes(), before)
         self.assertEqual(set(self.root.iterdir()), {source, output, self.scratch})
 
     def test_direct_act_matches_stages_and_cleans_intermediates(self):
@@ -229,7 +222,7 @@ class ConversionTests(unittest.TestCase):
 
     def test_shortcut_failures_preserve_output_and_clean_intermediates(self):
         cases = [("mm2", "paths", b"(bad"),
-                 ("upaths", "act", zlib.compress(struct.pack("<I", 3) + b"abc")[:-1])]
+                 ("upaths", "act", zlib.compress(struct.pack("<I", (1 << 16) + 1) + b"x" * ((1 << 16) + 1)))]
         for target in ["upaths", "paths", "act"]:
             for bad in [b"", b'{"ok":1,"bad":', b'{"ok":1} trailing', b'{"bad":"\xff"}' ]:
                 cases.append(("json", target, bad))

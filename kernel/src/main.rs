@@ -5077,9 +5077,8 @@ fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize>
     let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
     let mut builder =
         pathmap::arena_compact::ACTOutputStream::with_cache_limits(target.path(), 0, 0)?;
-    let stats = pathmap::paths_serialization::for_each_deserialized_path_with_limit(
+    let stats = pathmap::paths_serialization::for_each_deserialized_path(
         BufReader::new(File::open(input)?),
-        memory / 16,
         |_, path| builder.push(path),
     )?;
     drop(builder.finish()?);
@@ -6376,7 +6375,7 @@ enum Commands {
         template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
-        /// Memory budget in MiB for sort buffers and input paths (runtime overhead is additional).
+        /// Memory budget in MiB for sort buffers (decoder paths and runtime overhead are additional).
         #[arg(long, default_value_t = 1024)]
         memory_mib: usize,
         /// Directory for sort runs and conversion intermediates (defaults to the system temporary directory).

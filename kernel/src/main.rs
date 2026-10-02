@@ -6526,34 +6526,52 @@ fn main() {
                             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--xmx is too large"))?;
                         let input = Path::new(&input_path);
                         let output = Path::new(&some_output_path);
-                        let write_upaths = |target: &Path| match input_format.as_str() {
-                            "mm2" | "metta" => mm2_to_upaths(input, target),
-                            "json" => json_upaths(input, target),
+                        match (input_format.as_str(), output_format.as_str()) {
+                            ("mm2" | "metta", "upaths") => mm2_to_upaths(input, output),
+                            ("json", "upaths") => json_upaths(input, output),
+                            ("paths", "act") => paths_to_act(input, output, memory),
+                            ("upaths", "paths") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                upaths_to_paths(input, output, memory, scratch.path())
+                            }
+                            ("mm2", "paths") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                let unordered = scratch.path().join("intermediate.upaths");
+                                mm2_to_upaths(input, &unordered)?;
+                                upaths_to_paths(&unordered, output, memory, scratch.path())
+                            }
+                            ("json", "paths") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                let unordered = scratch.path().join("intermediate.upaths");
+                                json_upaths(input, &unordered)?;
+                                upaths_to_paths(&unordered, output, memory, scratch.path())
+                            }
+                            ("upaths", "act") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                let sorted = scratch.path().join("intermediate.paths");
+                                upaths_to_paths(input, &sorted, memory, scratch.path())?;
+                                paths_to_act(&sorted, output, memory)
+                            }
+                            ("mm2", "act") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                let unordered = scratch.path().join("intermediate.upaths");
+                                let sorted = scratch.path().join("intermediate.paths");
+                                mm2_to_upaths(input, &unordered)?;
+                                upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
+                                fs::remove_file(unordered)?;
+                                paths_to_act(&sorted, output, memory)
+                            }
+                            ("json", "act") => {
+                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                                let unordered = scratch.path().join("intermediate.upaths");
+                                let sorted = scratch.path().join("intermediate.paths");
+                                json_upaths(input, &unordered)?;
+                                upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
+                                fs::remove_file(unordered)?;
+                                paths_to_act(&sorted, output, memory)
+                            }
                             _ => unreachable!(),
-                        };
-                        if output_format == "upaths" {
-                            return write_upaths(output);
                         }
-                        if input_format == "paths" {
-                            return paths_to_act(input, output, memory);
-                        }
-                        let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                        let unordered = scratch.path().join("intermediate.upaths");
-                        let input_paths = if input_format == "upaths" {
-                            input
-                        } else {
-                            write_upaths(&unordered)?;
-                            &unordered
-                        };
-                        if output_format == "paths" {
-                            return upaths_to_paths(input_paths, output, memory, scratch.path());
-                        }
-                        let sorted = scratch.path().join("intermediate.paths");
-                        upaths_to_paths(input_paths, &sorted, memory, scratch.path())?;
-                        if input_format != "upaths" {
-                            fs::remove_file(unordered)?;
-                        }
-                        paths_to_act(&sorted, output, memory)
                     })();
                     match result {
                         Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },

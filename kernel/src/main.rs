@@ -11,7 +11,10 @@ use std::time::Instant;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Read};
+use std::io::{self, BufRead, Read, BufReader, BufWriter, Write};
+use std::fs::{self, File};
+use std::path::Path;
+use pathmap::paths_serialization::serialize_paths_from_funcs;
 use std::ops::Add;
 // use std::future::Future;
 // use std::task::Poll;
@@ -4962,28 +4965,184 @@ fn json_upaths_smoke() {
 "#);
 }
 
-fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
-    println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
-    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
-    let json_file = std::fs::File::open(json_path).unwrap();
-    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
-    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
-    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
 
-    let mut s = Space::new();
-    let t0 = Instant::now();
-    let written = s.json_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
-    println!("written {written} in {} ms", t0.elapsed().as_millis());
-    // (zephy)
-    // mmapping JSON file "/home/adam/Downloads/G37S-9NQ.json"
-    // writing out unordered .paths file "G37S-9NQ.upaths"
-    // Ok(SerializationStats { bytes_out: 1415053, bytes_in: 12346358, path_count: 224769 })
-    // written 224769 in 193 ms
-    // (badbad)
-    // mmapping JSON file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.json"
-    // writing out unordered .paths file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths"
-    // Ok(SerializationStats { bytes_out: 231708224, bytes_in: 808333425, path_count: 15969490 })
-    // written 15969490 in 17441 ms
+/// Read mm2 through the existing parser over an mmap, without constructing a Space.
+fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
+    use mork_frontend::bytestring_parser::{Context, ParserError};
+    if cfg!(feature = "interning") {
+        return Err(invalid(
+            "mm2 conversion requires inline symbols; rebuild without interning",
+        ));
+    }
+    let file = File::open(input)?;
+    let mmap = if file.metadata()?.len() == 0 {
+        None
+    } else {
+        Some(unsafe { memmap2::Mmap::map(&file)? })
+    };
+    let bytes = mmap.as_deref().unwrap_or(&[]);
+    // Reserve address space for the parser's unchecked writes, but only commit
+    // pages actually touched by an expression. Inline encoding is at most 2x.
+    let capacity = bytes
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid("mm2 file is too large"))?
+        .max(1);
+    let buffer = memmap2::MmapOptions::new().len(capacity).no_reserve_swap().map_anon()?;
+    let symbols = mork_interning::SharedMapping::new();
+    let mut parser = mork::space::ParDataParser::new(&symbols);
+    let mut source = (Context::new(bytes), buffer, 0usize);
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    #[cfg(unix)]
+    let mut released = 0;
+    let stats = {
+        let mut writer = BufWriter::new(target.as_file());
+        let stats = serialize_paths_from_funcs(
+            &mut writer,
+            &mut source,
+            |(context, buffer, length)| {
+                let mut zipper = mork_expr::ExprZipper::new(mork_expr::Expr {
+                    ptr: buffer.as_mut_ptr(),
+                });
+                let parsed = parser.sexpr(context, &mut zipper);
+                context.variables.clear();
+                // Discard completed input pages in aligned batches; subsequent
+                // parsing only touches the suffix. The input file must stay unchanged.
+                #[cfg(unix)]
+                {
+                    let end = context.loc / (8 * 1024 * 1024) * (8 * 1024 * 1024);
+                    if end > released {
+                        unsafe {
+                            mmap.as_ref().unwrap().unchecked_advise_range(
+                                memmap2::UncheckedAdvice::DontNeed,
+                                released,
+                                end - released,
+                            )?;
+                        }
+                        released = end;
+                    }
+                }
+                match parsed {
+                    Ok(()) => {
+                        if zipper.loc > u32::MAX as usize {
+                            return Err(invalid("expression exceeds .paths length limit"));
+                        }
+                        *length = zipper.loc;
+                        Ok(true)
+                    }
+                    Err(ParserError::InputFinished) if zipper.loc == 0 => Ok(false),
+                    Err(error) => Err(invalid(format!("mm2 byte {}: {error:?}", context.loc))),
+                }
+            },
+            |(_, buffer, length)| Some(&buffer[..*length]),
+        )?;
+        writer.flush()?;
+        stats
+    };
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(stats.path_count)
+}
+
+fn upaths_to_paths(
+    input: &Path,
+    output: &Path,
+    memory: usize,
+    temp_dir: &Path,
+) -> io::Result<usize> {
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let stats = {
+        let mut writer = BufWriter::new(target.as_file());
+        let stats = pathmap::paths_serialization::sort_paths(
+            BufReader::new(File::open(input)?),
+            &mut writer,
+            memory,
+            temp_dir,
+        )?;
+        writer.flush()?;
+        stats
+    };
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(stats.path_count)
+}
+
+/// Line reuse is disabled: on the 49.5M-path benchmark, an unbounded cache
+/// saved only 1.46% of output but used GiB of memory.
+fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize> {
+    if memory < 1024 * 1024 {
+        return Err(invalid("--memory-mib must be at least 1"));
+    }
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let mut builder =
+        pathmap::arena_compact::ACTOutputStream::with_cache_limits(target.path(), 0, 0)?;
+    let stats = pathmap::paths_serialization::for_each_deserialized_path_with_limit(
+        BufReader::new(File::open(input)?),
+        memory / 16,
+        |_, path| builder.push(path),
+    )?;
+    drop(builder.finish()?);
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(stats.path_count)
+}
+
+fn convert_on_disk(
+    input_format: &str,
+    output_format: &str,
+    input: &Path,
+    output: &Path,
+    memory: usize,
+    temp_dir: &Path,
+) -> io::Result<usize> {
+    let write_upaths = |target: &Path| match input_format {
+        "mm2" | "metta" => mm2_to_upaths(input, target),
+        "json" => json_upaths(input, target),
+        _ => unreachable!(),
+    };
+    if output_format == "upaths" {
+        return write_upaths(output);
+    }
+    if memory < 1024 * 1024 {
+        return Err(invalid("--memory-mib must be at least 1"));
+    }
+    if input_format == "paths" {
+        return paths_to_act(input, output, memory);
+    }
+    let scratch = tempfile::tempdir_in(temp_dir)?;
+    let unordered = scratch.path().join("intermediate.upaths");
+    let input_paths = if input_format == "upaths" {
+        input
+    } else {
+        write_upaths(&unordered)?;
+        &unordered
+    };
+    if output_format == "paths" {
+        return upaths_to_paths(input_paths, output, memory, scratch.path());
+    }
+    let sorted = scratch.path().join("intermediate.paths");
+    upaths_to_paths(input_paths, &sorted, memory, scratch.path())?;
+    if input_format != "upaths" {
+        fs::remove_file(unordered)?;
+    }
+    paths_to_act(&sorted, output, memory)
+}
+
+fn json_upaths(input: &Path, output: &Path) -> io::Result<usize> {
+    if cfg!(feature = "interning") {
+        return Err(invalid("JSON paths conversion requires inline symbols; rebuild without interning"));
+    }
+    let file = File::open(input)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let count = {
+        let mut writer = BufWriter::new(target.as_file());
+        let count = Space::new().json_to_paths(&mmap, &mut writer).map_err(invalid)?;
+        writer.flush()?;
+        count
+    };
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(count)
 }
 
 #[cfg(all(feature = "nightly"))]
@@ -6217,6 +6376,12 @@ enum Commands {
         template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
+        /// Memory budget in MiB for sort buffers and input paths (runtime overhead is additional).
+        #[arg(long, default_value_t = 1024)]
+        memory_mib: usize,
+        /// Directory for sort runs and conversion intermediates (defaults to the system temporary directory).
+        #[arg(long)]
+        temp_dir: Option<std::path::PathBuf>,
         input_path: String,
         output_path: Option<String>
     }
@@ -6388,17 +6553,36 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, pattern, template, instrumentation, input_path, output_path } => {
+        Commands::Convert { input_format, output_format, pattern, template, instrumentation, memory_mib, temp_dir, input_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
 
             let input_path_extension = input_path.rfind(".").map(|i| &input_path[i+1..]);
             if input_path_extension.unwrap_or("") != input_format.as_str() { println!("input format {} does not coincide with the extension {:?}", input_format, input_path_extension); }
-            let some_output_path = output_path.unwrap_or_else(|| format!("{}.{}", &input_path[..input_path.len()-input_path_extension.unwrap_or("").len()], output_format));
+            let some_output_path = output_path.unwrap_or_else(|| std::path::Path::new(&input_path).with_extension(&output_format).to_string_lossy().into_owned());
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
             match (input_format.as_str(), output_format.as_str()) {
+                ("mm2" | "json", "upaths" | "paths" | "act") | ("metta", "upaths") | ("upaths", "paths" | "act") | ("paths", "act") => {
+                    let result = if pattern != "$" || template != "_1" {
+                        Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
+                    } else {
+                        let input = std::path::Path::new(&input_path);
+                        let output = std::path::Path::new(&some_output_path);
+                        match memory_mib.checked_mul(1024 * 1024) {
+                            Some(memory) => convert_on_disk(
+                                &input_format, &output_format, input, output, memory,
+                                &temp_dir.unwrap_or_else(std::env::temp_dir),
+                            ),
+                            None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
+                        }
+                    };
+                    match result {
+                        Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },
+                        Err(error) => { eprintln!("conversion failed: {error}"); std::process::exit(1); }
+                    }
+                }
                 ("metta", "metta" | "act" | "paths") => {
                     let mut s = Space::new();
                     let f = std::fs::File::open(&input_path).unwrap();
@@ -6423,7 +6607,7 @@ fn main() {
                         _ => { unreachable!() }
                     }
                 }
-                ("paths", "metta" | "act" | "paths") => {
+                ("paths", "metta" | "paths") => {
                     assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
                     assert_eq!(template, "_1"); // todo
                     let mut s = Space::new();
@@ -6437,47 +6621,22 @@ fn main() {
                             let mut w = std::io::BufWriter::new(f);
                             s.dump_all_sexpr(&mut w).unwrap();
                         }
-                        "act" => {
-                            s.backup_tree(some_output_path);
-                        }
                         "paths" => { // todo can be streamed without loading into memory
                             s.backup_paths(some_output_path);
                         }
                         _ => { unreachable!() }
                     }
                 }
-                ("json", "metta" | "act" | "paths") => {
+                ("json", "metta") => {
                     let mut s = Space::new();
                     let f = std::fs::File::open(&input_path).unwrap();
                     let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
                     s.load_json(&*mmapf);
                     println!("done loading in memory");
                     if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-
-                    match output_format.as_str() {
-                        "metta" => {
-                            let f = std::fs::File::create(&some_output_path).unwrap();
-                            let mut w = std::io::BufWriter::new(f);
-                            s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
-                        }
-                        "act" => {
-                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
-                            assert_eq!(template, "_1"); // todo
-                            s.backup_tree(some_output_path).unwrap();
-                        }
-                        "paths" => {
-                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
-                            assert_eq!(template, "_1"); // todo
-                            s.backup_paths(some_output_path).unwrap();
-                        }
-                        _ => { unreachable!() }
-                    }
-                }
-                ("json", "upaths") => {
-                    assert_eq!(pattern, "$");
-                    assert_eq!(template, "_1");
-                    // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
-                    json_upaths(input_path, some_output_path);
+                    let f = std::fs::File::create(&some_output_path).unwrap();
+                    let mut w = std::io::BufWriter::new(f);
+                    s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
                 }
                 // ("jsonl", "upaths") => {
                 //     #[cfg(all(feature = "nightly"))]

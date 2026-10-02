@@ -199,11 +199,13 @@ class ConversionTests(unittest.TestCase):
     @unittest.skipUnless(Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK),
                          "mork ACT queries currently require writable /dev/shm")
     def test_streamed_act_is_queryable_on_disk(self):
-        # The current ACT source resolves names beneath the fixed /dev/shm directory.
+        # Resolve through the fixed ACT directory while keeping the ACT on the test filesystem.
         act_directory = tempfile.TemporaryDirectory(prefix="mork-conversion-", dir="/dev/shm")
         self.addCleanup(act_directory.cleanup)
-        act = Path(act_directory.name) / "input.act"
-        name = act.relative_to("/dev/shm").with_suffix("").as_posix()
+        act = self.root / "input.act"
+        alias = Path(act_directory.name) / "input.act"
+        alias.symlink_to(act)
+        name = alias.relative_to("/dev/shm").with_suffix("").as_posix()
         source = self.root / "input.mm2"
         program = self.root / "query.mm2"
         output = self.root / "results.metta"

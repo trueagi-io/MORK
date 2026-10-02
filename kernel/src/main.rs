@@ -6213,7 +6213,7 @@ enum Commands {
         output_format: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
-        /// Sort workspace in MiB (record buffers; codec/runtime overhead is additional).
+        /// Memory budget in MiB for sort buffers or ACT cache (runtime overhead is additional).
         #[arg(long, default_value_t = 1024)]
         memory_mib: usize,
         /// Directory for external-sort runs (defaults to the system temporary directory).
@@ -6408,14 +6408,15 @@ fn main() {
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
-            if matches!((input_format.as_str(), output_format.as_str()), ("mm2", "upaths") | ("metta", "upaths") | ("upaths", "paths")) {
+            if matches!((input_format.as_str(), output_format.as_str()), ("mm2", "upaths") | ("metta", "upaths") | ("upaths", "paths") | ("paths", "act")) {
                 let result = if pattern != "$" || template != "_1" {
                     Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
                 } else {
                     let input = std::path::Path::new(&input_path);
                     let output = std::path::Path::new(&some_output_path);
                     match input_format.as_str() {
-                        "upaths" => match memory_mib.checked_mul(1024 * 1024) {
+                        "upaths" | "paths" => match memory_mib.checked_mul(1024 * 1024) {
+                            Some(memory) if input_format == "paths" => mork::convert::paths_to_act(input, output, memory),
                             Some(memory) => mork::convert::upaths_to_paths(input, output, memory, &temp_dir.unwrap_or_else(std::env::temp_dir)),
                             None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
                         },
@@ -6453,7 +6454,7 @@ fn main() {
                         _ => { unreachable!() }
                     }
                 }
-                ("paths", "metta" | "act" | "paths") => {
+                ("paths", "metta" | "paths") => {
                     assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
                     assert_eq!(template, "_1"); // todo
                     let mut s = Space::new();
@@ -6466,9 +6467,6 @@ fn main() {
                             let f = std::fs::File::create(&some_output_path).unwrap();
                             let mut w = std::io::BufWriter::new(f);
                             s.dump_all_sexpr(&mut w).unwrap();
-                        }
-                        "act" => {
-                            s.backup_tree(some_output_path);
                         }
                         "paths" => { // todo can be streamed without loading into memory
                             s.backup_paths(some_output_path);

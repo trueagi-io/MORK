@@ -515,6 +515,35 @@ pub fn upaths_to_paths(
     Ok(stats.path_count)
 }
 
+/// Stream sorted unique paths directly to an on-disk ACT. The builder retains
+/// the current trie frontier and a bounded line-reuse cache, never a PathMap.
+pub fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize> {
+    if memory < 1024 * 1024 {
+        return Err(invalid("--memory-mib must be at least 1"));
+    }
+    let mut source = paths_reader(input, memory / 16)?;
+    let target = Output::new(output)?;
+    let mut builder = pathmap::arena_compact::ACTOutputStream::with_cache_limits(
+        &target.path,
+        memory / 8,
+        memory / 256,
+    )?;
+    let mut count = 0;
+    while source.advance()? {
+        builder.push(&source.path).map_err(|e| {
+            invalid(format!(
+                "path {}: {e}; use 'convert upaths paths' to sort and deduplicate first",
+                count + 1
+            ))
+        })?;
+        count += 1;
+    }
+    // finish maps the completed file; dropping it does not read it into RAM.
+    drop(builder.finish()?);
+    target.publish(output)?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,6 +571,100 @@ mod tests {
             paths.push(source.path.clone());
         }
         paths
+    }
+
+    #[test]
+    fn act_stream_round_trip_and_invalid_order() {
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let input = scratch.0.join("input.paths");
+        let output = scratch.0.join("output.act");
+        for paths in [
+            vec![],
+            vec![vec![]],
+            vec![vec![], vec![0], vec![0, 0], vec![0, 255], vec![255]],
+        ] {
+            write_paths(&input, &paths);
+            assert_eq!(paths_to_act(&input, &output, 1 << 20).unwrap(), paths.len());
+            let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
+            for path in &paths {
+                assert_eq!(tree.get_val_at(path), Some(0));
+            }
+            assert_eq!(tree.get_val_at(b"absent"), None);
+            let actual: Vec<_> = tree.iter().map(|(p, _)| p).collect();
+            assert_eq!(actual, paths);
+        }
+        let before = fs::read(&output).unwrap();
+        for paths in [vec![vec![2], vec![1]], vec![vec![1], vec![1]]] {
+            write_paths(&input, &paths);
+            assert!(paths_to_act(&input, &output, 1 << 20).is_err());
+            assert_eq!(fs::read(&output).unwrap(), before);
+        }
+        write_paths(&input, &[b"abc".to_vec()]);
+        let mut bytes = fs::read(&input).unwrap();
+        bytes.pop();
+        fs::write(&input, bytes).unwrap();
+        assert!(paths_to_act(&input, &output, 1 << 20).is_err());
+        assert_eq!(fs::read(&output).unwrap(), before);
+        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 2);
+    }
+
+    #[test]
+    #[cfg(not(feature = "interning"))]
+    fn streamed_act_source_uses_on_disk_query_engine() {
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let input = scratch.0.join("input.mm2");
+        let unordered = scratch.0.join("input.upaths");
+        let sorted = scratch.0.join("input.paths");
+        let output = scratch.0.join("input.act");
+        fs::write(&input, b"(in 0 g0) (in 1 g1) (in 10 g10)").unwrap();
+        mm2_to_upaths(&input, &unordered).unwrap();
+        upaths_to_paths(&unordered, &sorted, 1 << 20, &scratch.0).unwrap();
+        paths_to_act(&sorted, &output, 1 << 20).unwrap();
+        let mut space = Space::new();
+        space.mmaps.insert(
+            mork_expr::OwnedSourceItem::from("streamed"),
+            pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap(),
+        );
+        space
+            .add_all_sexpr(b"(exec 0 (I (ACT streamed (in $x $y))) (, (found $x $y)))")
+            .unwrap();
+        space.metta_calculus(10);
+        let mut result = vec![];
+        space.dump_all_sexpr(&mut result).unwrap();
+        let result = String::from_utf8(result).unwrap();
+        assert_eq!(
+            result.lines().collect::<std::collections::BTreeSet<_>>(),
+            ["(found 0 g0)", "(found 1 g1)", "(found 10 g10)"]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "interning"))]
+    fn mm2_to_act_matches_space() {
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let input = scratch.0.join("input.mm2");
+        let unordered = scratch.0.join("input.upaths");
+        let sorted = scratch.0.join("input.paths");
+        let output = scratch.0.join("input.act");
+        let text = b"(z $x $x) (a (b) \"string\") (z $x $x) (prefix) ()";
+        fs::write(&input, text).unwrap();
+        assert_eq!(mm2_to_upaths(&input, &unordered).unwrap(), 5);
+        assert_eq!(
+            upaths_to_paths(&unordered, &sorted, 1 << 20, &scratch.0).unwrap(),
+            4
+        );
+        assert_eq!(paths_to_act(&sorted, &output, 1 << 20).unwrap(), 4);
+        let mut space = Space::new();
+        space.add_all_sexpr(text).unwrap();
+        let expected = scratch.0.join("expected.paths");
+        space.backup_paths(&expected).unwrap();
+        let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
+        assert_eq!(
+            tree.iter().map(|(p, _)| p).collect::<Vec<_>>(),
+            read_paths(&expected)
+        );
     }
 
     #[test]

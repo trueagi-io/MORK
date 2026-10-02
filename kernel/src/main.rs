@@ -6211,14 +6211,11 @@ enum Commands {
         input_format: String,
         #[arg(default_missing_value = "metta")]
         output_format: String,
-        #[arg(default_missing_value = "$")]
-        pattern: String,
-        #[arg(default_missing_value = "_1")]
-        template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
-        input_path: String,
-        output_path: Option<String>
+        /// INPUT [OUTPUT], or the legacy PATTERN TEMPLATE INPUT [OUTPUT].
+        #[arg(num_args = 1..=4, required = true, value_name = "PATHS")]
+        paths: Vec<String>
     }
 }
 
@@ -6388,16 +6385,35 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, pattern, template, instrumentation, input_path, output_path } => {
+        Commands::Convert { input_format, output_format, instrumentation, paths } => {
+            let (pattern, template, input_path, output_path) = match paths.as_slice() {
+                [input] => ("$".to_owned(), "_1".to_owned(), input.clone(), None),
+                [input, output] => ("$".to_owned(), "_1".to_owned(), input.clone(), Some(output.clone())),
+                [pattern, template, input] => (pattern.clone(), template.clone(), input.clone(), None),
+                [pattern, template, input, output] => (pattern.clone(), template.clone(), input.clone(), Some(output.clone())),
+                _ => unreachable!(),
+            };
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
 
             let input_path_extension = input_path.rfind(".").map(|i| &input_path[i+1..]);
             if input_path_extension.unwrap_or("") != input_format.as_str() { println!("input format {} does not coincide with the extension {:?}", input_format, input_path_extension); }
-            let some_output_path = output_path.unwrap_or_else(|| format!("{}.{}", &input_path[..input_path.len()-input_path_extension.unwrap_or("").len()], output_format));
+            let some_output_path = output_path.unwrap_or_else(|| std::path::Path::new(&input_path).with_extension(&output_format).to_string_lossy().into_owned());
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
+            if matches!((input_format.as_str(), output_format.as_str()), ("mm2", "upaths") | ("metta", "upaths")) {
+                let result = if pattern != "$" || template != "_1" {
+                    Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
+                } else {
+                    mork::convert::mm2_to_upaths(std::path::Path::new(&input_path), std::path::Path::new(&some_output_path))
+                };
+                match result {
+                    Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },
+                    Err(error) => { eprintln!("conversion failed: {error}"); std::process::exit(1); }
+                }
+                return;
+            }
             match (input_format.as_str(), output_format.as_str()) {
                 ("metta", "metta" | "act" | "paths") => {
                     let mut s = Space::new();

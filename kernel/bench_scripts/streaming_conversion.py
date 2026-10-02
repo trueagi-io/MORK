@@ -47,7 +47,7 @@ def main():
     for source, target, input_path, output_path in stages:
         name = f"{source}-{target}"
         time_path = args.output_dir / f"{name}.time"
-        command = [str(args.mork), "convert", source, target, str(input_path), str(output_path),
+        command = [str(args.mork), "convert", source, target, "$", "_1", str(input_path), str(output_path),
                    "--memory-mib", str(args.memory_mib), "--temp-dir", str(args.output_dir)]
         stage_start = time.perf_counter()
         with (args.output_dir / f"{name}.log").open("w") as log:

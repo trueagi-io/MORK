@@ -5100,213 +5100,6 @@ fn mm2_to_act(input: &Path, output: &Path, memory: usize, temp_dir: &Path) -> io
     paths_to_act(&sorted, output, memory)
 }
 
-#[cfg(test)]
-mod conversion_tests {
-    use super::*;
-    use mork::space::{ParDataParser, Space};
-    use mork_expr::{Expr, ExprZipper};
-    use mork_frontend::bytestring_parser::{Context, Parser};
-
-    fn write_paths(path: &Path, paths: &[Vec<u8>]) {
-        let mut source = (0usize, paths);
-        serialize_paths_from_funcs(
-            &mut File::create(path).unwrap(),
-            &mut source,
-            |s| {
-                s.0 += 1;
-                Ok(s.0 <= s.1.len())
-            },
-            |s| Some(s.1[s.0 - 1].as_slice()),
-        )
-        .unwrap();
-    }
-    fn read_paths(path: &Path) -> Vec<Vec<u8>> {
-        let mut paths = vec![];
-        pathmap::paths_serialization::for_each_deserialized_path(File::open(path).unwrap(), |_, p| {
-            paths.push(p.to_vec()); Ok(())
-        }).unwrap();
-        paths
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn direct_mm2_act_uses_and_cleans_temporary_directory() {
-        let scratch = tempfile::tempdir().unwrap();
-        let temp = scratch.path().join("temp");
-        fs::create_dir(&temp).unwrap();
-        let input = scratch.path().join("input.mm2");
-        let output = scratch.path().join("output.act");
-        fs::write(&input, b"(b) (a) (b)").unwrap();
-        assert_eq!(mm2_to_act(&input, &output, 1 << 20, &temp).unwrap(), 2);
-        assert_eq!(fs::read_dir(&temp).unwrap().count(), 0);
-        let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
-        assert_eq!(
-            tree.iter().map(|(p, _)| p).collect::<Vec<_>>(),
-            vec![vec![1, 193, b'a'], vec![1, 193, b'b']]
-        );
-        drop(tree);
-        let before = fs::read(&output).unwrap();
-        fs::write(&input, b"(bad").unwrap();
-        assert!(mm2_to_act(&input, &output, 1 << 20, &temp).is_err());
-        assert_eq!(fs::read(&output).unwrap(), before);
-        assert_eq!(fs::read_dir(&temp).unwrap().count(), 0);
-        assert!(mm2_to_act(&input, &output, 0, &temp).is_err());
-    }
-
-    #[test]
-    fn act_stream_round_trip_and_invalid_order() {
-        let scratch = tempfile::tempdir().unwrap();
-        let input = scratch.path().join("input.paths");
-        let output = scratch.path().join("output.act");
-        for paths in [
-            vec![],
-            vec![vec![]],
-            vec![vec![], vec![0], vec![0, 0], vec![0, 255], vec![255]],
-        ] {
-            write_paths(&input, &paths);
-            assert_eq!(paths_to_act(&input, &output, 1 << 20).unwrap(), paths.len());
-            let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
-            for path in &paths {
-                assert_eq!(tree.get_val_at(path), Some(0));
-            }
-            assert_eq!(tree.get_val_at(b"absent"), None);
-            let actual: Vec<_> = tree.iter().map(|(p, _)| p).collect();
-            assert_eq!(actual, paths);
-        }
-        let before = fs::read(&output).unwrap();
-        for paths in [vec![vec![2], vec![1]], vec![vec![1], vec![1]]] {
-            write_paths(&input, &paths);
-            assert!(paths_to_act(&input, &output, 1 << 20).is_err());
-            assert_eq!(fs::read(&output).unwrap(), before);
-        }
-        write_paths(&input, &[b"abc".to_vec()]);
-        let mut bytes = fs::read(&input).unwrap();
-        bytes.pop();
-        fs::write(&input, bytes).unwrap();
-        assert!(paths_to_act(&input, &output, 1 << 20).is_err());
-        assert_eq!(fs::read(&output).unwrap(), before);
-        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 2);
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn streamed_act_source_uses_on_disk_query_engine() {
-        let scratch = tempfile::tempdir().unwrap();
-        let input = scratch.path().join("input.mm2");
-        let unordered = scratch.path().join("input.upaths");
-        let sorted = scratch.path().join("input.paths");
-        let output = scratch.path().join("input.act");
-        fs::write(&input, b"(in 0 g0) (in 1 g1) (in 10 g10)").unwrap();
-        mm2_to_upaths(&input, &unordered).unwrap();
-        upaths_to_paths(&unordered, &sorted, 1 << 20, scratch.path()).unwrap();
-        paths_to_act(&sorted, &output, 1 << 20).unwrap();
-        let mut space = Space::new();
-        space.mmaps.insert(
-            mork_expr::OwnedSourceItem::from("streamed"),
-            pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap(),
-        );
-        space
-            .add_all_sexpr(b"(exec 0 (I (ACT streamed (in $x $y))) (, (found $x $y)))")
-            .unwrap();
-        space.metta_calculus(10);
-        let mut result = vec![];
-        space.dump_all_sexpr(&mut result).unwrap();
-        let result = String::from_utf8(result).unwrap();
-        assert_eq!(
-            result.lines().collect::<std::collections::BTreeSet<_>>(),
-            ["(found 0 g0)", "(found 1 g1)", "(found 10 g10)"]
-                .into_iter()
-                .collect()
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn mm2_to_act_matches_space() {
-        let scratch = tempfile::tempdir().unwrap();
-        let input = scratch.path().join("input.mm2");
-        let unordered = scratch.path().join("input.upaths");
-        let sorted = scratch.path().join("input.paths");
-        let output = scratch.path().join("input.act");
-        let text = b"(z $x $x) (a (b) \"string\") (z $x $x) (prefix) ()";
-        fs::write(&input, text).unwrap();
-        assert_eq!(mm2_to_upaths(&input, &unordered).unwrap(), 5);
-        assert_eq!(
-            upaths_to_paths(&unordered, &sorted, 1 << 20, scratch.path()).unwrap(),
-            4
-        );
-        assert_eq!(paths_to_act(&sorted, &output, 1 << 20).unwrap(), 4);
-        let mut space = Space::new();
-        space.add_all_sexpr(text).unwrap();
-        let expected = scratch.path().join("expected.paths");
-        space.backup_paths(&expected).unwrap();
-        let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
-        assert_eq!(
-            tree.iter().map(|(p, _)| p).collect::<Vec<_>>(),
-            read_paths(&expected)
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn upaths_round_trip_and_failed_conversion_preserves_destination() {
-        let mut input = tempfile::NamedTempFile::new().unwrap();
-        input.write_all(b"(z $v $v) (a) (z $v $v)").unwrap();
-        let output = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(mm2_to_upaths(input.path(), output.path()).unwrap(), 3);
-        let mut paths = Vec::new();
-        pathmap::paths_serialization::for_each_deserialized_path(
-            File::open(output.path()).unwrap(),
-            |_, p| {
-                paths.push(p.to_vec());
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(paths.len(), 3);
-        assert_eq!(paths[0], paths[2]);
-        assert!(paths[0] > paths[1]);
-        let before = fs::read(output.path()).unwrap();
-        fs::write(input.path(), b"(broken").unwrap();
-        assert!(mm2_to_upaths(input.path(), output.path()).is_err());
-        assert_eq!(fs::read(output.path()).unwrap(), before);
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn mmap_reader_matches_existing_parser() {
-        let temp = tempfile::tempdir().unwrap();
-        let input = temp.path().join("input.mm2");
-        let output = temp.path().join("output.upaths");
-        for text in [String::new(), "; trailing comment".into(),
-            "; comment\n(foo (bar $x) $x $y \"multi\nline\") () $v $v abc".into(),
-            format!("(outer (inner {}) $x $x) (next $x $x)", "x".repeat(200_000))] {
-            fs::write(&input, &text).unwrap();
-            mm2_to_upaths(&input, &output).unwrap();
-            let space = Space::new();
-            let mut parser = ParDataParser::new(&space.sm);
-            let mut context = Context::new(text.as_bytes());
-            let mut expected = vec![];
-            loop {
-                let mut buffer = [0; 1024];
-                let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-                match parser.sexpr(&mut context, &mut zipper) {
-                    Ok(()) => expected.push(buffer[..zipper.loc].to_vec()),
-                    Err(mork_frontend::bytestring_parser::ParserError::InputFinished) => break,
-                    Err(error) => panic!("{error:?}"),
-                }
-                context.variables.clear();
-            }
-            assert_eq!(read_paths(&output), expected);
-        }
-        for bad in ["(", ")", "(a", "(a ; unfinished", "\"escape\\"] {
-            fs::write(&input, bad).unwrap();
-            assert!(mm2_to_upaths(&input, &output).is_err(), "{bad:?}");
-        }
-    }
-
-}
-
 fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
     println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
     println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
@@ -6556,6 +6349,10 @@ enum Commands {
         input_format: String,
         #[arg(default_missing_value = "metta")]
         output_format: String,
+        #[arg(default_missing_value = "$")]
+        pattern: String,
+        #[arg(default_missing_value = "_1")]
+        template: String,
         #[arg(long, short='i', default_value_t = 1)]
         instrumentation: usize,
         /// Memory budget in MiB for sort buffers and input paths (runtime overhead is additional).
@@ -6564,9 +6361,8 @@ enum Commands {
         /// Directory for sort runs and mm2-to-act intermediates (defaults to the system temporary directory).
         #[arg(long)]
         temp_dir: Option<std::path::PathBuf>,
-        /// INPUT [OUTPUT], or the legacy PATTERN TEMPLATE INPUT [OUTPUT].
-        #[arg(num_args = 1..=4, required = true, value_name = "PATHS")]
-        paths: Vec<String>
+        input_path: String,
+        output_path: Option<String>
     }
 }
 
@@ -6736,14 +6532,7 @@ fn main() {
                 s.dump_all_sexpr(&mut w).unwrap();
             }
         }
-        Commands::Convert { input_format, output_format, instrumentation, memory_mib, temp_dir, paths } => {
-            let (pattern, template, input_path, output_path) = match paths.as_slice() {
-                [input] => ("$".to_owned(), "_1".to_owned(), input.clone(), None),
-                [input, output] => ("$".to_owned(), "_1".to_owned(), input.clone(), Some(output.clone())),
-                [pattern, template, input] => (pattern.clone(), template.clone(), input.clone(), None),
-                [pattern, template, input, output] => (pattern.clone(), template.clone(), input.clone(), Some(output.clone())),
-                _ => unreachable!(),
-            };
+        Commands::Convert { input_format, output_format, pattern, template, instrumentation, memory_mib, temp_dir, input_path, output_path } => {
             #[cfg(debug_assertions)]
             println!("WARNING running in debug, if unintentional, build with --release");
 

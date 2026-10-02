@@ -5011,136 +5011,100 @@ impl Drop for Output {
     }
 }
 
-/// Iterative parser: one expression, one token and at most 64 variable names.
-/// Symbols use the same inline encoding (including 63-byte truncation) as
-/// ParDataParser. Quoted symbols retain their quotes and escape bytes.
-struct Mm2Reader<R> {
+/// Buffer adapter for the existing mm2 reader. It retains only a chunk and an
+/// unfinished expression; all syntax and encoding belong to ParDataParser.
+struct Mm2Stream<'a, R> {
     source: R,
-    path: Vec<u8>,
-    token: Vec<u8>,
-    variables: Vec<Vec<u8>>,
-    stack: Vec<(usize, u8)>,
+    parser: mork::space::ParDataParser<'a>,
+    input: Vec<u8>,
+    start: usize,
     offset: u64,
+    eof: bool,
+    chunk_size: usize,
+    output: Vec<u8>,
+    output_len: usize,
 }
-impl<R: BufRead> Mm2Reader<R> {
-    fn new(source: R) -> Self {
+impl<'a, R: Read> Mm2Stream<'a, R> {
+    fn new(source: R, parser: mork::space::ParDataParser<'a>) -> Self {
+        Self::with_capacity(256 * 1024, source, parser)
+    }
+    fn with_capacity(chunk_size: usize, source: R, parser: mork::space::ParDataParser<'a>) -> Self {
+        assert!(chunk_size > 0);
         Self {
             source,
-            path: vec![],
-            token: vec![],
-            variables: vec![],
-            stack: vec![],
+            parser,
+            input: vec![],
+            start: 0,
             offset: 0,
+            eof: false,
+            chunk_size,
+            // ExprZipper::new inspects the root byte even for empty input.
+            output: vec![0],
+            output_len: 0,
         }
     }
-    fn peek(&mut self) -> io::Result<Option<u8>> {
-        Ok(self.source.fill_buf()?.first().copied())
+    fn refill(&mut self) -> io::Result<()> {
+        self.input.drain(..self.start);
+        self.offset += self.start as u64;
+        self.start = 0;
+        // Grow geometrically when one expression spans chunks, so retrying the
+        // slice reader costs O(expression length), rather than O(length squared).
+        let additional = self.input.len().max(self.chunk_size);
+        let count = self
+            .source
+            .by_ref()
+            .take(additional as u64)
+            .read_to_end(&mut self.input)?;
+        self.eof = count < additional;
+        Ok(())
     }
-    fn take(&mut self) -> io::Result<Option<u8>> {
-        let byte = self.peek()?;
-        if byte.is_some() {
-            self.source.consume(1);
-            self.offset += 1;
-        }
-        Ok(byte)
-    }
-    fn error(&self, message: &str) -> io::Error {
-        invalid(format!("mm2 byte {}: {message}", self.offset))
+    fn path(&self) -> &[u8] {
+        &self.output[..self.output_len]
     }
     fn advance(&mut self) -> io::Result<bool> {
-        self.path.clear();
-        self.variables.clear();
+        use mork_frontend::bytestring_parser::{Context, ParserError};
         loop {
-            let Some(c) = self.peek()? else {
-                return if self.stack.is_empty() {
-                    Ok(false)
-                } else {
-                    Err(self.error("unclosed expression"))
-                };
-            };
-            if c.is_ascii_whitespace() {
-                self.take()?;
+            let remaining = &self.input[self.start..];
+            // The existing parser writes through ExprZipper's raw pointer.
+            // Inline encoding needs at most two bytes per source byte; interned
+            // one-byte symbols can require nine. Keep storage initialized and
+            // reuse it without clearing the entire buffer for each expression.
+            let expansion = if cfg!(feature = "interning") { 9 } else { 2 };
+            let needed = remaining
+                .len()
+                .checked_mul(expansion)
+                .ok_or_else(|| invalid("mm2 expression is too large"))?;
+            if self.output.len() < needed {
+                self.output.resize(needed, 0);
+            }
+            let mut context = Context::new(remaining);
+            let mut target = mork_expr::ExprZipper::new(mork_expr::Expr {
+                ptr: self.output.as_mut_ptr(),
+            });
+            let result = self.parser.sexpr(&mut context, &mut target);
+            // A token or quoted symbol ending at the buffer edge might continue
+            // in the next chunk. Do not publish it until the reader has seen a
+            // boundary or actual EOF. This also handles split escape sequences.
+            if !self.eof && context.loc == remaining.len() {
+                self.refill()?;
                 continue;
             }
-            if c == b';' {
-                while let Some(b) = self.take()? {
-                    if b == b'\n' {
-                        break;
+            match result {
+                Ok(()) => {
+                    if target.loc > u32::MAX as usize {
+                        return Err(invalid("expression exceeds .paths length limit"));
                     }
-                }
-                continue;
-            }
-            if c == b')' {
-                self.take()?;
-                let Some((position, arity)) = self.stack.pop() else {
-                    return Err(self.error("unexpected ')'"));
-                };
-                self.path[position] = item_byte(Tag::Arity(arity));
-                if self.stack.is_empty() {
+                    self.output_len = target.loc;
+                    self.start += context.loc;
                     return Ok(true);
                 }
-                continue;
-            }
-            if let Some((_, arity)) = self.stack.last_mut() {
-                if *arity == 63 {
-                    return Err(self.error("more than 63 children"));
+                Err(ParserError::InputFinished) if target.loc == 0 && self.eof => return Ok(false),
+                Err(error) => {
+                    return Err(invalid(format!(
+                        "mm2 byte {}: {error:?}",
+                        self.offset + self.start as u64 + context.loc as u64
+                    )));
                 }
-                *arity += 1;
-            }
-            if c == b'(' {
-                self.take()?;
-                self.stack.push((self.path.len(), 0));
-                self.path.push(0);
-                continue;
-            }
-            self.token.clear();
-            if c == b'"' {
-                self.take()?;
-                self.token.push(c);
-                loop {
-                    let b = self
-                        .take()?
-                        .ok_or_else(|| self.error("unclosed quoted symbol"))?;
-                    self.token.push(b);
-                    if b == b'"' {
-                        break;
-                    }
-                    if b == b'\\' {
-                        let escaped = self
-                            .take()?
-                            .ok_or_else(|| self.error("unfinished escape"))?;
-                        self.token.push(escaped);
-                    }
-                }
-            } else {
-                while let Some(b) = self.peek()? {
-                    if b.is_ascii_whitespace() || b == b'(' || b == b')' {
-                        break;
-                    }
-                    self.token.push(b);
-                    self.take()?;
-                }
-            }
-            if c == b'$' {
-                if let Some(index) = self.variables.iter().position(|v| v == &self.token) {
-                    self.path.push(item_byte(Tag::VarRef(index as u8)));
-                } else {
-                    if self.variables.len() == 64 {
-                        return Err(self.error("more than 64 variables"));
-                    }
-                    self.variables.push(self.token.clone());
-                    self.path.push(item_byte(Tag::NewVar));
-                }
-            } else {
-                let len = self.token.len().min(63);
-                self.path.push(item_byte(Tag::SymbolSize(len as u8)));
-                self.path.extend_from_slice(&self.token[..len]);
-            }
-            if self.path.len() > u32::MAX as usize {
-                return Err(self.error("expression exceeds .paths length limit"));
-            }
-            if self.stack.is_empty() {
-                return Ok(true);
             }
         }
     }
@@ -5154,7 +5118,9 @@ fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
             "streaming mm2 conversion requires inline symbols; rebuild without interning",
         ));
     }
-    let mut source = Mm2Reader::new(BufReader::with_capacity(256 * 1024, File::open(input)?));
+    let symbols = mork_interning::SharedMapping::new();
+    let parser = mork::space::ParDataParser::new(&symbols);
+    let mut source = Mm2Stream::new(File::open(input)?, parser);
     let target = Output::new(output)?;
     let stats = {
         let mut writer = BufWriter::with_capacity(256 * 1024, &target.file);
@@ -5162,7 +5128,7 @@ fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
             &mut writer,
             &mut source,
             |s| s.advance(),
-            |s| Some(&s.path),
+            |s| Some(s.path()),
         )?;
         writer.flush()?;
         stats
@@ -5816,20 +5782,28 @@ mod conversion_tests {
 
     #[test]
     #[cfg(not(feature = "interning"))]
-    fn streaming_parser_matches_existing_parser() {
-        let input = b"; comment\n(foo (bar $x) $x $y \"a \\\" b\") () $v $v abc (a b)";
+    fn buffered_reader_matches_existing_parser_at_every_chunk_size() {
+        let input = b"; comment\n(foo (bar $x) $x $y \"a \\\" b\") () $v $v abc (a b) \"multi\nline\" (long-symbol abcdefghijklmnopqrstuvwxyz) ; trailing comment";
         let space = Space::new();
         let mut parser = ParDataParser::new(&space.sm);
         let mut context = Context::new(input);
-        let mut stream = Mm2Reader::new(BufReader::with_capacity(1, &input[..]));
-        while stream.advance().unwrap() {
+        let mut expected = vec![];
+        loop {
             let mut buffer = [0; 1024];
-            let mut zipper = ExprZipper::new(Expr {
-                ptr: buffer.as_mut_ptr(),
-            });
-            parser.sexpr(&mut context, &mut zipper).unwrap();
-            assert_eq!(stream.path, buffer[..zipper.loc]);
+            let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+            match parser.sexpr(&mut context, &mut zipper) {
+                Ok(()) => expected.push(buffer[..zipper.loc].to_vec()),
+                Err(mork_frontend::bytestring_parser::ParserError::InputFinished) => break,
+                Err(error) => panic!("{error:?}"),
+            }
             context.variables.clear();
+        }
+        drop(parser);
+        for chunk in 1..=input.len() + 1 {
+            let mut stream = Mm2Stream::with_capacity(chunk, &input[..], ParDataParser::new(&space.sm));
+            let mut actual = vec![];
+            while stream.advance().unwrap() { actual.push(stream.path().to_vec()); }
+            assert_eq!(actual, expected, "chunk size {chunk}");
         }
     }
 
@@ -5859,21 +5833,37 @@ mod conversion_tests {
     }
 
     #[test]
-    fn streaming_parser_boundaries_and_errors() {
-        let input = b"(a ; comment\r\n b)\r\n\"a\n(b)\"";
-        let mut reader = Mm2Reader::new(BufReader::with_capacity(1, &input[..]));
+    #[cfg(not(feature = "interning"))]
+    fn buffered_reader_large_expressions_and_errors() {
+        let space = Space::new();
+        // Exercise repeated refills, output-buffer growth and symbol truncation
+        // using the actual reader. Variables must retain their per-atom scope.
+        let long = format!("(outer (inner {}) $x $x) (next $x $x)", "x".repeat(200_000));
+        let mut reader = Mm2Stream::with_capacity(7, long.as_bytes(), ParDataParser::new(&space.sm));
         assert!(reader.advance().unwrap());
-        assert_eq!(reader.path, [2, 193, b'a', 193, b'b']);
+        let first = reader.path().to_vec();
         assert!(reader.advance().unwrap());
+        assert_eq!(reader.path(), &[3, 196, b'n', b'e', b'x', b't', 192, 128]);
         assert!(!reader.advance().unwrap());
-        for bad in ["(", ")", "\"oops", "(a", "\"escape\\"] {
-            assert!(Mm2Reader::new(bad.as_bytes()).advance().is_err(), "{bad}");
+        drop(reader);
+        let mut parser = ParDataParser::new(&space.sm);
+        let mut buffer = [0; 1024];
+        let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+        parser.sexpr(&mut Context::new(long.as_bytes()), &mut zipper).unwrap();
+        assert_eq!(first, buffer[..zipper.loc]);
+        drop(parser);
+        for bad in ["(", ")", "(a", "(a ; unfinished", "\"escape\\"] {
+            for chunk in 1..=bad.len() + 1 {
+                let mut reader = Mm2Stream::with_capacity(chunk, bad.as_bytes(), ParDataParser::new(&space.sm));
+                assert!(reader.advance().is_err(), "{bad:?}, chunk {chunk}");
+            }
         }
-        let deep = format!("{}a{}", "(".repeat(10000), ")".repeat(10000));
-        assert!(Mm2Reader::new(deep.as_bytes()).advance().unwrap());
-        let wide = format!("({})", "a ".repeat(64));
-        assert!(Mm2Reader::new(wide.as_bytes()).advance().is_err());
+        for empty in ["", " \t\n", "; comment", "; comment\n "] {
+            let mut reader = Mm2Stream::with_capacity(1, empty.as_bytes(), ParDataParser::new(&space.sm));
+            assert!(!reader.advance().unwrap());
+        }
     }
+
 }
 
 fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {

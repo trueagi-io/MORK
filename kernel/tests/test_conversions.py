@@ -181,6 +181,81 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(direct.read_bytes(), before)
         self.assertEqual(list(self.scratch.iterdir()), [])
 
+    def test_missing_shortcuts_match_stages(self):
+        source = self.root / "input.mm2"
+        unordered = self.root / "input.upaths"
+        ordered = self.root / "staged.paths"
+        staged_act = self.root / "staged.act"
+        direct_paths = self.root / "direct.paths"
+        direct_act = self.root / "direct.act"
+        for text in ["", "(z $x $x) (a) (z $x $x) ()"]:
+            with self.subTest(input=text):
+                source.write_text(text)
+                self.convert("mm2", "upaths", source, unordered)
+                self.convert("upaths", "paths", unordered, ordered)
+                self.convert("paths", "act", ordered, staged_act)
+                self.convert("mm2", "paths", source, direct_paths)
+                self.convert("upaths", "act", unordered, direct_act)
+                self.assertEqual(read_paths(direct_paths), read_paths(ordered))
+                self.assertEqual(direct_act.read_bytes(), staged_act.read_bytes())
+                self.assertEqual(list(self.scratch.iterdir()), [])
+                self.assertTrue(unordered.is_file())
+
+    def test_json_shortcuts_match_existing_conversion(self):
+        source = self.root / "input.json"
+        unordered = self.root / "input.upaths"
+        ordered = self.root / "staged.paths"
+        staged_act = self.root / "staged.act"
+        direct_paths = self.root / "direct.paths"
+        direct_act = self.root / "direct.act"
+        expected = self.root / "expected.metta"
+        actual = self.root / "actual.metta"
+        for text in ['{}', '[]', 'null',
+                     '{"z":[1,true,null,"text"],"a":{"nested":false,"empty":[]}}',
+                     '{"dup":1,"dup":1}']:
+            with self.subTest(input=text):
+                source.write_text(text)
+                self.convert("json", "upaths", source, unordered)
+                self.convert("upaths", "paths", unordered, ordered)
+                self.convert("paths", "act", ordered, staged_act)
+                self.convert("json", "paths", source, direct_paths)
+                self.convert("json", "act", source, direct_act)
+                self.assertEqual(read_paths(direct_paths), read_paths(ordered))
+                self.assertEqual(direct_act.read_bytes(), staged_act.read_bytes())
+                self.convert("json", "metta", source, expected)
+                self.convert("paths", "metta", direct_paths, actual)
+                self.assertEqual(actual.read_bytes(), expected.read_bytes())
+                self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_shortcut_failures_preserve_output_and_clean_intermediates(self):
+        cases = [("mm2", "paths", b"(bad"),
+                 ("upaths", "act", zlib.compress(struct.pack("<I", 3) + b"abc")[:-1])]
+        for target in ["upaths", "paths", "act"]:
+            for bad in [b"", b'{"ok":1,"bad":', b'{"ok":1} trailing', b'{"bad":"\xff"}' ]:
+                cases.append(("json", target, bad))
+        for source_format, target_format, content in cases:
+            with self.subTest(source=source_format, target=target_format, content=content):
+                source = self.root / ("input." + source_format)
+                output = self.root / ("output." + target_format)
+                source.write_bytes(content)
+                output.write_bytes(b"existing destination")
+                before_files = set(self.root.iterdir())
+                result = self.convert(source_format, target_format, source, output, success=False)
+                self.assertIn("conversion failed:", result.stderr)
+                self.assertEqual(output.read_bytes(), b"existing destination")
+                self.assertEqual(list(self.scratch.iterdir()), [])
+                self.assertEqual(set(self.root.iterdir()), before_files)
+        for source_format, target_format in [("mm2", "paths"), ("upaths", "act"),
+                                             ("json", "paths"), ("json", "act")]:
+            with self.subTest(source=source_format, target=target_format, invalid_options=True):
+                source = self.root / ("input." + source_format)
+                output = self.root / ("output." + target_format)
+                output.write_bytes(b"existing destination")
+                self.convert(source_format, target_format, source, output, memory=0, success=False)
+                self.convert(source_format, target_format, source, output, pattern="(a)", success=False)
+                self.assertEqual(output.read_bytes(), b"existing destination")
+                self.assertEqual(list(self.scratch.iterdir()), [])
+
     def test_explicit_cli_fields_and_default_output(self):
         source = self.root / "input with spaces.mm2"
         source.write_text("(a)")

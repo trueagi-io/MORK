@@ -5087,41 +5087,62 @@ fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize>
     Ok(stats.path_count)
 }
 
-fn mm2_to_act(input: &Path, output: &Path, memory: usize, temp_dir: &Path) -> io::Result<usize> {
+fn convert_on_disk(
+    input_format: &str,
+    output_format: &str,
+    input: &Path,
+    output: &Path,
+    memory: usize,
+    temp_dir: &Path,
+) -> io::Result<usize> {
+    let write_upaths = |target: &Path| match input_format {
+        "mm2" | "metta" => mm2_to_upaths(input, target),
+        "json" => json_upaths(input, target),
+        _ => unreachable!(),
+    };
+    if output_format == "upaths" {
+        return write_upaths(output);
+    }
     if memory < 1024 * 1024 {
         return Err(invalid("--memory-mib must be at least 1"));
     }
+    if input_format == "paths" {
+        return paths_to_act(input, output, memory);
+    }
     let scratch = tempfile::tempdir_in(temp_dir)?;
     let unordered = scratch.path().join("intermediate.upaths");
+    let input_paths = if input_format == "upaths" {
+        input
+    } else {
+        write_upaths(&unordered)?;
+        &unordered
+    };
+    if output_format == "paths" {
+        return upaths_to_paths(input_paths, output, memory, scratch.path());
+    }
     let sorted = scratch.path().join("intermediate.paths");
-    mm2_to_upaths(input, &unordered)?;
-    upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
-    fs::remove_file(unordered)?;
+    upaths_to_paths(input_paths, &sorted, memory, scratch.path())?;
+    if input_format != "upaths" {
+        fs::remove_file(unordered)?;
+    }
     paths_to_act(&sorted, output, memory)
 }
 
-fn json_upaths<IPath: AsRef<std::path::Path>, OPath : AsRef<std::path::Path>>(json_path: IPath, upaths_path: OPath) {
-    println!("mmapping JSON file {:?}", json_path.as_ref().as_os_str());
-    println!("writing out unordered .paths file {:?}", upaths_path.as_ref().as_os_str());
-    let json_file = std::fs::File::open(json_path).unwrap();
-    let json_mmap = unsafe { memmap2::Mmap::map(&json_file).unwrap() };
-    let upaths_file = std::fs::File::create_new(upaths_path).unwrap();
-    let mut upaths_bufwriter = std::io::BufWriter::new(upaths_file);
-
-    let mut s = Space::new();
-    let t0 = Instant::now();
-    let written = s.json_to_paths(&*json_mmap, &mut upaths_bufwriter).unwrap();
-    println!("written {written} in {} ms", t0.elapsed().as_millis());
-    // (zephy)
-    // mmapping JSON file "/home/adam/Downloads/G37S-9NQ.json"
-    // writing out unordered .paths file "G37S-9NQ.upaths"
-    // Ok(SerializationStats { bytes_out: 1415053, bytes_in: 12346358, path_count: 224769 })
-    // written 224769 in 193 ms
-    // (badbad)
-    // mmapping JSON file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.json"
-    // writing out unordered .paths file "/mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths"
-    // Ok(SerializationStats { bytes_out: 231708224, bytes_in: 808333425, path_count: 15969490 })
-    // written 15969490 in 17441 ms
+fn json_upaths(input: &Path, output: &Path) -> io::Result<usize> {
+    if cfg!(feature = "interning") {
+        return Err(invalid("JSON paths conversion requires inline symbols; rebuild without interning"));
+    }
+    let file = File::open(input)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let count = {
+        let mut writer = BufWriter::new(target.as_file());
+        let count = Space::new().json_to_paths(&mmap, &mut writer).map_err(invalid)?;
+        writer.flush()?;
+        count
+    };
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(count)
 }
 
 #[cfg(all(feature = "nightly"))]
@@ -6358,7 +6379,7 @@ enum Commands {
         /// Memory budget in MiB for sort buffers and input paths (runtime overhead is additional).
         #[arg(long, default_value_t = 1024)]
         memory_mib: usize,
-        /// Directory for sort runs and mm2-to-act intermediates (defaults to the system temporary directory).
+        /// Directory for sort runs and conversion intermediates (defaults to the system temporary directory).
         #[arg(long)]
         temp_dir: Option<std::path::PathBuf>,
         input_path: String,
@@ -6543,20 +6564,18 @@ fn main() {
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
             match (input_format.as_str(), output_format.as_str()) {
-                ("mm2", "upaths" | "act") | ("metta", "upaths") | ("upaths", "paths") | ("paths", "act") => {
+                ("mm2" | "json", "upaths" | "paths" | "act") | ("metta", "upaths") | ("upaths", "paths" | "act") | ("paths", "act") => {
                     let result = if pattern != "$" || template != "_1" {
                         Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "streaming conversion requires pattern '$' and template '_1'"))
                     } else {
                         let input = std::path::Path::new(&input_path);
                         let output = std::path::Path::new(&some_output_path);
-                        match (input_format.as_str(), output_format.as_str()) {
-                            ("upaths", "paths") | ("paths", "act") | ("mm2", "act") => match memory_mib.checked_mul(1024 * 1024) {
-                                Some(memory) if input_format == "mm2" => mm2_to_act(input, output, memory, &temp_dir.unwrap_or_else(std::env::temp_dir)),
-                                Some(memory) if input_format == "paths" => paths_to_act(input, output, memory),
-                                Some(memory) => upaths_to_paths(input, output, memory, &temp_dir.unwrap_or_else(std::env::temp_dir)),
-                                None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
-                            },
-                            _ => mm2_to_upaths(input, output),
+                        match memory_mib.checked_mul(1024 * 1024) {
+                            Some(memory) => convert_on_disk(
+                                &input_format, &output_format, input, output, memory,
+                                &temp_dir.unwrap_or_else(std::env::temp_dir),
+                            ),
+                            None => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "--memory-mib is too large")),
                         }
                     };
                     match result {
@@ -6608,38 +6627,16 @@ fn main() {
                         _ => { unreachable!() }
                     }
                 }
-                ("json", "metta" | "act" | "paths") => {
+                ("json", "metta") => {
                     let mut s = Space::new();
                     let f = std::fs::File::open(&input_path).unwrap();
                     let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
                     s.load_json(&*mmapf);
                     println!("done loading in memory");
                     if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-
-                    match output_format.as_str() {
-                        "metta" => {
-                            let f = std::fs::File::create(&some_output_path).unwrap();
-                            let mut w = std::io::BufWriter::new(f);
-                            s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
-                        }
-                        "act" => {
-                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
-                            assert_eq!(template, "_1"); // todo
-                            s.backup_tree(some_output_path).unwrap();
-                        }
-                        "paths" => {
-                            assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
-                            assert_eq!(template, "_1"); // todo
-                            s.backup_paths(some_output_path).unwrap();
-                        }
-                        _ => { unreachable!() }
-                    }
-                }
-                ("json", "upaths") => {
-                    assert_eq!(pattern, "$");
-                    assert_eq!(template, "_1");
-                    // json upaths /mnt/data/enwiki-20231220-pages-articles-links/cqls.json /mnt/data/enwiki-20231220-pages-articles-links/cqls.upaths
-                    json_upaths(input_path, some_output_path);
+                    let f = std::fs::File::create(&some_output_path).unwrap();
+                    let mut w = std::io::BufWriter::new(f);
+                    s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
                 }
                 // ("jsonl", "upaths") => {
                 //     #[cfg(all(feature = "nightly"))]

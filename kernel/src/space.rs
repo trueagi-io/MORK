@@ -590,22 +590,30 @@ impl Space {
     }
 
     pub fn json_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<usize, String> {
+        let text = std::str::from_utf8(r).map_err(|e| e.to_string())?;
         let mut sink = pathmap::paths_serialization::paths_serialization_sink(d);
-
         let mut wz = Vec::with_capacity(4096);
         let mut st = ASpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
-
-        let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
+        let mut p = mork_frontend::json_parser::Parser::new(text);
         let mut coro = p.parse_stream(&mut st);
-        while let CoroutineState::Yielded(n) = Pin::new(&mut coro).resume(()) {
-            Pin::new(&mut sink).resume(Some(n));
-        }
-        match Pin::new(&mut sink).resume(None) {
-            CoroutineState::Yielded(_) => { panic!() }
-            CoroutineState::Complete(summary) => { println!("{:?}", summary) }
-        }
-        drop(coro);
-        Ok(st.count)
+        let parsed = loop {
+            match Pin::new(&mut coro).resume(()) {
+                CoroutineState::Yielded(path) => {
+                    if let CoroutineState::Complete(result) = Pin::new(&mut sink).resume(Some(path)) {
+                        result.map_err(|e| e.to_string())?;
+                        return Err("paths serializer finished before end of JSON".into());
+                    }
+                }
+                CoroutineState::Complete(result) => break result,
+            }
+        };
+        // Finish the compressor even on parse errors, but never report partial input as success.
+        let stats = match Pin::new(&mut sink).resume(None) {
+            CoroutineState::Yielded(_) => unreachable!(),
+            CoroutineState::Complete(result) => result.map_err(|e| e.to_string())?,
+        };
+        parsed.map_err(|e| e.to_string())?;
+        Ok(stats.path_count)
     }
 
     pub fn jsonl_to_paths<W : std::io::Write>(&mut self, r: &[u8], d: &mut W) -> Result<(usize, usize), String> {

@@ -12,9 +12,8 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, BufReader, BufWriter, Write};
-use std::fs::{self, File, OpenOptions};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs::{self, File};
+use std::path::Path;
 use pathmap::paths_serialization::serialize_paths_from_funcs;
 use std::ops::Add;
 // use std::future::Future;
@@ -4970,569 +4969,133 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
-/// Publish only a complete file; leave an existing destination intact on error.
-struct Output {
-    path: PathBuf,
-    file: File,
-}
-impl Output {
-    fn new(destination: &Path) -> io::Result<Self> {
-        let parent = destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        loop {
-            let path = parent.join(format!(
-                ".mork-convert-{}-{}",
-                std::process::id(),
-                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-            ));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(file) => return Ok(Self { path, file }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-    fn publish(self, destination: &Path) -> io::Result<()> {
-        fs::rename(&self.path, destination)
-    }
-}
-impl Drop for Output {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// Buffer adapter for the existing mm2 reader. It retains only a chunk and an
-/// unfinished expression; all syntax and encoding belong to ParDataParser.
-struct Mm2Stream<'a, R> {
-    source: R,
-    parser: mork::space::ParDataParser<'a>,
-    input: Vec<u8>,
-    start: usize,
-    offset: u64,
-    eof: bool,
-    chunk_size: usize,
-    output: Vec<u8>,
-    output_len: usize,
-}
-impl<'a, R: Read> Mm2Stream<'a, R> {
-    fn new(source: R, parser: mork::space::ParDataParser<'a>) -> Self {
-        Self::with_capacity(256 * 1024, source, parser)
-    }
-    fn with_capacity(chunk_size: usize, source: R, parser: mork::space::ParDataParser<'a>) -> Self {
-        assert!(chunk_size > 0);
-        Self {
-            source,
-            parser,
-            input: vec![],
-            start: 0,
-            offset: 0,
-            eof: false,
-            chunk_size,
-            // ExprZipper::new inspects the root byte even for empty input.
-            output: vec![0],
-            output_len: 0,
-        }
-    }
-    fn refill(&mut self) -> io::Result<()> {
-        self.input.drain(..self.start);
-        self.offset += self.start as u64;
-        self.start = 0;
-        // Grow geometrically when one expression spans chunks, so retrying the
-        // slice reader costs O(expression length), rather than O(length squared).
-        let additional = self.input.len().max(self.chunk_size);
-        let count = self
-            .source
-            .by_ref()
-            .take(additional as u64)
-            .read_to_end(&mut self.input)?;
-        self.eof = count < additional;
-        Ok(())
-    }
-    fn path(&self) -> &[u8] {
-        &self.output[..self.output_len]
-    }
-    fn advance(&mut self) -> io::Result<bool> {
-        use mork_frontend::bytestring_parser::{Context, ParserError};
-        loop {
-            let remaining = &self.input[self.start..];
-            // The existing parser writes through ExprZipper's raw pointer.
-            // Inline encoding needs at most two bytes per source byte; interned
-            // one-byte symbols can require nine. Keep storage initialized and
-            // reuse it without clearing the entire buffer for each expression.
-            let expansion = if cfg!(feature = "interning") { 9 } else { 2 };
-            let needed = remaining
-                .len()
-                .checked_mul(expansion)
-                .ok_or_else(|| invalid("mm2 expression is too large"))?;
-            if self.output.len() < needed {
-                self.output.resize(needed, 0);
-            }
-            let mut context = Context::new(remaining);
-            let mut target = mork_expr::ExprZipper::new(mork_expr::Expr {
-                ptr: self.output.as_mut_ptr(),
-            });
-            let result = self.parser.sexpr(&mut context, &mut target);
-            // A token or quoted symbol ending at the buffer edge might continue
-            // in the next chunk. Do not publish it until the reader has seen a
-            // boundary or actual EOF. This also handles split escape sequences.
-            if !self.eof && context.loc == remaining.len() {
-                self.refill()?;
-                continue;
-            }
-            match result {
-                Ok(()) => {
-                    if target.loc > u32::MAX as usize {
-                        return Err(invalid("expression exceeds .paths length limit"));
-                    }
-                    self.output_len = target.loc;
-                    self.start += context.loc;
-                    return Ok(true);
-                }
-                Err(ParserError::InputFinished) if target.loc == 0 && self.eof => return Ok(false),
-                Err(error) => {
-                    return Err(invalid(format!(
-                        "mm2 byte {}: {error:?}",
-                        self.offset + self.start as u64 + context.loc as u64
-                    )));
-                }
-            }
-        }
-    }
-}
-
-/// `.upaths` has precisely PathMap's zlib-compressed, length-prefixed `.paths`
-/// representation, retaining input order and duplicates. Memory is O(max atom).
+/// Read mm2 through the existing parser over an mmap, without constructing a Space.
 fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
+    use mork_frontend::bytestring_parser::{Context, ParserError};
     if cfg!(feature = "interning") {
         return Err(invalid(
-            "streaming mm2 conversion requires inline symbols; rebuild without interning",
+            "mm2 conversion requires inline symbols; rebuild without interning",
         ));
     }
+    let file = File::open(input)?;
+    let mmap = if file.metadata()?.len() == 0 {
+        None
+    } else {
+        Some(unsafe { memmap2::Mmap::map(&file)? })
+    };
+    let bytes = mmap.as_deref().unwrap_or(&[]);
+    // Reserve address space for the parser's unchecked writes, but only commit
+    // pages actually touched by an expression. Inline encoding is at most 2x.
+    let capacity = bytes
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| invalid("mm2 file is too large"))?
+        .max(1);
+    let buffer = memmap2::MmapOptions::new().len(capacity).no_reserve_swap().map_anon()?;
     let symbols = mork_interning::SharedMapping::new();
-    let parser = mork::space::ParDataParser::new(&symbols);
-    let mut source = Mm2Stream::new(File::open(input)?, parser);
-    let target = Output::new(output)?;
+    let mut parser = mork::space::ParDataParser::new(&symbols);
+    let mut source = (Context::new(bytes), buffer, 0usize);
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    #[cfg(unix)]
+    let mut released = 0;
     let stats = {
-        let mut writer = BufWriter::with_capacity(256 * 1024, &target.file);
+        let mut writer = BufWriter::new(target.as_file());
         let stats = serialize_paths_from_funcs(
             &mut writer,
             &mut source,
-            |s| s.advance(),
-            |s| Some(s.path()),
+            |(context, buffer, length)| {
+                let mut zipper = mork_expr::ExprZipper::new(mork_expr::Expr {
+                    ptr: buffer.as_mut_ptr(),
+                });
+                let parsed = parser.sexpr(context, &mut zipper);
+                context.variables.clear();
+                // Discard completed input pages in aligned batches; subsequent
+                // parsing only touches the suffix. The input file must stay unchanged.
+                #[cfg(unix)]
+                {
+                    let end = context.loc / (8 * 1024 * 1024) * (8 * 1024 * 1024);
+                    if end > released {
+                        unsafe {
+                            mmap.as_ref().unwrap().unchecked_advise_range(
+                                memmap2::UncheckedAdvice::DontNeed,
+                                released,
+                                end - released,
+                            )?;
+                        }
+                        released = end;
+                    }
+                }
+                match parsed {
+                    Ok(()) => {
+                        if zipper.loc > u32::MAX as usize {
+                            return Err(invalid("expression exceeds .paths length limit"));
+                        }
+                        *length = zipper.loc;
+                        Ok(true)
+                    }
+                    Err(ParserError::InputFinished) if zipper.loc == 0 => Ok(false),
+                    Err(error) => Err(invalid(format!("mm2 byte {}: {error:?}", context.loc))),
+                }
+            },
+            |(_, buffer, length)| Some(&buffer[..*length]),
         )?;
         writer.flush()?;
         stats
     };
-    target.publish(output)?;
+    target.persist(output).map_err(|e| e.error)?;
     Ok(stats.path_count)
 }
 
-// Checked zlib-ng reader, using the same codec as PathMap's .paths writer.
-// Keep z_stream at a stable address, and release its state on every error path.
-struct ZlibReader<R> {
-    source: R,
-    codec: Box<libz_ng_sys::z_stream>,
-    finished: bool,
-}
-
-unsafe extern "C" fn zlib_alloc(
-    _: libz_ng_sys::voidpf,
-    items: u32,
-    size: u32,
-) -> libz_ng_sys::voidpf {
-    unsafe { libc::calloc(items as usize, size as usize) }
-}
-unsafe extern "C" fn zlib_free(_: libz_ng_sys::voidpf, address: libz_ng_sys::voidpf) {
-    unsafe {
-        libc::free(address);
-    }
-}
-
-impl<R: BufRead> ZlibReader<R> {
-    fn new(source: R) -> io::Result<Self> {
-        // The FFI represents allocator callbacks as non-null function pointers,
-        // so zero-initializing the whole Rust struct would be undefined behavior.
-        let mut codec = Box::new(libz_ng_sys::z_stream {
-            next_in: std::ptr::null_mut(),
-            avail_in: 0,
-            total_in: 0,
-            next_out: std::ptr::null_mut(),
-            avail_out: 0,
-            total_out: 0,
-            msg: std::ptr::null_mut(),
-            state: std::ptr::null_mut(),
-            zalloc: zlib_alloc,
-            zfree: zlib_free,
-            opaque: std::ptr::null_mut(),
-            data_type: 0,
-            adler: 0,
-            reserved: 0,
-        });
-        let status = unsafe { libz_ng_sys::zng_inflateInit(&mut *codec) };
-        if status != libz_ng_sys::Z_OK {
-            return Err(invalid(format!(
-                "zlib-ng inflate initialization failed: {status}"
-            )));
-        }
-        Ok(Self {
-            source,
-            codec,
-            finished: false,
-        })
-    }
-}
-impl<R> Drop for ZlibReader<R> {
-    fn drop(&mut self) {
-        unsafe {
-            libz_ng_sys::inflateEnd(&mut *self.codec);
-        }
-    }
-}
-impl<R: BufRead> Read for ZlibReader<R> {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        use libz_ng_sys::{Z_BUF_ERROR, Z_NO_FLUSH, Z_OK, Z_STREAM_END, inflate};
-        if output.is_empty() || self.finished {
-            return Ok(0);
-        }
-        loop {
-            let input = self.source.fill_buf()?;
-            let input_len = input.len().min(u32::MAX as usize);
-            let output_len = output.len().min(u32::MAX as usize);
-            self.codec.next_in = input.as_ptr().cast_mut();
-            self.codec.avail_in = input_len as u32;
-            self.codec.next_out = output.as_mut_ptr();
-            self.codec.avail_out = output_len as u32;
-            let status = unsafe { inflate(&mut *self.codec, Z_NO_FLUSH) };
-            let consumed = input_len - self.codec.avail_in as usize;
-            let produced = output_len - self.codec.avail_out as usize;
-            // No pointers into borrowed buffers persist past this call.
-            self.codec.next_in = std::ptr::null_mut();
-            self.codec.next_out = std::ptr::null_mut();
-            self.source.consume(consumed);
-            if status == Z_STREAM_END {
-                if !self.source.fill_buf()?.is_empty() {
-                    return Err(invalid("trailing bytes after .paths zlib stream"));
-                }
-                self.finished = true;
-                return Ok(produced);
-            }
-            if status != Z_OK && status != Z_BUF_ERROR {
-                return Err(invalid(format!(
-                    "invalid .paths zlib-ng stream: status {status}"
-                )));
-            }
-            if produced > 0 {
-                return Ok(produced);
-            }
-            if consumed == 0 {
-                return Err(invalid("truncated .paths zlib stream"));
-            }
-        }
-    }
-}
-
-struct Records<R> {
-    source: R,
-    path: Vec<u8>,
-    max_path: usize,
-}
-impl<R: Read> Records<R> {
-    fn new(source: R, max_path: usize) -> Self {
-        Self {
-            source,
-            path: vec![],
-            max_path,
-        }
-    }
-    fn advance(&mut self) -> io::Result<bool> {
-        let mut length = [0; 4];
-        // read_exact handles Interrupted, including before the first byte.
-        loop {
-            match self.source.read(&mut length[..1]) {
-                Ok(0) => return Ok(false),
-                Ok(_) => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        self.source.read_exact(&mut length[1..])?;
-        let length = u32::from_le_bytes(length) as usize;
-        if length > self.max_path {
-            return Err(invalid(format!(
-                "path length {length} exceeds memory-budget limit {}; increase --memory-mib",
-                self.max_path
-            )));
-        }
-        self.path.resize(length, 0);
-        self.source.read_exact(&mut self.path)?;
-        Ok(true)
-    }
-}
-
-const IO_BUFFER: usize = 16 * 1024;
-fn paths_reader(
-    input: &Path,
-    max_path: usize,
-) -> io::Result<Records<BufReader<ZlibReader<BufReader<File>>>>> {
-    Ok(Records::new(
-        BufReader::with_capacity(
-            IO_BUFFER,
-            ZlibReader::new(BufReader::with_capacity(IO_BUFFER, File::open(input)?))?,
-        ),
-        max_path,
-    ))
-}
-fn write_record(writer: &mut impl Write, path: &[u8]) -> io::Result<()> {
-    let length =
-        u32::try_from(path.len()).map_err(|_| invalid("path exceeds .paths length limit"))?;
-    writer.write_all(&length.to_le_bytes())?;
-    writer.write_all(path)
-}
-
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new(parent: &Path) -> io::Result<Self> {
-        loop {
-            let path = parent.join(format!(
-                "mork-sort-{}-{}",
-                std::process::id(),
-                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-    fn run(&self) -> PathBuf {
-        self.0
-            .join(NEXT_TEMP.fetch_add(1, Ordering::Relaxed).to_string())
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-struct Chunk {
-    bytes: Vec<u8>,
-    entries: Vec<(usize, usize)>,
-    byte_limit: usize,
-    entry_limit: usize,
-}
-impl Chunk {
-    fn new(memory: usize) -> Self {
-        let byte_limit = memory / 3;
-        let entry_limit = memory / 6 / std::mem::size_of::<(usize, usize)>();
-        Self {
-            bytes: Vec::with_capacity(byte_limit),
-            entries: Vec::with_capacity(entry_limit),
-            byte_limit,
-            entry_limit,
-        }
-    }
-    fn fits(&self, path: &[u8]) -> bool {
-        self.bytes.len() + path.len() <= self.byte_limit && self.entries.len() < self.entry_limit
-    }
-    fn push(&mut self, path: &[u8]) {
-        self.entries.push((self.bytes.len(), path.len()));
-        self.bytes.extend_from_slice(path);
-    }
-    fn spill(&mut self, scratch: &Scratch) -> io::Result<PathBuf> {
-        let bytes = &self.bytes;
-        self.entries
-            .sort_unstable_by(|&(a, al), &(b, bl)| bytes[a..a + al].cmp(&bytes[b..b + bl]));
-        let path = scratch.run();
-        let mut writer = BufWriter::with_capacity(IO_BUFFER, File::create(&path)?);
-        let mut previous: Option<&[u8]> = None;
-        for &(start, len) in &self.entries {
-            let value = &bytes[start..start + len];
-            if previous != Some(value) {
-                write_record(&mut writer, value)?;
-            }
-            previous = Some(value);
-        }
-        writer.flush()?;
-        self.entries.clear();
-        self.bytes.clear();
-        Ok(path)
-    }
-}
-
-/// Two-way merge keeps file descriptors and head buffers bounded, even for
-/// arbitrarily many runs. Inputs are internally generated sorted unique runs.
-fn merge_runs(
-    left: &Path,
-    right: &Path,
-    scratch: &Scratch,
-    max_path: usize,
-) -> io::Result<PathBuf> {
-    let mut a = Records::new(
-        BufReader::with_capacity(IO_BUFFER, File::open(left)?),
-        max_path,
-    );
-    let mut b = Records::new(
-        BufReader::with_capacity(IO_BUFFER, File::open(right)?),
-        max_path,
-    );
-    let output = scratch.run();
-    let mut writer = BufWriter::with_capacity(IO_BUFFER, File::create(&output)?);
-    let mut has_a = a.advance()?;
-    let mut has_b = b.advance()?;
-    while has_a || has_b {
-        let order = match (has_a, has_b) {
-            (true, true) => a.path.cmp(&b.path),
-            (true, false) => std::cmp::Ordering::Less,
-            _ => std::cmp::Ordering::Greater,
-        };
-        if order.is_le() {
-            write_record(&mut writer, &a.path)?;
-        } else {
-            write_record(&mut writer, &b.path)?;
-        }
-        if order.is_le() {
-            has_a = a.advance()?;
-        }
-        if order.is_ge() {
-            has_b = b.advance()?;
-        }
-    }
-    writer.flush()?;
-    drop(a);
-    drop(b);
-    fs::remove_file(left)?;
-    fs::remove_file(right)?;
-    Ok(output)
-}
-
-// Binary carry merging stores at most one run per level, never an unbounded
-// in-memory run list. Each record is merged O(log(number of initial runs)) times.
-fn add_run(
-    mut run: PathBuf,
-    levels: &mut [Option<PathBuf>; 64],
-    scratch: &Scratch,
-    max_path: usize,
-) -> io::Result<()> {
-    for slot in levels {
-        match slot.take() {
-            None => {
-                *slot = Some(run);
-                return Ok(());
-            }
-            Some(other) => {
-                run = merge_runs(&other, &run, scratch, max_path)?;
-            }
-        }
-    }
-    Err(invalid("too many sort runs"))
-}
-
-/// External bytewise sort with deduplication. The memory budget covers record
-/// buffers and sort workspace; small codec/runtime allocations are additional.
-/// Oversize records fail rather than silently exceeding the configured bound.
 fn upaths_to_paths(
     input: &Path,
     output: &Path,
     memory: usize,
     temp_dir: &Path,
 ) -> io::Result<usize> {
-    if memory < 1024 * 1024 {
-        return Err(invalid("--memory-mib must be at least 1"));
-    }
-    let max_path = memory / 16;
-    let scratch = Scratch::new(temp_dir)?;
-    let mut source = paths_reader(input, max_path)?;
-    let mut chunk = Chunk::new(memory);
-    let mut levels = std::array::from_fn(|_| None);
-    while source.advance()? {
-        if !chunk.fits(&source.path) {
-            add_run(chunk.spill(&scratch)?, &mut levels, &scratch, max_path)?;
-        }
-        chunk.push(&source.path);
-    }
-    if !chunk.entries.is_empty() {
-        add_run(chunk.spill(&scratch)?, &mut levels, &scratch, max_path)?;
-    }
-    drop(chunk);
-    drop(source);
-    let mut final_run: Option<PathBuf> = None;
-    for run in levels.into_iter().flatten() {
-        final_run = Some(match final_run {
-            None => run,
-            Some(other) => merge_runs(&other, &run, &scratch, max_path)?,
-        });
-    }
-    let target = Output::new(output)?;
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
     let stats = {
-        let mut writer = BufWriter::with_capacity(IO_BUFFER, &target.file);
-        // An empty input still needs a complete, valid empty zlib stream.
-        let source: Box<dyn Read> = match final_run {
-            Some(path) => Box::new(BufReader::with_capacity(IO_BUFFER, File::open(path)?)),
-            None => Box::new(io::empty()),
-        };
-        let mut records = Records::new(source, max_path);
-        let stats = serialize_paths_from_funcs(
+        let mut writer = BufWriter::new(target.as_file());
+        let stats = pathmap::paths_serialization::sort_paths(
+            BufReader::new(File::open(input)?),
             &mut writer,
-            &mut records,
-            |r| r.advance(),
-            |r| Some(&r.path),
+            memory,
+            temp_dir,
         )?;
         writer.flush()?;
         stats
     };
-    target.publish(output)?;
+    target.persist(output).map_err(|e| e.error)?;
     Ok(stats.path_count)
 }
 
-/// Stream sorted unique paths directly to an on-disk ACT. The builder retains
-/// only the current trie frontier. Line reuse is disabled: on the 49.5M-path
-/// benchmark, an unbounded cache saved 1.46% of output but used GiB of memory.
+/// Line reuse is disabled: on the 49.5M-path benchmark, an unbounded cache
+/// saved only 1.46% of output but used GiB of memory.
 fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize> {
     if memory < 1024 * 1024 {
         return Err(invalid("--memory-mib must be at least 1"));
     }
-    let mut source = paths_reader(input, memory / 16)?;
-    let target = Output::new(output)?;
-    let mut builder = pathmap::arena_compact::ACTOutputStream::with_cache_limits(&target.path, 0, 0)?;
-    let mut count = 0;
-    while source.advance()? {
-        builder.push(&source.path).map_err(|e| {
-            invalid(format!(
-                "path {}: {e}; use 'convert upaths paths' to sort and deduplicate first",
-                count + 1
-            ))
-        })?;
-        count += 1;
-    }
-    // finish maps the completed file; dropping it does not read it into RAM.
+    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let mut builder =
+        pathmap::arena_compact::ACTOutputStream::with_cache_limits(target.path(), 0, 0)?;
+    let stats = pathmap::paths_serialization::for_each_deserialized_path_with_limit(
+        BufReader::new(File::open(input)?),
+        memory / 16,
+        |_, path| builder.push(path),
+    )?;
     drop(builder.finish()?);
-    target.publish(output)?;
-    Ok(count)
+    target.persist(output).map_err(|e| e.error)?;
+    Ok(stats.path_count)
 }
 
-/// Run the complete disk pipeline, keeping both intermediate formats in the
-/// selected temporary directory. Scratch and partial output are removed on error.
 fn mm2_to_act(input: &Path, output: &Path, memory: usize, temp_dir: &Path) -> io::Result<usize> {
     if memory < 1024 * 1024 {
         return Err(invalid("--memory-mib must be at least 1"));
     }
-    let scratch = Scratch::new(temp_dir)?;
-    let unordered = scratch.0.join("intermediate.upaths");
-    let sorted = scratch.0.join("intermediate.paths");
+    let scratch = tempfile::tempdir_in(temp_dir)?;
+    let unordered = scratch.path().join("intermediate.upaths");
+    let sorted = scratch.path().join("intermediate.paths");
     mm2_to_upaths(input, &unordered)?;
-    upaths_to_paths(&unordered, &sorted, memory, &scratch.0)?;
+    upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
     fs::remove_file(unordered)?;
     paths_to_act(&sorted, output, memory)
 }
@@ -5558,22 +5121,21 @@ mod conversion_tests {
         .unwrap();
     }
     fn read_paths(path: &Path) -> Vec<Vec<u8>> {
-        let mut source = paths_reader(path, 1 << 20).unwrap();
         let mut paths = vec![];
-        while source.advance().unwrap() {
-            paths.push(source.path.clone());
-        }
+        pathmap::paths_serialization::for_each_deserialized_path(File::open(path).unwrap(), |_, p| {
+            paths.push(p.to_vec()); Ok(())
+        }).unwrap();
         paths
     }
 
     #[test]
     #[cfg(not(feature = "interning"))]
     fn direct_mm2_act_uses_and_cleans_temporary_directory() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let temp = scratch.0.join("temp");
+        let scratch = tempfile::tempdir().unwrap();
+        let temp = scratch.path().join("temp");
         fs::create_dir(&temp).unwrap();
-        let input = scratch.0.join("input.mm2");
-        let output = scratch.0.join("output.act");
+        let input = scratch.path().join("input.mm2");
+        let output = scratch.path().join("output.act");
         fs::write(&input, b"(b) (a) (b)").unwrap();
         assert_eq!(mm2_to_act(&input, &output, 1 << 20, &temp).unwrap(), 2);
         assert_eq!(fs::read_dir(&temp).unwrap().count(), 0);
@@ -5593,9 +5155,9 @@ mod conversion_tests {
 
     #[test]
     fn act_stream_round_trip_and_invalid_order() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let input = scratch.0.join("input.paths");
-        let output = scratch.0.join("output.act");
+        let scratch = tempfile::tempdir().unwrap();
+        let input = scratch.path().join("input.paths");
+        let output = scratch.path().join("output.act");
         for paths in [
             vec![],
             vec![vec![]],
@@ -5623,20 +5185,20 @@ mod conversion_tests {
         fs::write(&input, bytes).unwrap();
         assert!(paths_to_act(&input, &output, 1 << 20).is_err());
         assert_eq!(fs::read(&output).unwrap(), before);
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(scratch.path()).unwrap().count(), 2);
     }
 
     #[test]
     #[cfg(not(feature = "interning"))]
     fn streamed_act_source_uses_on_disk_query_engine() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let input = scratch.0.join("input.mm2");
-        let unordered = scratch.0.join("input.upaths");
-        let sorted = scratch.0.join("input.paths");
-        let output = scratch.0.join("input.act");
+        let scratch = tempfile::tempdir().unwrap();
+        let input = scratch.path().join("input.mm2");
+        let unordered = scratch.path().join("input.upaths");
+        let sorted = scratch.path().join("input.paths");
+        let output = scratch.path().join("input.act");
         fs::write(&input, b"(in 0 g0) (in 1 g1) (in 10 g10)").unwrap();
         mm2_to_upaths(&input, &unordered).unwrap();
-        upaths_to_paths(&unordered, &sorted, 1 << 20, &scratch.0).unwrap();
+        upaths_to_paths(&unordered, &sorted, 1 << 20, scratch.path()).unwrap();
         paths_to_act(&sorted, &output, 1 << 20).unwrap();
         let mut space = Space::new();
         space.mmaps.insert(
@@ -5661,22 +5223,22 @@ mod conversion_tests {
     #[test]
     #[cfg(not(feature = "interning"))]
     fn mm2_to_act_matches_space() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let input = scratch.0.join("input.mm2");
-        let unordered = scratch.0.join("input.upaths");
-        let sorted = scratch.0.join("input.paths");
-        let output = scratch.0.join("input.act");
+        let scratch = tempfile::tempdir().unwrap();
+        let input = scratch.path().join("input.mm2");
+        let unordered = scratch.path().join("input.upaths");
+        let sorted = scratch.path().join("input.paths");
+        let output = scratch.path().join("input.act");
         let text = b"(z $x $x) (a (b) \"string\") (z $x $x) (prefix) ()";
         fs::write(&input, text).unwrap();
         assert_eq!(mm2_to_upaths(&input, &unordered).unwrap(), 5);
         assert_eq!(
-            upaths_to_paths(&unordered, &sorted, 1 << 20, &scratch.0).unwrap(),
+            upaths_to_paths(&unordered, &sorted, 1 << 20, scratch.path()).unwrap(),
             4
         );
         assert_eq!(paths_to_act(&sorted, &output, 1 << 20).unwrap(), 4);
         let mut space = Space::new();
         space.add_all_sexpr(text).unwrap();
-        let expected = scratch.0.join("expected.paths");
+        let expected = scratch.path().join("expected.paths");
         space.backup_paths(&expected).unwrap();
         let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(&output).unwrap();
         assert_eq!(
@@ -5686,137 +5248,15 @@ mod conversion_tests {
     }
 
     #[test]
-    fn external_sort_many_runs_matches_bytewise_set() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let input = scratch.0.join("input.upaths");
-        let output = scratch.0.join("output.paths");
-        let mut paths = vec![vec![], vec![0], vec![0, 0], vec![255], vec![]];
-        for n in (0u32..35000).rev() {
-            let mut path = n.to_be_bytes().to_vec();
-            path.extend_from_slice(&[0, 255, 0]);
-            path.extend(std::iter::repeat_n((n % 251) as u8, (n % 123) as usize));
-            paths.push(path.clone());
-            if n % 3 == 0 {
-                paths.push(path);
-            }
-        }
-        write_paths(&input, &paths);
-        paths.sort();
-        paths.dedup();
-        assert_eq!(
-            upaths_to_paths(&input, &output, 1 << 20, &scratch.0).unwrap(),
-            paths.len()
-        );
-        assert_eq!(read_paths(&output), paths);
-        // Compatibility with PathMap's independent streaming decoder.
-        let mut index = 0;
-        pathmap::paths_serialization::for_each_deserialized_path(
-            File::open(&output).unwrap(),
-            |_, path| {
-                assert_eq!(path, paths[index]);
-                index += 1;
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(index, paths.len());
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn sort_empty_duplicates_and_corrupt_streams() {
-        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
-        let input = scratch.0.join("input.upaths");
-        let output = scratch.0.join("output.paths");
-        for paths in [vec![], vec![vec![]; 3], vec![b"same".to_vec(); 25000]] {
-            write_paths(&input, &paths);
-            let mut expected = paths;
-            expected.sort();
-            expected.dedup();
-            upaths_to_paths(&input, &output, 1 << 20, &scratch.0).unwrap();
-            assert_eq!(read_paths(&output), expected);
-        }
-        write_paths(&input, &[vec![42; 2049], b"xyz".to_vec()]);
-        let valid = fs::read(&input).unwrap();
-        let before = fs::read(&output).unwrap();
-        for len in 0..valid.len() {
-            fs::write(&input, &valid[..len]).unwrap();
-            assert!(
-                upaths_to_paths(&input, &output, 1 << 20, &scratch.0).is_err(),
-                "truncation {len}"
-            );
-            assert_eq!(fs::read(&output).unwrap(), before);
-        }
-        let mut bad = valid.clone();
-        bad[valid.len() - 1] ^= 1;
-        fs::write(&input, &bad).unwrap();
-        assert!(upaths_to_paths(&input, &output, 1 << 20, &scratch.0).is_err());
-        let mut bad = valid;
-        bad.push(0);
-        fs::write(&input, &bad).unwrap();
-        assert!(upaths_to_paths(&input, &output, 1 << 20, &scratch.0).is_err());
-        write_paths(&input, &[vec![0; (1 << 16) + 1]]);
-        assert!(upaths_to_paths(&input, &output, 1 << 20, &scratch.0).is_err());
-        // Valid compression, incomplete record header/payload.
-        for raw in [vec![1], vec![2, 0, 0, 0, 42]] {
-            let mut compressed = vec![0; unsafe { libz_ng_sys::compressBound(raw.len()) }];
-            let mut length = compressed.len();
-            assert_eq!(
-                unsafe {
-                    libz_ng_sys::compress2(
-                        compressed.as_mut_ptr(),
-                        &mut length,
-                        raw.as_ptr(),
-                        raw.len(),
-                        7,
-                    )
-                },
-                libz_ng_sys::Z_OK
-            );
-            compressed.truncate(length);
-            fs::write(&input, compressed).unwrap();
-            assert!(upaths_to_paths(&input, &output, 1 << 20, &scratch.0).is_err());
-        }
-        assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 2);
-    }
-
-    #[test]
-    #[cfg(not(feature = "interning"))]
-    fn buffered_reader_matches_existing_parser_at_every_chunk_size() {
-        let input = b"; comment\n(foo (bar $x) $x $y \"a \\\" b\") () $v $v abc (a b) \"multi\nline\" (long-symbol abcdefghijklmnopqrstuvwxyz) ; trailing comment";
-        let space = Space::new();
-        let mut parser = ParDataParser::new(&space.sm);
-        let mut context = Context::new(input);
-        let mut expected = vec![];
-        loop {
-            let mut buffer = [0; 1024];
-            let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-            match parser.sexpr(&mut context, &mut zipper) {
-                Ok(()) => expected.push(buffer[..zipper.loc].to_vec()),
-                Err(mork_frontend::bytestring_parser::ParserError::InputFinished) => break,
-                Err(error) => panic!("{error:?}"),
-            }
-            context.variables.clear();
-        }
-        drop(parser);
-        for chunk in 1..=input.len() + 1 {
-            let mut stream = Mm2Stream::with_capacity(chunk, &input[..], ParDataParser::new(&space.sm));
-            let mut actual = vec![];
-            while stream.advance().unwrap() { actual.push(stream.path().to_vec()); }
-            assert_eq!(actual, expected, "chunk size {chunk}");
-        }
-    }
-
-    #[test]
     #[cfg(not(feature = "interning"))]
     fn upaths_round_trip_and_failed_conversion_preserves_destination() {
-        let mut input = Output::new(&std::env::temp_dir().join("input.mm2")).unwrap();
-        input.file.write_all(b"(z $v $v) (a) (z $v $v)").unwrap();
-        let output = Output::new(&std::env::temp_dir().join("output.upaths")).unwrap();
-        assert_eq!(mm2_to_upaths(&input.path, &output.path).unwrap(), 3);
+        let mut input = tempfile::NamedTempFile::new().unwrap();
+        input.write_all(b"(z $v $v) (a) (z $v $v)").unwrap();
+        let output = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(mm2_to_upaths(input.path(), output.path()).unwrap(), 3);
         let mut paths = Vec::new();
         pathmap::paths_serialization::for_each_deserialized_path(
-            File::open(&output.path).unwrap(),
+            File::open(output.path()).unwrap(),
             |_, p| {
                 paths.push(p.to_vec());
                 Ok(())
@@ -5826,41 +5266,42 @@ mod conversion_tests {
         assert_eq!(paths.len(), 3);
         assert_eq!(paths[0], paths[2]);
         assert!(paths[0] > paths[1]);
-        let before = fs::read(&output.path).unwrap();
-        fs::write(&input.path, b"(broken").unwrap();
-        assert!(mm2_to_upaths(&input.path, &output.path).is_err());
-        assert_eq!(fs::read(&output.path).unwrap(), before);
+        let before = fs::read(output.path()).unwrap();
+        fs::write(input.path(), b"(broken").unwrap();
+        assert!(mm2_to_upaths(input.path(), output.path()).is_err());
+        assert_eq!(fs::read(output.path()).unwrap(), before);
     }
 
     #[test]
     #[cfg(not(feature = "interning"))]
-    fn buffered_reader_large_expressions_and_errors() {
-        let space = Space::new();
-        // Exercise repeated refills, output-buffer growth and symbol truncation
-        // using the actual reader. Variables must retain their per-atom scope.
-        let long = format!("(outer (inner {}) $x $x) (next $x $x)", "x".repeat(200_000));
-        let mut reader = Mm2Stream::with_capacity(7, long.as_bytes(), ParDataParser::new(&space.sm));
-        assert!(reader.advance().unwrap());
-        let first = reader.path().to_vec();
-        assert!(reader.advance().unwrap());
-        assert_eq!(reader.path(), &[3, 196, b'n', b'e', b'x', b't', 192, 128]);
-        assert!(!reader.advance().unwrap());
-        drop(reader);
-        let mut parser = ParDataParser::new(&space.sm);
-        let mut buffer = [0; 1024];
-        let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
-        parser.sexpr(&mut Context::new(long.as_bytes()), &mut zipper).unwrap();
-        assert_eq!(first, buffer[..zipper.loc]);
-        drop(parser);
-        for bad in ["(", ")", "(a", "(a ; unfinished", "\"escape\\"] {
-            for chunk in 1..=bad.len() + 1 {
-                let mut reader = Mm2Stream::with_capacity(chunk, bad.as_bytes(), ParDataParser::new(&space.sm));
-                assert!(reader.advance().is_err(), "{bad:?}, chunk {chunk}");
+    fn mmap_reader_matches_existing_parser() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("input.mm2");
+        let output = temp.path().join("output.upaths");
+        for text in [String::new(), "; trailing comment".into(),
+            "; comment\n(foo (bar $x) $x $y \"multi\nline\") () $v $v abc".into(),
+            format!("(outer (inner {}) $x $x) (next $x $x)", "x".repeat(200_000))] {
+            fs::write(&input, &text).unwrap();
+            mm2_to_upaths(&input, &output).unwrap();
+            let space = Space::new();
+            let mut parser = ParDataParser::new(&space.sm);
+            let mut context = Context::new(text.as_bytes());
+            let mut expected = vec![];
+            loop {
+                let mut buffer = [0; 1024];
+                let mut zipper = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
+                match parser.sexpr(&mut context, &mut zipper) {
+                    Ok(()) => expected.push(buffer[..zipper.loc].to_vec()),
+                    Err(mork_frontend::bytestring_parser::ParserError::InputFinished) => break,
+                    Err(error) => panic!("{error:?}"),
+                }
+                context.variables.clear();
             }
+            assert_eq!(read_paths(&output), expected);
         }
-        for empty in ["", " \t\n", "; comment", "; comment\n "] {
-            let mut reader = Mm2Stream::with_capacity(1, empty.as_bytes(), ParDataParser::new(&space.sm));
-            assert!(!reader.advance().unwrap());
+        for bad in ["(", ")", "(a", "(a ; unfinished", "\"escape\\"] {
+            fs::write(&input, bad).unwrap();
+            assert!(mm2_to_upaths(&input, &output).is_err(), "{bad:?}");
         }
     }
 

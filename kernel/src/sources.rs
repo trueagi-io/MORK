@@ -271,7 +271,7 @@ impl Source for ASource {
 
 
 
-/// The following expresses the DSL grammar as a BNF style grammar. Some quirks explaind below.</br>
+/// The following expresses the DSL grammar in BNF style. Some quirks explaind below.</br>
 /// `""` for regex matching terminal tokens.</br>
 /// `''` for unescaped terminal tokens.</br>
 /// `;` to terminate a non-terminal.</br>
@@ -322,7 +322,7 @@ SymbolConstraint  ::=  '('  'symbol'  PNumbers{,1}  PNumberRanges)  ')'   ;  { t
 TupleConstraint   ::=  'tuple'                                            ;  { symbol        }
 TupleConstraint   ::=  '('  'tuple'   Numbers  ')'                        ;  { tuple[2]      }
 TupleConstraint   ::=  '('  'tuple'   Numbers{,1}  NumberRanges  ')'      ;  { tuple[2..=3]  }
-Var               ::=  \"$[^ \n\t\"\\(\\)]{1,}\"                          ;  { variable      }
+Var               ::=  \"$[^ \n\t\\(\\)]{1,}\"                            ;  { variable      }
 Vars              ::=  Var                                                ;  { variable      }
 Vars              ::=  '('  Var{1,63}  ')                                 ;  { tuple[1..=63] }
 AdmitContraint    ::=  '('  Vars
@@ -360,13 +360,25 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
     let mut bind_as_var    = 0_u64;
     let mut admit_tag_mask = 0_u64;
     let mut admit_masks    = [ByteMask::new(); 64];
+    let mut es             = ExprSource::new(e.ptr);
+    let grammar_error      = Err(EvalError::Msg { ptr: GRAMMAR.as_ptr(), len: GRAMMAR.len() });
 
-    let mut es = ExprSource::new(e.ptr);
-
-    let grammar_error = Err(EvalError::Msg { ptr: GRAMMAR.as_ptr(), len: GRAMMAR.len() });
-
-    let top_level_arity @ (2 | 4) = es.consume_head_check(b"admit")? else { return grammar_error; };
-    let comma_list_arity          = es.consume_head_check(b","    )? else { return grammar_error; };
+    const VAR_BITS : ByteMask = {
+        let mut mask = ByteMask::new();
+        mask.set_inclusive_bit_range(item_byte(Tag::NewVar)..=item_byte(Tag::NewVar));
+        mask.set_inclusive_bit_range(item_byte(Tag::VarRef(0))..=item_byte(Tag::VarRef(63)));
+        mask
+    };
+    const SYMBOL_BITS : ByteMask = {
+        let mut mask = ByteMask::new();
+        mask.set_inclusive_bit_range(item_byte(Tag::SymbolSize(1))..=item_byte(Tag::SymbolSize(63)));
+        mask
+    };
+    const TUPLE_BITS : ByteMask = {
+        let mut mask = ByteMask::new();
+        mask.set_inclusive_bit_range(item_byte(Tag::Arity(0))..=item_byte(Tag::Arity(63)));
+        mask
+    };
 
     macro_rules! var_set {
         (let $VAR_SET:ident) => {
@@ -405,6 +417,10 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
         true
     };
 
+
+    let top_level_arity @ (2 | 4) = es.consume_head_check(b"admit")? else { return grammar_error; };
+    let comma_list_arity          = es.consume_head_check(b","    )? else { return grammar_error; };
+
     for each in 0..comma_list_arity {
         let SourceItem::Tag(Tag::Arity(admition_arity @ 2..)) = es.read()     else { return grammar_error; };
 
@@ -415,11 +431,9 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
         for each in 1..admition_arity {
             match es.read() {
-                SourceItem::Symbol(b"var")    => {  mask.set_bit(item_byte(Tag::NewVar));
-                                                    mask.set_inclusive_bit_range(item_byte(Tag::VarRef(0))..=item_byte(Tag::VarRef(63)));
-                                                 },
-                SourceItem::Symbol(b"symbol") => mask.set_inclusive_bit_range(item_byte(Tag::SymbolSize(1))..=item_byte(Tag::SymbolSize(63))),
-                SourceItem::Symbol(b"tuple" ) => mask.set_inclusive_bit_range(item_byte(Tag::Arity(0))..=item_byte(Tag::Arity(63))),
+                SourceItem::Symbol(b"var")    => mask = mask.or(&VAR_BITS),
+                SourceItem::Symbol(b"symbol") => mask = mask.or(&SYMBOL_BITS),
+                SourceItem::Symbol(b"tuple" ) => mask = mask.or(&TUPLE_BITS),
                 SourceItem::Tag(Tag::Arity(a @ 2..=3)) => {
                     macro_rules! read_num {
                         (let $NUM:ident) => {
@@ -495,7 +509,6 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
     }
 
     // We look for conflicts that can't ever be satisfied
-    let mut unsat = false;
     const UNSAT : &[u8] = b"`exec` has conflicting unification `bind` constraints from `admit`";
     if  bind_as_nonvar & bind_as_var != 0
     ||  !effect_on_nth_bit(bind_as_nonvar & admit_tag_mask, |nth| {
@@ -511,11 +524,9 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
         return Err(EvalError::Msg { ptr: UNSAT.as_ptr(), len: UNSAT.len() });
     }
 
-    // This avoids usless matches on nonvars that would only get filtered later by the bind constraits.
+    // This avoids useless matches on nonvars that would only get filtered later by the bind constraits.
     effect_on_nth_bit(bind_as_var & admit_tag_mask, |nth| {
-            admit_masks[nth] = ByteMask::new();
-            admit_masks[nth].set_bit(item_byte(Tag::NewVar));
-            admit_masks[nth].set_inclusive_bit_range(item_byte(Tag::VarRef(0))..=item_byte(Tag::VarRef(63)));
+            admit_masks[nth] = VAR_BITS;
             true
         }
     );

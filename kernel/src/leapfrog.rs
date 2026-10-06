@@ -398,7 +398,7 @@ impl<Z: Zipper + ZipperMoving + ZipperIteration> SubtermCursor<Z> {
             // The leftmost child, straight off the node's iterator: materializing a full
             // 256-bit child mask and scanning it for the least bit, then re-finding that byte
             // with descend_to_byte, re-derived per byte what the zipper answers in one step.
-            if !self.z.descend_first_byte() {
+            if !self.z.descend_first_byte().is_some() {
                 self.at_end = true;
                 return false;
             }

@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use eval_ffi::{EvalError, ExprSource, SourceItem};
 use pathmap::utils::{BitMask, ByteMask};
 use log::trace;
@@ -299,7 +301,7 @@ impl Source for ASource {
 ///           bind
 ///           (, (($x $y) nonvar)
 ///              ($z      nonvar)
-///              ($b      var)
+///              ($b      nonvar)
 ///           )
 ///         )
 ///         ....
@@ -332,7 +334,7 @@ AdmitContraint    ::=  '('  Vars
                                  )
                             ')'
                        ')'                                                ;  { tuple[2]      }
-BindConstrait     ::=  '('  Vars  ('nonvar'  |  'var')  ')'               ;  { tuple[2]      }
+BindConstrait     ::=  '('  Vars  'nonvar'  ')'                           ;  { tuple[2]      }
 AdmitDecl         ::=  'admit'  '('  ','  AdmitContraint{,62}  ')'        ;  { [2]           }
 BindDecl          ::=  'bind'   '('  ','  BindConstrait{,62}   ')'        ;  { [2]           }
 Admit             ::=  '('  AdmitDecl  ')'                                ;  { tuple[2]      }
@@ -343,47 +345,96 @@ Admit             ::=  '('  AdmitDecl  BindDecl ')'                       ;  { t
 /// If it `nth` bit if off, the `admit_masks[nth]` value should not be accessed.
 /// It is semanticaly equivalent to a full mask, but to avoid a large constant overhead,
 /// we should avoid the need to fill the untagged masks</br>
-///
-/// The following must always be true
-/// ```ignore
-/// bind_as_nonvar & bind_as_var != 0
-/// ```
+#[derive(Clone, Copy)]
 struct AdmitConstraits {
-    admit_masks     : [ByteMask;64],
-    admit_tag_mask  : u64,
-    bind_as_nonvar  : u64,
-    bind_as_var     : u64,
-    next_newvar     : u8,
+    admit_masks    : [ByteMask;64],
+    admit_tag_mask : u64,
+    bind_as_nonvar : u64,
+    next_newvar    : u8,
 }
+impl Debug for AdmitConstraits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AdmitConstraits {{")?;
+
+        let mut nth       = 0_usize;
+        let mut remaining = self.admit_tag_mask | self.bind_as_nonvar;
+        while remaining != 0 {
+            let t = remaining.trailing_zeros() as usize;
+            nth += t;
+
+            let cursor = 1 << nth;
+            write!(f,"\n\t{} : {{", nth )?;
+            if cursor & self.admit_tag_mask != 0 {
+                if self.admit_masks[nth].test_bit(item_byte(Tag::NewVar)) { write!(f, "\n\t    var    : true")?; }
+                let sym_mask = self.admit_masks[nth].and(&SYMBOL_BITS);
+
+                if sym_mask.count_bits() != 0 {
+                    let mut acc = 0_u64;
+
+                    for i in sym_mask.iter() { match byte_item(i) { Tag::SymbolSize(size) => acc |= 1 << size, _ => {} } }
+                    write!(f, "\n\t    symbol :")?;
+                    for b in acc.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
+                }
+
+                let tup_mask = self.admit_masks[nth].and(&TUPLE_BITS);
+                if tup_mask.count_bits() != 0 {
+                    let mut acc = 0_u64;
+
+                    for i in tup_mask.iter() { match byte_item(i) { Tag::Arity(arity) => acc |= 1 << arity, _ => {} }  }
+                    write!(f, "\n\t    tuple  :")?;
+                    for b in acc.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
+                }
+            }
+            if cursor & self.bind_as_nonvar != 0 { write!(f, "\n\t    bind   : nonvar")? }
+            write!(f,"\n\t}}")?;
+
+            nth+=1;
+            remaining >>= t+1;
+        }
+        write!(f, "\n}}")
+    }
+}
+
+
+
+const VAR_BITS : ByteMask = {
+    let mut mask = ByteMask::new();
+    mask.set_inclusive_bit_range(item_byte(Tag::NewVar)..=item_byte(Tag::NewVar));
+    mask.set_inclusive_bit_range(item_byte(Tag::VarRef(0))..=item_byte(Tag::VarRef(63)));
+    mask
+};
+const SYMBOL_BITS : ByteMask = {
+    let mut mask = ByteMask::new();
+    mask.set_inclusive_bit_range(item_byte(Tag::SymbolSize(1))..=item_byte(Tag::SymbolSize(63)));
+    mask
+};
+const TUPLE_BITS : ByteMask = {
+    let mut mask = ByteMask::new();
+    mask.set_inclusive_bit_range(item_byte(Tag::Arity(0))..=item_byte(Tag::Arity(63)));
+    mask
+};
+
+
+
 fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstraits, EvalError> {
     let mut bind_as_nonvar = 0_u64;
-    let mut bind_as_var    = 0_u64;
     let mut admit_tag_mask = 0_u64;
     let mut admit_masks    = [ByteMask::new(); 64];
     let mut es             = ExprSource::new(e.ptr);
     const GRAMMAR_ERR   : EvalError                          = EvalError::Msg { ptr: GRAMMAR.as_ptr(), len: GRAMMAR.len() };
     const GRAMMAR_ERROR : Result<AdmitConstraits, EvalError> = Err(GRAMMAR_ERR);
 
-    const VAR_BITS : ByteMask = {
-        let mut mask = ByteMask::new();
-        mask.set_inclusive_bit_range(item_byte(Tag::NewVar)..=item_byte(Tag::NewVar));
-        mask.set_inclusive_bit_range(item_byte(Tag::VarRef(0))..=item_byte(Tag::VarRef(63)));
-        mask
-    };
-    const SYMBOL_BITS : ByteMask = {
-        let mut mask = ByteMask::new();
-        mask.set_inclusive_bit_range(item_byte(Tag::SymbolSize(1))..=item_byte(Tag::SymbolSize(63)));
-        mask
-    };
-    const TUPLE_BITS : ByteMask = {
-        let mut mask = ByteMask::new();
-        mask.set_inclusive_bit_range(item_byte(Tag::Arity(0))..=item_byte(Tag::Arity(63)));
-        mask
-    };
+    macro_rules! action {
+            ($TRACE:ident, $ACTION:ident) => {  #[cfg(debug_assertions)]if ($TRACE.1 &(1 << (AdmitConstraitsTraceAction::$ACTION as u64))) != 0 {$TRACE.0.push(  (line!() as usize, AdmitConstraitsTraceAction::$ACTION))};  };
+    }
+
+
+
+
 
     
     #[inline(always)]
-    fn parse_var_set(es : &mut ExprSource, next_newvar: &mut u8)->Result<u64, EvalError>{
+    fn parse_var_set(es : &mut ExprSource, next_newvar : &mut u8)->Result<u64, EvalError>{
         const GRAMMAR_ERROR : Result<u64, EvalError> = Err(GRAMMAR_ERR);
             // here we accumulate the vars into a bitset for the admit constraints
             let mut var_set = 0_u64;
@@ -416,16 +467,21 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
             if !effect(nth) { return false; };
 
+            nth+=1;
             remaining >>= t+1;
         }
         true
     };
 
 
-    let top_level_arity @ (2 | 4) = es.consume_head_check(b"admit")? else { return GRAMMAR_ERROR; };
-    let comma_list_arity          = es.consume_head_check(b","    )? else { return GRAMMAR_ERROR; };
+    let SourceItem::Tag(Tag::Arity(top_level_arity @ (2 | 4))) = es.read() else { return GRAMMAR_ERROR; };    
+    let SourceItem::Symbol(b"admit") = es.read() else { return GRAMMAR_ERROR; };
 
+
+    let comma_list_arity          = es.consume_head_check(b","    )? else { return GRAMMAR_ERROR; };
+    
     for each in 0..comma_list_arity {
+
         let SourceItem::Tag(Tag::Arity(admition_arity @ 2..)) = es.read()     else { return GRAMMAR_ERROR; };
 
         let admit_var_set = parse_var_set(&mut es, &mut next_newvar)?;
@@ -443,14 +499,16 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
                     #[inline(always)]
                     fn handle_numbers_and_ranges<const ZERO_IS_ERROR : bool>(
-                        es  : &mut ExprSource,
-                        a   : u8, mask : &mut ByteMask,
-                        tag : impl Fn(u8
-                    )->Tag) -> Result<(), EvalError> {
+                        es    : &mut ExprSource,
+                        a     : u8,
+                        mask  : &mut ByteMask,
+                        tag   : impl Fn(u8)->Tag,
+                    ) -> Result<(), EvalError> {
                         const GRAMMAR_ERROR : Result<(), EvalError> = Err(GRAMMAR_ERR);
                         #[inline(always)]
-                        fn read_number(es : &mut ExprSource)->Result<u8,EvalError> {
+                        fn read_number(es : &mut ExprSource )->Result<u8,EvalError> {
                             const GRAMMAR_ERROR : Result<u8, EvalError> = Err(GRAMMAR_ERR);
+
                             let SourceItem::Symbol(s @ ( [b'0'..=b'9'] 
                                                        | [b'0'..=b'9',b'0'..=b'9']
                                                        ) ) = es.read() else {return GRAMMAR_ERROR;};
@@ -462,8 +520,10 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
                         }
 
                         'done : {
+
                             let range_count = match es.consume_head()? {
                                 (n, b"#") => {
+
                                     for _ in  0..n {
                                         let len = read_number(es)?;
                                         if ZERO_IS_ERROR && len == 0 { return GRAMMAR_ERROR; }
@@ -475,21 +535,25 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
                                 (n, b"#..") if a == 2 => n,
                                 _                     => return GRAMMAR_ERROR,
                             };
-                        
+
                             for _ in 0..range_count {
                                 let SourceItem::Tag(Tag::Arity(2)) = es.read() else { return GRAMMAR_ERROR; };
                                 let s = read_number(es)?;
                                 let e = read_number(es)?;
                                 if s > e { return GRAMMAR_ERROR; }
                                 if ZERO_IS_ERROR && (s == 0 || e == 0) { return GRAMMAR_ERROR; }
+
                                 mask.set_inclusive_bit_range(item_byte(tag(s))..=item_byte(tag(e)));
                             }
                         }
                         Ok(())
                     }
                     match es.read() {
-                        SourceItem::Symbol(b"symbol") => handle_numbers_and_ranges::<true>( &mut es, a, &mut mask, Tag::SymbolSize)?,
-                        SourceItem::Symbol(b"tuple")  => handle_numbers_and_ranges::<false>(&mut es, a, &mut mask, Tag::Arity     )?,
+                        SourceItem::Symbol(b"symbol") => {
+
+                            handle_numbers_and_ranges::<true>( &mut es, a, &mut mask, Tag::SymbolSize)?
+                        },
+                        SourceItem::Symbol(b"tuple")  => handle_numbers_and_ranges::<false>(&mut es, a, &mut mask, Tag::Arity)?,
                         _                             => return GRAMMAR_ERROR,
                     }
                 },
@@ -511,7 +575,6 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
             match es.read() {
                 SourceItem::Symbol(b"nonvar") => { bind_as_nonvar |= bind_set }
-                SourceItem::Symbol(b"var")    => { bind_as_var    |= bind_set }
                 _ => return GRAMMAR_ERROR,
             }
         }
@@ -519,8 +582,7 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
     // We look for conflicts that can't ever be satisfied
     const UNSAT : &[u8] = b"`exec` has conflicting unification `bind` constraints from `admit`";
-    if  bind_as_nonvar & bind_as_var != 0
-    ||  !effect_on_nth_bit(bind_as_nonvar & admit_tag_mask, |nth| {
+    if  !effect_on_nth_bit(bind_as_nonvar & admit_tag_mask, |nth| {
             // Here we check if the constraint is only on a variable, under the assumption that exactly __all__ var bits are set,
             // The semantics of `admit` require that the tags are checked a final time after unification,
             //   so if we filter out all nonvars via the mask, then the nonvar bind constraint would not need to fire anyways.
@@ -533,21 +595,34 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
         return Err(EvalError::Msg { ptr: UNSAT.as_ptr(), len: UNSAT.len() });
     }
 
-    // This avoids useless matches on nonvars that would only get filtered later by the bind constraits.
-    effect_on_nth_bit(bind_as_var & admit_tag_mask, |nth| {
-            admit_masks[nth] = VAR_BITS;
-            true
-        }
-    );
-
-    Ok(AdmitConstraits { admit_masks, admit_tag_mask, bind_as_nonvar, bind_as_var, next_newvar })
+    Ok(AdmitConstraits { admit_masks, admit_tag_mask, bind_as_nonvar, next_newvar })
 }
 
 
 #[cfg(test)] 
 mod admit_tests {
+    use crate::{expr, sources::build_admit_constraints};
+
     #[test]
     fn admit_test(){
-        todo!()
+        let s = crate::space::Space::new();
+        let e = expr!(s, "\
+            [4] admit                                     \
+                [3] , [4] $ var                           \
+                            [3] symbol [2] #   6          \
+                                       [3] #.. [2] 1 3    \
+                                               [2] 10 15  \
+                            [3] tuple  [3] #   4 3        \
+                                       [2] #.. [2] 7 9    \
+                      [3] $ var                           \
+                            [2] symbol [2] #.. [2] 4 6    \
+                bind                                      \
+                [4] , [2] [2] _1 _2   nonvar              \
+                      [2] $           nonvar              \
+                      [2] $           nonvar              \
+        ");
+        let admit_set = build_admit_constraints(e, 0);
+        println!("e         : {:?}", e.string());
+        println!("admit_set : {:?}", admit_set);
     }
 }

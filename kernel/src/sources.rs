@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::path::Iter;
 
 use eval_ffi::{EvalError, ExprSource, SourceItem};
 use pathmap::utils::{BitMask, ByteMask};
@@ -8,6 +9,8 @@ use pathmap::PathMap;
 use pathmap::zipper::*;
 use mork_expr::{byte_item, destruct, item_byte, serialize, Expr, Tag};
 use mork_expr::macros::SerializableExpr;
+
+use crate::sources::AdmitGrammarRule::NumberLargerThan64;
 
 pub enum ResourceRequest {
     BTM(&'static [u8]),
@@ -309,37 +312,75 @@ impl Source for ASource {
 ///     (,)
 /// )
 /// ```
-static GRAMMAR : &'static str = "
-AdmitDSl          ::= Admit                                               ;  { tuple[2|4]    }
+static GRAMMAR : [&'static str; {AdmitGrammarRule::_Variants as usize}] = const { 
+    use AdmitGrammarRule::*;
+    let mut out = [""; _Variants as usize];
 
-PNumber           ::=  \"[1-9]\"  |  \"[1-5][0-9]\"  |  \"6[0-4]\"        ;  { symbol        }
-Number            ::=  '0'  |  PNumber                                    ;  { symbol        }
-PNumbers          ::=  '('  '#'    PNumber{1,62}  ')'                     ;  { tuple[2..=63] }
-Numbers           ::=  '('  '#'    Number{1,62}   ')'                     ;  { tuple[2..=63] }
-PNumberRanges     ::=  '('  '#..'  ('(' PNumber PNumber  ')'){1,62}  ')'  ;  { tuple[2..=63] }
-NumberRanges      ::=  '('  '#..'  ('(' Number  Number   ')'){1,62}  ')'  ;  { tuple[2..=63] }
-SymbolConstraint  ::=  'symbol'                                           ;  { symbol        }
-SymbolConstraint  ::=  '('  'symbol'  PNumbers  ')'                       ;  { tuple[2]      }
-SymbolConstraint  ::=  '('  'symbol'  PNumbers{,1}  PNumberRanges)  ')'   ;  { tuple[2..=3]  }
-TupleConstraint   ::=  'tuple'                                            ;  { symbol        }
-TupleConstraint   ::=  '('  'tuple'   Numbers  ')'                        ;  { tuple[2]      }
-TupleConstraint   ::=  '('  'tuple'   Numbers{,1}  NumberRanges  ')'      ;  { tuple[2..=3]  }
-Var               ::=  \"$[^ \n\t\\(\\)]{1,}\"                            ;  { variable      }
-Vars              ::=  Var                                                ;  { variable      }
-Vars              ::=  '('  Var{1,63}  ')                                 ;  { tuple[1..=63] }
-AdmitContraint    ::=  '('  Vars
-                            '('  (  'var'
-                                 |  SymbolConstraint
-                                 |  TupleConstraint){1,63}
-                                 )
-                            ')'
-                       ')'                                                ;  { tuple[2]      }
-BindConstrait     ::=  '('  Vars  'nonvar'  ')'                           ;  { tuple[2]      }
-AdmitDecl         ::=  'admit'  '('  ','  AdmitContraint{,62}  ')'        ;  { [2]           }
-BindDecl          ::=  'bind'   '('  ','  BindConstrait{,62}   ')'        ;  { [2]           }
-Admit             ::=  '('  AdmitDecl  ')'                                ;  { tuple[2]      }
-Admit             ::=  '('  AdmitDecl  BindDecl ')'                       ;  { tuple[4]      }
-";
+    out[AdmitDsl         as usize] = "AdmitDSl          ::= Admit                                               ;  { tuple[2|4]    }";
+    out[PNumber          as usize] = "PNumber           ::=  \"[1-9]\"  |  \"[1-5][0-9]\"  |  \"6[0-4]\"        ;  { symbol        }";
+    out[Number           as usize] = "Number            ::=  '0'  |  PNumber                                    ;  { symbol        }";
+    out[PNumbers         as usize] = "PNumbers          ::=  '('  '#'    PNumber{1,62}  ')'                     ;  { tuple[2..=63] }";
+    out[Numbers          as usize] = "Numbers           ::=  '('  '#'    Number{1,62}   ')'                     ;  { tuple[2..=63] }";
+    out[PNumberRanges    as usize] = "PNumberRanges     ::=  '('  '#..'  ('(' PNumber PNumber  ')'){1,62}  ')'  ;  { tuple[2..=63] }";
+    out[NumberRanges     as usize] = "NumberRanges      ::=  '('  '#..'  ('(' Number  Number   ')'){1,62}  ')'  ;  { tuple[2..=63] }";
+    out[SymbolConstraint as usize] = "SymbolConstraint  ::=  'symbol'                                           ;  { symbol        }\n\
+                                      SymbolConstraint  ::=  '('  'symbol'  PNumbers  ')'                       ;  { tuple[2]      }\n\
+                                      SymbolConstraint  ::=  '('  'symbol'  PNumbers{,1}  PNumberRanges)  ')'   ;  { tuple[2..=3]  }";
+    out[TupleConstraint  as usize] = "TupleConstraint   ::=  'tuple'                                            ;  { symbol        }\n\
+                                      TupleConstraint   ::=  '('  'tuple'   Numbers  ')'                        ;  { tuple[2]      }\n\
+                                      TupleConstraint   ::=  '('  'tuple'   Numbers{,1}  NumberRanges  ')'      ;  { tuple[2..=3]  }";
+    out[Var              as usize] = "Var               ::=  \"$[^ \n\t\\(\\)]{1,}\"                            ;  { variable      }";
+    out[Vars             as usize] = "Vars              ::=  Var                                                ;  { variable      }\n\
+                                      Vars              ::=  '('  Var{1,63}  ')                                 ;  { tuple[1..=63] }";
+    out[AdmitConstraint  as usize] = "AdmitContraint    ::=  '('  Vars                                                              \
+                                    \n                            '('  (  'var'                                                     \
+                                    \n                                 |  SymbolConstraint                                          \
+                                    \n                                 |  TupleConstraint                                           \
+                                    \n                                 ){1,63}                                                      \
+                                    \n                            ')'                                                               \
+                                    \n                       ')'                                                ;  { tuple[2]      }";
+    out[BindConstrait    as usize] = "BindConstrait     ::=  '('  Vars  'nonvar'  ')'                           ;  { tuple[2]      }";
+    out[AdmitDecl        as usize] = "AdmitDecl         ::=  'admit'  '('  ','  AdmitContraint{,62}  ')'        ;  { [2]           }";
+    out[BindDecl         as usize] = "BindDecl          ::=  'bind'   '('  ','  BindConstrait{,62}   ')'        ;  { [2]           }";
+    out[Admit            as usize] = "Admit             ::=  '('  AdmitDecl  ')'                                ;  { tuple[2]      }\n\
+                                      Admit             ::=  '('  AdmitDecl  BindDecl ')'                       ;  { tuple[4]      }";
+    
+    out[RangeError         as usize] = "for a range (s e), s <= e";
+    out[NumberLargerThan64 as usize] = "parsed number larger than 64";
+    out[UnSat              as usize] =  "`exec` has conflicting unification `bind` constraints from `admit`";
+
+    out
+};
+
+#[repr(usize)]
+enum AdmitGrammarRule {
+    AdmitDsl,
+    PNumber,
+    Number,
+    PNumbers,
+    Numbers,
+    PNumberRanges,
+    NumberRanges,
+    SymbolConstraint,
+    TupleConstraint,
+    Var,
+    Vars,
+    AdmitConstraint,
+    BindConstrait,
+    AdmitDecl,
+    BindDecl,
+    Admit,
+
+    RangeError,
+    NumberLargerThan64,
+    UnSat,
+
+    _Variants
+}
+
+
+
+
 
 /// If the `nth` bit in the admit_tag_mask is on, the `nth` variable has an admit mask that constraints matching.</br>
 /// If it `nth` bit if off, the `admit_masks[nth]` value should not be accessed.
@@ -352,46 +393,9 @@ struct AdmitConstraits {
     bind_as_nonvar : u64,
     next_newvar    : u8,
 }
-impl Debug for AdmitConstraits {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AdmitConstraits {{")?;
-
-        let mut nth       = 0_usize;
-        let mut remaining = self.admit_tag_mask | self.bind_as_nonvar;
-        while remaining != 0 {
-            let t = remaining.trailing_zeros() as usize;
-            nth += t;
-
-            let cursor = 1 << nth;
-            write!(f,"\n\t{} : {{", nth )?;
-            if cursor & self.admit_tag_mask != 0 {
-                if self.admit_masks[nth].test_bit(item_byte(Tag::NewVar)) { write!(f, "\n\t    var    : true")?; }
-                let sym_mask = self.admit_masks[nth].and(&SYMBOL_BITS);
-
-                if sym_mask.count_bits() != 0 {
-                    let mut acc = 0_u64;
-
-                    for i in sym_mask.iter() { match byte_item(i) { Tag::SymbolSize(size) => acc |= 1 << size, _ => {} } }
-                    write!(f, "\n\t    symbol :")?;
-                    for b in acc.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
-                }
-
-                let tup_mask = self.admit_masks[nth].and(&TUPLE_BITS);
-                if tup_mask.count_bits() != 0 {
-                    let mut acc = 0_u64;
-
-                    for i in tup_mask.iter() { match byte_item(i) { Tag::Arity(arity) => acc |= 1 << arity, _ => {} }  }
-                    write!(f, "\n\t    tuple  :")?;
-                    for b in acc.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
-                }
-            }
-            if cursor & self.bind_as_nonvar != 0 { write!(f, "\n\t    bind   : nonvar")? }
-            write!(f,"\n\t}}")?;
-
-            nth+=1;
-            remaining >>= t+1;
-        }
-        write!(f, "\n}}")
+impl AdmitConstraits {
+    fn iter(&self)->AdmitConstraitsIter{
+        AdmitConstraitsIter::new(self)
     }
 }
 
@@ -421,21 +425,14 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
     let mut admit_tag_mask = 0_u64;
     let mut admit_masks    = [ByteMask::new(); 64];
     let mut es             = ExprSource::new(e.ptr);
-    const GRAMMAR_ERR   : EvalError                          = EvalError::Msg { ptr: GRAMMAR.as_ptr(), len: GRAMMAR.len() };
-    const GRAMMAR_ERROR : Result<AdmitConstraits, EvalError> = Err(GRAMMAR_ERR);
-
-    macro_rules! action {
-            ($TRACE:ident, $ACTION:ident) => {  #[cfg(debug_assertions)]if ($TRACE.1 &(1 << (AdmitConstraitsTraceAction::$ACTION as u64))) != 0 {$TRACE.0.push(  (line!() as usize, AdmitConstraitsTraceAction::$ACTION))};  };
+    const fn grammar_error<T>(rule : AdmitGrammarRule)->Result<T, EvalError> {
+        let s = GRAMMAR[rule as usize];
+        Err( EvalError::Msg { ptr: s.as_ptr(), len: s.len() } )
     }
 
-
-
-
-
-    
     #[inline(always)]
     fn parse_var_set(es : &mut ExprSource, next_newvar : &mut u8)->Result<u64, EvalError>{
-        const GRAMMAR_ERROR : Result<u64, EvalError> = Err(GRAMMAR_ERR);
+        // const GRAMMAR_ERROR : Result<u64, EvalError> = Err(GRAMMAR_ERR);
             // here we accumulate the vars into a bitset for the admit constraints
             let mut var_set = 0_u64;
             match es.read() {
@@ -446,11 +443,11 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
                         match es.read() {
                             SourceItem::Tag(Tag::NewVar   ) => {var_set |= (1 << *next_newvar); *next_newvar += 1 },
                             SourceItem::Tag(Tag::VarRef(r)) => {var_set |= (1 << r);},
-                            _ => return GRAMMAR_ERROR,
+                            _ => return grammar_error(AdmitGrammarRule::Vars),
                         }
                     }
                 },
-                _ => return GRAMMAR_ERROR,
+                _ => return grammar_error(AdmitGrammarRule::Vars),
             }
             Ok(var_set)   
     }
@@ -474,15 +471,15 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
     };
 
 
-    let SourceItem::Tag(Tag::Arity(top_level_arity @ (2 | 4))) = es.read() else { return GRAMMAR_ERROR; };    
-    let SourceItem::Symbol(b"admit") = es.read() else { return GRAMMAR_ERROR; };
+    let SourceItem::Tag(Tag::Arity(top_level_arity @ (2 | 4))) = es.read() else { return grammar_error(AdmitGrammarRule::Admit); };    
+    let SourceItem::Symbol(b"admit")                           = es.read() else { return grammar_error(AdmitGrammarRule::AdmitDecl); };
 
 
-    let comma_list_arity          = es.consume_head_check(b","    )? else { return GRAMMAR_ERROR; };
+    let comma_list_arity          = es.consume_head_check(b","    )? else { return grammar_error(AdmitGrammarRule::AdmitDecl); };
     
     for each in 0..comma_list_arity {
 
-        let SourceItem::Tag(Tag::Arity(admition_arity @ 2..)) = es.read()     else { return GRAMMAR_ERROR; };
+        let SourceItem::Tag(Tag::Arity(admition_arity @ 2..)) = es.read()     else { return grammar_error(AdmitGrammarRule::AdmitConstraint); };
 
         let admit_var_set = parse_var_set(&mut es, &mut next_newvar)?;
         admit_tag_mask |= admit_var_set;
@@ -504,18 +501,16 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
                         mask  : &mut ByteMask,
                         tag   : impl Fn(u8)->Tag,
                     ) -> Result<(), EvalError> {
-                        const GRAMMAR_ERROR : Result<(), EvalError> = Err(GRAMMAR_ERR);
                         #[inline(always)]
                         fn read_number(es : &mut ExprSource )->Result<u8,EvalError> {
-                            const GRAMMAR_ERROR : Result<u8, EvalError> = Err(GRAMMAR_ERR);
 
                             let SourceItem::Symbol(s @ ( [b'0'..=b'9'] 
-                                                       | [b'0'..=b'9',b'0'..=b'9']
-                                                       ) ) = es.read() else {return GRAMMAR_ERROR;};
+                                                       | [b'0'..=b'6',b'0'..=b'9']
+                                                       ) ) = es.read() else {return grammar_error(AdmitGrammarRule::Number);};
                             let mut acc = 0;
                             for &each in s { acc = acc*10 + (each-b'0') }
                                                    
-                            if acc > 63 { return GRAMMAR_ERROR; }
+                            if acc > 63 { return grammar_error(NumberLargerThan64); }
                             Ok(acc)
                         }
 
@@ -526,22 +521,27 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
 
                                     for _ in  0..n {
                                         let len = read_number(es)?;
-                                        if ZERO_IS_ERROR && len == 0 { return GRAMMAR_ERROR; }
+                                        if ZERO_IS_ERROR && len == 0 { return grammar_error(AdmitGrammarRule::PNumber); }
                                         mask.set_bit(item_byte(tag(len)));
                                     }
                                     if a == 2 { break 'done; }
-                                    es.consume_head_check(b"#..")?
+                                    match es.consume_head_check(b"#..") {
+                                        Ok(n_) => n_,
+                                        Err(_) => return if ZERO_IS_ERROR {grammar_error(AdmitGrammarRule::PNumberRanges)} else {grammar_error(AdmitGrammarRule::NumberRanges)},
+                                    }
                                 }
                                 (n, b"#..") if a == 2 => n,
-                                _                     => return GRAMMAR_ERROR,
+                                _                     => return grammar_error(AdmitGrammarRule::AdmitConstraint),
                             };
 
                             for _ in 0..range_count {
-                                let SourceItem::Tag(Tag::Arity(2)) = es.read() else { return GRAMMAR_ERROR; };
+                                let SourceItem::Tag(Tag::Arity(2)) = es.read() else { 
+                                    return if ZERO_IS_ERROR {grammar_error(AdmitGrammarRule::PNumberRanges)} else {grammar_error(AdmitGrammarRule::NumberRanges)};
+                                };
                                 let s = read_number(es)?;
                                 let e = read_number(es)?;
-                                if s > e { return GRAMMAR_ERROR; }
-                                if ZERO_IS_ERROR && (s == 0 || e == 0) { return GRAMMAR_ERROR; }
+                                if s > e { return grammar_error(AdmitGrammarRule::RangeError); }
+                                if ZERO_IS_ERROR && s == 0 { return grammar_error(AdmitGrammarRule::PNumber); }
 
                                 mask.set_inclusive_bit_range(item_byte(tag(s))..=item_byte(tag(e)));
                             }
@@ -549,15 +549,12 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
                         Ok(())
                     }
                     match es.read() {
-                        SourceItem::Symbol(b"symbol") => {
-
-                            handle_numbers_and_ranges::<true>( &mut es, a, &mut mask, Tag::SymbolSize)?
-                        },
+                        SourceItem::Symbol(b"symbol") => handle_numbers_and_ranges::<true>( &mut es, a, &mut mask, Tag::SymbolSize)?,
                         SourceItem::Symbol(b"tuple")  => handle_numbers_and_ranges::<false>(&mut es, a, &mut mask, Tag::Arity)?,
-                        _                             => return GRAMMAR_ERROR,
+                        _                             => return grammar_error(AdmitGrammarRule::AdmitConstraint),
                     }
                 },
-                _ => return GRAMMAR_ERROR,
+                _ => return grammar_error(AdmitGrammarRule::AdmitConstraint),
             }
         }
 
@@ -565,17 +562,17 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
     }
 
     if top_level_arity == 4 {
-        let SourceItem::Symbol(b"bind") = es.read()                        else { return GRAMMAR_ERROR; };
-        let bind_list_arity             = es.consume_head_check(b","    )? else { return GRAMMAR_ERROR; };
+        let SourceItem::Symbol(b"bind") = es.read()                        else { return grammar_error(AdmitGrammarRule::Admit); };
+        let bind_list_arity             = es.consume_head_check(b","    )? else { return grammar_error(AdmitGrammarRule::BindDecl); };
 
 
         for each in 0..bind_list_arity {
-            let SourceItem::Tag(Tag::Arity(2)) = es.read() else { return GRAMMAR_ERROR; };
+            let SourceItem::Tag(Tag::Arity(2)) = es.read() else { return grammar_error(AdmitGrammarRule::BindConstrait); };
             let bind_set = parse_var_set(&mut es, &mut next_newvar)?;
 
             match es.read() {
                 SourceItem::Symbol(b"nonvar") => { bind_as_nonvar |= bind_set }
-                _ => return GRAMMAR_ERROR,
+                _ => return grammar_error(AdmitGrammarRule::BindConstrait),
             }
         }
     }
@@ -592,23 +589,251 @@ fn build_admit_constraints(e : Expr, mut next_newvar : u8) -> Result<AdmitConstr
             ! admit_masks[nth].test_bit(item_byte(Tag::NewVar)) || admit_masks[nth].count_bits() != VAR_BITS_COUNT 
         })
     {
-        return Err(EvalError::Msg { ptr: UNSAT.as_ptr(), len: UNSAT.len() });
+        return grammar_error(AdmitGrammarRule::UnSat);
     }
 
     Ok(AdmitConstraits { admit_masks, admit_tag_mask, bind_as_nonvar, next_newvar })
 }
 
 
-#[cfg(test)] 
+
+
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum AdmitConstraitsItemMatch {
+    All,
+    Selection(AdmitConstraitsSelection)
+}
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct AdmitConstraitsSelection {
+    symbols     : u64,
+    tuples      : u64,
+    match_var   : bool,
+}
+#[derive(PartialEq, Eq)]
+struct AdmitConstraitItem {
+    var_id      : u8,
+    match_      : AdmitConstraitsItemMatch,
+    bind_nonvar : bool,
+}
+struct AdmitConstraitsIter<'a> {
+    nth           : usize,
+    shifting_mask : u64,
+    constraints   : &'a AdmitConstraits,
+}
+impl<'a> AdmitConstraitsIter<'a> {
+    fn new(constraints : &'a AdmitConstraits)->Self {
+        Self { nth: 0, shifting_mask: constraints.admit_tag_mask | constraints.bind_as_nonvar, constraints }
+    }
+}
+impl<'a> Iterator for AdmitConstraitsIter<'a> {
+    type Item = AdmitConstraitItem;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.shifting_mask==0 {return None;}
+
+        let t = self.shifting_mask.trailing_zeros() as usize;
+        self.nth += t;
+
+        const TUPLE_HEADER : usize = const { 
+            let mut i = 0; while i < 64 { assert!((item_byte(Tag::Arity(i)) & 0b_1100_0000) >> 6 == 0b_00) ; i+=1 } 
+            0b_00
+        };
+        
+        // This just encodes our understanding of what we expect the representation to be.
+        const _VAR_REF_HEADER : usize = const { 
+            let mut i = 0; 
+            while i < 64 { assert!((item_byte(Tag::VarRef(i)) & 0b_1100_0000) >> 6 == 0b_10); i+=1;}
+            0b_10 
+        };
+        
+        const SYM_AND_NEWVAR_HEADER : usize = const { 
+            let mut i = 1;
+            while i < 64 { assert!((item_byte(Tag::SymbolSize(i)) & 0b_1100_0000) >> 6 == 0b_11); i+=1 }; 
+            assert!((item_byte(Tag::NewVar) & 0b_1100_0000) >> 6 == 0b_11);
+            0b_11 as usize
+        };
+
+        let var_id = self.nth;
+        let mask = self.constraints.admit_masks[var_id].0;
+
+        // we work under the assumption that if new_var is set, all vars are set.
+        let match_var   = mask[SYM_AND_NEWVAR_HEADER] & (1<<0 /* NewVar */) != 0;
+        let symbols     = mask[SYM_AND_NEWVAR_HEADER] & !(1<<0 /* NewVar */);
+        let tuples      = mask[TUPLE_HEADER];
+        let bind_nonvar = self.constraints.bind_as_nonvar & 1<<var_id != 0;
+
+        let out = AdmitConstraitItem { var_id : var_id as u8, 
+            match_ : if !match_var && symbols ==0 && tuples ==0 {
+                AdmitConstraitsItemMatch::All
+            } else {
+                AdmitConstraitsItemMatch::Selection(AdmitConstraitsSelection { symbols, tuples, match_var })
+            },
+            bind_nonvar
+        };
+        
+        self.nth+=1;
+        self.shifting_mask >>= t+1;
+    
+        Some(out)
+    }
+}
+impl Debug for AdmitConstraitItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AdmitConstraitItem {{")?;
+        write!(f, "\n\tvar_id    : {}", self.var_id)?;
+        match &self.match_ {
+            AdmitConstraitsItemMatch::All => write!(f, "\n\tmatch_   : All")?,
+            AdmitConstraitsItemMatch::Selection(self_) => {
+                write!(f, "\n\tmatch_   : Selection {{")?;
+                
+                
+                if self_.match_var {
+                    write!(f, "\n\t  match_var : true,")?
+                }
+                if self_.symbols != 0 {
+                    write!(f, "\n\t  symbols   :")?;
+                    for b in self_.symbols.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
+                    write!(f, ",");
+                }
+                if self_.tuples != 0 {
+                    write!(f, "\n\t  tuples    :")?;
+                    for b in self_.tuples.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
+                    write!(f, ",");
+                }
+                write!(f, "\n\t}}")?;                
+            },
+        }
+        if self.bind_nonvar {
+            write!(f, "\n\t  bind_var  : true,")?
+        }
+        writeln!(f, "\n}}")
+    }
+    
+}
+
+impl Debug for AdmitConstraits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AdmitConstraits : \n")?;
+        for each in self.iter() {
+            write!(f, "{:?}", each);
+        }
+        Ok(())
+    }
+}
+
+
+
+
+
+#[cfg(test)]
 mod admit_tests {
-    use crate::{expr, sources::build_admit_constraints};
+    use eval_ffi::EvalError;
+use mork_expr::item_byte;
+
+use crate::{expr, sources::{AdmitConstraitItem, AdmitConstraitsItemMatch, AdmitConstraitsSelection, GRAMMAR, build_admit_constraints}};
+
+
+    fn eval_error_str<'a>(e : EvalError)->&'a str {
+        match e {
+            EvalError::NotEnoughSpace   => "NotEnoughSpace",
+            EvalError::Msg { ptr, len } => unsafe { str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) },
+        }
+    }
+
+    fn id_match_bind_nonvar(
+        id          : u8, 
+        match_      : AdmitConstraitsItemMatch,
+        bind_nonvar : bool,
+    ) -> AdmitConstraitItem {
+        AdmitConstraitItem { var_id: id, match_: match_, bind_nonvar }
+    }
+    fn select_symbols_tuples_vars(symbols : u64, tuples : u64, vars : bool) -> AdmitConstraitsItemMatch {
+        AdmitConstraitsItemMatch::Selection(
+            AdmitConstraitsSelection { symbols, tuples, match_var: vars }
+        )
+    }
+    fn select_all() -> AdmitConstraitsItemMatch {
+        AdmitConstraitsItemMatch::All
+    }
+
+    fn bitset_u64(ns : &[u8]) -> u64 {
+        let mut acc = 0;
+        for each in ns {
+            core::debug_assert!(*each < 64);
+            acc |= (1 << each)
+        }
+        acc
+    }
+    fn bitset_inclusive_range_u64(rs : &[std::ops::RangeInclusive<u8>])->u64 {
+        let mut acc = 0;
+        for each in rs {
+            for each_ in *each.start()..=*each.end() {
+                core::debug_assert!(each_ < 64);
+                acc |= (1 << each_)
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn symbol_test() {
+        let s = crate::space::Space::new();
+        let e = expr!(s, "\
+            [2] admit [2] , [2] $ symbol \
+        ");
+        let admit_set = build_admit_constraints(e, 0);
+        let constraint = admit_set.unwrap().iter().next().unwrap();
+        assert_eq!(constraint,
+            id_match_bind_nonvar(0, select_symbols_tuples_vars((!0)^1, 0, false), false )
+        );
+    }
+
+    #[test]
+    fn var_test() {
+        let s = crate::space::Space::new();
+        let e = expr!(s, "\
+            [2] admit [2] , [2] $ var \
+        ");
+        let admit_set = build_admit_constraints(e, 0);
+        let constraint = admit_set.unwrap().iter().next().unwrap();
+        assert_eq!(constraint,
+            id_match_bind_nonvar(0, select_symbols_tuples_vars(0, 0, true), false )
+        );
+    }
+
+    #[test]
+    fn tuple_test() {
+        let s = crate::space::Space::new();
+        let e = expr!(s, "\
+            [2] admit [2] , [2] $ tuple \
+        ");
+        let admit_set = build_admit_constraints(e, 0);
+        let constraint = admit_set.unwrap().iter().next().unwrap();
+        assert_eq!(constraint,
+            id_match_bind_nonvar(0, select_symbols_tuples_vars(0, !0, false), false )
+        );
+    }
+
+    #[test]
+    fn bind_test() {
+        let s = crate::space::Space::new();
+        let e = expr!(s, "\
+            [4] admit [1] ,               \
+                bind  [2] , [2] $ nonvar  \
+        ");
+        let admit_set = build_admit_constraints(e, 0);
+        let constraint = admit_set.unwrap().iter().next().unwrap();
+        assert_eq!(constraint,
+            id_match_bind_nonvar(0, select_symbols_tuples_vars((!0)^1, 0, false), false )
+        );
+    }
 
     #[test]
     fn admit_test(){
         let s = crate::space::Space::new();
         let e = expr!(s, "\
             [4] admit                                     \
-                [3] , [4] $ var                           \
+                [6] , [4] $ var                           \
                             [3] symbol [2] #   6          \
                                        [3] #.. [2] 1 3    \
                                                [2] 10 15  \
@@ -616,13 +841,72 @@ mod admit_tests {
                                        [2] #.. [2] 7 9    \
                       [3] $ var                           \
                             [2] symbol [2] #.. [2] 4 6    \
+                      [2] [2] $ $ symbol                  \
+                      [3] $ symbol tuple                  \
+                      [4] $ var symbol tuple              \
                 bind                                      \
                 [4] , [2] [2] _1 _2   nonvar              \
                       [2] $           nonvar              \
                       [2] $           nonvar              \
         ");
         let admit_set = build_admit_constraints(e, 0);
-        println!("e         : {:?}", e.string());
-        println!("admit_set : {:?}", admit_set);
+
+        let admit_set_collect = admit_set.unwrap().iter().collect::<Vec<_>>();
+        assert_eq!(
+            &admit_set_collect,
+            &[
+                id_match_bind_nonvar(
+                    0, 
+                    select_symbols_tuples_vars(
+                        bitset_u64(&[6])    | bitset_inclusive_range_u64(&[1..=3, 10..=15]),
+                        bitset_u64(&[4, 3]) | bitset_inclusive_range_u64(&[7..=9]),
+                        true), 
+                    true
+                ),
+                id_match_bind_nonvar(
+                    1,
+                    select_symbols_tuples_vars(
+                        bitset_inclusive_range_u64(&[4..=6]), 0, true
+                    ),
+                    true
+                ),
+                id_match_bind_nonvar(2, select_symbols_tuples_vars((!0)^1, 0, false), false),
+                id_match_bind_nonvar(3, select_symbols_tuples_vars((!0)^1, 0, false), false),
+                id_match_bind_nonvar(4, select_symbols_tuples_vars((!0)^1, !0, false), false),
+                id_match_bind_nonvar(5, select_symbols_tuples_vars((!0)^1, !0, true), false),
+                id_match_bind_nonvar(6, select_all(), true),
+                id_match_bind_nonvar(7, select_all(), true),
+            ],
+        );
+    }
+
+    #[test]
+    fn hit_errors() {
+        let s = crate::space::Space::new();
+
+        macro_rules! hit_error {
+            ($EXPR:literal => $ERROR:ident) => {
+                let e = expr!(s, $EXPR);
+                let admit_set = build_admit_constraints(e, 0);
+                if let Err(s) = admit_set { assert_eq!(eval_error_str(s), GRAMMAR[super::AdmitGrammarRule::$ERROR as usize]); }
+            };
+        }
+
+        hit_error!("[3] admit bind  [2] , [2] $ nonvar"                      => Admit              );
+        hit_error!("[2] admity [1] ,"                                        => AdmitDecl          );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] # 75"               => Number             );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] # 65"               => NumberLargerThan64 );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] # 0"                => PNumber            );
+        hit_error!("[2] admit [2] , [2] $ [2] tuple [2] # 0"                 => Number             );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] #. 0"               => AdmitConstraint    );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] # 7 [2] #. [2] 0 3" => PNumberRanges      );
+        hit_error!("[2] admit [2] , [2] $ [2] tuple [2] # 7 [2] #. [2] 0 3 " => NumberRanges       );
+        hit_error!("[2] admit [2] , [2] $ [2] symbol [2] #.. [3] 0 3 7"      => PNumberRanges      );
+        hit_error!("[2] admit [2] , [2] $ [2] tuple [2] #.. [2] 7 1"         => RangeError         );
+        hit_error!("[2] admit [2] , [2] $ [2] tuple [2] #.. [2] 0 5"         => PNumber            );
+        hit_error!("[2] admit [2] , [2] $ [2] symboly [2] #.. [2] 2 5"       => AdmitConstraint    );
+        hit_error!("[4] admit [1] , bind [2] , [3] $ nonvar g"               => BindConstrait      );
+        hit_error!("[4] admit [1] , bind [2] , [2] $ nonva"                  => BindConstrait      );
+        hit_error!("[4] admit [2] , [2] $ var  bind [2] , [2] $ nonvar"      => UnSat              );
     }
 }

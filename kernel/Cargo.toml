@@ -34,6 +34,7 @@ interning = []
 wasm = ["dep:wasmtime"]
 z3 = []
 leapfrog = [] # experimental: route flat conjunctive exec bodies to the WCO leapfrog join
+egraph = []
 no_search = []
 grounding = []
 specialize_io = []

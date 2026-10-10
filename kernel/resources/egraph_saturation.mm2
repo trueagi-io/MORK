@@ -1,0 +1,10 @@
+; E-graph equality saturation as a grounded sink (build with --features egraph).
+; Push equalities and terms into a scoped e-graph via the (egraph ...) sink; the
+; (O ...) template functor routes each factor through the sink dispatch. At finalize
+; congruence closure runs and each member's cheapest canonical form is written back
+; as (canon <member> <representative>), which ordinary queries then read.
+(fact (= a b))
+(fact (= b c))
+(fact (f a))
+(fact (f c))
+(exec 0 (, (fact $x)) (O (egraph $x)))

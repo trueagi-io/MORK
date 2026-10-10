@@ -9,6 +9,7 @@ pub mod space;
 /// also what routes conjunctive bodies to it; without the feature the engine is unchanged.
 #[cfg(feature = "leapfrog")]
 pub mod leapfrog;
+pub mod json_path_query;
 mod sources;
 mod sinks;
 mod pure;

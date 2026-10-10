@@ -14,6 +14,7 @@ fn isDigit(c: u8) -> bool {
 #[derive(Debug)]
 pub enum ParserError {
   TooManyVars,
+  TooManyArity,
   UnexpectedEOF,
   InputFinished,
   NotArity,
@@ -114,7 +115,10 @@ pub trait Parser {
                 self.sexpr(it, target)?;
                 unsafe {
                   let p = target.root.ptr.byte_add(arity_loc);
-                  if let Tag::Arity(a) = byte_item(*p) { *p = item_byte(Tag::Arity(a + 1)); }
+                  if let Tag::Arity(a) = byte_item(*p) {
+                    if a == 63 { return Err(TooManyArity) }
+                    *p = item_byte(Tag::Arity(a + 1));
+                  }
                   else { return Err(NotArity) }
                 }
               }

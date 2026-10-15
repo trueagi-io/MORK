@@ -1890,10 +1890,22 @@ impl Space {
                             let t = remaining.trailing_zeros() as usize;
                             nth += t;
                             match bindings.get(&(0 /*  */,nth as u8)) {
-                                Some(e) => {
+                                Some(mut e) => {
+                                    // [Remy]:
+                                    // The bindings are not guaranteed to be "canonical", so we chase.
+                                    // From my recollection there is still path compression, just not canonicalization
+                                    while let Some(v) = e.var_opt() { match bindings.get(&v) {
+                                        Some(nested_e) => e = nested_e,
+                                        None => break,
+                                    } }
+                                    
                                     let var_bit = (1<<nth);
+
+
                                     if (var_bit & c.bind_as_nonvar != 0) && e.var_opt().is_some()      
-                                    || (var_bit & c.admit_tag_mask != 0) && !c.admit_masks[nth].test_bit(unsafe { *e.subsexpr().ptr })
+                                    { break 'query true; }
+
+                                    if (var_bit & c.admit_tag_mask != 0) && !c.admit_masks[nth].test_bit(unsafe { *e.subsexpr().ptr })
                                     { break 'query true; }
                                 },
                                 None => {},
@@ -2690,7 +2702,7 @@ mod admit_constraint {
             let admit_set = build_admit_constraints(e, 0);
             let constraint = admit_set.unwrap().iter().next().unwrap();
             assert_eq!(constraint,
-                id_match_bind_nonvar(0, select_symbols_tuples_vars((!0)^1, 0, false), false )
+                id_match_bind_nonvar(0, select_all(), true )
             );
         }
 
@@ -2775,36 +2787,762 @@ mod admit_constraint {
             hit_error!("[4] admit [1] , bind [2] , [2] $ nonva"                  => BindConstrait      );
             hit_error!("[4] admit [2] , [2] $ var  bind [2] , [2] $ nonvar"      => UnSat              );
         }
+
+
+
+
+
+
+        #[test]
+        fn exec_sym_len_select_zero_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in aa)
+                (in aaa)
+                (in aaaa)
+
+                (exec 0 (C ( admit (, ($x (symbol (#)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "");
+        }
+        #[test]
+        fn exec_sym_len_select_one_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in aa)
+                (in aaa)
+                (in aaaa)
+
+                (exec 0 (C ( admit (, ($x (symbol (# 2)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "(out aa)\n");
+        }
+    
+        #[test]
+        fn exec_sym_len_select_many_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in aa)
+                (in aaa)
+                (in aaaa)
+    
+                (exec 0 (C ( admit (, ($x (symbol (# 2 4)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "(out aa)\n(out aaaa)\n");
+        }
+        #[test]
+        fn exec_sym_len_range_zero_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+    
+                (in aa)
+                (in aaa)
+                (in aaaa)
+                
+                (in aaaaa)
+                (in aaaaaa)
+    
+                (in aaaaaaa)
+                (in aaaaaaaa)
+                (in aaaaaaaaa)
+                (in aaaaaaaaaa)
+    
+                (in aaaaaaaaaaa)
+    
+                (exec 0 (C ( admit (, ($x (symbol (#..)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "");
+        }
+        #[test]
+        fn exec_sym_len_range_one_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+    
+                (in aa)
+                (in aaa)
+                (in aaaa)
+                
+                (in aaaaa)
+                (in aaaaaa)
+    
+                (in aaaaaaa)
+                (in aaaaaaaa)
+                (in aaaaaaaaa)
+                (in aaaaaaaaaa)
+    
+                (in aaaaaaaaaaa)
+    
+                (exec 0 (C ( admit (, ($x (symbol (#.. (2 4))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out aa)\n\
+                 (out aaa)\n\
+                 (out aaaa)\n\
+                "
+            );
+        }
+        #[test]
+        fn exec_sym_len_range_many_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+    
+                (in aa)
+                (in aaa)
+                (in aaaa)
+                
+                (in aaaaa)
+                (in aaaaaa)
+    
+                (in aaaaaaa)
+                (in aaaaaaaa)
+                (in aaaaaaaaa)
+                (in aaaaaaaaaa)
+    
+                (in aaaaaaaaaaa)
+    
+                (exec 0 (C ( admit (, ($x (symbol (#.. (2 4) (7 10))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out aa)\n\
+                 (out aaa)\n\
+                 (out aaaa)\n\
+                 \
+                 (out aaaaaaa)\n\
+                 (out aaaaaaaa)\n\
+                 (out aaaaaaaaa)\n\
+                 (out aaaaaaaaaa)\n\
+                "
+            );
+        }
+    
+        #[test]
+        fn exec_sym_len_select_and_range_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+    
+                (in aa)
+                (in aaa)
+                (in aaaa)
+                
+                (in aaaaa)
+    
+                (in aaaaaa)
+    
+                (in aaaaaaa)
+                
+                (in aaaaaaaa)
+    
+                (in aaaaaaaaa)
+    
+                (in aaaaaaaaaa)
+                (in aaaaaaaaaaa)
+                (in aaaaaaaaaaaa)
+    
+                (exec 0 (C ( admit (, ($x (symbol (# 6 8) (#.. (2 4) (10 12))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "\
+                (out aa)\n\
+                (out aaa)\n\
+                (out aaaa)\n\
+                (out aaaaaa)\n\
+                (out aaaaaaaa)\n\
+                (out aaaaaaaaaa)\n\
+                (out aaaaaaaaaaa)\n\
+                (out aaaaaaaaaaaa)\n\
+                "
+            );
+        }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+        #[test]
+        fn exec_arity_select_zero_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (#)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "");
+        }
+        #[test]
+        fn exec_arity_select_one_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (# 2)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "(out (a a))\n");
+        }
+    
+        #[test]
+        fn exec_arity_select_many_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (# 2 4)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "(out (a a))\n(out (a a a a))\n");
+        }
+        #[test]
+        fn exec_arity_range_zero_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+    
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+                
+                (in (a a a a a))
+                (in (a a a a a a))
+    
+                (in (a a a a a a a))
+                (in (a a a a a a a a))
+                (in (a a a a a a a a a))
+                (in (a a a a a a a a a a))
+    
+                (in (a a a a a a a a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (#..)) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, "");
+        }
+        #[test]
+        fn exec_arity_range_one_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+    
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+                
+                (in (a a a a a))
+                (in (a a a a a a))
+    
+                (in (a a a a a a a))
+                (in (a a a a a a a a))
+                (in (a a a a a a a a a))
+                (in (a a a a a a a a a a))
+    
+                (in (a a a a a a a a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (#.. (2 4))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out (a a))\n\
+                 (out (a a a))\n\
+                 (out (a a a a))\n\
+                "
+            );
+        }
+        #[test]
+        fn exec_arity_range_many_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+    
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+                
+                (in (a a a a a))
+                (in (a a a a a a))
+    
+                (in (a a a a a a a))
+                (in (a a a a a a a a))
+                (in (a a a a a a a a a))
+                (in (a a a a a a a a a a))
+    
+                (in (a a a a a a a a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (#.. (2 4) (7 10))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out (a a))\n\
+                 (out (a a a))\n\
+                 (out (a a a a))\n\
+                 \
+                 (out (a a a a a a a))\n\
+                 (out (a a a a a a a a))\n\
+                 (out (a a a a a a a a a))\n\
+                 (out (a a a a a a a a a a))\n\
+                "
+            );
+        }
+    
+        #[test]
+        fn exec_arity_select_and_range_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in (a))
+    
+                (in (a a))
+                (in (a a a))
+                (in (a a a a))
+                
+                (in (a a a a a))
+    
+                (in (a a a a a a))
+    
+                (in (a a a a a a a))
+                
+                (in (a a a a a a a a))
+    
+                (in (a a a a a a a a a))
+    
+                (in (a a a a a a a a a a))
+                (in (a a a a a a a a a a a))
+                (in (a a a a a a a a a a a a))
+    
+                (exec 0 (C ( admit (, ($x (tuple (# 6 8) (#.. (2 4) (10 12))) ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "\
+                (out (a a))\n\
+                (out (a a a))\n\
+                (out (a a a a))\n\
+                (out (a a a a a a))\n\
+                (out (a a a a a a a a))\n\
+                (out (a a a a a a a a a a))\n\
+                (out (a a a a a a a a a a a))\n\
+                (out (a a a a a a a a a a a a))\n\
+                "
+            );
+        }
+
+
+
+
+
+
+
+        #[test]
+        fn exec_sym_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x symbol ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out a)\n"
+            );
+        }
+        #[test]
+        fn exec_tuple_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x tuple ) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out (a))\n"
+            );
+        }
+        #[test]
+        fn exec_var_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x var) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out $a)\n"
+            );
+        }
+        #[test]
+        fn exec_sym_tup_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x symbol tuple) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out a)\n(out (a))\n"
+            );
+        }
+        #[test]
+        fn exec_tup_var_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x tuple var) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out $a)\n(out (a))\n"
+            );
+        }
+        #[test]
+        fn exec_var_sym_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x var symbol) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out $a)\n(out a)\n"
+            );
+        }
+        #[test]
+        fn exec_sym_tup_var_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x symbol tuple var) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out $a)\n(out a)\n(out (a))\n"
+            );
+        }
+        #[test]
+        fn exec_sym_tup_var_bind_nonvar_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, ($x symbol tuple var) )
+                             bind  (, ($x nonvar) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out a)\n(out (a))\n"
+            );
+        }
+
+        #[test]
+        fn exec_sym_var_bind_nonvar_with_unification_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in $a)
+
+                (! b)
+                (! (b))
+                (! $b)
+
+                (exec 0 (C ( admit (, ($x symbol var) )
+                             bind  (, ($x nonvar) )
+                           )
+                           (, (in $x) (! $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+    
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out a)\n(out b)\n"
+            );
+        }
+
+        // [Remy]:
+        // This test is one of the most important.
+        // This allows one to use variables for unification, but constrain outputs to not be "bare variables"
+        #[test]
+        fn exec_tuple_var_bind_nonvar_with_unification_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in ($a))
+                (in $a)
+
+                (! b)
+                (! (b))
+                (! ($b))
+                (! $b)
+
+                (exec 0 (C ( admit (, ($x tuple var) )
+                             bind  (, ($x nonvar) )
+                           )
+                           (, (in $x) (! $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out ($a))\n(out (a))\n(out (b))\n"
+            );
+        }
+
+        #[test]
+        fn exec_nonvar_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in ($a))
+                (in $a)
+    
+                (exec 0 (C ( admit (, )
+                             bind  (, ($x nonvar) )
+                           )
+                           (, (in $x) )
+                        )
+                        (, (out $x))
+                )
+            ").unwrap();
+
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out a)\n(out ($a))\n(out (a))\n"
+            );
+        }
     }
-
-
-    #[test]
-    fn with_exec_test(){
-        let mut s = crate::space::Space::new();
-
-        s.add_all_sexpr(b"
-            (in a)
-            (in aa)
-            (in aaa)
-            (in aaaa)
-            (in (a b c))
-            (in $a)
-
-            (exec 0 (C ( admit (, ($x (symbol (# 2 4)) tuple var)
-                              )
-                         bind (, ($x nonvar))
-                       )
-                       (, (in $x) )
-                    )
-                    (, (out $x))
-            )
-
-        ").unwrap();
-
-        s.metta_calculus(100);
-        let mut out = String::new();
-        s.dump_all_sexpr(unsafe { out.as_mut_vec() });
-        println!("{}", out);
-    }
-
 }

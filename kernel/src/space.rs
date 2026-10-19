@@ -3557,5 +3557,36 @@ mod admit_constraint {
                 "(out a)\n(out ($a))\n(out (a))\n"
             );
         }
+
+
+                #[test]
+        fn exec_io_test(){
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(b"
+                (in a)
+                (in (a))
+                (in ($a))
+                (in $a)
+                
+                (in b)
+                (in (b))
+                (in ($b))
+                (in $b)
+    
+                (exec 0 (C ( admit (, ($x symbol) ($y symbol))
+                           )
+                           (I (!= (in $x) (in $y)) )
+                        )
+                        (O (+ (out ($x $y)) ) )
+                )
+            ").unwrap();
+
+            s.metta_calculus(100);
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+            assert_eq!(&out, 
+                "(out (a b))\n(out (b a))\n"
+            );
+        }
     }
 }

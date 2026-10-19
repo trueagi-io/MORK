@@ -1954,7 +1954,7 @@ impl Traversal<(), ()> for TraverseSide {
 }
 
 impl ExprEnv {
-    pub fn new(i: u8, e: Expr) -> Self {
+    pub const fn new(i: u8, e: Expr) -> Self {
         Self {
             n: i,
             v: 0,

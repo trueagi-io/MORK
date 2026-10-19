@@ -110,46 +110,18 @@ pub(crate) const VARS: [u64; 4] = {
 // - keeping a needle instead of a stack to avoid the `reverse` (would also create the opportunity to be even more lazy about instruction gen)
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
 fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
-    loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, admit: &Option<admit_constraint::AdmitConstraits>, f: &mut F) {
+    loc        : &mut Z,
+    mut stack  : &mut Vec<ExprEnv>,
+    references : &mut Vec<u32>,
+    var_facts  : u64,
+    admit      : &Option<admit_constraint::AdmitConstraits>,
+    f          : &mut F) {
 
-    let constraint_filter = |e : ExprEnv,m: &mut ByteMask| {
-        if let Some(admitions) = admit 
-        && let Some((0,v)) = e.var_opt()
-        && (admitions.admit_tag_mask & (1<<v) != 0) {
-            *m = m.and(&admitions.admit_masks[1<<v]);
-        }        
-    };
 
-    macro_rules! vs {
-        ($e:expr, $nv:expr) => {{
-            let mut m = loc.child_mask().and(&ByteMask(VARS));
+    const  ANON_NAMESPACE        : u8      = 255;
+    const  ZIPPER_PATH_NAMESPACE : u8      = 254;
+    const  ANON_NV               : ExprEnv = ExprEnv::new(ANON_NAMESPACE, Expr { ptr: ((&mork_expr::NEW_VAR_EXPR_BYTES) as *const u8).cast_mut() });
 
-            constraint_filter($e,&mut m);
-
-            let mut it = m.iter();
-
-            while let Some(b) = it.next() {
-                // technically requires us to replace references to this NewVar on the stack with e
-                // if !$nv && item_byte(Tag::NewVar) == b {
-                //     if $e.n == 0 {
-                //         references.push(u32::MAX);
-                //     }
-                // }
-                // Every variable tag byte on the data path descends exactly here (the mask is
-                // taken at an item boundary, so symbol payload bytes never enter), which makes
-                // this the one place the walk learns a candidate is non-ground. The knowledge
-                // rides the recursion itself: one bit per factor, passed BY VALUE, so unwinding
-                // restores it for free and the leaf reads each fact's groundness off its bit --
-                // no side vector, no rescan. A conjunction has at most 63 conjuncts, so u64
-                // suffices (`.min(63)` is a defensive clamp, not a reachable case).
-                loc.descend_to_byte(b);
-                debug_assert!(loc.path_exists());
-                let vf = var_facts | (1u64 << loc.focus_factor().min(63));
-                coreferential_transition(loc, stack, references, vf, admit, f);
-                if !loc.ascend_byte() { unreachable_unchecked() };
-            }
-        }};
-    }
     unsafe {
     trace!(target: "coref trans", "loc {}    len {}", serialize(loc.path()), loc.path().len());
     // trace!(target: "coref trans", "loc {} ({:?})    len {}    ops {:?} ({:?})", serialize(loc.path()), loc.path(), loc.path().len(), loc.child_mask(), loc.child_mask().iter().map(byte_item).collect::<Vec<_>>());
@@ -158,6 +130,47 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
     match stack.pop() {
         None => { f(loc, var_facts) }
         Some(e) => {
+
+            let constraint_filter = |e : ExprEnv,m: &mut ByteMask| {
+                if let Some(admitions) = admit 
+                && let Some((0,v)) = e.var_opt()
+                && (admitions.admit_tag_mask & (1<<v) != 0) {
+                    *m = m.and(&admitions.admit_masks[1<<v]);
+                }
+            };
+
+            let mut child_mask = loc.child_mask();
+            constraint_filter(e,&mut child_mask);
+
+            macro_rules! vs {
+                ($e:expr, $nv:expr) => {{
+                    let mut variables_mask = child_mask.and(&ByteMask(VARS));
+                    
+                    let mut it = variables_mask.iter();
+                
+                    while let Some(b) = it.next() {
+                        // technically requires us to replace references to this NewVar on the stack with e
+                        // if !$nv && item_byte(Tag::NewVar) == b {
+                        //     if $e.n == 0 {
+                        //         references.push(u32::MAX);
+                        //     }
+                        // }
+                        // Every variable tag byte on the data path descends exactly here (the mask is
+                        // taken at an item boundary, so symbol payload bytes never enter), which makes
+                        // this the one place the walk learns a candidate is non-ground. The knowledge
+                        // rides the recursion itself: one bit per factor, passed BY VALUE, so unwinding
+                        // restores it for free and the leaf reads each fact's groundness off its bit --
+                        // no side vector, no rescan. A conjunction has at most 63 conjuncts, so u64
+                        // suffices (`.min(63)` is a defensive clamp, not a reachable case).
+                        loc.descend_to_byte(b);
+                        debug_assert!(loc.path_exists());
+                        let vf = var_facts | (1u64 << loc.focus_factor().min(63));
+                        coreferential_transition(loc, stack, references, vf, admit, f);
+                        if !loc.ascend_byte() { unreachable_unchecked() };
+                    }
+                }};
+            }
+
             let e_byte = *e.base.ptr.add(e.offset as usize);
 
             match byte_item(e_byte) {
@@ -172,8 +185,9 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
 
                     vs!(e, true);
 
-                    let m = loc.child_mask().and(&ByteMask(SIZES));
-                    let mut it = m.iter();
+                    let mut symbol_sizes_mask = child_mask.and(&ByteMask(SIZES));
+
+                    let mut it = symbol_sizes_mask.iter();
                     while let Some(b) = it.next() {
                         let Tag::SymbolSize(size) = byte_item(b) else { unreachable_unchecked() };
                         loc.descend_to_byte(b);
@@ -186,15 +200,15 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         if !loc.ascend_byte() { unreachable_unchecked() }
                     }
 
-                    let m = loc.child_mask().and(&ByteMask(ARITIES));
-                    let mut it = m.iter();
+                    let mut arities_mask = child_mask.and(&ByteMask(ARITIES));
+
+                    let mut it = arities_mask.iter();
                     while let Some(b) = it.next() {
                         let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
                         loc.descend_to_byte(b);
                         debug_assert!(loc.path_exists());
-                        static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
-                        for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                        for _ in 0..a { stack.push(ANON_NV) }
                         coreferential_transition(loc, stack, references, var_facts, admit, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
@@ -213,11 +227,10 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
                         // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv::new(254, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
+                        ExprEnv::new(ZIPPER_PATH_NAMESPACE, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
-                        static nv: u8 = item_byte(Tag::NewVar);
-                        ExprEnv::new(255, Expr{ ptr: ((&nv) as *const u8).cast_mut() })
+                        ANON_NV
                     };
                     stack.push(addition);
                     vs!(e, false);

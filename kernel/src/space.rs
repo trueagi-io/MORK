@@ -600,7 +600,7 @@ impl Space {
                 CoroutineState::Yielded(path) => {
                     if let CoroutineState::Complete(result) = Pin::new(&mut sink).resume(Some(path)) {
                         result.map_err(|e| e.to_string())?;
-                        return Err("paths serializer finished before end of JSON".into());
+                        unreachable!("paths serializer only completes successfully after receiving None");
                     }
                 }
                 CoroutineState::Complete(result) => break result,

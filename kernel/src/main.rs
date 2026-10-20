@@ -1,11 +1,11 @@
-#![feature(string_from_utf8_lossy_owned)]
+#![feature(string_from_utf8_lossy_owned, coroutine_trait)]
 
 use mork::{expr, prefix, sexpr, space};
 use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
 use mork_expr::{item_byte, serialize, SourceItem, Tag};
 use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving};
+use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperPath};
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
 use std::ffi::OsStr;
@@ -14,7 +14,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, BufReader, BufWriter, Write};
 use std::fs::{self, File};
 use std::path::Path;
-use pathmap::paths_serialization::serialize_paths_from_funcs;
+use std::ops::{Coroutine, CoroutineState};
+use std::pin::Pin;
 use std::ops::Add;
 // use std::future::Future;
 // use std::task::Poll;
@@ -4965,13 +4966,9 @@ fn json_upaths_smoke() {
 "#);
 }
 
-/// Read mm2 through the existing parser over an mmap, without constructing a Space.
-fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
+/// Read one expression at a time through the existing parser over an mmap.
+fn for_each_mm2(input: &Path, mut visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
     use mork_frontend::bytestring_parser::{Context, ParserError};
-    if cfg!(feature = "interning") {
-        return Err(io::Error::new(io::ErrorKind::InvalidData,
-            "mm2 conversion requires inline symbols; rebuild without interning"));
-    }
     let file = File::open(input)?;
     let mmap = if file.metadata()?.len() == 0 {
         None
@@ -4983,59 +4980,58 @@ fn mm2_to_upaths(input: &Path, output: &Path) -> io::Result<usize> {
     // pages actually touched by an expression. Inline encoding is at most 2x.
     // A mapped slice is at most isize::MAX bytes, so doubling fits in usize.
     let capacity = (bytes.len() * 2).max(1);
-    let buffer = memmap2::MmapOptions::new().len(capacity).no_reserve_swap().map_anon()?;
+    let mut buffer = memmap2::MmapOptions::new().len(capacity).no_reserve_swap().map_anon()?;
     let symbols = mork_interning::SharedMapping::new();
     let mut parser = mork::space::ParDataParser::new(&symbols);
-    let mut source = (Context::new(bytes), buffer, 0usize);
-    let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
+    let mut context = Context::new(bytes);
     #[cfg(unix)]
     let mut released = 0;
-    let stats = {
-        let mut writer = BufWriter::new(target.as_file());
-        let stats = serialize_paths_from_funcs(
-            &mut writer,
-            &mut source,
-            |(context, buffer, length)| {
-                let mut zipper = mork_expr::ExprZipper::new(mork_expr::Expr {
-                    ptr: buffer.as_mut_ptr(),
-                });
-                let parsed = parser.sexpr(context, &mut zipper);
-                context.variables.clear();
-                // Discard completed input pages in aligned batches; subsequent
-                // parsing only touches the suffix. The input file must stay unchanged.
-                #[cfg(unix)]
-                {
-                    let end = context.loc / (8 * 1024 * 1024) * (8 * 1024 * 1024);
-                    if end > released {
-                        unsafe {
-                            mmap.as_ref().unwrap().unchecked_advise_range(
-                                memmap2::UncheckedAdvice::DontNeed,
-                                released,
-                                end - released,
-                            )?;
-                        }
-                        released = end;
-                    }
+    loop {
+        let mut zipper = mork_expr::ExprZipper::new(mork_expr::Expr { ptr: buffer.as_mut_ptr() });
+        let parsed = parser.sexpr(&mut context, &mut zipper);
+        context.variables.clear();
+        // Discard completed input pages in aligned batches; subsequent parsing
+        // only touches the suffix. The input file must stay unchanged.
+        #[cfg(unix)]
+        {
+            let end = context.loc / (8 * 1024 * 1024) * (8 * 1024 * 1024);
+            if end > released {
+                unsafe {
+                    mmap.as_ref().unwrap().unchecked_advise_range(
+                        memmap2::UncheckedAdvice::DontNeed, released, end - released,
+                    )?;
                 }
-                match parsed {
-                    Ok(()) => {
-                        if zipper.loc > u32::MAX as usize {
-                            return Err(io::Error::new(io::ErrorKind::InvalidData, "expression exceeds .paths length limit"));
-                        }
-                        *length = zipper.loc;
-                        Ok(true)
-                    }
-                    Err(ParserError::InputFinished) if zipper.loc == 0 => Ok(false),
-                    Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("mm2 byte {}: {error:?}", context.loc))),
-                }
-            },
-            |(_, buffer, length)| Some(&buffer[..*length]),
-        )?;
-        writer.flush()?;
-        stats
-    };
-    target.persist(output).map_err(|e| e.error)?;
-    Ok(stats.path_count)
+                released = end;
+            }
+        }
+        match parsed {
+            Ok(()) => visit(&buffer[..zipper.loc])?,
+            Err(ParserError::InputFinished) if zipper.loc == 0 => return Ok(()),
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("mm2 byte {}: {error:?}", context.loc))),
+        }
+    }
+}
+
+// Serialized paths may be arbitrary bytes. Check the expression boundaries before
+// passing them to the pointer-based unifier or text serializer.
+fn validate_expression(path: &[u8]) -> io::Result<()> {
+    let (mut at, mut pending, mut vars) = (0, 1, 0);
+    while pending > 0 {
+        let tag = mork_expr::maybe_byte_item(*path.get(at).ok_or(io::ErrorKind::InvalidData)?)
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        at += 1;
+        pending -= 1;
+        match tag {
+            Tag::Arity(n) => pending += n as usize,
+            Tag::SymbolSize(n) => at += n as usize,
+            Tag::NewVar if vars < 64 => vars += 1,
+            Tag::VarRef(i) if (i as usize) < vars => {}
+            _ => return Err(io::ErrorKind::InvalidData.into()),
+        }
+    }
+    if at != path.len() { return Err(io::ErrorKind::InvalidData.into()); }
+    Ok(())
 }
 
 fn upaths_to_paths(
@@ -5077,9 +5073,6 @@ fn paths_to_act(input: &Path, output: &Path, memory: usize) -> io::Result<usize>
 }
 
 fn json_upaths(input: &Path, output: &Path) -> io::Result<usize> {
-    if cfg!(feature = "interning") {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "JSON paths conversion requires inline symbols; rebuild without interning"));
-    }
     let file = File::open(input)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let target = tempfile::NamedTempFile::new_in(output.parent().unwrap_or(Path::new(".")))?;
@@ -6312,14 +6305,18 @@ enum Commands {
         aux_path: Vec<String>,
         output_path: Option<String>,
     },
+    /// Stream expressions through full unification and template application.
+    /// MM2/upaths preserve order and duplicates; paths/ACT produce sorted sets.
     #[command(arg_required_else_help = true)]
     Convert {
         #[arg(default_missing_value = "metta")]
         input_format: String,
         #[arg(default_missing_value = "metta")]
         output_format: String,
+        /// Expression in [arity] notation, e.g. '[3] p $ $'.
         #[arg(default_missing_value = "$")]
         pattern: String,
+        /// Expression in [arity] notation; _1, _2, ... refer to pattern variables.
         #[arg(default_missing_value = "_1")]
         template: String,
         #[arg(long, short='i', default_value_t = 1)]
@@ -6512,132 +6509,147 @@ fn main() {
             let output_path_extension = some_output_path.rfind(".").map(|i| &some_output_path[i+1..]);
             if output_path_extension.unwrap_or("") != output_format.as_str() { println!("output format {} does not coincide with the extension {:?}", output_format, output_path_extension); }
 
-            match (input_format.as_str(), output_format.as_str()) {
-                ("mm2" | "json", "upaths" | "paths" | "act") | ("metta", "upaths") | ("upaths", "paths" | "act") | ("paths", "act") => {
-                    let result = (|| -> io::Result<usize> {
-                        if pattern != "$" || template != "_1" {
-                            return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                                "streaming conversion requires pattern '$' and template '_1'"));
-                        }
-                        if xmx == 0 {
-                            return Err(io::Error::new(io::ErrorKind::InvalidInput, "--xmx must be at least 1 GiB"));
-                        }
-                        let memory = xmx.checked_mul(1024 * 1024 * 1024)
-                            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--xmx is too large"))?;
-                        let input = Path::new(&input_path);
-                        let output = Path::new(&some_output_path);
-                        match (input_format.as_str(), output_format.as_str()) {
-                            ("mm2" | "metta", "upaths") => mm2_to_upaths(input, output),
-                            ("json", "upaths") => json_upaths(input, output),
-                            ("paths", "act") => paths_to_act(input, output, memory),
-                            ("upaths", "paths") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                upaths_to_paths(input, output, memory, scratch.path())
-                            }
-                            ("mm2", "paths") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                let unordered = scratch.path().join("intermediate.upaths");
-                                mm2_to_upaths(input, &unordered)?;
-                                upaths_to_paths(&unordered, output, memory, scratch.path())
-                            }
-                            ("json", "paths") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                let unordered = scratch.path().join("intermediate.upaths");
-                                json_upaths(input, &unordered)?;
-                                upaths_to_paths(&unordered, output, memory, scratch.path())
-                            }
-                            ("upaths", "act") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                let sorted = scratch.path().join("intermediate.paths");
-                                upaths_to_paths(input, &sorted, memory, scratch.path())?;
-                                paths_to_act(&sorted, output, memory)
-                            }
-                            ("mm2", "act") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                let unordered = scratch.path().join("intermediate.upaths");
-                                let sorted = scratch.path().join("intermediate.paths");
-                                mm2_to_upaths(input, &unordered)?;
-                                upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
-                                fs::remove_file(unordered)?;
-                                paths_to_act(&sorted, output, memory)
-                            }
-                            ("json", "act") => {
-                                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
-                                let unordered = scratch.path().join("intermediate.upaths");
-                                let sorted = scratch.path().join("intermediate.paths");
-                                json_upaths(input, &unordered)?;
-                                upaths_to_paths(&unordered, &sorted, memory, scratch.path())?;
-                                fs::remove_file(unordered)?;
-                                paths_to_act(&sorted, output, memory)
-                            }
-                            _ => unreachable!(),
-                        }
-                    })();
-                    match result {
-                        Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },
-                        Err(error) => { eprintln!("conversion failed: {error}"); std::process::exit(1); }
-                    }
+            let result = (|| -> io::Result<usize> {
+                use mork_expr::{Expr, ExprEnv, VecSink};
+                match (input_format.as_str(), output_format.as_str()) {
+                    ("mm2" | "metta" | "json" | "upaths" | "paths" | "act",
+                     "mm2" | "metta" | "upaths" | "paths" | "act") => {}
+                    _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported conversion")),
                 }
-                ("metta", "metta" | "act" | "paths") => {
-                    let mut s = Space::new();
-                    let f = std::fs::File::open(&input_path).unwrap();
-                    let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                    if pattern == "$" && template == "_1" { s.add_all_sexpr(&*mmapf).unwrap(); }
-                    else { s.add_sexpr(&*mmapf, expr!(s, &*pattern), expr!(s, &*template)).unwrap(); }
-                    println!("done loading in memory");
-                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-
-                    match output_format.as_str() {
-                        "metta" => {
-                            let f = std::fs::File::create(&some_output_path).unwrap();
-                            let mut w = std::io::BufWriter::new(f);
-                            s.dump_all_sexpr(&mut w).unwrap();
+                if cfg!(feature = "interning") {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                        "streaming conversion requires inline symbols; rebuild without interning"));
+                }
+                if xmx == 0 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "--xmx must be at least 1 GiB"));
+                }
+                let memory = xmx.checked_mul(1024 * 1024 * 1024)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--xmx is too large"))?;
+                let input = Path::new(&input_path);
+                let output = Path::new(&some_output_path);
+                let identity = pattern == "$" && template == "_1";
+                let text_output = matches!(output_format.as_str(), "mm2" | "metta");
+                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                // JSON already has a streaming transcriber; feed its output through
+                // the same expression conversion as other serialized paths.
+                let json_paths = scratch.path().join("json.upaths");
+                let (format, input) = match input_format.as_str() {
+                    "json" => {
+                        json_upaths(input, &json_paths)?;
+                        ("upaths", json_paths.as_path())
+                    }
+                    format => (format, input),
+                };
+                match (format, output_format.as_str()) {
+                    ("paths", "act") if identity => return paths_to_act(input, output, memory),
+                    ("upaths", "paths") if identity => return upaths_to_paths(input, output, memory, scratch.path()),
+                    _ => {}
+                }
+                let space = Space::new();
+                let pattern = expr!(space, &*pattern);
+                let template = expr!(space, &*template);
+                let pat_vars = pattern.newvars() as u8;
+                let (mut pairs, mut stack, mut assignments, mut transformed) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                let mut stream = |emit: &mut dyn FnMut(&[u8]) -> io::Result<()>| -> io::Result<usize> {
+                    let mut count = 0;
+                    let mut visit = |path: &[u8]| -> io::Result<()> {
+                        if !identity || text_output { validate_expression(path)?; }
+                        if identity {
+                            emit(path)?;
+                        } else {
+                            pairs.clear();
+                            pairs.push((ExprEnv::new(0, pattern), ExprEnv::new(1, Expr { ptr: path.as_ptr().cast_mut() })));
+                            let Ok(bindings) = mork_expr::unify(&mut pairs) else { return Ok(()) };
+                            let Some((oi, ni)) = mork_expr::pattern_cycles_and_intros(
+                                pat_vars, &bindings, &mut stack, &mut assignments,
+                            ) else { return Ok(()) };
+                            transformed.clear();
+                            let mut sink = VecSink(&mut transformed);
+                            if !mork_expr::apply_e_clears_stacks_and_cycles_check!(
+                                0, oi, ni, template, &bindings, sink, stack, assignments
+                            ).2 { return Ok(()) }
+                            emit(&transformed)?;
+                        }
+                        count += 1;
+                        Ok(())
+                    };
+                    match format {
+                        "mm2" | "metta" => for_each_mm2(input, &mut visit)?,
+                        "upaths" | "paths" => {
+                            pathmap::paths_serialization::for_each_deserialized_path(
+                                BufReader::new(File::open(input)?), |_, path| visit(path),
+                            )?;
                         }
                         "act" => {
-                            s.backup_tree(some_output_path);
+                            let tree = pathmap::arena_compact::ArenaCompactTree::open_mmap(input)?;
+                            let mut zipper = tree.read_zipper();
+                            while zipper.to_next_val() { visit(zipper.path())?; }
                         }
-                        "paths" => {
-                            s.backup_paths(some_output_path);
-                        }
-                        _ => { unreachable!() }
+                        _ => unreachable!(),
                     }
-                }
-                ("paths", "metta" | "paths") => {
-                    assert_eq!(pattern, "$"); // todo use streaming interface instead of deserialize_paths
-                    assert_eq!(template, "_1"); // todo
-                    let mut s = Space::new();
-                    s.restore_paths(&input_path);
-                    println!("done loading in memory");
-                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-
-                    match output_format.as_str() {
-                        "metta" => {
-                            let f = std::fs::File::create(&some_output_path).unwrap();
-                            let mut w = std::io::BufWriter::new(f);
-                            s.dump_all_sexpr(&mut w).unwrap();
-                        }
-                        "paths" => { // todo can be streamed without loading into memory
-                            s.backup_paths(some_output_path);
-                        }
-                        _ => { unreachable!() }
+                    Ok(count)
+                };
+                let ordered = identity && matches!(format, "paths" | "act");
+                let directory = match (output_format.as_str(), ordered) {
+                    ("paths", false) | ("act", _) => scratch.path(),
+                    _ => output.parent().unwrap_or(Path::new(".")),
+                };
+                let target = tempfile::NamedTempFile::new_in(directory)?;
+                let mut writer = BufWriter::new(target.as_file());
+                let count = match output_format.as_str() {
+                    "mm2" | "metta" => {
+                        // The existing text serializer ignores Write errors; serialize one
+                        // expression to memory, then propagate the actual file write error.
+                        let mut text = Vec::new();
+                        stream(&mut |path| {
+                            text.clear();
+                            Expr { ptr: path.as_ptr().cast_mut() }.serialize2(&mut text,
+                                |s| std::str::from_utf8(s).expect("MM2 symbols must be UTF-8"),
+                                |i, _| Expr::VARNAMES[i as usize]);
+                            text.push(b'\n');
+                            writer.write_all(&text)
+                        })?
                     }
+                    "upaths" | "paths" | "act" => {
+                        let mut sink = pathmap::paths_serialization::paths_serialization_sink(&mut writer);
+                        stream(&mut |path| {
+                            if path.len() > u32::MAX as usize {
+                                return Err(io::Error::new(io::ErrorKind::InvalidData, "expression exceeds .paths length limit"));
+                            }
+                            // The sink consumes this slice before yielding and replaces it
+                            // before reading again on its next resume.
+                            let path = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(path) };
+                            if let CoroutineState::Complete(result) = Pin::new(&mut sink).resume(Some(path)) {
+                                result?;
+                                unreachable!("paths serializer only completes successfully after receiving None");
+                            }
+                            Ok(())
+                        })?;
+                        match Pin::new(&mut sink).resume(None) {
+                            CoroutineState::Complete(result) => result?.path_count,
+                            CoroutineState::Yielded(_) => unreachable!(),
+                        }
+                    }
+                    _ => unreachable!(),
+                };
+                writer.flush()?;
+                drop(writer);
+                match (output_format.as_str(), ordered) {
+                    ("paths", false) => upaths_to_paths(target.path(), output, memory, scratch.path()),
+                    ("act", true) => paths_to_act(target.path(), output, memory),
+                    ("act", false) => {
+                        let sorted = scratch.path().join("intermediate.paths");
+                        upaths_to_paths(target.path(), &sorted, memory, scratch.path())?;
+                        drop(target);
+                        paths_to_act(&sorted, output, memory)
+                    }
+                    _ => { target.persist(output).map_err(|e| e.error)?; Ok(count) }
                 }
-                ("json", "metta") => {
-                    let mut s = Space::new();
-                    let f = std::fs::File::open(&input_path).unwrap();
-                    let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                    s.load_json(&*mmapf);
-                    println!("done loading in memory");
-                    if instrumentation > 0 { println!("dumping {} expressions", s.btm.val_count()) }
-                    let f = std::fs::File::create(&some_output_path).unwrap();
-                    let mut w = std::io::BufWriter::new(f);
-                    s.dump_sexpr(expr!(s, &*pattern), expr!(s, &*template), &mut w);
-                }
-                // ("jsonl", "upaths") => {
-                //     #[cfg(all(feature = "nightly"))]
-                //     jsonl_upaths(input_path, some_output_path);
-                // }
-                (_, _) => { panic!("unsupported conversion") }
+            })();
+            match result {
+                Ok(count) => if instrumentation > 0 { println!("wrote {count} paths to {some_output_path}"); },
+                Err(error) => { eprintln!("conversion failed: {error}"); std::process::exit(1); }
             }
         }
     }

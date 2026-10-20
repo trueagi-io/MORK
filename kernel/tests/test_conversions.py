@@ -213,7 +213,7 @@ class ConversionTests(unittest.TestCase):
                 self.assertEqual(direct_act.read_bytes(), staged_act.read_bytes())
                 self.convert("json", "metta", source, expected)
                 self.convert("paths", "metta", direct_paths, actual)
-                self.assertEqual(actual.read_bytes(), expected.read_bytes())
+                self.assertEqual(set(actual.read_text().splitlines()), set(expected.read_text().splitlines()))
                 self.assertEqual(list(self.scratch.iterdir()), [])
 
     def test_shortcut_failures_preserve_output_and_clean_intermediates(self):
@@ -244,9 +244,121 @@ class ConversionTests(unittest.TestCase):
                 output = self.root / ("output." + target_format)
                 output.write_bytes(b"existing destination")
                 self.convert(source_format, target_format, source, output, xmx=0, success=False)
-                self.convert(source_format, target_format, source, output, pattern="(a)", success=False)
                 self.assertEqual(output.read_bytes(), b"existing destination")
                 self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_streaming_conversion_matrix(self):
+        source = self.root / "input.mm2"
+        source.write_text('(p z a) (p a z) (p z a) (v $x $x) () "two words"')
+        unordered = self.root / "input.upaths"
+        self.convert("mm2", "upaths", source, unordered)
+        records = read_paths(unordered)
+        for source_format in ["mm2", "metta", "upaths", "paths", "act"]:
+            input_path = self.root / ("matrix-input." + source_format)
+            self.convert("mm2", source_format, source, input_path)
+            expected = sorted(set(records)) if source_format in ["paths", "act"] else records
+            for target_format in ["mm2", "metta", "upaths", "paths", "act"]:
+                with self.subTest(source=source_format, target=target_format):
+                    output = self.root / ("matrix-output." + target_format)
+                    self.convert(source_format, target_format, input_path, output)
+                    check = self.root / "check.upaths"
+                    self.convert(target_format, "upaths", output, check)
+                    self.assertEqual(read_paths(check),
+                                     sorted(set(expected)) if target_format in ["paths", "act"] else expected)
+                    self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_full_unification_and_template_application(self):
+        # Variables on either side, repeated-variable constraints, and cyclic
+        # substitutions (including cycles discarded by a constant template).
+        cases = [
+            ("(p $x $x) (p a b) (p a a)", "[3] p a $", "[2] out _1", "(out a) (out b) (out a)"),
+            ("(p $x a) (p b b) (p a b)", "[3] p $ _1", "[2] out _1", "(out a) (out b)"),
+            ("(p $x (f $x))", "[3] p $ $", "[4] q _2 _1 _2", "(q (f $a) $a (f $a))"),
+            ("(p $x $x)", "[3] p $ $", "[4] q $ _1 _2", "(q $a $b $b)"),
+            ("(p (f $y) $y) (p a (f a))", "[3] p $ [2] f _1", "ok", "ok"),
+            ("(p z a) (p a z) (p z a)", "[3] p $ $", "[3] r _2 _1", "(r a z) (r z a) (r a z)"),
+            ("(p a) (q a)", "[2] missing $", "_1", ""),
+        ]
+        source = self.root / "source.mm2"
+        expected_file = self.root / "expected.mm2"
+        check = self.root / "check.upaths"
+        for data, pattern, template, expected in cases:
+            source.write_text(data)
+            expected_file.write_text(expected)
+            self.convert("mm2", "upaths", expected_file, check)
+            expected_records = read_paths(check)
+            for source_format in ["mm2", "upaths", "paths", "act"]:
+                input_path = self.root / ("unify-input." + source_format)
+                self.convert("mm2", source_format, source, input_path)
+                for target_format in ["mm2", "upaths", "paths", "act"]:
+                    with self.subTest(data=data, pattern=pattern, template=template,
+                                      source=source_format, target=target_format):
+                        output = self.root / ("unify-output." + target_format)
+                        self.convert(source_format, target_format, input_path, output,
+                                     pattern=pattern, template=template)
+                        self.convert(target_format, "upaths", output, check)
+                        actual = read_paths(check)
+                        self.assertEqual(sorted(set(actual)), sorted(set(expected_records)))
+                        if source_format in ["mm2", "upaths"] and target_format in ["mm2", "upaths"]:
+                            self.assertEqual(actual, expected_records)
+                        self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_json_streaming_transform(self):
+        source = self.root / "input.json"
+        source.write_text('{"p":["z","a"],"q":true}')
+        expected = self.root / "expected.mm2"
+        expected.write_text("(result z 0) (result a 1)")
+        check = self.root / "check.upaths"
+        self.convert("mm2", "upaths", expected, check)
+        records = read_paths(check)
+        for target_format in ["mm2", "metta", "upaths", "paths", "act"]:
+            with self.subTest(target=target_format):
+                output = self.root / ("json-output." + target_format)
+                self.convert("json", target_format, source, output,
+                             pattern="[2] p [2] $ $", template="[3] result _2 _1")
+                self.convert(target_format, "upaths", output, check)
+                self.assertEqual(read_paths(check),
+                                 sorted(records) if target_format in ["paths", "act"] else records)
+                self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_streaming_expansion_and_invalid_expression_paths(self):
+        source = self.root / "large.mm2"
+        term = "x"
+        for _ in range(11):
+            term = f"(f {term} {term})"
+        source.write_text(f"(p {term})")
+        output = self.root / "large-output.mm2"
+        self.convert("mm2", "mm2", source, output,
+                     pattern="[2] p $", template="[3] q _1 _1")
+        self.assertEqual(output.read_text(), f"(q {term} {term})\n")
+        source = self.root / "bad.paths"
+        for path in [b"", b"\x40", b"\xc3ab", b"\x02\xc1a", b"\x80", b"\x00\x00"]:
+            write_paths(source, [path])
+            for target_format, pattern in [("mm2", "$"), ("upaths", "[1] $")]:
+                with self.subTest(path=path, target=target_format):
+                    output.write_bytes(b"keep me")
+                    self.convert("paths", target_format, source, output,
+                                 pattern=pattern, success=False)
+                    self.assertEqual(output.read_bytes(), b"keep me")
+                    self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_streaming_same_file_and_error_preservation(self):
+        source = self.root / "same.mm2"
+        source.write_text("(p a) (p b) (q c)")
+        self.convert("mm2", "mm2", source, source, pattern="[2] p $", template="[2] r _1")
+        self.assertEqual(source.read_text(), "(r a)\n(r b)\n")
+        paths = self.root / "same.paths"
+        self.convert("mm2", "paths", source, paths)
+        self.convert("paths", "paths", paths, paths, pattern="[2] r $", template="one")
+        self.assertEqual(len(read_paths(paths)), 1)
+        for target_format in ["mm2", "upaths", "paths", "act"]:
+            output = self.root / ("preserved." + target_format)
+            output.write_bytes(b"keep me")
+            source.write_text("(p a) (p b) (")
+            self.convert("mm2", target_format, source, output, success=False,
+                         pattern="[2] p $", template="[2] r _1")
+            self.assertEqual(output.read_bytes(), b"keep me")
+            self.assertEqual(list(self.scratch.iterdir()), [])
 
     def test_xmx_accepts_gib_and_rejects_invalid_budgets(self):
         source = self.root / "input.mm2"
@@ -287,9 +399,9 @@ class ConversionTests(unittest.TestCase):
         help_text = self.invoke("convert", "--help").stdout
         for field in ["<PATTERN>", "<TEMPLATE>", "<INPUT_PATH>", "[OUTPUT_PATH]"]:
             self.assertIn(field, help_text)
-        output = self.root / "rejected.upaths"
-        self.convert("mm2", "upaths", source, output, pattern="(a)", success=False)
-        self.assertFalse(output.exists())
+        output = self.root / "filtered.upaths"
+        self.convert("mm2", "upaths", source, output, pattern="[1] a", template="matched")
+        self.assertEqual(read_paths(output), [b"\xc7matched"])
 
     @unittest.skipUnless(Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK),
                          "mork ACT queries currently require writable /dev/shm")

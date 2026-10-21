@@ -428,6 +428,82 @@ class ConversionTests(unittest.TestCase):
         self.convert("mm2", "upaths", source, output, pattern="[1] a", template="matched")
         self.assertEqual(read_paths(output), [b"\xc7matched"])
 
+    def test_run_formats_for_primary_auxiliary_and_output(self):
+        program = self.root / "program.mm2"
+        program.write_text("(exec 0 (, (in $x)) (, (out $x)))")
+        data = self.root / "data.json"
+        data.write_text('{"in":"a"}')
+        data_mm2 = self.root / "data.mm2"
+        self.convert("json", "mm2", data, data_mm2)
+        baseline = self.root / "baseline.mm2"
+        self.invoke("run", program, baseline, "--aux-path", data_mm2, "--steps", "2")
+        expected = baseline.read_bytes()
+        self.assertIn(b"(out a)", expected)
+        for format in ["mm2", "metta", "json", "upaths", "paths", "act"]:
+            data_file = data
+            program_file = program
+            if format != "json":
+                data_file = self.root / ("data-input." + format)
+                program_file = self.root / ("program-input." + format)
+                self.convert("json", format, data, data_file)
+                self.convert("mm2", format, program, program_file)
+            for primary, auxiliary in [(program_file, data_file), (data_file, program_file)]:
+                for output_format in ["mm2", "upaths"]:
+                    with self.subTest(format=format, primary=primary.name, output=output_format):
+                        output = self.root / ("run-result." + output_format)
+                        self.invoke("run", primary, output, "--aux-path", auxiliary, "--steps", "2")
+                        if output_format == "upaths":
+                            text = self.root / "decoded.mm2"
+                            self.convert("upaths", "mm2", output, text)
+                            self.assertEqual(text.read_bytes(), expected)
+                        else:
+                            self.assertEqual(output.read_bytes(), expected)
+
+    def test_run_mixed_auxiliary_formats_and_extensionless_files(self):
+        program = self.root / "program"
+        program.write_text("(exec 0 (, (in $x)) (, (out $x)))")
+        args = []
+        for format in ["mm2", "metta", "json", "upaths", "paths", "act"]:
+            source = self.root / (format + ".json")
+            source.write_text('{"in":"' + format + '"}')
+            auxiliary = source
+            if format != "json":
+                auxiliary = self.root / ("auxiliary." + format)
+                self.convert("json", format, source, auxiliary)
+            args += ["--aux-path", auxiliary]
+        output = self.root / "result"
+        self.invoke("run", program, output, *args, "--steps", "2")
+        for format in ["mm2", "metta", "json", "upaths", "paths", "act"]:
+            self.assertIn(f"(out {format})", output.read_text())
+        stdout = self.invoke("run", program, *args, "--steps", "2").stdout
+        self.assertIn("result:", stdout)
+        self.assertIn("(out json)", stdout)
+        empty = self.root / "empty.mm2"
+        empty.write_text("")
+        output = self.root / "empty.upaths"
+        self.invoke("run", empty, output, "--steps", "0")
+        self.assertEqual(read_paths(output), [])
+
+    def test_run_format_errors_preserve_output(self):
+        program = self.root / "program.mm2"
+        program.write_text("(exec 0 (, (in $x)) (, (out $x)))")
+        output = self.root / "preserved.mm2"
+        output.write_bytes(b"keep me")
+        bad = self.root / "bad.json"
+        bad.write_text('{"in":')
+        for source in [bad, self.root / "unknown.xyz"] + [
+                self.root / ("missing." + fmt) for fmt in ["mm2", "json", "upaths", "paths", "act"]]:
+            for args in [(source, output), (program, output, "--aux-path", source)]:
+                with self.subTest(source=source.name, args=args):
+                    result = self.invoke("run", *args, "--steps", "2", success=False)
+                    self.assertIn(str(source), result.stderr)
+                    self.assertEqual(output.read_bytes(), b"keep me")
+        output = self.root / "unsupported.paths"
+        output.write_bytes(b"keep me")
+        result = self.invoke("run", program, output, "--steps", "2", success=False)
+        self.assertIn("unsupported run output format", result.stderr)
+        self.assertEqual(output.read_bytes(), b"keep me")
+
     @unittest.skipUnless(Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK),
                          "mork ACT queries currently require writable /dev/shm")
     def test_streamed_act_is_queryable_on_disk(self):

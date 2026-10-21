@@ -585,7 +585,7 @@ impl Space {
         let mut wz = self.btm.write_zipper();
         let mut st = SpaceTranscriber{ count: 0, wz: &mut wz, pdp: ParDataParser::new(&self.sm) };
         let mut p = mork_frontend::json_parser::Parser::new(unsafe { std::str::from_utf8_unchecked(r) });
-        p.parse(&mut st).unwrap();
+        p.parse(&mut st).map_err(|e| e.to_string())?;
         Ok(st.count)
     }
 

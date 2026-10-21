@@ -6295,6 +6295,7 @@ enum Commands {
     },
     #[command(arg_required_else_help = true)]
     Run {
+        /// Input format is inferred from .mm2, .metta, .json, .upaths, .paths or .act.
         input_path: String,
         #[arg(long, default_value_t = 1000000000000000)]
         steps: usize,
@@ -6302,8 +6303,10 @@ enum Commands {
         instrumentation: usize,
         #[arg(long, default_value_t = false)]
         timing: bool,
+        /// Additional input; each file's extension selects its format.
         #[arg(long)]
         aux_path: Vec<String>,
+        /// Output format: .mm2/.metta or .upaths. No extension or no file means MM2.
         output_path: Option<String>,
     },
     /// Stream expressions through full unification and template application.
@@ -6467,19 +6470,41 @@ fn main() {
             println!("WARNING running in debug, if unintentional, build with --release");
             let mut s = Space::new();
             s.timing = timing;
-            let f = std::fs::File::open(&input_path).unwrap();
-            let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-            // Surface a load failure instead of running on a silently truncated space: the loader
-            // stops at the offending atom, so ignoring this reported success over a partial space.
-            if let Err(e) = s.add_all_sexpr(&*mmapf) {
-                eprintln!("{input_path}: {e}");
+            let output_format = output_path.as_ref().and_then(|p| Path::new(p).extension())
+                .and_then(OsStr::to_str).unwrap_or("mm2");
+            if !matches!(output_format, "mm2" | "metta" | "upaths") {
+                eprintln!("unsupported run output format: {output_format}");
                 std::process::exit(1);
             }
-            for repeated_aux_path in &aux_path {
-                let f = std::fs::File::open(&repeated_aux_path).unwrap();
-                let mmapf = unsafe { memmap2::Mmap::map(&f).unwrap() };
-                if let Err(e) = s.add_all_sexpr(&*mmapf) {
-                    eprintln!("{repeated_aux_path}: {e}");
+            for input_path in std::iter::once(&input_path).chain(&aux_path) {
+                let input = Path::new(input_path);
+                let format = input.extension().and_then(OsStr::to_str).unwrap_or("mm2");
+                let result = (|| -> io::Result<()> {
+                    match format {
+                        "mm2" | "metta" | "json" => {
+                            let file = File::open(input)?;
+                            let mmap = if file.metadata()?.len() == 0 { None }
+                                else { Some(unsafe { memmap2::Mmap::map(&file)? }) };
+                            let bytes = mmap.as_deref().unwrap_or(&[]);
+                            match format {
+                                "json" => s.load_json(bytes),
+                                _ => s.add_all_sexpr(bytes),
+                            }.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        }
+                        "upaths" | "paths" => {
+                            pathmap::paths_serialization::for_each_deserialized_path(
+                                BufReader::new(File::open(input)?),
+                                |_, path| { s.btm.insert(path, ()); Ok(()) },
+                            )?;
+                        }
+                        "act" => s.restore_tree(input)?,
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                            format!("unsupported run input format: {format}"))),
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    eprintln!("{input_path}: {error}");
                     std::process::exit(1);
                 }
             }
@@ -6495,9 +6520,18 @@ fn main() {
                 let res = String::from_utf8_lossy_owned(v);
                 println!("result:\n{res}");
             } else {
-                let f = std::fs::File::create(&output_path.unwrap()).unwrap();
-                let mut w = std::io::BufWriter::new(f);
-                s.dump_all_sexpr(&mut w).unwrap();
+                let result = (|| -> io::Result<()> {
+                    let mut writer = BufWriter::new(File::create(output_path.as_ref().unwrap())?);
+                    match output_format {
+                        "upaths" => { pathmap::paths_serialization::serialize_paths(s.btm.read_zipper(), &mut writer)?; }
+                        _ => { s.dump_all_sexpr(&mut writer).map_err(io::Error::other)?; }
+                    }
+                    writer.flush()
+                })();
+                if let Err(error) = result {
+                    eprintln!("{}: {error}", output_path.as_ref().unwrap());
+                    std::process::exit(1);
+                }
             }
         }
         Commands::Convert { input_format, output_format, pattern, template, instrumentation, xmx, temp_dir, input_path, output_path } => {

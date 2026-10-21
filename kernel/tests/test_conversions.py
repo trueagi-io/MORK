@@ -448,13 +448,13 @@ class ConversionTests(unittest.TestCase):
                 self.convert("json", format, data, data_file)
                 self.convert("mm2", format, program, program_file)
             for primary, auxiliary in [(program_file, data_file), (data_file, program_file)]:
-                for output_format in ["mm2", "upaths"]:
+                for output_format in ["mm2", "metta", "upaths", "paths", "act"]:
                     with self.subTest(format=format, primary=primary.name, output=output_format):
                         output = self.root / ("run-result." + output_format)
                         self.invoke("run", primary, output, "--aux-path", auxiliary, "--steps", "2")
-                        if output_format == "upaths":
+                        if output_format in ["upaths", "paths", "act"]:
                             text = self.root / "decoded.mm2"
-                            self.convert("upaths", "mm2", output, text)
+                            self.convert(output_format, "mm2", output, text)
                             self.assertEqual(text.read_bytes(), expected)
                         else:
                             self.assertEqual(output.read_bytes(), expected)
@@ -480,9 +480,12 @@ class ConversionTests(unittest.TestCase):
         self.assertIn("(out json)", stdout)
         empty = self.root / "empty.mm2"
         empty.write_text("")
-        output = self.root / "empty.upaths"
-        self.invoke("run", empty, output, "--steps", "0")
-        self.assertEqual(read_paths(output), [])
+        for output_format in ["upaths", "paths", "act"]:
+            output = self.root / ("empty." + output_format)
+            self.invoke("run", empty, output, "--steps", "0")
+            decoded = self.root / "empty-decoded.upaths"
+            self.convert(output_format, "upaths", output, decoded)
+            self.assertEqual(read_paths(decoded), [])
 
     def test_run_format_errors_preserve_output(self):
         program = self.root / "program.mm2"
@@ -498,7 +501,7 @@ class ConversionTests(unittest.TestCase):
                     result = self.invoke("run", *args, "--steps", "2", success=False)
                     self.assertIn(str(source), result.stderr)
                     self.assertEqual(output.read_bytes(), b"keep me")
-        output = self.root / "unsupported.paths"
+        output = self.root / "unsupported.json"
         output.write_bytes(b"keep me")
         result = self.invoke("run", program, output, "--steps", "2", success=False)
         self.assertIn("unsupported run output format", result.stderr)

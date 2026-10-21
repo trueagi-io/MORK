@@ -5013,28 +5013,6 @@ fn for_each_mm2(input: &Path, mut visit: impl FnMut(&[u8]) -> io::Result<()>) ->
     }
 }
 
-// Serialized paths may be arbitrary bytes. Check the expression boundaries before
-// passing them to the pointer-based unifier or text serializer.
-#[cfg(debug_assertions)]
-fn validate_expression(path: &[u8]) -> io::Result<()> {
-    let (mut at, mut pending, mut vars) = (0, 1, 0);
-    while pending > 0 {
-        let tag = mork_expr::maybe_byte_item(*path.get(at).ok_or(io::ErrorKind::InvalidData)?)
-            .map_err(|_| io::ErrorKind::InvalidData)?;
-        at += 1;
-        pending -= 1;
-        match tag {
-            Tag::Arity(n) => pending += n as usize,
-            Tag::SymbolSize(n) => at += n as usize,
-            Tag::NewVar if vars < 64 => vars += 1,
-            Tag::VarRef(i) if (i as usize) < vars => {}
-            _ => return Err(io::ErrorKind::InvalidData.into()),
-        }
-    }
-    if at != path.len() { return Err(io::ErrorKind::InvalidData.into()); }
-    Ok(())
-}
-
 fn upaths_to_paths(
     input: &Path,
     output: &Path,
@@ -6306,7 +6284,7 @@ enum Commands {
         /// Additional input; each file's extension selects its format.
         #[arg(long)]
         aux_path: Vec<String>,
-        /// Output format: .mm2/.metta or .upaths. No extension or no file means MM2.
+        /// Output format: .mm2/.metta, .upaths, .paths or .act. No extension or no file means MM2.
         output_path: Option<String>,
     },
     /// Stream expressions through full unification and template application.
@@ -6472,7 +6450,7 @@ fn main() {
             s.timing = timing;
             let output_format = output_path.as_ref().and_then(|p| Path::new(p).extension())
                 .and_then(OsStr::to_str).unwrap_or("mm2");
-            if !matches!(output_format, "mm2" | "metta" | "upaths") {
+            if !matches!(output_format, "mm2" | "metta" | "upaths" | "paths" | "act") {
                 eprintln!("unsupported run output format: {output_format}");
                 std::process::exit(1);
             }
@@ -6520,14 +6498,17 @@ fn main() {
                 let res = String::from_utf8_lossy_owned(v);
                 println!("result:\n{res}");
             } else {
-                let result = (|| -> io::Result<()> {
-                    let mut writer = BufWriter::new(File::create(output_path.as_ref().unwrap())?);
-                    match output_format {
-                        "upaths" => { pathmap::paths_serialization::serialize_paths(s.btm.read_zipper(), &mut writer)?; }
-                        _ => { s.dump_all_sexpr(&mut writer).map_err(io::Error::other)?; }
-                    }
-                    writer.flush()
-                })();
+                let result = match output_format {
+                    "act" => s.backup_tree(output_path.as_ref().unwrap()),
+                    _ => (|| -> io::Result<()> {
+                        let mut writer = BufWriter::new(File::create(output_path.as_ref().unwrap())?);
+                        match output_format {
+                            "upaths" | "paths" => { pathmap::paths_serialization::serialize_paths(s.btm.read_zipper(), &mut writer)?; }
+                            _ => { s.dump_all_sexpr(&mut writer).map_err(io::Error::other)?; }
+                        }
+                        writer.flush()
+                    })(),
+                };
                 if let Err(error) = result {
                     eprintln!("{}: {error}", output_path.as_ref().unwrap());
                     std::process::exit(1);
@@ -6596,7 +6577,7 @@ fn main() {
                     let mut visit = |path: &[u8]| -> io::Result<()> {
                         #[cfg(debug_assertions)]
                         if !identity || matches!(output_format.as_str(), "mm2" | "metta") {
-                            validate_expression(path)?;
+                            mork_expr::validate_expression(path)?;
                         }
                         if identity {
                             emit(path)?;

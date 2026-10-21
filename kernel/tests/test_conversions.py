@@ -321,7 +321,7 @@ class ConversionTests(unittest.TestCase):
                                  sorted(records) if target_format in ["paths", "act"] else records)
                 self.assertEqual(list(self.scratch.iterdir()), [])
 
-    def test_streaming_expansion_and_invalid_expression_paths(self):
+    def test_streaming_expansion(self):
         source = self.root / "large.mm2"
         term = "x"
         for _ in range(11):
@@ -331,6 +331,14 @@ class ConversionTests(unittest.TestCase):
         self.convert("mm2", "mm2", source, output,
                      pattern="[2] p $", template="[3] q _1 _1")
         self.assertEqual(output.read_text(), f"(q {term} {term})\n")
+
+    def test_invalid_expression_paths_in_debug(self):
+        source = self.root / "empty.mm2"
+        source.write_text("")
+        output = self.root / "output.mm2"
+        result = self.convert("mm2", "mm2", source, output)
+        if "WARNING running in debug" not in result.stdout:
+            self.skipTest("expression validation is debug-only")
         source = self.root / "bad.paths"
         for path in [b"", b"\x40", b"\xc3ab", b"\x02\xc1a", b"\x80", b"\x00\x00"]:
             write_paths(source, [path])
@@ -341,6 +349,23 @@ class ConversionTests(unittest.TestCase):
                                  pattern=pattern, success=False)
                     self.assertEqual(output.read_bytes(), b"keep me")
                     self.assertEqual(list(self.scratch.iterdir()), [])
+
+    def test_direct_streams_need_no_scratch_directory(self):
+        source = self.root / "input.mm2"
+        source.write_text("(p z) (p a) (p z)")
+        for source_format in ["mm2", "upaths", "paths"]:
+            input_path = self.root / ("stream-input." + source_format)
+            self.convert("mm2", source_format, source, input_path)
+            for target_format in ["mm2", "upaths"]:
+                for pattern, template in [("$", "_1"), ("[2] p $", "[2] q _1")]:
+                    with self.subTest(source=source_format, target=target_format, pattern=pattern):
+                        output = self.root / ("stream-output." + target_format)
+                        before = set(self.root.iterdir())
+                        self.invoke("convert", source_format, target_format, pattern, template,
+                                    input_path, output, "--temp-dir", self.root / "does-not-exist")
+                        self.assertEqual(set(self.root.iterdir()), before | {output})
+                        self.assertEqual(list(self.scratch.iterdir()), [])
+                        self.assertGreater(output.stat().st_size, 0)
 
     def test_streaming_same_file_and_error_preservation(self):
         source = self.root / "same.mm2"

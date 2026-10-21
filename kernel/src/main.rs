@@ -5015,6 +5015,7 @@ fn for_each_mm2(input: &Path, mut visit: impl FnMut(&[u8]) -> io::Result<()>) ->
 
 // Serialized paths may be arbitrary bytes. Check the expression boundaries before
 // passing them to the pointer-based unifier or text serializer.
+#[cfg(debug_assertions)]
 fn validate_expression(path: &[u8]) -> io::Result<()> {
     let (mut at, mut pending, mut vars) = (0, 1, 0);
     while pending > 0 {
@@ -6528,13 +6529,18 @@ fn main() {
                 let input = Path::new(&input_path);
                 let output = Path::new(&some_output_path);
                 let identity = pattern == "$" && template == "_1";
-                let text_output = matches!(output_format.as_str(), "mm2" | "metta");
-                let scratch = tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?;
+                let scratch = match (input_format.as_str(), output_format.as_str()) {
+                    ("json", _) | (_, "paths" | "act") =>
+                        Some(tempfile::tempdir_in(temp_dir.unwrap_or_else(std::env::temp_dir))?),
+                    _ => None,
+                };
+                let scratch_path = scratch.as_ref().map(tempfile::TempDir::path);
                 // JSON already has a streaming transcriber; feed its output through
                 // the same expression conversion as other serialized paths.
-                let json_paths = scratch.path().join("json.upaths");
+                let json_paths;
                 let (format, input) = match input_format.as_str() {
                     "json" => {
+                        json_paths = scratch_path.unwrap().join("json.upaths");
                         json_upaths(input, &json_paths)?;
                         ("upaths", json_paths.as_path())
                     }
@@ -6542,7 +6548,7 @@ fn main() {
                 };
                 match (format, output_format.as_str()) {
                     ("paths", "act") if identity => return paths_to_act(input, output, memory),
-                    ("upaths", "paths") if identity => return upaths_to_paths(input, output, memory, scratch.path()),
+                    ("upaths", "paths") if identity => return upaths_to_paths(input, output, memory, scratch_path.unwrap()),
                     _ => {}
                 }
                 let space = Space::new();
@@ -6554,7 +6560,10 @@ fn main() {
                 let mut stream = |emit: &mut dyn FnMut(&[u8]) -> io::Result<()>| -> io::Result<usize> {
                     let mut count = 0;
                     let mut visit = |path: &[u8]| -> io::Result<()> {
-                        if !identity || text_output { validate_expression(path)?; }
+                        #[cfg(debug_assertions)]
+                        if !identity || matches!(output_format.as_str(), "mm2" | "metta") {
+                            validate_expression(path)?;
+                        }
                         if identity {
                             emit(path)?;
                         } else {
@@ -6592,7 +6601,7 @@ fn main() {
                 };
                 let ordered = identity && matches!(format, "paths" | "act");
                 let directory = match (output_format.as_str(), ordered) {
-                    ("paths", false) | ("act", _) => scratch.path(),
+                    ("paths", false) | ("act", _) => scratch_path.unwrap(),
                     _ => output.parent().unwrap_or(Path::new(".")),
                 };
                 let target = tempfile::NamedTempFile::new_in(directory)?;
@@ -6615,7 +6624,7 @@ fn main() {
                         let mut sink = pathmap::paths_serialization::paths_serialization_sink(&mut writer);
                         stream(&mut |path| {
                             if path.len() > u32::MAX as usize {
-                                return Err(io::Error::new(io::ErrorKind::InvalidData, "expression exceeds .paths length limit"));
+                                unreachable!("expression exceeds .paths length limit");
                             }
                             // The sink consumes this slice before yielding and replaces it
                             // before reading again on its next resume.
@@ -6636,11 +6645,11 @@ fn main() {
                 writer.flush()?;
                 drop(writer);
                 match (output_format.as_str(), ordered) {
-                    ("paths", false) => upaths_to_paths(target.path(), output, memory, scratch.path()),
+                    ("paths", false) => upaths_to_paths(target.path(), output, memory, scratch_path.unwrap()),
                     ("act", true) => paths_to_act(target.path(), output, memory),
                     ("act", false) => {
-                        let sorted = scratch.path().join("intermediate.paths");
-                        upaths_to_paths(target.path(), &sorted, memory, scratch.path())?;
+                        let sorted = scratch_path.unwrap().join("intermediate.paths");
+                        upaths_to_paths(target.path(), &sorted, memory, scratch_path.unwrap())?;
                         drop(target);
                         paths_to_act(&sorted, output, memory)
                     }

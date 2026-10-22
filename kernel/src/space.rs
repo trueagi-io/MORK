@@ -135,7 +135,7 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                 if let Some(admitions) = admit 
                 && let Some((0,v)) = e.var_opt()
                 && (admitions.admit_tag_mask & (1<<v) != 0) {
-                    *m = m.and(&admitions.admit_masks[1<<v]);
+                    *m = m.and(&admitions.admit_masks[v as usize]);
                 }
             };
 
@@ -1260,10 +1260,7 @@ impl Space {
         let mut pat_args = Vec::with_capacity(n_factors);
         
 
-        let mut pat_e = ExprEnv::new(0, pat_expr);
-        Self::ADMIT_CONSTRAINTS.with_borrow(|r|if let Some(c) = r {pat_e.v = c.next_newvar});
-        pat_e.args(&mut pat_args);
-        // ExprEnv::new(0, pat_expr).args(&mut pat_args);
+        ExprEnv::new(0, pat_expr).args(&mut pat_args);
         
 
         trace!(target: "query_multi_i", "z3s {:?}", z3s.keys().collect::<Vec<_>>());
@@ -1370,7 +1367,6 @@ impl Space {
         }
 
         let constraints = Self::ADMIT_CONSTRAINTS.with_borrow(|r|*r);
-        
 
         BREAK.with_borrow_mut(|a| {
             if unsafe { setjmp(a) == 0 } {
@@ -1926,7 +1922,6 @@ impl Space {
                             nth+=1;
                             remaining >>= t+1;
                         }
-
                     }
 
 
@@ -1954,6 +1949,7 @@ impl Space {
                         buffer.clear();
                         let mut bs = mork_expr::VecSink(&mut buffer);
                         let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
+                        oi = toi;
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);
@@ -1962,6 +1958,10 @@ impl Space {
                 }
             }
         });
+
+        // Its very important that the admit constraints are cleared here, as sinks may use query_multi_raw, 
+        // calling coreferential_transition.
+        Self::ADMIT_CONSTRAINTS.set(None);
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
@@ -2002,18 +2002,24 @@ impl Space {
             if *tpl_expr.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { return Err("template functor can only be , or O") }
 
             
-            // #[cfg(feature="specialize_io")]
+            #[cfg(feature="specialize_io")]
             let res = match (*pat_expr.ptr.add(2), *tpl_expr.ptr.add(2)) {
                 (b'C', t @ (b'O' | b',') ) if matches!(byte_item(*pat_expr.ptr), Tag::Arity(3)) => {
-                    let admit_expr = Expr{ ptr : pat_expr.ptr.add(3)};
-                    let admit = match admit_constraint::build_admit_constraints(admit_expr, 0) {
+
+                    let pat_expr_ = Expr{ ptr : pat_expr.ptr.add(3)};
+
+                    let admit_expr = Expr{ ptr : pat_expr_.ptr.add(pat_expr_.span().len())};
+                    let admit = match admit_constraint::build_admit_constraints(admit_expr, pat_expr_.newvars() as u8) {
                         Ok(a)  => a,
                         Err(m) => {
                             trace!(target: "transform", "admit error : {:?}", m.to_string());
                             return Err("admit constraint syntax error");
                         }
                     };
-                    let pat_expr_ = Expr{ ptr : admit.end_ptr.cast_mut() };
+                    if admit.next_newvar != pat_expr_.newvars() as u8 {
+                        return Err("constraints may not introduce variables that are not in the pattern/source");
+                    }
+
                     if let Tag::Arity(i) = byte_item(*pat_expr_.ptr) { if i == 0 { return Err("pattern expression in constraint can not be empty"); } } else { return Err("pattern must be an expression, not a symbol or variables") }
                     if *pat_expr_.ptr.add(1) != item_byte(Tag::SymbolSize(1)) { return Err("pattern functor in constraint can only be , or I") }
 
@@ -2327,7 +2333,7 @@ mod admit_constraint {
                 let mut var_set = 0_u64;
                 match es.read() {
                     SourceItem::Tag(Tag::NewVar   ) => { var_set |= (1 << *next_newvar); *next_newvar += 1 },
-                    SourceItem::Tag(Tag::VarRef(r)) => { var_set |= (1 << r);},
+                    SourceItem::Tag(Tag::VarRef(r)) => { var_set |= (1 << r); },
                     SourceItem::Tag(Tag::Arity(a) ) => {
                         for each in 0..a {
                             match es.read() {
@@ -2570,23 +2576,23 @@ mod admit_constraint {
     impl Debug for AdmitConstraitItem {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "AdmitConstraitItem {{")?;
-            write!(f, "\n\tvar_id    : {}", self.var_id)?;
+            write!(f, "\n\tvar_id       : {}", self.var_id)?;
             match &self.match_ {
-                AdmitConstraitsItemMatch::All => write!(f, "\n\tmatch_   : All")?,
+                AdmitConstraitsItemMatch::All => write!(f, "\n\tmatch_       : All")?,
                 AdmitConstraitsItemMatch::Selection(self_) => {
-                    write!(f, "\n\tmatch_   : Selection {{")?;
+                    write!(f, "\n\tmatch_       : Selection {{")?;
 
 
                     if self_.match_var {
-                        write!(f, "\n\t  match_var : true,")?
+                        write!(f, "\n\t  match_var  : true,")?
                     }
                     if self_.symbols != 0 {
-                        write!(f, "\n\t  symbols   :")?;
+                        write!(f, "\n\t  symbols    :")?;
                         for b in self_.symbols.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
                         write!(f, ",");
                     }
                     if self_.tuples != 0 {
-                        write!(f, "\n\t  tuples    :")?;
+                        write!(f, "\n\t  tuples     :")?;
                         for b in self_.tuples.to_be_bytes() { write!(f, " {:0>8b}", b)?; }
                         write!(f, ",");
                     }
@@ -2594,7 +2600,7 @@ mod admit_constraint {
                 },
             }
             if self.bind_nonvar {
-                write!(f, "\n\t  bind_var  : true,")?
+                write!(f, "\n\tbind_nonvar  : true,")?
             }
             writeln!(f, "\n}}")
         }
@@ -2815,9 +2821,10 @@ mod admit_constraint {
                 (in aaa)
                 (in aaaa)
 
-                (exec 0 (C ( admit (, ($x (symbol (#)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (#)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -2837,9 +2844,10 @@ mod admit_constraint {
                 (in aaa)
                 (in aaaa)
 
-                (exec 0 (C ( admit (, ($x (symbol (# 2)) ) )
-                           )
+                (exec 0 (C
                            (, (in $x) )
+                           ( admit (, ($x (symbol (# 2)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -2860,9 +2868,10 @@ mod admit_constraint {
                 (in aaa)
                 (in aaaa)
     
-                (exec 0 (C ( admit (, ($x (symbol (# 2 4)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (# 2 4)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -2893,9 +2902,10 @@ mod admit_constraint {
     
                 (in aaaaaaaaaaa)
     
-                (exec 0 (C ( admit (, ($x (symbol (#..)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (#..)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -2926,9 +2936,10 @@ mod admit_constraint {
     
                 (in aaaaaaaaaaa)
     
-                (exec 0 (C ( admit (, ($x (symbol (#.. (2 4))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (#.. (2 4))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -2964,9 +2975,10 @@ mod admit_constraint {
     
                 (in aaaaaaaaaaa)
     
-                (exec 0 (C ( admit (, ($x (symbol (#.. (2 4) (7 10))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (#.. (2 4) (7 10))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3012,9 +3024,10 @@ mod admit_constraint {
                 (in aaaaaaaaaaa)
                 (in aaaaaaaaaaaa)
     
-                (exec 0 (C ( admit (, ($x (symbol (# 6 8) (#.. (2 4) (10 12))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (symbol (# 6 8) (#.. (2 4) (10 12))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3055,9 +3068,10 @@ mod admit_constraint {
                 (in (a a a))
                 (in (a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (#)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (#)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3077,9 +3091,10 @@ mod admit_constraint {
                 (in (a a a))
                 (in (a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (# 2)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (# 2)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3100,9 +3115,10 @@ mod admit_constraint {
                 (in (a a a))
                 (in (a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (# 2 4)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (# 2 4)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3133,9 +3149,10 @@ mod admit_constraint {
     
                 (in (a a a a a a a a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (#..)) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (#..)) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3166,9 +3183,10 @@ mod admit_constraint {
     
                 (in (a a a a a a a a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (#.. (2 4))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (#.. (2 4))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3204,9 +3222,10 @@ mod admit_constraint {
     
                 (in (a a a a a a a a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (#.. (2 4) (7 10))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (#.. (2 4) (7 10))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3252,9 +3271,10 @@ mod admit_constraint {
                 (in (a a a a a a a a a a a))
                 (in (a a a a a a a a a a a a))
     
-                (exec 0 (C ( admit (, ($x (tuple (# 6 8) (#.. (2 4) (10 12))) ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x (tuple (# 6 8) (#.. (2 4) (10 12))) ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3291,9 +3311,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x symbol ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x symbol ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3314,9 +3335,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x tuple ) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x tuple ) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3337,9 +3359,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x var) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x var) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3360,9 +3383,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x symbol tuple) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x symbol tuple) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3383,9 +3407,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x tuple var) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x tuple var) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3406,9 +3431,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x var symbol) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x var symbol) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3429,9 +3455,10 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x symbol tuple var) )
-                           )
+                (exec 0 (C 
                            (, (in $x) )
+                           ( admit (, ($x symbol tuple var) )
+                           )
                         )
                         (, (out $x))
                 )
@@ -3452,10 +3479,11 @@ mod admit_constraint {
                 (in (a))
                 (in $a)
     
-                (exec 0 (C ( admit (, ($x symbol tuple var) )
+                (exec 0 (C 
+                           (, (in $x) )
+                           ( admit (, ($x symbol tuple var) )
                              bind  (, ($x nonvar) )
                            )
-                           (, (in $x) )
                         )
                         (, (out $x))
                 )
@@ -3481,10 +3509,11 @@ mod admit_constraint {
                 (! (b))
                 (! $b)
 
-                (exec 0 (C ( admit (, ($x symbol var) )
+                (exec 0 (C 
+                           (, (in $x) (! $x) )
+                           ( admit (, ($x symbol var) )
                              bind  (, ($x nonvar) )
                            )
-                           (, (in $x) (! $x) )
                         )
                         (, (out $x))
                 )
@@ -3515,10 +3544,11 @@ mod admit_constraint {
                 (! ($b))
                 (! $b)
 
-                (exec 0 (C ( admit (, ($x tuple var) )
+                (exec 0 (C 
+                           (, (in $x) (! $x) )
+                           ( admit (, ($x tuple var) )
                              bind  (, ($x nonvar) )
                            )
-                           (, (in $x) (! $x) )
                         )
                         (, (out $x))
                 )
@@ -3541,10 +3571,11 @@ mod admit_constraint {
                 (in ($a))
                 (in $a)
     
-                (exec 0 (C ( admit (, )
+                (exec 0 (C 
+                           (, (in $x) )
+                           ( admit (, )
                              bind  (, ($x nonvar) )
                            )
-                           (, (in $x) )
                         )
                         (, (out $x))
                 )
@@ -3573,9 +3604,10 @@ mod admit_constraint {
                 (in ($b))
                 (in $b)
     
-                (exec 0 (C ( admit (, ($x symbol) ($y symbol))
-                           )
+                (exec 0 (C 
                            (I (!= (in $x) (in $y)) )
+                           ( admit (, ($x symbol) ($y symbol))
+                           )
                         )
                         (O (+ (out ($x $y)) ) )
                 )
@@ -3587,6 +3619,123 @@ mod admit_constraint {
             assert_eq!(&out, 
                 "(out (a b))\n(out (b a))\n"
             );
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn words(){
+            use std::{io::Read};
+
+            let mut words = String::with_capacity(1000000);
+            std::fs::File::open("/usr/share/dict/words").unwrap().read_to_string(&mut words);
+
+            let mut base_facts = String::new();
+            for each in words.split('\n') {
+                use std::fmt::Write;
+
+                // println!("{}", each);
+                if each == "" {continue;}
+                writeln!(base_facts, "(word {})", each);
+            }
+
+            base_facts.push_str("
+                (char-selection a)
+                (char-selection b)
+                (char-selection c)
+
+                (nth 0 ($0)             $0)
+                (nth 0 ($0 $1)          $0)
+                (nth 0 ($0 $1 $2)       $0)
+                (nth 0 ($0 $1 $2 $3)    $0)
+                (nth 0 ($0 $1 $2 $3 $4) $0)
+
+                (nth 1 ($0 $1)          $1)
+                (nth 1 ($0 $1 $2)       $1)
+                (nth 1 ($0 $1 $2 $3)    $1)
+                (nth 1 ($0 $1 $2 $3 $4) $1)
+
+                (nth 2 ($0 $1 $2)       $2)
+                (nth 2 ($0 $1 $2 $3)    $2)
+                (nth 2 ($0 $1 $2 $3 $4) $2)
+
+                (nth 3 ($0 $1 $2 $3)    $3)
+                (nth 3 ($0 $1 $2 $3 $4) $3)
+
+                (nth 4 ($0 $1 $2 $3 $4) $4)
+            ");
+
+            let slow_exec = b"
+                (exec 0 (, (word $x) ) 
+                        (O (pure (word-letters-1-3 $x $l) $l (explode_symbol $x)))
+                )
+            ";
+            let fast_exec = b"
+                (exec 0 (C  (, (word $x) )  (admit (, ($x (symbol (#.. (1 3)) )) ) ) )
+                        (O (pure (word-letters-1-3 $x $l) $l (explode_symbol $x)))
+                )
+            ";
+
+            let last_actions = b"
+                (exec 1 (, (word-letters-1-3 $x $y) ) (, (out !)) )
+                (exec 10 
+                         (, (char-selection $l0) (word-letters-1-3 $w $ls) (nth 0 $ls $l0)   )
+
+                         (, (out (($l0 word-1-3) $w) ) )
+                )
+            ";
+
+
+            let mut s0 = crate::space::Space::new();
+            s0.add_all_sexpr(base_facts.as_bytes());
+            s0.add_all_sexpr(slow_exec);
+            s0.add_all_sexpr(last_actions);
+            
+            let now0 = std::time::Instant::now();
+            s0.metta_calculus(100);
+            let elapsed0 = now0.elapsed();
+ 
+            let mut s1 = crate::space::Space::new();
+            s1.add_all_sexpr(base_facts.as_bytes());
+            s1.add_all_sexpr(fast_exec);
+            s1.add_all_sexpr(last_actions);
+
+            let now1 = std::time::Instant::now();
+            s1.metta_calculus(100);
+            let elapsed1 = now1.elapsed();
+            
+            println!("no constraints   time : {:?} ms\
+                    \n                 vals : {:?}\
+                                       ", elapsed0.as_millis(), s0.btm.val_count()
+            );
+            println!("with constraints time : {:?} ms\
+                    \n                 vals : {:?}\
+            ", elapsed1.as_millis(), s1.btm.val_count());
+
+        }
+
+        #[test]
+        fn wtf_error() {
+            let mut s = crate::space::Space::new();
+
+            s.add_all_sexpr(b"
+                (in a)
+                (in b)
+
+                (exec 0 (I (BTM (in $x)) )
+                        (O
+                        (pure (out (!! $e)) $e (explode_symbol $x))
+                        (+ (out $x))
+                        (+ (out (! $x)))
+                        )
+                )
+            ");
+
+            s.metta_calculus(100);
+
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
+
+            println!("{}", out);
         }
     }
 }

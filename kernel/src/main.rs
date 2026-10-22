@@ -3255,6 +3255,27 @@ fn sink_hexlife_symbolic() {
     // assert_eq!(res, "stupid\n")
 }
 
+fn transform_io_many_arguments() {
+    let mut s = Space::new();
+
+    s.add_all_sexpr(b"
+        (in a)
+        (in b)
+        (exec 0 (I (BTM (in $x)))
+                (O
+                    (pure (out (! $a)) $a (' $x))
+                    (pure (out (? $b)) $b (' $x))
+                )
+        )
+    ");
+    s.metta_calculus(100);
+    let mut out = String::new();
+    s.dump_all_sexpr(unsafe { out.as_mut_vec() });
+
+    assert_eq!("(in a)\n(in b)\n(out (! a))\n(out (! b))\n(out (? a))\n(out (? b))\n", &out);
+}
+
+
 fn bench_sink_hexlife_axial() {
     let mut s = Space::new();
 
@@ -6259,6 +6280,8 @@ fn main() {
             }
         }
         Commands::Test { .. } => {
+            transform_io_many_arguments();
+
             #[cfg(not(debug_assertions))]
             println!("WARNING running in release or -O3, if unintentional, build without --release and with the alternative .cargo rustflags");
             // variables_in_priority();

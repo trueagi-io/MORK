@@ -1877,6 +1877,7 @@ impl Space {
                         buffer.clear();
                         let mut bs = mork_expr::VecSink(&mut buffer);
                         let (toi, _, true) = mork_expr::apply_e_clears_stacks_and_cycles_check!(0,oi,ni,*template,bindings,bs,astack,ass) else { continue 'writes; };
+                        oi = toi;
 
                         trace!(target: "transform", "U {i} out {:?}", Expr{ ptr: buffer.as_mut_ptr() });
                         sinks[i].sink(std::iter::once(wz), &buffer[..]);

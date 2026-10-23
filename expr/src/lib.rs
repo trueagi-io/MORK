@@ -145,6 +145,29 @@ pub const fn maybe_byte_item(b: u8) -> Result<Tag, u8> {
     else { return Err(b) }
 }
 
+/// Check that a byte slice encodes exactly one expression with valid variable references.
+/// Debug-only: pointer-based expression consumers assume well-formed input in release builds.
+#[cfg(debug_assertions)]
+pub fn validate_expression(path: &[u8]) -> std::io::Result<()> {
+    use std::io;
+    let (mut at, mut pending, mut vars) = (0, 1, 0);
+    while pending > 0 {
+        let tag = maybe_byte_item(*path.get(at).ok_or(io::ErrorKind::InvalidData)?)
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        at += 1;
+        pending -= 1;
+        match tag {
+            Tag::Arity(n) => pending += n as usize,
+            Tag::SymbolSize(n) => at += n as usize,
+            Tag::NewVar if vars < 64 => vars += 1,
+            Tag::VarRef(i) if (i as usize) < vars => {}
+            _ => return Err(io::ErrorKind::InvalidData.into()),
+        }
+    }
+    if at != path.len() { return Err(io::ErrorKind::InvalidData.into()); }
+    Ok(())
+}
+
 // pub fn str_item(ptr: *mut u8) -> (usize, Result<Tag, &[u8]>) {
 //     let offset = 0;
 //     loop {

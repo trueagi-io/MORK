@@ -1,0 +1,65 @@
+;; @expect
+;; @steps  60
+;; @desc   The two source-level transforms, each computed BOTH ways in one program so the
+;; @desc   expected space pins them equal: a chain query naively and Yannakakis-staged, and a
+;; @desc   transitive closure naively and semi-naively. If a staging ever stops agreeing with the
+;; @desc   form it replaces, this program's space changes.
+
+;; ---------------------------------------------------------------- the chain query R-S-T
+(R a p)
+(R b p)
+(R c q)
+(R d r)
+(S p u)
+(S p v)
+(S q u)
+(S r dead)
+(T u m)
+(T v n)
+
+;; naive: one join over all three relations
+(exec (0 0) (, (R $x $y) (S $y $z) (T $z $w)) (, (outN $x $w)))
+
+;; Yannakakis-staged: project, semi-join bottom-up, semi-join top-down, then join the reduced
+;; relations. Every projection is `(, (Rel $key $_))` -- the shape the projection cut answers
+;; with one witness per key -- which is why the reduced relations are emitted KEY-FIRST: a
+;; projection off a key-last relation would be `(, (Rel $_ $key))`, where the don't-care is not
+;; trailing and must keep enumerating.
+(exec (1 0) (, (T $z $_))            (, (Tz $z)))
+(exec (1 1) (, (S $y $z) (Tz $z))    (, (S1 $y $z)))
+(exec (1 2) (, (S1 $y $_))           (, (S1y $y)))
+(exec (1 3) (, (R $x $y) (S1y $y))   (, (R1 $y $x)))
+(exec (1 4) (, (R1 $y $_))           (, (R1y $y)))
+(exec (1 5) (, (S1 $y $z) (R1y $y))  (, (S2 $z $y)))
+(exec (1 6) (, (S2 $z $_))           (, (S2z $z)))
+(exec (1 7) (, (T $z $w) (S2z $z))   (, (T1 $z $w)))
+(exec (1 8) (, (R1 $y $x) (S2 $z $y) (T1 $z $w)) (, (outS $x $w)))
+
+;; ---------------------------------------------------------------- transitive closure
+(edge g0 g1)
+(edge g1 g2)
+(edge g2 g3)
+(edge g3 g4)
+
+;; NOTE on loc ordering: execs run in byte order of the whole atom, and a SYMBOL loc sorts
+;; above a COMPOUND one -- `(exec (2 0) ..)` would run AFTER `(exec (2 (1 Z)) ..)`, so the seed
+;; would fire after the loop and the loop would see an empty relation. Every loc here is the
+;; same shape so the intended order is the numeric one.
+;;
+;; Both loops carry Peano fuel. A self-reproducing exec has no termination condition of its own,
+;; so an unbounded one would monopolise every remaining step and the family after it would never
+;; run at all.
+(fuelN (S (S (S (S (S Z))))))
+(fuelD (S (S (S (S (S Z))))))
+
+;; naive: every iteration re-joins the WHOLE path relation with edge
+(exec (2 (0 0)) (, (edge $x $y)) (, (pathN $x $y)))
+(exec (2 (1 Z)) (, (exec (2 (1 $l)) $p $t) (fuelN (S $k)) (pathN $x $y) (edge $y $z))
+                (O (+ (exec (2 (1 (S $l))) $p $t)) (+ (pathN $x $z))
+                   (+ (fuelN $k)) (- (fuelN (S $k)))))
+
+;; semi-naive: every iteration joins only the frontier the previous one produced
+(exec (3 (0 0)) (, (edge $x $y)) (, (front Z $x $y) (pathD $x $y)))
+(exec (3 (1 Z)) (, (exec (3 (1 $l)) $p $t) (fuelD (S $k)) (front $l $x $y) (edge $y $z))
+                (O (+ (exec (3 (1 (S $l))) $p $t)) (+ (front (S $l) $x $z)) (+ (pathD $x $z))
+                   (+ (fuelD $k)) (- (fuelD (S $k)))))

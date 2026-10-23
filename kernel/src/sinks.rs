@@ -131,6 +131,17 @@ pub(crate) trait Sink {
     fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w;
 }
 
+/// Return the prefix of the sink's template, rather than the prefix of the whole sink
+/// expression. A constant template has no proper prefix, so leave its final byte outside
+/// the requested root; the reduction sinks write paths below that root.
+fn sink_template_prefix(e: Expr, template_offset: usize) -> &'static [u8] {
+    let template = Expr { ptr: unsafe { e.ptr.add(template_offset) } };
+    unsafe { template.prefix().unwrap_or_else(|_| {
+        let span = template.span();
+        slice_from_raw_parts(template.ptr, span.len() - 1)
+    }).as_ref().unwrap() }
+}
+
 pub struct CompatSink { e: Expr, changed: bool }
 
 impl Sink for CompatSink {
@@ -505,15 +516,12 @@ impl Sink for WASMSink {
 
         WASMSink { e, skip: 1 + 1+4 + program_e.span().len(), changed: false, module, store, instance }
     }
-    fn request(&self) -> impl Iterator<Item=&'static [u8]> {
-        // let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[self.skip..];
-        // trace!(target: "sink", "wasm requesting {}", serialize(p));
-        // std::iter::once(p)
+    fn request(&self) -> impl Iterator<Item=WriteResourceRequest> {
         static empty: [u8; 0] = [];
-        std::iter::once(&empty[..])
+        std::iter::once(WriteResourceRequest::BTM(&empty[..]))
     }
-    fn sink<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
-        let mut wz = it.next().unwrap();
+    fn sink<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, path: &[u8]) where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         let mpath = &path[self.skip+wz.root_prefix_path().len()..];
         trace!(target: "sink", "wasm at '{}' sinking raw '{}'", serialize(wz.root_prefix_path()), serialize(path));
         trace!(target: "sink", "wasm input '{}'", serialize(mpath));
@@ -525,7 +533,9 @@ impl Sink for WASMSink {
                 let omem = self.instance.get_memory(&mut self.store, "out").unwrap().data(&mut self.store);
                 let ospan = unsafe { Expr{ ptr: omem.as_ptr().cast_mut() }.span().as_ref().unwrap() };
                 trace!(target: "sink", "wasm output '{}'", serialize(ospan));
-                wz.move_to_path(ospan);
+                let root_len = wz.root_prefix_path().len();
+                debug_assert!(ospan.starts_with(wz.root_prefix_path()));
+                wz.move_to_path(&ospan[root_len..]);
                 self.changed |= wz.set_val(()).is_none();
             }
             Err(e) => {
@@ -534,7 +544,7 @@ impl Sink for WASMSink {
         }
 
     }
-    fn finalize<'w, 'a, 'k, It: Iterator<Item=&'w mut WriteZipperUntracked<'a, 'k, ()>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w  {
+    fn finalize<'w, 'a, 'k, It: Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, _it: It) -> bool where 'a : 'w, 'k : 'w  {
         trace!(target: "sink", "wasm finalizing");
         self.changed
     }
@@ -550,7 +560,7 @@ impl Sink for CountSink {
         CountSink { e, unique: PathMap::new() }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[7..];
+        let p = sink_template_prefix(self.e, 7);
         trace!(target: "sink", "count requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -586,7 +596,7 @@ impl Sink for CountSink {
                 if descended == cnt_str.len() {
                     let fixed = &prz.path()[..prz.path().len()-(1+cnt_str.len())];
                     trace!(target: "sink", "fixed guard {}", serialize(fixed));
-                    wz.move_to_path(fixed);
+                    wz.move_to_path(&fixed[wz.root_prefix_path().len()..]);
                     wz.set_val(());
                     changed |= true;
                 }
@@ -595,7 +605,7 @@ impl Sink for CountSink {
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
                 trace!(target: "sink", "ignored guard {}", serialize(ignored));
-                wz.move_to_path(ignored);
+                wz.move_to_path(&ignored[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 changed |= true;
                 prz.ascend_byte();
@@ -629,7 +639,7 @@ impl Sink for HashSink {
         Self { e, unique: PathMap::new() }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[6..];
+        let p = sink_template_prefix(self.e, 6);
         trace!(target: "sink", "hash requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -675,7 +685,7 @@ impl Sink for HashSink {
                     if fixed_number == &cnt_str[..] {
                         let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
                         trace!(target: "sink", "fixed payload {}", serialize(fixed));
-                        wz.move_to_path(fixed);
+                        wz.move_to_path(&fixed[wz.root_prefix_path().len()..]);
                         wz.set_val(());
                         changed |= true;
                     }
@@ -688,7 +698,7 @@ impl Sink for HashSink {
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
                 trace!(target: "sink", "ignored guard {}", serialize(ignored));
-                wz.move_to_path(ignored);
+                wz.move_to_path(&ignored[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 changed |= true;
                 prz.ascend_byte();
@@ -726,7 +736,7 @@ impl Sink for AndSink {
         Self { e, unique: PathMap::new() }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
+        let p = sink_template_prefix(self.e, 5);
         trace!(target: "sink", "and requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -778,7 +788,7 @@ impl Sink for AndSink {
                     if fixed_number == &cnt_str[..] {
                         let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
                         trace!(target: "sink", "fixed payload {}", serialize(fixed));
-                        wz.move_to_path(fixed);
+                        wz.move_to_path(&fixed[wz.root_prefix_path().len()..]);
                         wz.set_val(());
                         changed |= true;
                     }
@@ -791,7 +801,7 @@ impl Sink for AndSink {
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
                 trace!(target: "sink", "ignored guard {}", serialize(ignored));
-                wz.move_to_path(ignored);
+                wz.move_to_path(&ignored[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 changed |= true;
                 prz.ascend_byte();
@@ -836,7 +846,7 @@ impl Sink for SumSink {
         SumSink { e, unique: PathMap::new() }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[5..];
+        let p = sink_template_prefix(self.e, 5);
         trace!(target: "sink", "sum requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -887,7 +897,7 @@ impl Sink for SumSink {
                     if fixed_number == cnt_str.as_bytes() {
                         let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
                         trace!(target: "sink", "fixed payload {}", serialize(fixed));
-                        wz.move_to_path(fixed);
+                        wz.move_to_path(&fixed[wz.root_prefix_path().len()..]);
                         wz.set_val(());
                         changed |= true;
                     }
@@ -900,7 +910,7 @@ impl Sink for SumSink {
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
                 trace!(target: "sink", "ignored guard {}", serialize(ignored));
-                wz.move_to_path(ignored);
+                wz.move_to_path(&ignored[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 changed |= true;
                 prz.ascend_byte();
@@ -978,7 +988,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         Self { e, unique: PathMap::new(), boo : PhantomData }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        let p = &unsafe { self.e.prefix().unwrap_or_else(|x| { let s = self.e.span(); slice_from_raw_parts(self.e.ptr, s.len() - 1) }).as_ref().unwrap() }[2+Reduction::NAME.len()..];
+        let p = sink_template_prefix(self.e, 2 + Reduction::NAME.len());
         trace!(target: "sink", "{} requesting {}", Reduction::NAME, serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }
@@ -1029,7 +1039,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                     if fixed_number == min_str.as_bytes() {
                         let fixed = &prz.origin_path()[..prz.origin_path().len()-(1+size as usize)];
                         trace!(target: "sink", "fixed payload {}", serialize(fixed));
-                        wz.move_to_path(fixed);
+                        wz.move_to_path(&fixed[wz.root_prefix_path().len()..]);
                         wz.set_val(());
                         changed |= true;
                     }
@@ -1042,7 +1052,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
             if prz.descend_to_existing_byte(item_byte(Tag::NewVar)) {
                 let ignored = &prz.path()[..prz.path().len()-1];
                 trace!(target: "sink", "ignored guard {}", serialize(ignored));
-                wz.move_to_path(ignored);
+                wz.move_to_path(&ignored[wz.root_prefix_path().len()..]);
                 wz.set_val(());
                 changed |= true;
                 prz.ascend_byte();
@@ -1092,20 +1102,7 @@ impl Sink for PureSink {
         PureSink { e, unique: PathMap::new(), scope }
     }
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest> {
-        // The root has to contain every path this sink writes, and what it writes are
-        // instantiations of the template alone. Taking the prefix of the whole
-        // `(pure <template> <pattern> <call>)` runs past the template and into the
-        // pattern and call whenever the template is constant, which leaves the root
-        // longer than what gets emitted. The template sits at offset 6, after
-        // `[Arity(4)][SymbolSize(4)]pure`.
-        let tpl = Expr { ptr: unsafe { self.e.ptr.add(6) } };
-        let p = unsafe { tpl.prefix().unwrap_or_else(|_| {
-            // A constant template is its own prefix, so keep the root one byte above
-            // it; the arms here emit at `absolute[root_prefix_path().len()..]` and need
-            // that to be non-empty.
-            let s = tpl.span();
-            slice_from_raw_parts(tpl.ptr, s.len() - 1)
-        }).as_ref().unwrap() };
+        let p = sink_template_prefix(self.e, 6);
         trace!(target: "sink", "pure requesting {}", serialize(p));
         std::iter::once(WriteResourceRequest::BTM(p))
     }

@@ -102,9 +102,14 @@ impl EvalScope {
                     let top_frame = self.stack.last_mut().unwrap();
                     let e = mork_expr::Expr { ptr: unsafe { self.expr.ptr.cast_mut().add(self.expr.position) } };
                     let mut src = item_source(e);
-                    while let CoroutineState::Yielded(i) = std::pin::pin!(&mut src).resume(()) {
-                        top_frame.sink.write(i)?;
-                    }
+                    let len = loop {
+                        match std::pin::pin!(&mut src).resume(()) {
+                            CoroutineState::Yielded(i) => top_frame.sink.write(i)?,
+                            CoroutineState::Complete(len) => break len,
+                        }
+                    };
+                    // step over the quoted argument, so its siblings are read from after it
+                    self.expr.position += len;
                 } else {
                     let mut frame = StackFrame {
                         // yes this is just get_alloc but Rust is stupid

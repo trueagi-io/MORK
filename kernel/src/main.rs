@@ -1189,6 +1189,38 @@ fn sink_pure_quote_collapse_symbol() {
     assert_eq!(res, "(myconcat _foo_bar)\n");
 }
 
+fn sink_pure_multiple_quotes() {
+    let mut s = Space::new();
+
+    // A quote copies its argument into the sink, and the evaluator has to step over that
+    // argument as well. When it doesn't, whatever follows the quote is read from inside the
+    // quoted term: a quoted symbol gets read a second time in place of its sibling (exec 0, 2
+    // and 3), and a quoted list gets evaluated as a call to its own head, which fails and
+    // drops the result (exec 1). A quote in last position hid this, as nothing is read after it.
+    const SPACE_EXPRS: &str = r#"
+(exec 0 (,) (O (pure $r $r (tuple Q0 (' a) (' b)))))
+(exec 1 (,) (O (pure $r $r (tuple Q1 (' (x y)) (' z)))))
+(exec 2 (,) (O (pure $r $r (tuple Q2 (tuple (' a)) b))))
+(exec 3 (,) (O (pure $r $r (tuple Q3 (' a) (reverse_symbol cb)))))
+    "#;
+
+    s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
+
+    let mut t0 = Instant::now();
+    let steps = s.metta_calculus(1000000000000000);
+    println!("elapsed {} steps {} size {}", t0.elapsed().as_millis(), steps, s.btm.val_count());
+
+    let mut v = vec![];
+    s.dump_sexpr(expr!(s, "$"), expr!(s, "_1"), &mut v);
+    let dumped = String::from_utf8_lossy_owned(v);
+    let mut lines: Vec<&str> = dumped.lines().filter(|l| !l.is_empty()).collect();
+    lines.sort();
+    let res = lines.join("\n");
+
+    println!("result: {res}");
+    assert_eq!(res, "(Q0 a b)\n(Q1 (x y) z)\n(Q2 (a) b)\n(Q3 a bc)");
+}
+
 fn sink_pure_explode_collapse_ident() {
     let mut s = Space::new();
 
@@ -6350,6 +6382,7 @@ fn main() {
             sink_pure_dynamic_subformula();
             sink_pure_quoted_variable_identity();
             sink_pure_quote_collapse_symbol();
+            sink_pure_multiple_quotes();
             sink_pure_explode_collapse_ident();
             sink_pure_ignored_guard_addressing();
             sink_bass64url_ident();

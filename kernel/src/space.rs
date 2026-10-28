@@ -135,12 +135,12 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                 if let Some(admitions) = admit 
                 && let Some((0,v)) = e.var_opt()
                 && (admitions.admit_tag_mask & (1<<v) != 0) {
+                    #[cfg(test)] admit_constraint::admit_tests::TEST_ONLY_CONSTRAINT_COUNTER.with_borrow_mut(|c| if let Some(count) = c { *count += 1 });
                     *m = m.and(&admitions.admit_masks[v as usize]);
                 }
             };
 
             let mut child_mask = loc.child_mask();
-            constraint_filter(e,&mut child_mask);
 
             macro_rules! vs {
                 ($e:expr, $nv:expr) => {{
@@ -175,6 +175,8 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
 
             match byte_item(e_byte) {
                 Tag::NewVar => {
+                    constraint_filter(e,&mut child_mask);
+
                     let restore = if e.n == 0 {
                         let idx = e.v as usize;
                         if references.len() <= idx { references.resize(idx + 1, u32::MAX) }
@@ -227,7 +229,20 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
                         // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv::new(ZIPPER_PATH_NAMESPACE, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
+
+                        let matched_ptr = loc.path().as_ptr().cast_mut().offset(references[i as usize] as _);
+                        match unsafe { byte_item(*matched_ptr) } {
+                            Tag::NewVar | Tag::VarRef(_) => { 
+                                // [Remy]: the idea here is that we make use of the fact that the `0` namespace __restores__ the state of a reference position.
+                                // We try to match again, with the hope that we will become more specific, and activate the constrain filter again.
+                                ExprEnv::new(0, Expr { ptr: (&raw const mork_expr::NEW_VAR_EXPR_BYTES[0]).cast_mut() })
+                            }
+                            _                            => {
+                                ExprEnv::new(ZIPPER_PATH_NAMESPACE, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
+                            }
+                        }
+                        
+                        //ExprEnv::new(ZIPPER_PATH_NAMESPACE, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
                         ANON_NV
@@ -2622,12 +2637,13 @@ mod admit_constraint {
 
 
     #[cfg(test)]
-    mod admit_tests {
-        use eval_ffi::EvalError;
-    use mork_expr::item_byte;
+    pub(crate) mod admit_tests {
 
-    use crate::expr;
-    use super::{AdmitConstraitItem, AdmitConstraitsItemMatch, AdmitConstraitsSelection, GRAMMAR, build_admit_constraints};
+        use eval_ffi::EvalError;
+        use mork_expr::item_byte;
+
+        use crate::expr;
+        use super::{AdmitConstraitItem, AdmitConstraitsItemMatch, AdmitConstraitsSelection, GRAMMAR, build_admit_constraints};
 
 
         fn eval_error_str<'a>(e : EvalError)->&'a str {
@@ -3602,7 +3618,6 @@ mod admit_constraint {
                 (in b)
                 (in (b))
                 (in ($b))
-                (in $b)
     
                 (exec 0 (C 
                            (I (!= (in $x) (in $y)) )
@@ -3632,8 +3647,6 @@ mod admit_constraint {
             let mut base_facts = String::new();
             for each in words.split('\n') {
                 use std::fmt::Write;
-
-                // println!("{}", each);
                 if each == "" {continue;}
                 writeln!(base_facts, "(word {})", each);
             }
@@ -3702,40 +3715,178 @@ mod admit_constraint {
             let now1 = std::time::Instant::now();
             s1.metta_calculus(100);
             let elapsed1 = now1.elapsed();
-            
-            println!("no constraints   time : {:?} ms\
-                    \n                 vals : {:?}\
-                                       ", elapsed0.as_millis(), s0.btm.val_count()
-            );
-            println!("with constraints time : {:?} ms\
-                    \n                 vals : {:?}\
-            ", elapsed1.as_millis(), s1.btm.val_count());
 
+            let mut out = String::new();
+            s1.dump_sexpr(expr!(s1, "[2] out $"), expr!(s1, "[2] out _1"), unsafe { out.as_mut_vec() });
+            println!("{}", out);
+
+            // [Remy]: this is conservative, on my system it's closer to a 50x difference
+            assert!(elapsed0.as_micros()/elapsed1.as_micros() > 20);
+            assert!(s0.btm.val_count() > s1.btm.val_count());
         }
 
+        #[cfg(test)]
+        thread_local! { pub(crate) static TEST_ONLY_CONSTRAINT_COUNTER : std::cell::RefCell<Option<usize>> = std::cell::RefCell::new(None); }
+
+        #[cfg(test)]
         #[test]
-        fn wtf_error() {
+        fn ref_hits_constraint_too() {
             let mut s = crate::space::Space::new();
 
             s.add_all_sexpr(b"
-                (in a)
-                (in b)
+                (in0 (a))
+                (in0 $a)
 
-                (exec 0 (I (BTM (in $x)) )
-                        (O
-                        (pure (out (!! $e)) $e (explode_symbol $x))
-                        (+ (out $x))
-                        (+ (out (! $x)))
+                (in1 b)
+                (in1 (b))
+
+                (in2 a)
+                (in2 b)
+                (in2 c)
+
+                (exec 0
+                    (C  (, (in0 $x) (in1 $x) (in2 $x) )
+                        ( admit (, ($x symbol var) )
+                          bind  (, ($x nonvar) )
                         )
+                    )
+                    (, (out $x) )
                 )
             ");
 
+            TEST_ONLY_CONSTRAINT_COUNTER.set(Some(0));
             s.metta_calculus(100);
+            let count = TEST_ONLY_CONSTRAINT_COUNTER.take().unwrap();
+            core::assert_eq!(count, 2);
 
             let mut out = String::new();
             s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1"), unsafe { out.as_mut_vec() });
 
-            println!("{}", out);
+            core::assert_eq!("(out b)\n", &out);
+        }
+
+        #[test]
+        fn tuple_filter_comparison() {
+            use std::{io::Read};
+
+            let mut words = String::with_capacity(1000000);
+            std::fs::File::open("/usr/share/dict/words").unwrap().read_to_string(&mut words);
+
+            let mut base_facts = String::new();
+            for each in words.split('\n') {
+                use std::fmt::Write;
+                if each == "" {continue;}
+                writeln!(base_facts, "(word {})", each);
+            }
+
+            let mut helpers = String::new();
+            for each in 1..=63 {
+                helpers.push_str("(tuple-first (");
+                for i in 0..each {
+                    use std::fmt::Write;
+                    write!(helpers, "${} ", i);
+                }
+                helpers.push_str(") $0)\n");
+            }
+            for each in 0..=63 {
+                use std::fmt::Write;
+                write!(helpers, "(length {} (", each);
+                for i in 0..each {
+                    write!(helpers, "${} ", i);
+                }
+                helpers.push_str("))\n");
+            }
+
+            base_facts.push_str(&helpers);
+
+
+            let words_as_tuples = b"
+                (exec (0) (, (word $w)) 
+                         (O 
+                            (pure (letters-word $l $w) $l (explode_symbol $w))
+                            (pure (word-letters $w $l) $l (explode_symbol $w))
+                         )
+                )
+            ";
+
+            let mut s = crate::space::Space::new();
+            s.add_all_sexpr(base_facts.as_bytes());
+            s.add_all_sexpr(words_as_tuples);
+            s.metta_calculus(100);
+
+            let tmp = s.btm.clone();
+
+            s.add_all_sexpr(b"
+                (range (1 3) 1)
+                (range (1 3) 2)
+                (range (1 3) 3)
+ 
+                 (exec 0
+                     (, 
+                         (range (1 3) $n)
+                         (length $n $t)
+                         (letters-word $t $w)
+                         (tuple-first $t $l)
+                     )
+                     (, (out (($l word-1-3) $w) ) )
+                 )
+
+ 
+;                (exec 0
+;                    (I 
+;                       (BTM (range (1 3) $n))
+;                       (BTM (length $n $t))
+;                       (BTM (letters-word $t $w))
+;                       ; (BTM (word-letters $w $t))
+;                       (BTM (tuple-first $t $l))
+;                    )
+;                    (O (+ (out (($l word-1-3) $w) ) ))
+;                )
+            ");
+            let now0 = std::time::Instant::now();
+            s.metta_calculus(100);
+            let elapsed0  = now0.elapsed();
+
+            let mut s1 = crate::space::Space::new();
+            s1.add_all_sexpr(base_facts.as_bytes());
+            s1.add_all_sexpr(helpers.as_bytes());
+            s1.btm = tmp.clone();
+            s1.add_all_sexpr(b"
+                (range (1 3) 1)
+                (range (1 3) 2)
+                (range (1 3) 3)
+
+                (exec 0 
+                    (C  (,
+                            ; (range (1 3) $n)
+                            ; (length $n $t)
+                            (letters-word $t $w)
+                            (tuple-first  $t $l)
+                        )
+                        (admit (,  ($t (tuple (#.. (1 3))) var)  )   )
+                    )
+                    (,  (out (($l word-1-3) $w) )  )
+                )
+            ");
+
+            let now1 = std::time::Instant::now();
+            s1.metta_calculus(100);
+            let elapsed1  = now1.elapsed();
+
+
+            println!("s0 : {}\ns1 : {}", elapsed0.as_millis(), elapsed1.as_millis());
+
+            let mut out = String::new();
+            s.dump_sexpr(expr!(s, "[2] out $"), expr!(s, "[2] out _1") ,unsafe { out.as_mut_vec() });
+            // s.dump_all_sexpr( unsafe { out.as_mut_vec() });
+            // println!("{}", out);
+
+            let mut out1 = String::new();
+            s1.dump_sexpr(expr!(s1, "[2] out $"), expr!(s1, "[2] out _1") ,unsafe { out1.as_mut_vec() });
+            // s1.dump_all_sexpr( unsafe { out1.as_mut_vec() });
+            // println!("{}", out1);
+
+            core::assert_eq!(out,out1);
         }
     }
 }

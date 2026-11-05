@@ -13,16 +13,23 @@
 //! here, then the zipper subterm cursor, then the unification leapfrog, gated against the
 //! ProductZipper.
 
-use mork_expr::{byte_item, item_byte, unify, unify_into, Expr, ExprEnv, ExprZipper, Tag};
+use mork_expr::{byte_item, item_byte, unify_into, Expr, ExprEnv, ExprZipper, Tag};
+// The test tooling below is `#[cfg(test)]` at module scope, so what only it uses is imported
+// the same way: this module now compiles into every build, and an import that a non-test build
+// does not reach would be a warning on all of them.
+#[cfg(test)]
+use mork_expr::unify;
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::{
     ReadZipperUntracked, Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperPath,
     ZipperValues,
 };
 use pathmap::PathMap;
-use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const QUERY_NS: u8 = 0;
 
@@ -542,8 +549,15 @@ pub struct EncodedTerm<'a> {
 }
 
 impl<'a> EncodedTerm<'a> {
-    fn is_ground(&self) -> bool {
+    pub(crate) fn is_ground(&self) -> bool {
         self.vars == 0
+    }
+
+    /// The query variables this term mentions, as a bitmask. The parse scan already recorded it,
+    /// so reading it costs nothing; [`crate::conjunct_order`] needs every column's variable set
+    /// to score an order.
+    pub(crate) fn vars(&self) -> u64 {
+        self.vars
     }
 
     fn min_var_pos(&self, var_pos: &[usize]) -> Option<usize> {

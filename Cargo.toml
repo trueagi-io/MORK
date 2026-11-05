@@ -25,6 +25,7 @@ mork-interning = {features = ["debug_api"], path = "./interning"}
 mork-expr = {path = "./expr"}
 mork-frontend = {path = "./frontend"}
 mork = {path = "./kernel"}
+linalg = {path = "./linalg"}
 
 # External to MORK
 gxhash = {version="3.4.1", git="https://github.com/luketpeterson/gxhash/"} # for dag_serialization

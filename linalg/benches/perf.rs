@@ -15,9 +15,11 @@
 
 use std::time::Instant;
 
+#[cfg(feature = "jit")]
+use linalg::jit::{EinsumF32Plan, JitInput};
 use linalg::{
     any::Tensor,
-    blocked::{attention, Blocked, Blocked16, Blocked8},
+    blocked::{Blocked, Blocked8, Blocked16, attention},
     csr::Csr,
     dense::Dense,
     einsum::{einsum, einsum_homogenous},
@@ -170,6 +172,22 @@ fn section_dense_matmul() {
         });
         println!("  ratio (dyn  / homo): {:.2}×", dyn_t / homo);
         println!("  ratio (enum / homo): {:.2}×", enum_t / homo);
+        #[cfg(feature = "jit")]
+        {
+            let plan = EinsumF32Plan::compile(
+                "ab,bc->ac",
+                &[JitInput::Dense(&a), JitInput::Dense(&b)],
+                &[vec![n, n]],
+            )
+            .unwrap();
+            let plan_name = format!("EinsumF32Plan ({:?})", plan.backend());
+            let plan_t = bench(&plan_name, iters, || {
+                let mut c = Dense::<f32>::zeros(vec![n, n]);
+                plan.run(&[JitInput::Dense(&a), JitInput::Dense(&b)], &mut [&mut c]);
+                std::hint::black_box(&c);
+            });
+            println!("  ratio (plan / homo): {:.4}×", plan_t / homo);
+        }
     }
 }
 
@@ -181,11 +199,14 @@ fn section_csr_matmul() {
     for &s in &[5usize, 10, 20] {
         let a = lattice_csr(s, 3.0, 42);
         let n = (s * s * s) as u32;
-        println!(
-            "\n--- side={s} (n={n}, nnz={}) ---",
-            a.nnz()
-        );
-        let iters: u32 = if s == 5 { 2000 } else if s == 10 { 200 } else { 30 };
+        println!("\n--- side={s} (n={n}, nnz={}) ---", a.nnz());
+        let iters: u32 = if s == 5 {
+            2000
+        } else if s == 10 {
+            200
+        } else {
+            30
+        };
 
         let nat = bench("Csr::matmul (native)", iters, || {
             let r = a.matmul(&a);
@@ -230,7 +251,13 @@ fn section_csr_par() {
         let a = lattice_csr(s, 3.0, 42);
         let n = (s * s * s) as u32;
         println!("\n--- side={s} (n={n}, nnz={}) ---", a.nnz());
-        let iters: u32 = if s == 10 { 100 } else if s == 20 { 20 } else { 5 };
+        let iters: u32 = if s == 10 {
+            100
+        } else if s == 20 {
+            20
+        } else {
+            5
+        };
 
         let seq = bench("Csr::matmul", iters, || {
             let r = a.matmul(&a);
@@ -286,6 +313,23 @@ fn section_csr_times_dense() {
             std::hint::black_box(&y);
         });
         println!("  ratio (enum / dyn): {:.2}×", enum_t / dyn_t);
+        #[cfg(feature = "jit")]
+        {
+            let plan = EinsumF32Plan::compile(
+                "ab,bc->ac",
+                &[JitInput::Csr(&af), JitInput::Dense(&x)],
+                &[vec![n, d]],
+            )
+            .unwrap();
+            let plan_name = format!("EinsumF32Plan ({:?})", plan.backend());
+            let plan_t = bench(&plan_name, iters, || {
+                let mut y = Dense::<f32>::zeros(vec![n, d]);
+                plan.run(&[JitInput::Csr(&af), JitInput::Dense(&x)], &mut [&mut y]);
+                std::hint::black_box(&y);
+            });
+            println!("  ratio (plan / dyn): {:.4}×", plan_t / dyn_t);
+            println!("  ratio (plan / enum): {:.4}×", plan_t / enum_t);
+        }
     }
 }
 

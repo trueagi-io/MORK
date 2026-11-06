@@ -5,7 +5,7 @@ use mork::space::{transitions, unifications, writes, Space, ACT_PATH};
 use mork_frontend::bytestring_parser::Parser;
 use mork_expr::{item_byte, serialize, SourceItem, Tag};
 use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperPath};
+use pathmap::zipper::{Zipper, ZipperAbsolutePath, ZipperIteration, ZipperMoving, ZipperPath, ZipperWriting};
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
 use std::ffi::OsStr;
@@ -6182,7 +6182,7 @@ fn parse_csv() {
     assert_eq!(reconstruction, String::from_utf8(res).unwrap());
 }
 
-
+#[test]
 fn connectome_Floyd_Warshall_dimensionality() {
     let mut s = Space::new();
 
@@ -6190,40 +6190,40 @@ fn connectome_Floyd_Warshall_dimensionality() {
 ; setup initial distance matrix
 (exec (0 0) (, (connection $x $y $t $w)) (, (D $x $y 1) (DT $y $x 1) (neuron $x) (neuron $y) ))
 (exec (0 1) (, (neuron $x) (neuron $y)) (, (D $x $y Inf) (DT $y $x Inf) ))
-(exec (0 2) (, (D $x $y 1)) (O (- (D $x $y Inf)) (- (DT $y $x Inf)) ))
-(exec (0 3) (, (D $x $x $d)) (O (- (D $x $x $d)) (- (DT $x $x $d)) (+ (D $x $x 0)) (+ (DT $x $x 0)) ))
-
-; inplace update Floyd Warshall update "if dist[i][j] > dist[i][k] + dist[k][j] then dist[i][j] = dist[i][k] + dist[k][j]" with k meta-programmed
-(exec (1 0)
- (, (neuron $k))
- (, (exec (1 $k)
-    (, (neuron $i) (neuron $j) (D $i $j $old) (D $i $k $d) (DT $j $k $dt) (arith ($d + $dt = $via)) (arith ($via < $old)))
-    (O (- (D $i $j $old)) (- (DT $j $i $old)) (+ (D $i $j $via)) (+ (DT $j $i $via))))
- )
-)
-
-; central node as node with max farness (with farness as row-sum over finite distances)
-(exec (2 0)
-  (, (neuron $i) (DT $i $j $d) (arith (finite $d)))
-  (O (count (farness-dist-cnt $i $d $c) $c $j)))
-(exec (2 1)
-  (, (farness-dist-cnt $i $d $c))
-  (O (pure (farness-product $i $p) $p (i64_to_string (product_i64 (i64_from_string $d) (i64_from_string $c))))))
-(exec (2 2)
-  (, (farness-product $i $p))
-  (O (sum (farness $i $s) $s $p)))
-(exec (2 3)
-  (, (farness $i $s))
-  (O (tail 1 (top-farness $s $i))))
-
-;
-(exec (3 0)
-  (, (top-farness $s $i) (farness-dist-cnt $i $d $c))
-  (, (top-d-c $d $c)))
-(exec (3 1)
-  (, (top-d-c $d $c) (arith ($d + 1 = $nd)) (top-d-c $nd $nc))
-  (O (pure (delta $d = $dr) $dr (f64_to_string (div_f64 (sub_f64 (ln_f64 (f64_from_string $nc)) (ln_f64 (f64_from_string $c)) )
-                                                        (sub_f64 (ln_f64 (f64_from_string $nd)) (ln_f64 (f64_from_string $d)) ))))))
+; (exec (0 2) (, (D $x $y 1)) (O (- (D $x $y Inf)) (- (DT $y $x Inf)) ))
+; (exec (0 3) (, (D $x $x $d)) (O (- (D $x $x $d)) (- (DT $x $x $d)) (+ (D $x $x 0)) (+ (DT $x $x 0)) ))
+; 
+; ; inplace update Floyd Warshall update "if dist[i][j] > dist[i][k] + dist[k][j] then dist[i][j] = dist[i][k] + dist[k][j]" with k meta-programmed
+; (exec (1 0)
+;  (, (neuron $k))
+;  (, (exec (1 $k)
+;     (, (neuron $i) (neuron $j) (D $i $j $old) (D $i $k $d) (DT $j $k $dt) (arith ($d + $dt = $via)) (arith ($via < $old)))
+;     (O (- (D $i $j $old)) (- (DT $j $i $old)) (+ (D $i $j $via)) (+ (DT $j $i $via))))
+;  )
+; )
+; 
+; ; central node as node with max farness (with farness as row-sum over finite distances)
+; (exec (2 0)
+;   (, (neuron $i) (DT $i $j $d) (arith (finite $d)))
+;   (O (count (farness-dist-cnt $i $d $c) $c $j)))
+; (exec (2 1)
+;   (, (farness-dist-cnt $i $d $c))
+;   (O (pure (farness-product $i $p) $p (i64_to_string (product_i64 (i64_from_string $d) (i64_from_string $c))))))
+; (exec (2 2)
+;   (, (farness-product $i $p))
+;   (O (sum (farness $i $s) $s $p)))
+; (exec (2 3)
+;   (, (farness $i $s))
+;   (O (tail 1 (top-farness $s $i))))
+; 
+; ;
+; (exec (3 0)
+;   (, (top-farness $s $i) (farness-dist-cnt $i $d $c))
+;   (, (top-d-c $d $c)))
+; (exec (3 1)
+;   (, (top-d-c $d $c) (arith ($d + 1 = $nd)) (top-d-c $nd $nc))
+;   (O (pure (delta $d = $dr) $dr (f64_to_string (div_f64 (sub_f64 (ln_f64 (f64_from_string $nc)) (ln_f64 (f64_from_string $c)) )
+;                                                         (sub_f64 (ln_f64 (f64_from_string $nd)) (ln_f64 (f64_from_string $d)) ))))))
     "#;
 
     let mut expr_buf = vec![];
@@ -6231,19 +6231,69 @@ fn connectome_Floyd_Warshall_dimensionality() {
     // N1: Neuron 1 name
     // N2: Neuron 2 name
     // Type: Type of synapse: S: Send or output (Neuron 1 pre-synaptic to Neuron 2); Sp: Send-poly (Neuron 1 is pre-synaptic to more than one postsynaptic partner.  Neuron 2 is just one of these post-synaptic neurons, see Figure 1 below.  In White et al, 1986, these polyadic synaptic connections were denoted by “m” in the tables of Appendix 1); R: Receive or input (Neuron 1 is post-synaptic to Neuron 2); Rp: Receive-poly (Neuron 1 is one of several post-synaptic partners of Neuron 2.  See Figure 1 and above); EJ: Electric junction; NMJ: Neuromuscular junction (only reconstructed NMJ's are represented).
-    // It must be noted that at polyadic synaptic sites, not all “send-poly” were faithfully labeled as such in White et al, 1986. Some pre-synaptic connections were labeled simply as “sends”. Reconciliation of chemical synapses did not previously distinguish between send from send-poly and receive from receive-poly. In this new reconciliation, the total number of send and send-poly is equal to the total number of receive and receive-poly (S+Sp=R+Rp). Every documented synapse is now listed in this Table, both with respect to the sending neuron and with respect to the receiving neuron(s).
+    //   It must be noted that at polyadic synaptic sites, not all “send-poly” were faithfully labeled as such in White et al, 1986. Some pre-synaptic connections were labeled simply as “sends”. Reconciliation of chemical synapses did not previously distinguish between send from send-poly and receive from receive-poly. In this new reconciliation, the total number of send and send-poly is equal to the total number of receive and receive-poly (S+Sp=R+Rp). Every documented synapse is now listed in this Table, both with respect to the sending neuron and with respect to the receiving neuron(s).
     // Nbr: Number of synapses between the given neuron pair.
     std::fs::File::open("resources/NeuronConnectElegans.csv").unwrap().read_to_end(&mut expr_buf).unwrap();
     s.load_csv(&expr_buf[..], expr!(s, "[5] $ $ $ $ $)"), expr!(s, "[5] connection _2 _3 _4 _5"), b',').unwrap();
 
     s.add_all_sexpr(SPACE_EXPRS.as_bytes()).unwrap();
-    let mut FIN: String = (0..=100).map(|x| format!("(arith (finite {}))\n", x)).collect();
-    s.add_all_sexpr(FIN.as_bytes()).unwrap();
-    let mut ADD: String = (0..=100).flat_map(|x| (0..100).map(move |y| format!("(arith ({} + {} = {}))\n", x, y, x+y))).collect();
-    s.add_all_sexpr(ADD.as_bytes()).unwrap();
-    let mut ORDER: String = (0..=100).flat_map(|x| (0..x).map(move |y| format!("(arith ({} < {}))\n", y, x))).collect();
-    s.add_all_sexpr(ORDER.as_bytes()).unwrap();
-    s.add_all_sexpr(b"(arith ($x < Inf))").unwrap();
+    // let mut FIN: String = (0..=100).map(|x| format!("(arith (finite {}))\n", x)).collect();
+    // s.add_all_sexpr(FIN.as_bytes()).unwrap();
+    // let mut ADD: String = (0..=100).flat_map(|x| (0..100).map(move |y| format!("(arith ({} + {} = {}))\n", x, y, x+y))).collect();
+    // s.add_all_sexpr(ADD.as_bytes()).unwrap();
+    // let mut ORDER: String = (0..=100).flat_map(|x| (0..x).map(move |y| format!("(arith ({} < {}))\n", y, x))).collect();
+    // s.add_all_sexpr(ORDER.as_bytes()).unwrap();
+    // s.add_all_sexpr(b"(arith ($x < Inf))").unwrap();
+
+// s.metta_calculus(0);
+
+    let mut act_map_prep;
+    {
+        let init_state_dump_path = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR")).join("tmp/init_state_dump.act");
+        std::fs::remove_file(&init_state_dump_path);
+        act_map_prep = s.btm.clone();
+        { let mut wz = act_map_prep.write_zipper();
+            wz.descend_to_byte(item_byte(Tag::Arity(4))); // exec
+            wz.descend_to_byte(item_byte(Tag::SymbolSize(4)));
+            wz.descend_to("exec");
+            while wz.descend_until() {}
+            wz.take_map(true);
+            assert!(wz.val_count()==0);
+        }
+        let init_state = pathmap::arena_compact::ACTMmap::dump_from_zipper(act_map_prep.read_zipper(), |_|0, &init_state_dump_path).unwrap();
+        for mut each in init_state.iter() {
+            println!("{:?}", mork_expr::Expr{ptr : each.0.as_mut_ptr()});
+        }
+        // drop(init_state);
+    }
+
+// let mut s = Space::new();
+// s.btm = act_map_prep;
+s.new_shared_buffer_target_trace();
+    let steps = s.metta_calculus(0);
+    '_lock_scope : {
+        let mut outfile_path = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
+        outfile_path.push("tmp/queries");
+        std::fs::remove_file(&outfile_path);
+        let mut file = std::fs::File::create(outfile_path).unwrap();
+
+
+        s.shared_buf_trace_target.trace_target.close();
+
+        let lock   = (&s.shared_buf_trace_target.shared_buf).0.lock().unwrap();
+        file.write_all(&lock);        
+        
+        // let traced = pathmap::utils::debug::zipper_tracing::decode_trace::<()>(&lock).unwrap();
+        // println!("TRACE : ");
+        // for each in &traced {
+        //     println!("\t{:?}", each);
+        // }
+        // println!();
+        drop(lock);
+    };
+    return;
+
+
 
     let mut t0 = Instant::now();
     let steps = s.metta_calculus(1000000000000000);

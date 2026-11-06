@@ -17,6 +17,7 @@ use pathmap::ring::{AlgebraicStatus, Lattice};
 use mork_expr::{byte_item, Expr, ExprZipper, ExtractFailure, item_byte, parse, serialize, Tag, traverseh, ExprEnv, unify, UnificationFailure, apply, destruct, OwnedSourceItem, Bindings};
 use mork_frontend::bytestring_parser::{Parser, ParserError, Context};
 use mork_interning::{WritePermit, SharedMapping, SharedMappingHandle};
+use pathmap::utils::debug::zipper_tracing::TraceTarget;
 use pathmap::utils::{BitMask, ByteMask};
 use pathmap::zipper::*;
 use pathmap::arena_compact::ArenaCompactTree;
@@ -55,13 +56,24 @@ fn pattern_variables_expr(pat_expr: Expr, buf: &mut [u8; 64]) -> Option<Expr> {
     Some(Expr { ptr: buf.as_ptr().cast_mut() })
 }
 
+#[derive(Clone, Default)]
+pub struct SharedBuf(pub std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(buf); Ok(buf.len()) }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+pub struct SharedBufferTraceTarget { pub shared_buf: SharedBuf, pub trace_target: TraceTarget }
+
 pub struct Space {
     pub btm: PathMap<()>,
     pub sm: SharedMappingHandle,
     pub mmaps: HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
     pub z3s: HashMap<OwnedSourceItem, Box<Popen>>,
     pub last_merkleize: Instant,
-    pub timing: bool
+    pub timing: bool,
+
+    pub shared_buf_trace_target : SharedBufferTraceTarget,
 }
 
 pub(crate) const SIZES: [u64; 4] = {
@@ -473,7 +485,45 @@ macro_rules! sexpr {
 
 impl Space {
     pub fn new() -> Self {
-        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false }
+        let shared_buf = SharedBuf::default();
+        let trace_target = pathmap::utils::debug::zipper_tracing::TraceTarget::new::<()>(shared_buf.clone()).unwrap();
+        Self { btm: PathMap::new(), sm: SharedMapping::new(), mmaps: HashMap::new(), z3s: HashMap::new(), last_merkleize: Instant::now(), timing: false,
+            shared_buf_trace_target : SharedBufferTraceTarget { shared_buf, trace_target }
+        }
+    }
+    pub fn new_shared_buffer_target_trace(&mut self) {
+        self.shared_buf_trace_target.trace_target.close().unwrap();
+        let shared_buf = SharedBuf::default();
+        let trace_target = pathmap::utils::debug::zipper_tracing::TraceTarget::new::<()>(shared_buf.clone()).unwrap();
+        self.shared_buf_trace_target = SharedBufferTraceTarget { shared_buf, trace_target };
+    }
+
+    pub fn metta_calculus_one_step_trace<P : AsRef<std::path::Path>, P_ : AsRef<std::path::Path>>(&mut self, act_out : P, trace_out : P_) {
+        std::fs::remove_file(&act_out);
+        
+        let mut act_map_prep = self.btm.clone();
+        { let mut wz = act_map_prep.write_zipper();
+            wz.descend_to_byte(item_byte(Tag::Arity(4))); // exec
+            while wz.descend_until() {}
+            wz.take_map(true);
+            assert!(wz.val_count()==0);
+        }
+        let init_state = pathmap::arena_compact::ACTMmap::dump_from_zipper(act_map_prep.read_zipper(), |_|0, &act_out).unwrap();
+        // for mut each in init_state.iter() {
+        //     println!("{:?}", mork_expr::Expr{ptr : each.0.as_mut_ptr()});
+        // }
+        let steps = self.metta_calculus(1);
+        '_lock_scope : {
+            let mut outfile_path = std::path::PathBuf::from(env!("CARGO_WORKSPACE_DIR"));
+            outfile_path.push("tmp/queries");
+            std::fs::remove_file(&outfile_path);
+            let mut file = std::fs::File::create(outfile_path).unwrap();
+        
+            self.shared_buf_trace_target.trace_target.close();
+            let lock   = (&self.shared_buf_trace_target.shared_buf).0.lock().unwrap();
+            file.write_all(&lock);        
+            drop(lock);
+        };
     }
 
     pub fn parse_sexpr(&mut self, r: &[u8], buf: *mut u8) -> Result<(Expr, usize), ParserError> {
@@ -1000,7 +1050,7 @@ impl Space {
         let mut pat_vars_buf = [0u8; 64];
         #[cfg(debug_assertions)]
         let pat_vars_expr = pattern_variables_expr(pattern, &mut pat_vars_buf).unwrap_or(pattern);
-        Self::query_multi(&self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| 'query : {
+        Self::query_multi(&self.shared_buf_trace_target, &self.btm, Expr{ ptr: pat.leak().as_mut_ptr() }, |refs_bindings, loc| 'query : {
             let mut oz = ExprZipper::new(Expr { ptr: buffer.as_mut_ptr() });
 
             match refs_bindings {
@@ -1105,7 +1155,10 @@ impl Space {
     /// which `query_multi` handles (or fails on) exactly as it always has, plus the encoding
     /// pathologies `parse_body_factors` rejects (a `VarRef` naming a variable the body never
     /// introduced, or more than `u8::MAX` variables).
-    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi_dispatch<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
+        shared_buf_trace_target : &SharedBufferTraceTarget,
+        btm: &PathMap<()>, pat_expr: Expr, mut effect: F
+    ) -> usize {
         // Which engine answers the space-to-space transform is a compile-time choice and nothing
         // more: with the `leapfrog` feature the join owns every body, and without it the module
         // does not exist. `query_multi` stays reachable for the paths that are not dispatched --
@@ -1116,11 +1169,15 @@ impl Space {
         }
         #[cfg(not(feature = "leapfrog"))]
         {
-            Self::query_multi(btm, pat_expr, effect)
+            Self::query_multi(shared_buf_trace_target, btm, pat_expr, effect)
         }
     }
 
-    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
+    pub fn query_multi<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
+        shared_buf_trace_target : &SharedBufferTraceTarget,
+    
+        btm: &PathMap<()>, pat_expr: Expr, mut effect: F
+    ) -> usize {
         let pat_newvars = pat_expr.newvars();
         trace!(target: "query_multi", "pattern (newvars={}) {:?}", pat_newvars, serialize(unsafe { pat_expr.span().as_ref().unwrap() }));
         let n_factors = pat_expr.arity().unwrap() as usize;
@@ -1132,12 +1189,29 @@ impl Space {
         let mut pat_args = Vec::with_capacity(n_factors);
         ExprEnv::new(0, pat_expr).args(&mut pat_args);
 
-        let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
-            btm.read_zipper()
+
+        let mut prz = ProductZipper::new(
+            pathmap::utils::debug::zipper_tracing::TraceZipper::new(
+                btm.read_zipper()
+                , shared_buf_trace_target.trace_target.clone()
+            )
+            , (0..(pat_args.len() - 2)).map(|i| {
+                pathmap::utils::debug::zipper_tracing::TraceZipper::new(
+                    btm.read_zipper()
+                    , shared_buf_trace_target.trace_target.clone()
+                )
         }));
+        let mut prz = OneFactor::new(pathmap::utils::debug::zipper_tracing::TraceZipper::new(
+                prz
+                , shared_buf_trace_target.trace_target.clone()
+        ));
+
+        // let mut prz = ProductZipper::new(btm.read_zipper(), (0..(pat_args.len() - 2)).map(|i| {
+        //     btm.read_zipper()
+        // }));
         prz.reserve_buffers(1 << 32, 32);
 
-        Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+        Self::query_multi_raw(shared_buf_trace_target, &mut prz, &pat_args[1..], effect)
     }
 
     #[inline]
@@ -1223,7 +1297,9 @@ impl Space {
         }
     }
 
-    pub fn query_multi_i<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(no_source: bool,
+    pub fn query_multi_i<F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
+            shared_buf_trace_target : &SharedBufferTraceTarget,
+            no_source: bool,
             mmaps: &mut HashMap<OwnedSourceItem, ArenaCompactTree<memmap2::Mmap>>,
             z3s: &mut HashMap<OwnedSourceItem, Box<Popen>>,
             btm: &PathMap<()>, pat_expr: Expr, mut effect: F) -> usize {
@@ -1253,13 +1329,13 @@ impl Space {
             AFactor::CompatSource(primary) => {
                 let mut prz = ProductZipper::new(primary, &mut factors[..]);
                 prz.reserve_buffers(1 << 32, 32);
-                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+                Self::query_multi_raw(shared_buf_trace_target, &mut prz, &pat_args[1..], effect)
             }
             primary => {
                 trace!(target: "query_multi_i", "PZG of {:?}", factors.len() + 1);
                 let mut prz = ProductZipperG::new(primary, &mut factors[..]);
                 prz.reserve_buffers(1 << 32, 32);
-                Self::query_multi_raw(&mut prz, &pat_args[1..], effect)
+                Self::query_multi_raw(shared_buf_trace_target, &mut prz, &pat_args[1..], effect)
             }
         }
     }
@@ -1331,7 +1407,10 @@ impl Space {
 
     #[cfg(not(feature="no_search"))]
     #[inline(always)]
-    pub fn query_multi_raw<PZ : ZipperProduct, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F) -> usize {
+    pub fn query_multi_raw<PZ : ZipperProduct + pathmap::zipper::ZipperValues<()>, F : FnMut(Result<&[u32], &Bindings>, Expr) -> bool>(
+        shared_buf_trace_target : &SharedBufferTraceTarget,
+        mut prz: &mut PZ, sources: &[ExprEnv], mut effect: F
+    ) -> usize {
         let mut stack = sources[0..].iter().rev().cloned().collect::<Vec<_>>();
 
         let mut references: Vec<u32> = vec![];
@@ -1492,7 +1571,12 @@ impl Space {
         template_prefixes.iter().enumerate().for_each(|(i, x)| {
             if subsumption[i] == i {
                 placements[i] = template_wzs.len();
-                template_wzs.push(unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) });
+                template_wzs.push(
+                    pathmap::utils::debug::zipper_tracing::TraceZipper::new(
+                        unsafe { zh.write_zipper_at_exclusive_path_unchecked(x) }
+                        , self.shared_buf_trace_target.trace_target.clone()
+                    )
+                );
             }
         });
         for i in 0..subsumption.len() {
@@ -1527,7 +1611,7 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi_dispatch(&read_copy, pat_expr, |refs_bindings, loc| 'query:{
+        let touched = Self::query_multi_dispatch(&self.shared_buf_trace_target, &read_copy, pat_expr, |refs_bindings, loc| 'query:{
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1578,7 +1662,9 @@ impl Space {
     }
 
     #[cfg(feature="specialize_io")]
-    pub fn transform_multi_multi_i(&mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr) -> (usize, bool) {
+    pub fn transform_multi_multi_i(
+            &mut self, pat_expr: Expr, tpl_expr: Expr, add: Expr
+        ) -> (usize, bool) {
         let mut buffer = Vec::with_capacity(1 << 32);
         unsafe { buffer.set_len(1 << 32); }
         let mut tpl_args = Vec::with_capacity(64);
@@ -1629,7 +1715,9 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
+        let touched = Self::query_multi_i(
+            &self.shared_buf_trace_target,
+            false, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, _loc| 'query : {
             // trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1739,7 +1827,7 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi(&read_copy, pat_expr, |refs_bindings, loc| 'query : {
+        let touched = Self::query_multi(&self.shared_buf_trace_target, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1783,7 +1871,7 @@ impl Space {
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
-            any_new |= s.finalize(std::iter::once(wz));
+            any_new |= s.finalize(std::iter::once(wz), &self.shared_buf_trace_target);
         }
         for wz in outstanding_wzs.iter_mut() {
             zh.cleanup_write_zipper(wz);
@@ -1852,7 +1940,7 @@ impl Space {
 
 
         let mut any_new = false;
-        let touched = Self::query_multi_i(no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
+        let touched = Self::query_multi_i(&self.shared_buf_trace_target, no_source, &mut self.mmaps, &mut self.z3s, &read_copy, pat_expr, |refs_bindings, loc| 'query : {
             trace!(target: "transform", "data {}", serialize(unsafe { loc.span().as_ref().unwrap()}));
             unsafe { writes += template_prefixes.len(); }
             match refs_bindings {
@@ -1896,7 +1984,7 @@ impl Space {
 
         for (i, s) in sinks.iter_mut().enumerate() {
             let wz = unsafe { std::ptr::read(&template_resources[subsumption[i]]) };
-            any_new |= s.finalize(std::iter::once(wz));
+            any_new |= s.finalize(std::iter::once(wz), &self.shared_buf_trace_target);
         }
         for wz in outstanding_wzs.iter_mut() {
             zh.cleanup_write_zipper(wz);

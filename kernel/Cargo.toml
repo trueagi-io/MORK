@@ -12,7 +12,7 @@ mork-interning = { workspace = true }
 pathmap = { workspace = true, features = ["nightly"] }
 log = { workspace=true }
 env_logger = { workspace=true }
-memmap2 = "0.9.5"
+memmap2 = "0.9.12"
 #neo4rs = { version = "0.9.0-rc.5" , features = ["unstable-bolt-protocol-impl-v2"]}
 #tokio = "1.43.0"
 futures = "0.3.31"

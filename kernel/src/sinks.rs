@@ -30,7 +30,7 @@ use eval::EvalScope;
 use eval_ffi::{ExprSink, ExprSource};
 use mork_expr::macros::SerializableExpr;
 use crate::{expr, pure};
-use crate::space::ACT_PATH;
+use crate::space::{ACT_PATH, SharedBufferTraceTarget};
 
 #[derive(Eq, PartialEq, Debug)]
 pub enum WriteResourceRequest {
@@ -128,7 +128,9 @@ pub(crate) trait Sink {
     fn new(e: Expr) -> Self;
     fn request(&self) ->  impl Iterator<Item=WriteResourceRequest>;
     fn sink<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, path: &[u8]) where 'a : 'w, 'k : 'w;
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w;
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(
+        &mut self, it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget
+    ) -> bool where 'a : 'w, 'k : 'w;
 }
 
 pub struct CompatSink { e: Expr, changed: bool }
@@ -148,7 +150,7 @@ impl Sink for CompatSink {
         wz.move_to_path(mpath);
         self.changed |= wz.set_val(()).is_none();
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, shared_buf_trace_traget : &SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "+ (compat) finalizing");
         self.changed
     }
@@ -170,7 +172,7 @@ impl Sink for AddSink {
         wz.move_to_path(mpath);
         self.changed |= wz.set_val(()).is_none();
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "+ finalizing");
         self.changed
     }
@@ -242,7 +244,7 @@ impl Sink for USink {
 
 
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "U finalizing");
         if self.conflict {
             trace!(target: "sink", "U conflict");
@@ -292,7 +294,7 @@ impl Sink for AUSink {
             self.tmp = self.buf.clone();
         }
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "AU finalizing");
         match self.buf.take() {
             None => {
@@ -325,7 +327,7 @@ impl Sink for ACTSink {
         trace!(target: "sink", "ACT sinking '{}'", serialize(&path[1+1+3+1+self.file.len()..]));
         self.tmp.insert(&path[1+1+3+1+self.file.len()..], ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         trace!(target: "sink", "ACT finalizing");
         let _ = it.next().unwrap() else { unreachable!() };
         pathmap::arena_compact::ArenaCompactTree::dump_from_zipper(
@@ -351,8 +353,8 @@ impl Sink for RemoveSink {
         trace!(target: "sink", "- sinking '{}'", serialize(mpath));
         self.remove.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
-        let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
+        let WriteResource::BTM(mut wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "- finalizing by subtracting {} at '{}'", self.remove.val_count(), serialize(wz.origin_path()));
         // match self.remove.remove(&[]) {
@@ -363,7 +365,11 @@ impl Sink for RemoveSink {
         //         println!("val not removed");
         //     }
         // }
-        match wz.subtract_into(&self.remove.read_zipper(), true) {
+        let mut twz = pathmap::utils::debug::zipper_tracing::TraceZipper::new(
+            &mut wz,
+            shared_buf_trace_traget.trace_target.clone()
+        );
+        match twz.subtract_into(&self.remove.read_zipper(), true) {
             AlgebraicStatus::Element => { true }
             AlgebraicStatus::Identity => { false }
             AlgebraicStatus::None => { true } // GOAT maybe not?
@@ -416,7 +422,7 @@ impl <const head: bool> Sink for HeadTailSink<head> {
             }
         }
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "head/tail finalizing by joining {} at '{}'", self.count, serialize(wz.origin_path()));
@@ -562,7 +568,7 @@ impl Sink for CountSink {
         trace!(target: "sink", "count registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "count finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -576,7 +582,7 @@ impl Sink for CountSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
             let cnt = prz.val_count();
             trace!(target: "sink", "'{}' and under {}", serialize(prz.path()), cnt);
             let clen = prz.path().len();
@@ -641,7 +647,7 @@ impl Sink for HashSink {
         trace!(target: "sink", "hash registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "hash finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -655,7 +661,7 @@ impl Sink for HashSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
                 // if size != 16 { trace!(target: "sink", "hash guard not 16 bytes {size}"); continue }
@@ -665,7 +671,7 @@ impl Sink for HashSink {
                 loop {
                     let clen = prz.origin_path().len();
 
-                    let hash = prz.fork_read_zipper().hash();
+                    let hash = prz.fork_read_zipper().unwrap().hash();
 
                     let cnt_str = hash.to_be_bytes();
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), hash);
@@ -695,7 +701,7 @@ impl Sink for HashSink {
             }
             if let Some(first_byte) = prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
-                    let hash = prz.fork_read_zipper().hash();
+                    let hash = prz.fork_read_zipper().unwrap().hash();
                     let cnt_str = hash.to_be_bytes();
 
                     let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
@@ -738,7 +744,7 @@ impl Sink for AndSink {
         trace!(target: "sink", "and registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "and finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -752,7 +758,7 @@ impl Sink for AndSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
@@ -764,7 +770,7 @@ impl Sink for AndSink {
                     let mut total = !0u8;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -800,7 +806,7 @@ impl Sink for AndSink {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = !0u8;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "and path {:?}", serialize(p));
@@ -848,7 +854,7 @@ impl Sink for SumSink {
         trace!(target: "sink", "sum registering in ctx {:?}", serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "sum finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -862,7 +868,7 @@ impl Sink for SumSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
@@ -873,7 +879,7 @@ impl Sink for SumSink {
                     let mut total = 0u32;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -909,7 +915,7 @@ impl Sink for SumSink {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = 0u32;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
@@ -990,7 +996,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         trace!(target: "sink", "{} registering in ctx {:?}", Reduction::NAME, serialize(mpath));
         self.unique.insert(mpath, ());
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "{} finalizing by reducing {} at '{}'", Reduction::NAME, self.unique.val_count(), serialize(wz.origin_path()));
@@ -1004,7 +1010,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
@@ -1015,7 +1021,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                     let mut total = Reduction::ACC;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -1051,7 +1057,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = Reduction::ACC;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
@@ -1118,7 +1124,7 @@ impl Sink for PureSink {
         self.unique.insert(mpath, ());
 
     }
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, mut it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         let WriteResource::BTM(wz) = it.next().unwrap() else { unreachable!() };
         wz.reset();
         trace!(target: "sink", "pure finalizing by reducing {} at '{}'", self.unique.val_count(), serialize(wz.origin_path()));
@@ -1132,7 +1138,7 @@ impl Sink for PureSink {
         let prz_ptr = (&prz) as *const OneFactor<_>;
         let mut changed = false;
         let mut buffer: Vec<u8> = Vec::with_capacity(1 << 32);
-        crate::space::Space::query_multi_raw(unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
+        crate::space::Space::query_multi_raw(shared_buf_trace_traget, unsafe { prz_ptr.cast_mut().as_mut().unwrap() }, &[ExprEnv::new(0, Expr{ ptr: v.as_ptr().cast_mut() })], |refs_bindings, loc| {
 
             for b in prz.child_mask().and(&ByteMask(crate::space::SIZES)).iter() {
                 let Tag::SymbolSize(size) = byte_item(b) else { unreachable!() };
@@ -1142,7 +1148,7 @@ impl Sink for PureSink {
                 loop {
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     'vals: while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -1173,7 +1179,7 @@ impl Sink for PureSink {
             if let Some(first_byte) = prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     'vals: while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
@@ -1386,30 +1392,30 @@ impl Sink for ASink {
         }
     }
 
-    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It) -> bool where 'a : 'w, 'k : 'w {
+    fn finalize<'w, 'a, 'k, It : Iterator<Item=WriteResource<'w, 'a, 'k>>>(&mut self, it: It, shared_buf_trace_traget : &crate::space::SharedBufferTraceTarget) -> bool where 'a : 'w, 'k : 'w {
         match self {
-            ASink::AddSink(s) => { s.finalize(it) }
-            ASink::USink(s) => { s.finalize(it) }
-            ASink::AUSink(s) => { s.finalize(it) }
-            ASink::RemoveSink(s) => { s.finalize(it) }
-            ASink::HeadSink(s) => { s.finalize(it) }
-            ASink::TailSink(s) => { s.finalize(it) }
-            ASink::CountSink(s) => { s.finalize(it) }
-            ASink::HashSink(s) => { s.finalize(it) }
-            ASink::SumSink(s) => { s.finalize(it) }
-            ASink::AndSink(s) => { s.finalize(it) }
-            ASink::ACTSink(s) => { s.finalize(it) }
+            ASink::AddSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::USink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::AUSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::RemoveSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::HeadSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::TailSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::CountSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::HashSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::SumSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::AndSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::ACTSink(s) => { s.finalize(it, shared_buf_trace_traget) }
             #[cfg(feature = "wasm")]
-            ASink::WASMSink(s) => { s.finalize(it) }
+            ASink::WASMSink(s) => { s.finalize(it, shared_buf_trace_traget) }
             #[cfg(feature = "grounding")]
-            ASink::PureSink(s) => { s.finalize(it) }
+            ASink::PureSink(s) => { s.finalize(it, shared_buf_trace_traget) }
             #[cfg(feature = "z3")]
-            ASink::Z3Sink(s) => { s.finalize(it) }
-            ASink::CompatSink(s) => { s.finalize(it) }
-            ASink::FSumSink(s) => { s.finalize(it) }
-            ASink::FMinSink(s) => { s.finalize(it) }
-            ASink::FMaxSink(s) => { s.finalize(it) }
-            ASink::FProdSink(s) => { s.finalize(it) }
+            ASink::Z3Sink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::CompatSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::FSumSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::FMinSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::FMaxSink(s) => { s.finalize(it, shared_buf_trace_traget) }
+            ASink::FProdSink(s) => { s.finalize(it, shared_buf_trace_traget) }
         }
     }
 }

@@ -116,7 +116,8 @@ pub enum Tag {
 /// The one-byte encoding of a lone new variable, `$`: the expression every fresh, unconstrained
 /// variable position denotes. Callers that need "an expression that is just a variable" (variable
 ///-to-variable binding links, placeholder envs) point at this instead of re-deriving the byte.
-pub const NEW_VAR_EXPR_BYTES: [u8; 1] = [item_byte(Tag::NewVar)];
+// [Remy]: Its important that this is a static!
+pub static NEW_VAR_EXPR_BYTES: [u8; 1] = [item_byte(Tag::NewVar)];
 
 #[inline(always)]
 pub const fn item_byte(b: Tag) -> u8 {
@@ -1977,7 +1978,7 @@ impl Traversal<(), ()> for TraverseSide {
 }
 
 impl ExprEnv {
-    pub fn new(i: u8, e: Expr) -> Self {
+    pub const fn new(i: u8, e: Expr) -> Self {
         Self {
             n: i,
             v: 0,

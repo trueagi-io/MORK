@@ -111,6 +111,11 @@ pub(crate) const VARS: [u64; 4] = {
 // - use descend_to and re-evaluated the added sub-path to do much better on long paths
 fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
     loc: &mut Z, mut stack: &mut Vec<ExprEnv>, references: &mut Vec<u32>, var_facts: u64, f: &mut F) {
+
+    const  ANON_NAMESPACE        : u8      = 255;
+    const  ZIPPER_PATH_NAMESPACE : u8      = 254;
+    const  ANON_NV               : ExprEnv = ExprEnv::new(ANON_NAMESPACE, Expr { ptr: ((&mork_expr::NEW_VAR_EXPR_BYTES) as *const u8).cast_mut() });
+
     macro_rules! vs {
         ($e:expr, $nv:expr) => {{
             let m = loc.child_mask().and(&ByteMask(VARS));
@@ -180,9 +185,8 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         let Tag::Arity(a) = byte_item(b) else { unreachable_unchecked() };
                         loc.descend_to_byte(b);
                         debug_assert!(loc.path_exists());
-                        static nv: u8 = item_byte(Tag::NewVar);
                         let ol = stack.len();
-                        for _ in 0..a { stack.push(ExprEnv::new(255, Expr { ptr: ((&nv) as *const u8).cast_mut() })) }
+                        for _ in 0..a { stack.push(ANON_NV) }
                         coreferential_transition(loc, stack, references, var_facts, f);
                         stack.truncate(ol);
                         if !loc.ascend_byte() { unreachable_unchecked() };
@@ -201,11 +205,24 @@ fn coreferential_transition<Z : ZipperProduct, F: FnMut(&mut Z, u64) -> ()>(
                         trace!(target: "coref trans", "varref {i} {:?}", &loc.path()[references[i as usize] as usize..]);
                         // trace!(target: "coref trans", "varref against {:?}", loc.child_mask());
                         // trace!(target: "coref trans", "varref path {:?}", serialize(loc.origin_path()));
-                        ExprEnv::new(254, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
+                        
+
+                        let matched_ptr = loc.path().as_ptr().cast_mut().offset(references[i as usize] as _);
+                        match unsafe { byte_item(*matched_ptr) } {
+                            Tag::NewVar | Tag::VarRef(_) => { 
+                                // [Remy]: the idea here is that we make use of the fact that the `0` namespace __restores__ the state of a reference position.
+                                // We try to match again, with the hope that we will become more specific, and activate the constrain filter again.
+                                
+                                // ExprEnv::new(0, Expr { ptr: (mork_expr::NEW_VAR_EXPR_BYTES.as_mut_ptr()) })
+                                ExprEnv::new(0, Expr { ptr: (&raw const mork_expr::NEW_VAR_EXPR_BYTES[0]).cast_mut() })
+                            }
+                            _                            => {
+                                ExprEnv::new(ZIPPER_PATH_NAMESPACE, Expr{ ptr: loc.path().as_ptr().cast_mut().offset(references[i as usize] as _) })
+                            }
+                        }
                     } else {
                         trace!(target: "coref trans", "varref <{},{i}> 'any'", e.n);
-                        static nv: u8 = item_byte(Tag::NewVar);
-                        ExprEnv::new(255, Expr{ ptr: ((&nv) as *const u8).cast_mut() })
+                        ANON_NV
                     };
                     stack.push(addition);
                     vs!(e, false);

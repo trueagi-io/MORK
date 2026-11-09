@@ -665,7 +665,7 @@ impl Sink for HashSink {
                 loop {
                     let clen = prz.origin_path().len();
 
-                    let hash = prz.fork_read_zipper().hash();
+                    let hash = prz.fork_read_zipper().unwrap().hash();
 
                     let cnt_str = hash.to_be_bytes();
                     trace!(target: "sink", "'{}' and under {}", serialize(prz.origin_path()), hash);
@@ -695,7 +695,7 @@ impl Sink for HashSink {
             }
             if let Some(first_byte) = prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
-                    let hash = prz.fork_read_zipper().hash();
+                    let hash = prz.fork_read_zipper().unwrap().hash();
                     let cnt_str = hash.to_be_bytes();
 
                     let mut cntv = vec![item_byte(Tag::SymbolSize(cnt_str.len() as _))];
@@ -764,7 +764,7 @@ impl Sink for AndSink {
                     let mut total = !0u8;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -800,7 +800,7 @@ impl Sink for AndSink {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = !0u8;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "and path {:?}", serialize(p));
@@ -873,7 +873,7 @@ impl Sink for SumSink {
                     let mut total = 0u32;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -909,7 +909,7 @@ impl Sink for SumSink {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = 0u32;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
@@ -1015,7 +1015,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                     let mut total = Reduction::ACC;
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -1051,7 +1051,7 @@ impl<Reduction : FloatReduction> Sink for FloatReductionSink<Reduction> {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let mut total = Reduction::ACC;
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
@@ -1142,7 +1142,7 @@ impl Sink for PureSink {
                 loop {
                     let clen = prz.origin_path().len();
 
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     'vals: while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path number {:?}", serialize(&p[clen..]));
@@ -1173,7 +1173,7 @@ impl Sink for PureSink {
             if let Some(first_byte) = prz.descend_first_byte() {
                 if let Tag::VarRef(k) = byte_item(first_byte) {
                     let clen = prz.path().len();
-                    let mut rz = prz.fork_read_zipper();
+                    let mut rz = prz.fork_read_zipper().unwrap();
                     'vals: while rz.to_next_val() {
                         let p = rz.origin_path();
                         trace!(target: "sink", "path {:?}", serialize(p));
